@@ -1,0 +1,9 @@
+node_modules
+.env
+.pnpm-store
+coverage
+dist
+.idea
+koishi-runtime.log
+*.log
+data/llonebot

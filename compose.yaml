@@ -1,0 +1,54 @@
+name: qqbot-stack
+
+services:
+  pmhq:
+    image: ${PMHQ_IMAGE:-docker.io/linyuchen/pmhq}:${PMHQ_TAG:-latest}
+    container_name: pmhq
+    privileged: true
+    environment:
+      ENABLE_HEADLESS: ${ENABLE_HEADLESS:-false}
+      AUTO_LOGIN_QQ: ${AUTO_LOGIN_QQ:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - qq_volume:/root/.config/QQ
+    networks:
+      - app_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:13000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  llbot:
+    image: ${LLBOT_IMAGE:-docker.io/linyuchen/llbot}:${LLBOT_TAG:-latest}
+    container_name: llonebot
+    environment:
+      PMHQ_HOST: pmhq
+      WEBUI_PORT: ${LLONEBOT_WEBUI_PORT:-3080}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${LLONEBOT_WEBUI_PORT:-3080}:${LLONEBOT_WEBUI_PORT:-3080}"
+      - "${LLONEBOT_WS_PORT:-3001}:3001"
+    volumes:
+      - qq_volume:/root/.config/QQ
+      - ./data/llonebot:/app/llbot/data:Z
+    networks:
+      - app_network
+    depends_on:
+      - pmhq
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps | grep '[n]ode'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  qq_volume:
+
+networks:
+  app_network:
+    driver: bridge

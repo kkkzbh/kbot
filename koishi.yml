@@ -1,0 +1,22 @@
+plugins:
+  group:entry:
+    http:main: {}
+    adapter-onebot:onebot:
+      protocol: ws
+      selfId: ${{ env.ONEBOT_SELF_ID }}
+      token: ${{ env.ONEBOT_TOKEN || '' }}
+      endpoint: ${{ env.ONEBOT_WS_ENDPOINT || 'ws://127.0.0.1:3001' }}
+    server:0b8t2q:
+      host: ${{ env.KOISHI_HOST || '0.0.0.0' }}
+      port: ${{ +env.KOISHI_PORT || 5140 }}
+    ./dist/plugins/group-chat:wtq0lk:
+      enabledGroups: ${{ env.CHAT_ENABLED_GROUPS }}
+      baseUrl: ${{ env.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+      apiKey: ${{ env.OPENAI_API_KEY }}
+      model: ${{ env.OPENAI_MODEL }}
+      maxContextTurns: ${{ +env.CHAT_MAX_CONTEXT_TURNS || 8 }}
+      timeoutMs: ${{ +env.CHAT_TIMEOUT_MS || 20000 }}
+      userCooldownMs: ${{ +env.CHAT_USER_COOLDOWN_MS || 8000 }}
+      groupQpsLimit: ${{ +env.CHAT_GROUP_QPS_LIMIT || 1 }}
+      systemPrompt: ${{ env.CHAT_SYSTEM_PROMPT || '' }}
+      systemPromptFile: ${{ env.CHAT_SYSTEM_PROMPT_FILE || '' }}

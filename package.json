@@ -1,0 +1,29 @@
+{
+  "name": "qqbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QQ group AI chat bot powered by Koishi + OneBot on Fedora/Podman",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "dev": "pnpm start",
+    "start": "pnpm build && pnpm exec koishi start koishi.yml",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@koishijs/plugin-http": "^0.6.3",
+    "@koishijs/plugin-proxy-agent": "^0.3.3",
+    "@koishijs/plugin-server": "^3.2.7",
+    "koishi": "^4.18.10",
+    "koishi-plugin-adapter-onebot": "^6.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
