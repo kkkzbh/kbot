@@ -127,7 +127,9 @@ Installed unit files:
 
 `qqbot-stack.service` starts/stops Podman compose services `pmhq` and `llbot`.
 `qqbot-koishi.service` runs Koishi on host with `/home/kkkzbh/code/qqbot/.env`.
-It also sets `NODE_USE_ENV_PROXY=1` to match local IDE run configuration.
+It sets `NODE_USE_ENV_PROXY=1` and proxy variables to match `~/.zshrc`:
+`http_proxy` / `https_proxy` / `all_proxy` / `no_proxy`
+and uppercase variants.
 `qqbot.target` groups both units for one-command start/stop.
 
 Reload units after changes:
