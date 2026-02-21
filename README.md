@@ -28,6 +28,32 @@ Optional prompt settings:
 - `CHAT_SYSTEM_PROMPT`: single-line prompt.
 - `CHAT_SYSTEM_PROMPT_FILE`: prompt file path for long or multi-line prompt (recommended).
 
+## Developer docs (web)
+
+This repository includes a VitePress documentation site for developers only.
+
+Source files are in:
+
+- `web/`
+
+Run docs locally:
+
+```bash
+pnpm docs:dev
+```
+
+Build static docs:
+
+```bash
+pnpm docs:build
+```
+
+Preview built docs:
+
+```bash
+pnpm docs:preview
+```
+
 ## 3. Start Koishi bot (host)
 
 ```bash
@@ -87,6 +113,7 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 ## 7. Quality checks
 
 ```bash
+pnpm docs:build
 pnpm typecheck
 pnpm test
 pnpm build

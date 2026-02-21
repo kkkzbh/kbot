@@ -6,6 +6,9 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "dev": "pnpm start",
+    "docs:dev": "vitepress dev web",
+    "docs:build": "vitepress build web",
+    "docs:preview": "vitepress preview web",
     "start": "pnpm build && pnpm exec koishi start koishi.yml",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -24,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^25.3.0",
     "typescript": "^5.9.3",
+    "vitepress": "^1.6.4",
     "vitest": "^4.0.18"
   }
 }

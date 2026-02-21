@@ -7,3 +7,5 @@ dist
 koishi-runtime.log
 *.log
 data/llonebot
+web/.vitepress/dist
+web/.vitepress/cache
