@@ -114,3 +114,71 @@ pnpm build
   - Check `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`.
   - For long prompt, prefer `CHAT_SYSTEM_PROMPT_FILE` instead of putting multi-line content directly in `.env`.
   - Check network/proxy for model endpoint.
+
+## 10. Run as `systemd --user` (recommended)
+
+This project can be managed as a user-level systemd stack so you do not need to keep WebStorm open.
+
+Installed unit files:
+
+- `/home/kkkzbh/.config/systemd/user/qqbot-stack.service`
+- `/home/kkkzbh/.config/systemd/user/qqbot-koishi.service`
+- `/home/kkkzbh/.config/systemd/user/qqbot.target`
+
+`qqbot-stack.service` starts/stops Podman compose services `pmhq` and `llbot`.
+`qqbot-koishi.service` runs Koishi on host with `/home/kkkzbh/code/qqbot/.env`.
+It also sets `NODE_USE_ENV_PROXY=1` to match local IDE run configuration.
+`qqbot.target` groups both units for one-command start/stop.
+
+Reload units after changes:
+
+```bash
+systemctl --user daemon-reload
+```
+
+Start or stop the full stack:
+
+```bash
+systemctl --user start qqbot.target
+systemctl --user stop qqbot.target
+```
+
+Enable auto start on login:
+
+```bash
+systemctl --user enable qqbot.target
+```
+
+Enable linger so services can run without an active desktop login:
+
+```bash
+loginctl enable-linger kkkzbh
+```
+
+## 11. `systemd` logs and troubleshooting
+
+Check unit status:
+
+```bash
+systemctl --user status qqbot-stack.service
+systemctl --user status qqbot-koishi.service
+systemctl --user status qqbot.target
+```
+
+Follow Koishi logs:
+
+```bash
+journalctl --user -u qqbot-koishi.service -f
+```
+
+Follow container login logs:
+
+```bash
+podman compose -f /home/kkkzbh/code/qqbot/compose.yaml logs -f pmhq
+```
+
+Common issues:
+
+- `qqbot-koishi.service` fails with `ExecStart`: confirm configured pnpm path exists (current file uses `/home/kkkzbh/.local/bin/pnpm`; check with `which pnpm`).
+- `qqbot-stack.service` fails: confirm Podman compose plugin is installed and `compose.yaml` exists.
+- Service not started after reboot: confirm `systemctl --user is-enabled qqbot.target` and `loginctl show-user kkkzbh | grep Linger`.
