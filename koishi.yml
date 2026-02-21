@@ -9,14 +9,52 @@ plugins:
     server:0b8t2q:
       host: ${{ env.KOISHI_HOST || '0.0.0.0' }}
       port: ${{ +env.KOISHI_PORT || 5140 }}
-    ./dist/plugins/group-chat:wtq0lk:
-      enabledGroups: ${{ env.CHAT_ENABLED_GROUPS }}
-      baseUrl: ${{ env.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
-      apiKey: ${{ env.OPENAI_API_KEY }}
-      model: ${{ env.OPENAI_MODEL }}
-      maxContextTurns: ${{ +env.CHAT_MAX_CONTEXT_TURNS || 8 }}
-      timeoutMs: ${{ +env.CHAT_TIMEOUT_MS || 20000 }}
-      userCooldownMs: ${{ +env.CHAT_USER_COOLDOWN_MS || 8000 }}
-      groupQpsLimit: ${{ +env.CHAT_GROUP_QPS_LIMIT || 1 }}
-      systemPrompt: ${{ env.CHAT_SYSTEM_PROMPT || '' }}
-      systemPromptFile: ${{ env.CHAT_SYSTEM_PROMPT_FILE || '' }}
+    database-sqlite:8jr5yp:
+      path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
+    chatluna:0qm1bk:
+      botNames:
+        - 小祥
+      isNickname: true
+      allowAtReply: true
+      defaultChatMode: plugin
+      defaultPreset: sakiko
+      defaultModel: ${{ env.OPENAI_MODEL || 'deepseek/deepseek-chat' }}
+    chatluna-deepseek-adapter:0o3zho:
+      apiKeys:
+        - - ${{ env.OPENAI_API_KEY || '' }}
+          - ${{ env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
+          - true
+    commands:qp6oxu:
+      chatluna:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.room:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.model:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.preset:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.memory:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.embeddings:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.vectorstore:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.tool:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.mcp:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.auth:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
+      chatluna.balance:
+        config:
+          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}

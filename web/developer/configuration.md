@@ -7,10 +7,7 @@
 - 敏感项统一放在 `.env`，不得硬编码。
 - Koishi 运行时从 `koishi.yml` 读取插件配置。
 - `koishi.yml` 中大多数值来自环境变量引用（Koishi Loader `env` 表达式）。
-- 系统提示词优先级：
-  - `CHAT_SYSTEM_PROMPT_FILE`（最高）
-  - `CHAT_SYSTEM_PROMPT`
-  - 插件内置默认提示词
+- 当前聊天主链路为 ChatLuna + DeepSeek 适配器。
 
 ## 必填配置
 
@@ -19,9 +16,10 @@
 | 变量 | 用途 | 备注 |
 | --- | --- | --- |
 | `ONEBOT_SELF_ID` | 机器人 QQ 号 | OneBot 适配器自身份 |
-| `CHAT_ENABLED_GROUPS` | 允许聊天的群号白名单 | 逗号分隔 |
 | `OPENAI_API_KEY` | 模型服务密钥 | 敏感项，不写入日志 |
-| `OPENAI_MODEL` | 模型名称 | 例如 `gpt-4o-mini` |
+| `OPENAI_MODEL` | 模型名称 | 推荐 `deepseek/deepseek-chat` |
+| `SQLITE_PATH` | SQLite 文件路径 | 默认 `./data/koishi.db` |
+| `CHATLUNA_COMMAND_AUTHORITY` | ChatLuna 命令权限门槛 | 默认 `3` |
 
 ## OneBot 连接相关
 
@@ -38,26 +36,40 @@
 | `KOISHI_HOST` | `0.0.0.0` | `server.host` | Koishi 监听地址 |
 | `KOISHI_PORT` | `5140` | `server.port` | Koishi 监听端口 |
 
-## OpenAI 兼容模型服务
+## SQLite 持久化
 
 | 变量 | 默认值 | 对应 `koishi.yml` | 说明 |
 | --- | --- | --- | --- |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | `group-chat.baseUrl` | OpenAI 兼容 API Base URL |
-| `OPENAI_API_KEY` | 无 | `group-chat.apiKey` | 访问密钥（敏感） |
-| `OPENAI_MODEL` | 无 | `group-chat.model` | 模型名称 |
+| `SQLITE_PATH` | `./data/koishi.db` | `database-sqlite.path` | SQLite 数据文件路径 |
 
-## 群聊策略配置
+## DeepSeek（OpenAI 兼容）模型配置
 
 | 变量 | 默认值 | 对应 `koishi.yml` | 说明 |
 | --- | --- | --- | --- |
-| `CHAT_TRIGGER_MODE` | `mention` | 运行时校验 | 首版固定 `mention`，非该值会启动失败 |
-| `CHAT_ENABLED_GROUPS` | 无 | `group-chat.enabledGroups` | 允许触发的群号白名单 |
-| `CHAT_MAX_CONTEXT_TURNS` | `8` | `group-chat.maxContextTurns` | 上下文轮数 |
-| `CHAT_TIMEOUT_MS` | `20000` | `group-chat.timeoutMs` | 模型请求超时毫秒 |
-| `CHAT_USER_COOLDOWN_MS` | `8000` | `group-chat.userCooldownMs` | 同用户冷却时间 |
-| `CHAT_GROUP_QPS_LIMIT` | `1` | `group-chat.groupQpsLimit` | 每群并发限制 |
-| `CHAT_SYSTEM_PROMPT` | 空 | `group-chat.systemPrompt` | 单行系统提示词 |
-| `CHAT_SYSTEM_PROMPT_FILE` | 空 | `group-chat.systemPromptFile` | 多行提示词文件路径（推荐） |
+| `OPENAI_BASE_URL` | `https://api.deepseek.com/v1` | `chatluna-deepseek-adapter.apiKeys[*][1]` | DeepSeek API 地址 |
+| `OPENAI_API_KEY` | 无 | `chatluna-deepseek-adapter.apiKeys[*][0]` | DeepSeek API Key（敏感） |
+| `OPENAI_MODEL` | `deepseek/deepseek-chat` | `chatluna.defaultModel` | ChatLuna 默认模型 |
+
+## ChatLuna 行为与命令权限
+
+| 变量/配置 | 默认值 | 对应 `koishi.yml` | 说明 |
+| --- | --- | --- | --- |
+| `defaultChatMode` | `plugin` | `chatluna.defaultChatMode` | 默认聊天模式 |
+| `OPENAI_MODEL` | `deepseek/deepseek-chat` | `chatluna.defaultModel` | 默认模型名 |
+| `CHATLUNA_COMMAND_AUTHORITY` | `3` | `commands.*.config.authority` | `chatluna.*` 命令所需权限 |
+
+## 旧链路（仅回滚）配置
+
+以下变量保留在 `.env.example`，仅用于回滚到旧自定义群聊插件时：
+
+- `CHAT_ENABLED_GROUPS`
+- `CHAT_TRIGGER_MODE`
+- `CHAT_MAX_CONTEXT_TURNS`
+- `CHAT_TIMEOUT_MS`
+- `CHAT_USER_COOLDOWN_MS`
+- `CHAT_GROUP_QPS_LIMIT`
+- `CHAT_SYSTEM_PROMPT`
+- `CHAT_SYSTEM_PROMPT_FILE`
 
 ## 推荐配置流程
 
@@ -70,4 +82,4 @@
 
 - 不在任何日志中打印 `OPENAI_API_KEY`、`ONEBOT_TOKEN` 或完整请求头。
 - 不将 `.env` 提交到版本库。
-- 不未经审批扩大群权限范围（例如白名单改为全量群）。
+- 不未经审批扩大命令权限或群权限范围。

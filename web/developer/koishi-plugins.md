@@ -7,7 +7,7 @@
 ### `@koishijs/plugin-http` (`http:main`)
 
 - 功能：为 Koishi 提供 HTTP 能力，供插件发起外部请求。
-- 在本项目中的作用：支持群聊插件调用 OpenAI 兼容接口。
+- 在本项目中的作用：为 ChatLuna 及适配器提供网络请求能力。
 
 ### `koishi-plugin-adapter-onebot` (`adapter-onebot:onebot`)
 
@@ -20,14 +20,26 @@
 - 功能：提供 Koishi 服务监听能力。
 - 在本项目中的作用：使 Koishi 在 `KOISHI_HOST:KOISHI_PORT` 上启动。
 
-### `./dist/plugins/group-chat` (`./dist/plugins/group-chat:wtq0lk`)
+### `@koishijs/plugin-database-sqlite` (`database-sqlite:main`)
 
-- 功能：项目自定义群聊插件。
-- 在本项目中的作用：
-  - 仅允许白名单群 `CHAT_ENABLED_GROUPS` 触发。
-  - 仅接受 `@机器人 + 文本` 触发模式（`CHAT_TRIGGER_MODE=mention`）。
-  - 回复时 `@` 原发言人。
-  - 支持上下文轮数、超时、用户冷却、群内并发限制等策略配置。
+- 功能：提供 SQLite 数据库存储。
+- 在本项目中的作用：持久化 ChatLuna 房间、会话与上下文。
+
+### `koishi-plugin-chatluna` (`chatluna:main`)
+
+- 功能：提供 ChatLuna 原生触发、房间系统与命令体系。
+- 在本项目中的作用：承接当前聊天主链路。
+- 当前默认聊天模式：`defaultChatMode=plugin`。
+
+### `koishi-plugin-chatluna-deepseek-adapter` (`chatluna-deepseek-adapter:main`)
+
+- 功能：为 ChatLuna 提供 DeepSeek 模型平台接入。
+- 在本项目中的作用：复用 `OPENAI_BASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL` 作为模型侧配置输入。
+
+### `@koishijs/plugin-commands` (`commands:main`)
+
+- 功能：覆盖 Koishi 指令元配置（如 authority）。
+- 在本项目中的作用：统一将 `chatluna.*` 命令权限提升到 `authority >= 3`（默认值，可配置）。
 
 ## 已安装但未启用插件
 
@@ -36,15 +48,24 @@
 - 状态：当前 `koishi.yml` 未启用。
 - 说明：依赖已安装不代表已生效；只有写入 `koishi.yml` 并加载后才会生效。
 
+### `koishi-plugin-chatluna-storage-service`
+
+- 状态：当前已安装但未启用。
+- 说明：预留后续扩展使用，当前不参与运行链路。
+
+### `./dist/plugins/group-chat`（旧自定义链路）
+
+- 状态：源码保留，但插件实例已在 `koishi.yml` 停用。
+- 说明：仅用于回滚场景，不参与当前主链路。
+
 ## 功能总览
 
 当前仓库（Milestone 1）实际提供的核心能力：
 
-- QQ 群 AI 聊天（Koishi + OneBot + LLOneBot）
-- 白名单群控制
-- Mention 触发控制
-- 模型调用失败统一降级提示
-- 聊天上下文、限流与并发保护
+- QQ AI 聊天（Koishi + OneBot + LLOneBot + ChatLuna + DeepSeek）
+- ChatLuna 原生触发路径（昵称/私聊/@）
+- ChatLuna 房间与上下文持久化（SQLite）
+- `chatluna.*` 命令权限分层（默认 `authority >= 3`）
 
 不在当前里程碑范围内的能力：
 
