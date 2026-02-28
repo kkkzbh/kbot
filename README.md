@@ -242,29 +242,16 @@ Behavior:
 
 ### 14.1 GitHub Actions secrets (required)
 
-Preferred secrets (`QQBOT_*`):
-
 - `QQBOT_SERVER_HOST`: deploy server host/IP
 - `QQBOT_SERVER_USER`: SSH login user
 - `QQBOT_SSH_PRIVATE_KEY`: private key used by GitHub Actions to login server
 - `QQBOT_SSH_KNOWN_HOSTS`: optional but recommended (`ssh-keyscan` output)
-
-Compatibility fallback (also supported):
-
-- `ASCENDANY_SERVER_HOST`
-- `ASCENDANY_SERVER_USER`
-- `ASCENDANY_SSH_PRIVATE_KEY`
-- `ASCENDANY_SSH_KNOWN_HOSTS`
 
 ### 14.2 GitHub Actions variables (optional)
 
 - `QQBOT_SERVER_PORT` (default: `22`)
 - `QQBOT_SERVER_APP_DIR` (default: `/opt/qqbot/current`)
 - `QQBOT_SYSTEMD_TARGET` (default: `qqbot.target`)
-
-Compatibility fallback:
-
-- `ASCENDANY_SERVER_PORT`
 
 ### 14.3 One-time server preparation
 
@@ -306,4 +293,4 @@ GitHub repo -> `Actions` -> `Deploy` -> `Run workflow`.
 - `pnpm is not installed on target host`:
   - install Node.js/corepack on server, or ensure `pnpm` is in the deploy user's `PATH`.
 - SSH failure:
-  - verify `QQBOT_*` secrets (or `ASCENDANY_*` fallback) and `known_hosts` content.
+  - verify `QQBOT_*` secrets and `known_hosts` content.
