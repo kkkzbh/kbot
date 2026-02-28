@@ -30,6 +30,7 @@ jobs:
       DEPLOY_SYSTEMD_TARGET: ${{ vars.QQBOT_SYSTEMD_TARGET || 'qqbot.target' }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.QQBOT_SSH_PRIVATE_KEY }}
       DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}
+      DEPLOY_DOTENV: ${{ secrets.QQBOT_DOTENV }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,6 +50,10 @@ jobs:
           fi
           if [ -z "${DEPLOY_SSH_PRIVATE_KEY}" ]; then
             echo "Missing required secret: QQBOT_SSH_PRIVATE_KEY" >&2
+            exit 1
+          fi
+          if [ -z "${DEPLOY_DOTENV}" ]; then
+            echo "Missing required secret: QQBOT_DOTENV" >&2
             exit 1
           fi
 
@@ -104,6 +109,12 @@ jobs:
             -e "ssh -p ${DEPLOY_PORT}" \
             ./ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_APP_DIR}/"
 
+      - name: Sync runtime .env
+        run: |
+          set -euo pipefail
+          printf "%s" "${DEPLOY_DOTENV}" | ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "cat > '${DEPLOY_APP_DIR}/.env'"
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "chmod 600 '${DEPLOY_APP_DIR}/.env'"
+
       - name: Install, build and restart service on server
         run: |
           set -euo pipefail
@@ -113,8 +124,14 @@ jobs:
 
           APP_DIR="${DEPLOY_APP_DIR}"
           SYSTEMD_TARGET="${DEPLOY_SYSTEMD_TARGET}"
+          USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
 
           cd "${APP_DIR}"
+
+          if [ ! -f "${APP_DIR}/.env" ]; then
+            echo "Missing runtime .env at ${APP_DIR}/.env" >&2
+            exit 1
+          fi
 
           if ! command -v pnpm >/dev/null 2>&1; then
             if command -v corepack >/dev/null 2>&1; then
@@ -128,12 +145,72 @@ jobs:
             exit 1
           fi
 
+          if [ "${SYSTEMD_TARGET}" = "qqbot.target" ]; then
+            if ! command -v podman-compose >/dev/null 2>&1; then
+              echo "podman-compose is not installed on target host" >&2
+              exit 1
+            fi
+
+            mkdir -p "${USER_SYSTEMD_DIR}"
+
+            cat > "${USER_SYSTEMD_DIR}/qqbot-stack.service" <<UNIT
+[Unit]
+Description=QQBot Podman Compose Stack (pmhq + llbot)
+After=network-online.target
+Wants=network-online.target
+PartOf=qqbot.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${APP_DIR}
+ExecStart=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml up -d pmhq llbot
+ExecStop=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml stop pmhq llbot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=qqbot.target
+UNIT
+
+            cat > "${USER_SYSTEMD_DIR}/qqbot-koishi.service" <<UNIT
+[Unit]
+Description=QQBot Koishi Service
+After=network-online.target qqbot-stack.service
+Wants=network-online.target qqbot-stack.service
+PartOf=qqbot.target
+
+[Service]
+Type=simple
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${APP_DIR}/.env
+ExecStart=/usr/bin/env bash -lc 'cd ${APP_DIR} && pnpm start'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=qqbot.target
+UNIT
+
+            cat > "${USER_SYSTEMD_DIR}/qqbot.target" <<'UNIT'
+[Unit]
+Description=QQBot Full Stack Target
+Wants=qqbot-stack.service qqbot-koishi.service
+After=qqbot-stack.service
+
+[Install]
+WantedBy=default.target
+UNIT
+          fi
+
           pnpm install --frozen-lockfile
           pnpm build
 
           if ! command -v systemctl >/dev/null 2>&1; then
             echo "systemctl is not available on target host" >&2
             exit 1
+          fi
+
+          if command -v loginctl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+            sudo -n loginctl enable-linger "$(whoami)" >/dev/null 2>&1 || true
           fi
 
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -143,6 +220,7 @@ jobs:
           fi
 
           systemctl --user daemon-reload
+          systemctl --user enable "${SYSTEMD_TARGET}" >/dev/null 2>&1 || true
           systemctl --user restart "${SYSTEMD_TARGET}"
           systemctl --user is-active --quiet "${SYSTEMD_TARGET}"
           EOF

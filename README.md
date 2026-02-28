@@ -246,6 +246,7 @@ Behavior:
 - `QQBOT_SERVER_USER`: SSH login user
 - `QQBOT_SSH_PRIVATE_KEY`: private key used by GitHub Actions to login server
 - `QQBOT_SSH_KNOWN_HOSTS`: optional but recommended (`ssh-keyscan` output)
+- `QQBOT_DOTENV`: production `.env` full content (multiline secret)
 
 ### 14.2 GitHub Actions variables (optional)
 
@@ -262,9 +263,32 @@ sudo mkdir -p /opt/qqbot/current
 sudo chown -R <server_user>:<server_user> /opt/qqbot
 ```
 
-2. Put production `.env` in deploy path (`/opt/qqbot/current/.env`).
+2. Install runtime dependencies on server (Ubuntu example):
 
-3. Ensure your `systemd --user` units point to deploy path and are enabled:
+```bash
+sudo apt-get update
+sudo apt-get install -y podman podman-compose
+```
+
+3. Enable linger so `systemd --user` services survive logout:
+
+```bash
+sudo loginctl enable-linger <server_user>
+```
+
+4. In GitHub repo settings, set secret `QQBOT_DOTENV` to your production `.env` content.
+
+`Deploy` will sync this secret to `${QQBOT_SERVER_APP_DIR}/.env` every run.
+
+5. Ensure your target user can run `sudo -n` for `loginctl enable-linger` (optional but recommended).
+
+6. `Deploy` will auto-provision user units (`qqbot-stack.service`, `qqbot-koishi.service`, `qqbot.target`)
+when `QQBOT_SYSTEMD_TARGET=qqbot.target`.
+
+7. If you use a custom target (not `qqbot.target`), manage that unit yourself and keep
+`QQBOT_SYSTEMD_TARGET` consistent.
+
+8. Ensure your `systemd --user` units are enabled:
 
 ```bash
 systemctl --user daemon-reload
@@ -292,5 +316,7 @@ GitHub repo -> `Actions` -> `Deploy` -> `Run workflow`.
   - run `loginctl enable-linger <server_user>` on server, and ensure user service session bus exists.
 - `pnpm is not installed on target host`:
   - install Node.js/corepack on server, or ensure `pnpm` is in the deploy user's `PATH`.
+- `podman-compose is not installed on target host`:
+  - install Podman and `podman-compose` on server.
 - SSH failure:
   - verify `QQBOT_*` secrets and `known_hosts` content.
