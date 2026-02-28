@@ -109,6 +109,16 @@ jobs:
             -e "ssh -p ${DEPLOY_PORT}" \
             ./ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_APP_DIR}/"
 
+      - name: Sync bundled preset files
+        run: |
+          set -euo pipefail
+          if [ -d "./data/chathub/presets" ]; then
+            ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${DEPLOY_APP_DIR}/data/chathub/presets'"
+            rsync -az \
+              -e "ssh -p ${DEPLOY_PORT}" \
+              ./data/chathub/presets/ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_APP_DIR}/data/chathub/presets/"
+          fi
+
       - name: Sync runtime .env
         run: |
           set -euo pipefail
