@@ -1,3 +1,7 @@
+/**
+ * @deprecated 旧版 group-chat 插件链路。
+ * 该文件仅保留用于回滚/参考，默认不启用。
+ */
 import { h, type Context, type Session, Logger, Schema } from 'koishi';
 import {
   buildConversationKey,

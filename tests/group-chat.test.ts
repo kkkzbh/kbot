@@ -1,3 +1,7 @@
+/**
+ * @deprecated 旧版 group-chat 链路的测试。
+ * 该文件仅保留用于回滚/参考。
+ */
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

@@ -1,3 +1,7 @@
+/**
+ * @deprecated 旧版 group-chat 核心逻辑。
+ * 该文件仅保留用于回滚/参考，默认不启用。
+ */
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import type {
