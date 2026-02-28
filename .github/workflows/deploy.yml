@@ -23,11 +23,13 @@ jobs:
     name: Deploy to Server
     runs-on: ubuntu-latest
     env:
-      DEPLOY_HOST: ${{ secrets.ASCENDANY_SERVER_HOST }}
-      DEPLOY_USER: ${{ secrets.ASCENDANY_SERVER_USER }}
-      DEPLOY_PORT: ${{ vars.ASCENDANY_SERVER_PORT || '22' }}
+      DEPLOY_HOST: ${{ secrets.QQBOT_SERVER_HOST || secrets.ASCENDANY_SERVER_HOST }}
+      DEPLOY_USER: ${{ secrets.QQBOT_SERVER_USER || secrets.ASCENDANY_SERVER_USER }}
+      DEPLOY_PORT: ${{ vars.QQBOT_SERVER_PORT || vars.ASCENDANY_SERVER_PORT || '22' }}
       DEPLOY_APP_DIR: ${{ vars.QQBOT_SERVER_APP_DIR || '/opt/qqbot/current' }}
       DEPLOY_SYSTEMD_TARGET: ${{ vars.QQBOT_SYSTEMD_TARGET || 'qqbot.target' }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.QQBOT_SSH_PRIVATE_KEY || secrets.ASCENDANY_SSH_PRIVATE_KEY }}
+      DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS || secrets.ASCENDANY_SSH_KNOWN_HOSTS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,11 +40,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DEPLOY_HOST}" ]; then
-            echo "Missing required secret: ASCENDANY_SERVER_HOST" >&2
+            echo "Missing required secret: QQBOT_SERVER_HOST (or ASCENDANY_SERVER_HOST)" >&2
             exit 1
           fi
           if [ -z "${DEPLOY_USER}" ]; then
-            echo "Missing required secret: ASCENDANY_SERVER_USER" >&2
+            echo "Missing required secret: QQBOT_SERVER_USER (or ASCENDANY_SERVER_USER)" >&2
+            exit 1
+          fi
+          if [ -z "${DEPLOY_SSH_PRIVATE_KEY}" ]; then
+            echo "Missing required secret: QQBOT_SSH_PRIVATE_KEY (or ASCENDANY_SSH_PRIVATE_KEY)" >&2
             exit 1
           fi
 
@@ -68,11 +74,11 @@ jobs:
       - name: Setup SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.ASCENDANY_SSH_PRIVATE_KEY }}
+          ssh-private-key: ${{ env.DEPLOY_SSH_PRIVATE_KEY }}
 
       - name: Setup known_hosts
         env:
-          SSH_KNOWN_HOSTS: ${{ secrets.ASCENDANY_SSH_KNOWN_HOSTS }}
+          SSH_KNOWN_HOSTS: ${{ env.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.ssh"
