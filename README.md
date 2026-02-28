@@ -226,3 +226,73 @@ Common issues:
 - `qqbot-koishi.service` fails with `ExecStart`: confirm configured pnpm path exists (current file uses `/home/kkkzbh/.local/bin/pnpm`; check with `which pnpm`).
 - `qqbot-stack.service` fails: confirm Podman compose plugin is installed and `compose.yaml` exists.
 - Service not started after reboot: confirm `systemctl --user is-enabled qqbot.target` and `loginctl show-user kkkzbh | grep Linger`.
+
+## 14. GitHub CI/CD auto deploy (push to `main`)
+
+This repo now includes:
+
+- `/.github/workflows/ci.yml`
+- `/.github/workflows/deploy.yml`
+
+Behavior:
+
+- `CI` runs on every `push` / `pull_request` (`pnpm typecheck`, `pnpm test`, `pnpm build`).
+- `Deploy` runs on `push` to `main` (or manual `workflow_dispatch`).
+- `Deploy` SSHes to your server, `rsync`s project files, then runs `pnpm install`, `pnpm build`, and restarts `qqbot.target`.
+
+### 14.1 GitHub Actions secrets (required)
+
+Use the same server secrets naming style as your `AscendAny` repo:
+
+- `ASCENDANY_SERVER_HOST`: deploy server host/IP
+- `ASCENDANY_SERVER_USER`: SSH login user
+- `ASCENDANY_SSH_PRIVATE_KEY`: private key used by GitHub Actions to login server
+- `ASCENDANY_SSH_KNOWN_HOSTS`: optional but recommended (`ssh-keyscan` output)
+
+### 14.2 GitHub Actions variables (optional)
+
+- `ASCENDANY_SERVER_PORT` (default: `22`)
+- `QQBOT_SERVER_APP_DIR` (default: `/opt/qqbot/current`)
+- `QQBOT_SYSTEMD_TARGET` (default: `qqbot.target`)
+
+### 14.3 One-time server preparation
+
+1. Prepare deploy directory (example uses default path):
+
+```bash
+sudo mkdir -p /opt/qqbot/current
+sudo chown -R <server_user>:<server_user> /opt/qqbot
+```
+
+2. Put production `.env` in deploy path (`/opt/qqbot/current/.env`).
+
+3. Ensure your `systemd --user` units point to deploy path and are enabled:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable qqbot.target
+loginctl enable-linger <server_user>
+```
+
+### 14.4 First push to GitHub
+
+```bash
+git remote add origin git@github.com:kkkzbh/kbot.git
+git branch -M main
+git push -u origin main
+```
+
+After this push, GitHub Actions will run CI and then deploy automatically.
+
+### 14.5 Manual deploy trigger
+
+GitHub repo -> `Actions` -> `Deploy` -> `Run workflow`.
+
+### 14.6 Common deploy failures
+
+- `User systemd bus not available`:
+  - run `loginctl enable-linger <server_user>` on server, and ensure user service session bus exists.
+- `pnpm is not installed on target host`:
+  - install Node.js/corepack on server, or ensure `pnpm` is in the deploy user's `PATH`.
+- SSH failure:
+  - verify `ASCENDANY_*` secrets and `known_hosts` content.
