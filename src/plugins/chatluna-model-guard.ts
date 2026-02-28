@@ -1,12 +1,13 @@
-import { type Context, Logger } from 'koishi';
+import { type Context, Logger, type Session } from 'koishi';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
-  ChainMiddlewareRunStatus: { CONTINUE: number };
+  ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
   checkConversationRoomAvailability: (ctx: Context, room: unknown) => Promise<boolean>;
   fixConversationRoomAvailability: (ctx: Context, config: unknown, room: unknown) => Promise<boolean>;
 };
 
 export const name = 'chatluna-model-guard';
+export const inject = ['chatluna'];
 
 type ChatLunaLike = {
   awaitLoadPlatform?: (platform: string, timeout?: number) => Promise<void>;
@@ -27,6 +28,7 @@ type RoomLike = {
 type MiddlewareContextLike = {
   command?: string;
   config: unknown;
+  send?: (message: string) => Promise<void>;
   options?: {
     room?: RoomLike;
   };
@@ -53,7 +55,8 @@ export function apply(ctx: Context): void {
     }
 
     chain
-      .middleware('chatluna_model_guard', async (_session, rawContext) => {
+      .middleware('chatluna_model_guard', async (rawSession, rawContext) => {
+        const session = rawSession as Session;
         const context = rawContext as MiddlewareContextLike;
         if ((context.command?.length ?? 0) > 1) {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
@@ -78,28 +81,46 @@ export function apply(ctx: Context): void {
           }
         }
 
+        let available = false;
         try {
-          const available = await ChatLunaChains.checkConversationRoomAvailability(ctx, room as never);
-          if (!available) {
-            const fixed = await ChatLunaChains.fixConversationRoomAvailability(
-              ctx,
-              context.config as never,
-              room as never,
-            );
-            if (fixed) {
-              logger.info(
-                'auto-fixed unavailable room model (roomId=%s, model=%s).',
-                String(room.roomId ?? ''),
-                String(room.model ?? ''),
-              );
-            }
-          }
+          available = await ChatLunaChains.checkConversationRoomAvailability(ctx, room as never);
         } catch (error) {
           logger.warn(
             'model guard check failed (roomId=%s): %s',
             String(room.roomId ?? ''),
             (error as Error).message,
           );
+        }
+
+        if (!available) {
+          let fixed = false;
+          try {
+            fixed = await ChatLunaChains.fixConversationRoomAvailability(
+              ctx,
+              context.config as never,
+              room as never,
+            );
+          }
+          catch (error) {
+            logger.warn(
+              'auto-fix unavailable room failed (roomId=%s): %s',
+              String(room.roomId ?? ''),
+              (error as Error).message,
+            );
+          }
+
+          if (fixed) {
+            logger.info(
+              'auto-fixed unavailable room model (roomId=%s, model=%s).',
+              String(room.roomId ?? ''),
+              String(room.model ?? ''),
+            );
+            return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+          }
+
+          const modelName = room.model?.trim() || 'empty';
+          await context.send?.(session.text('chatluna.room.unavailable', [modelName]));
+          return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
         }
 
         return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
