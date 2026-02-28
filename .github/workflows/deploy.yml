@@ -154,51 +154,51 @@ jobs:
             mkdir -p "${USER_SYSTEMD_DIR}"
 
             cat > "${USER_SYSTEMD_DIR}/qqbot-stack.service" <<UNIT
-[Unit]
-Description=QQBot Podman Compose Stack (pmhq + llbot)
-After=network-online.target
-Wants=network-online.target
-PartOf=qqbot.target
+          [Unit]
+          Description=QQBot Podman Compose Stack (pmhq + llbot)
+          After=network-online.target
+          Wants=network-online.target
+          PartOf=qqbot.target
 
-[Service]
-Type=oneshot
-WorkingDirectory=${APP_DIR}
-ExecStart=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml up -d pmhq llbot
-ExecStop=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml stop pmhq llbot
-RemainAfterExit=yes
+          [Service]
+          Type=oneshot
+          WorkingDirectory=${APP_DIR}
+          ExecStart=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml up -d pmhq llbot
+          ExecStop=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml stop pmhq llbot
+          RemainAfterExit=yes
 
-[Install]
-WantedBy=qqbot.target
-UNIT
+          [Install]
+          WantedBy=qqbot.target
+          UNIT
 
             cat > "${USER_SYSTEMD_DIR}/qqbot-koishi.service" <<UNIT
-[Unit]
-Description=QQBot Koishi Service
-After=network-online.target qqbot-stack.service
-Wants=network-online.target qqbot-stack.service
-PartOf=qqbot.target
+          [Unit]
+          Description=QQBot Koishi Service
+          After=network-online.target qqbot-stack.service
+          Wants=network-online.target qqbot-stack.service
+          PartOf=qqbot.target
 
-[Service]
-Type=simple
-WorkingDirectory=${APP_DIR}
-EnvironmentFile=${APP_DIR}/.env
-ExecStart=/usr/bin/env bash -lc 'cd ${APP_DIR} && pnpm start'
-Restart=always
-RestartSec=5
+          [Service]
+          Type=simple
+          WorkingDirectory=${APP_DIR}
+          EnvironmentFile=${APP_DIR}/.env
+          ExecStart=/usr/bin/env bash -lc 'cd ${APP_DIR} && pnpm start'
+          Restart=always
+          RestartSec=5
 
-[Install]
-WantedBy=qqbot.target
-UNIT
+          [Install]
+          WantedBy=qqbot.target
+          UNIT
 
             cat > "${USER_SYSTEMD_DIR}/qqbot.target" <<'UNIT'
-[Unit]
-Description=QQBot Full Stack Target
-Wants=qqbot-stack.service qqbot-koishi.service
-After=qqbot-stack.service
+          [Unit]
+          Description=QQBot Full Stack Target
+          Wants=qqbot-stack.service qqbot-koishi.service
+          After=qqbot-stack.service
 
-[Install]
-WantedBy=default.target
-UNIT
+          [Install]
+          WantedBy=default.target
+          UNIT
           fi
 
           pnpm install --frozen-lockfile
