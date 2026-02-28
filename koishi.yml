@@ -15,11 +15,13 @@ plugins:
       botNames:
         - 小祥
       defaultPreset: sakiko
+      defaultModel: ${{ env.OPENAI_MODEL || 'deepseek/deepseek-chat' }}
     chatluna-deepseek-adapter:0o3zho:
       apiKeys:
         - - ${{ env.OPENAI_API_KEY || '' }}
           - ${{ env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
           - true
+    ./dist/plugins/chatluna-model-guard: {}
     commands:qp6oxu:
       chatluna:
         config:
