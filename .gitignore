@@ -12,3 +12,4 @@ data/chathub/presets/*.yml
 !data/chathub/presets/sakiko.yml
 web/.vitepress/dist
 web/.vitepress/cache
+.codex/
