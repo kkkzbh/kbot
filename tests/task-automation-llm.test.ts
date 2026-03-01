@@ -81,6 +81,39 @@ describe('task automation model delivery behavior', () => {
     expect(userPrompt).toContain('用户意图：发送1+1的计算结果');
   });
 
+  it('caps max_tokens to deepseek-chat upper bound when routed to fast model', async () => {
+    const runtime = {
+      ...createRuntime(),
+      deliveryModel: 'deepseek-chat',
+      deliveryMaxTokens: 10000,
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '晚上好，愿你今晚好梦。' } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    const task: DeliveryTaskPayload = {
+      kind: 'once',
+      scope: 'private',
+      runAt: new Date('2026-03-01T19:33:00+08:00').getTime(),
+      cronExpr: null,
+      message: '发一个祝福消息',
+    };
+    const text = await buildDeliveryMessageByModel(runtime, task, formatUtc8Timestamp);
+    expect(text).toBe('晚上好，愿你今晚好梦。');
+
+    const [, reqInit] = fetchMock.mock.calls[0] ?? [];
+    const body =
+      reqInit && typeof reqInit === 'object' && 'body' in reqInit && typeof reqInit.body === 'string'
+        ? JSON.parse(reqInit.body)
+        : null;
+    expect(body?.model).toBe('deepseek-chat');
+    expect(body?.max_tokens).toBe(8192);
+  });
+
   it('falls back to raw task message when model request fails', async () => {
     const runtime = createRuntime();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }));

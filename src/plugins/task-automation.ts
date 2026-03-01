@@ -4,7 +4,6 @@ import { parseExpression } from 'cron-parser';
 import type { AutomationTask, TaskScope } from '../types/task-automation.js';
 import {
   AutomationIntent,
-  buildNaturalCreateFallbackReply,
   isValidCronExpr,
   normalizeGroupId,
   parseAutomationIntentByRule,
@@ -327,13 +326,6 @@ async function buildNaturalCreateReply(
   runtime: RuntimeConfig,
   payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
 ): Promise<string> {
-  const now = Date.now();
-  if (payload.kind === 'once') {
-    const runAt = payload.runAt ?? now;
-    if (runAt - now <= SHORT_ONCE_TASK_WINDOW_MS) {
-      return buildNaturalCreateFallbackReply(payload, now);
-    }
-  }
   return buildNaturalCreateReplyByModel(toAutomationLlmRuntime(runtime), payload, formatTimestamp);
 }
 
@@ -761,14 +753,11 @@ export function apply(ctx: Context, config: Config): void {
           message: rawMessage,
         });
         if (created) {
-          const reply = buildNaturalCreateFallbackReply(
-            {
-              kind: 'once',
-              runAt,
-              message: rawMessage,
-            },
-            Date.now(),
-          );
+          const reply = await buildNaturalCreateReply(runtime, {
+            kind: 'once',
+            runAt,
+            message: rawMessage,
+          });
           await session.send(reply);
           enrichOnceTaskMessageAsync(created.id, scope, runAt, rawMessage);
         }

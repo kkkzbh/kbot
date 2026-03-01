@@ -71,6 +71,13 @@ function cleanGeneratedText(text: string | null | undefined): string | null {
   return normalized || null;
 }
 
+function normalizeMaxTokensByModel(modelName: string, requested: number): number {
+  if (modelName.includes('deepseek-chat')) {
+    return Math.min(requested, 8192);
+  }
+  return requested;
+}
+
 async function generateModelReply(
   runtime: AutomationLlmRuntime,
   options: {
@@ -90,8 +97,8 @@ async function generateModelReply(
   const reasonerMinRaw = Number(options.reasonerMinTokens ?? requested);
   const reasonerMin =
     Number.isFinite(reasonerMinRaw) && reasonerMinRaw > 0 ? Math.floor(reasonerMinRaw) : requested;
-  const finalMaxTokens =
-    isReasonerModel ? Math.max(requested, reasonerMin) : requested;
+  const preferredMaxTokens = isReasonerModel ? Math.max(requested, reasonerMin) : requested;
+  const finalMaxTokens = normalizeMaxTokensByModel(modelName, preferredMaxTokens);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
