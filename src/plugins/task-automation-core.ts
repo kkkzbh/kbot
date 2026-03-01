@@ -45,6 +45,7 @@ const WEEKDAY_MAP: Record<string, number> = {
   六: 6,
 };
 
+const FIXED_TIMEZONE = 'Asia/Shanghai';
 const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function normalizeWhitespace(text: string): string {
@@ -181,6 +182,31 @@ export function parseOnceRunAt(text: string, now = Date.now()): number | null {
     parseRelativeDayTime(text, now) ??
     parseFallbackClockTime(text, now)
   );
+}
+
+export function formatAutomationTimestamp(ts: number): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: FIXED_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(ts));
+
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+  return `${lookup.get('year')}-${lookup.get('month')}-${lookup.get('day')} ${lookup.get('hour')}:${lookup.get('minute')}`;
+}
+
+export function buildNaturalCreateFallbackReply(
+  payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
+  now = Date.now(),
+): string {
+  if (payload.kind === 'once') {
+    return `好，我记住了。到 ${formatAutomationTimestamp(payload.runAt ?? now)} 我会提醒你：${payload.message}`;
+  }
+  return `好，我记住了。这个提醒我会按计划持续发你：${payload.message}`;
 }
 
 function parseDailyCron(text: string): string | null {

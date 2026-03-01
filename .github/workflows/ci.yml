@@ -42,6 +42,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Task automation regression tests
+        run: pnpm test -- tests/task-automation-llm.test.ts
+
       - name: Build
         run: pnpm build
 
@@ -51,4 +54,16 @@ jobs:
           OPENAI_API_KEY: "sk-ci-smoke"
           OPENAI_MODEL: "deepseek/deepseek-chat"
           TASK_AUTOMATION_INTENT_ENABLED: "false"
+        run: pnpm smoke:start
+
+      - name: Koishi startup smoke test (delivery model config)
+        env:
+          ONEBOT_SELF_ID: "100000001"
+          OPENAI_API_KEY: "sk-ci-smoke"
+          OPENAI_MODEL: "deepseek/deepseek-chat"
+          TASK_AUTOMATION_INTENT_ENABLED: "false"
+          TASK_AUTOMATION_DELIVERY_MODEL: "deepseek-reasoner"
+          TASK_AUTOMATION_CHAT_REPLY_MODEL: "deepseek-reasoner"
+          TASK_AUTOMATION_DELIVERY_TIMEOUT_MS: "18000"
+          TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS: "12000"
         run: pnpm smoke:start
