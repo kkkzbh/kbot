@@ -18,19 +18,25 @@ plugins:
       permissionMode: ${{ env.TASK_AUTOMATION_PERMISSION || 'all' }}
       intentEnabled: ${{ env.TASK_AUTOMATION_INTENT_ENABLED !== 'false' }}
       intentMinConfidence: ${{ +env.TASK_AUTOMATION_INTENT_MIN_CONFIDENCE || 0.78 }}
-      intentBaseUrl: ${{ env.TASK_AUTOMATION_INTENT_BASE_URL || env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
+      intentBaseUrl: >-
+        ${{ env.TASK_AUTOMATION_INTENT_BASE_URL || env.OPENAI_BASE_URL ||
+        'https://api.deepseek.com/v1' }}
       intentApiKey: ${{ env.TASK_AUTOMATION_INTENT_API_KEY || env.OPENAI_API_KEY || '' }}
       intentModel: ${{ env.TASK_AUTOMATION_INTENT_MODEL || env.OPENAI_MODEL || '' }}
       intentTimeoutMs: ${{ +env.TASK_AUTOMATION_INTENT_TIMEOUT_MS || 12000 }}
       pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}
       maxTasksPerUser: ${{ +env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20 }}
-      deliveryBaseUrl: ${{ env.TASK_AUTOMATION_DELIVERY_BASE_URL || env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
+      deliveryBaseUrl: >-
+        ${{ env.TASK_AUTOMATION_DELIVERY_BASE_URL || env.OPENAI_BASE_URL ||
+        'https://api.deepseek.com/v1' }}
       deliveryApiKey: ${{ env.TASK_AUTOMATION_DELIVERY_API_KEY || env.OPENAI_API_KEY || '' }}
       deliveryModel: ${{ env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
       deliveryTimeoutMs: ${{ +env.TASK_AUTOMATION_DELIVERY_TIMEOUT_MS || 18000 }}
       deliveryMaxTokens: ${{ +env.TASK_AUTOMATION_DELIVERY_MAX_TOKENS || 10000 }}
       deliverySystemPrompt: ${{ env.TASK_AUTOMATION_DELIVERY_SYSTEM_PROMPT || '' }}
-      chatReplyModel: ${{ env.TASK_AUTOMATION_CHAT_REPLY_MODEL || env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
+      chatReplyModel: >-
+        ${{ env.TASK_AUTOMATION_CHAT_REPLY_MODEL ||
+        env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
       chatReplyTimeoutMs: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS || 12000 }}
       chatReplyMaxTokens: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_MAX_TOKENS || 10000 }}
       chatReplySystemPrompt: ${{ env.TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT || '' }}
@@ -41,13 +47,179 @@ plugins:
       isNickNameWithContent: true
       allowAtReply: true
       defaultPreset: sakiko
+      defaultChatMode: plugin
       defaultModel: ${{ env.OPENAI_MODEL || 'deepseek/deepseek-chat' }}
+      defaultEmbeddings: ${{ env.CHATLUNA_DEFAULT_EMBEDDINGS || 'deepseek/deepseek-embedding' }}
+      defaultVectorStore: ${{ env.CHATLUNA_DEFAULT_VECTOR_STORE || 'luna-vdb' }}
     chatluna-deepseek-adapter:0o3zho:
       apiKeys:
         - - ${{ env.OPENAI_API_KEY || '' }}
           - ${{ env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
           - true
-    ./dist/plugins/chatluna-model-guard: {}
+    puppeteer:0vx5c7: {}
+    chatluna-search-service:3p16t2:
+      searchEngine:
+        - bing-web
+        - duckduckgo-lite
+        - wikipedia
+      topK: ${{ +env.CHATLUNA_SEARCH_TOPK || 5 }}
+      summaryType: ${{ env.CHATLUNA_SEARCH_SUMMARY_TYPE || 'speed' }}
+      summaryModel: >-
+        ${{ env.CHATLUNA_SEARCH_SUMMARY_MODEL || env.OPENAI_MODEL ||
+        'deepseek/deepseek-chat' }}
+      multiSourceMode: ${{ env.CHATLUNA_SEARCH_MULTI_SOURCE_MODE || 'average' }}
+      contextualCompression: ${{ env.CHATLUNA_SEARCH_CONTEXTUAL_COMPRESSION === 'true' }}
+      serperApiKey: ${{ env.CHATLUNA_SERPER_API_KEY || '' }}
+      tavilyApiKey: ${{ env.CHATLUNA_TAVILY_API_KEY || '' }}
+      bingSearchApiKey: ${{ env.CHATLUNA_BING_SEARCH_API_KEY || '' }}
+      searxngBaseURL: ${{ env.CHATLUNA_SEARXNG_BASE_URL || 'https://paulgo.io' }}
+    chatluna-plugin-common:qf1a6x:
+      think: ${{ env.CHATLUNA_COMMON_THINK === 'true' }}
+      send: ${{ env.CHATLUNA_COMMON_SEND !== 'false' }}
+      todos: ${{ env.CHATLUNA_COMMON_TODOS !== 'false' }}
+      chat: ${{ env.CHATLUNA_COMMON_CHAT !== 'false' }}
+      request: ${{ env.CHATLUNA_COMMON_REQUEST !== 'false' }}
+      requestMaxOutputLength: ${{ +env.CHATLUNA_COMMON_REQUEST_MAX_OUTPUT_LENGTH || 58600 }}
+      fs: ${{ env.CHATLUNA_COMMON_FS === 'true' }}
+      fsScopePath: ${{ env.CHATLUNA_COMMON_FS_SCOPE_PATH || '' }}
+      command: ${{ env.CHATLUNA_COMMON_COMMAND === 'true' }}
+      commandAutoExecute: ${{ env.CHATLUNA_COMMON_COMMAND_AUTO_EXECUTE === 'true' }}
+      cron: ${{ env.CHATLUNA_COMMON_CRON === 'true' }}
+      group: ${{ env.CHATLUNA_COMMON_GROUP === 'true' }}
+      actions: ${{ env.CHATLUNA_COMMON_ACTIONS === 'true' }}
+      actionsList:
+        - name: weather.geo
+          description: 根据城市名称查询经纬度，用于后续天气/未来预报查询。
+          headers: {}
+          selector:
+            - 天气
+            - 预报
+            - 城市
+            - weather
+            - forecast
+          openAPISpec: |-
+            openapi: 3.0.3
+            info:
+              title: Open-Meteo Geocoding API
+              version: 1.0.0
+            servers:
+              - url: https://geocoding-api.open-meteo.com
+            paths:
+              /v1/search:
+                get:
+                  summary: Search city coordinates
+                  parameters:
+                    - in: query
+                      name: name
+                      required: true
+                      schema:
+                        type: string
+                    - in: query
+                      name: count
+                      required: false
+                      schema:
+                        type: integer
+                        default: 1
+                    - in: query
+                      name: language
+                      required: false
+                      schema:
+                        type: string
+                        default: zh
+                    - in: query
+                      name: format
+                      required: false
+                      schema:
+                        type: string
+                        default: json
+                  responses:
+                    "200":
+                      description: OK
+        - name: weather.forecast
+          description: 根据经纬度查询未来天气预报（按天）。
+          headers: {}
+          selector:
+            - 天气
+            - 未来
+            - 预报
+            - weather
+            - forecast
+          openAPISpec: |-
+            openapi: 3.0.3
+            info:
+              title: Open-Meteo Forecast API
+              version: 1.0.0
+            servers:
+              - url: https://api.open-meteo.com
+            paths:
+              /v1/forecast:
+                get:
+                  summary: Get daily weather forecast
+                  parameters:
+                    - in: query
+                      name: latitude
+                      required: true
+                      schema:
+                        type: number
+                    - in: query
+                      name: longitude
+                      required: true
+                      schema:
+                        type: number
+                    - in: query
+                      name: daily
+                      required: false
+                      schema:
+                        type: string
+                        default: weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max
+                    - in: query
+                      name: forecast_days
+                      required: false
+                      schema:
+                        type: integer
+                        default: 7
+                    - in: query
+                      name: timezone
+                      required: false
+                      schema:
+                        type: string
+                        default: Asia/Shanghai
+                  responses:
+                    "200":
+                      description: OK
+      draw: false
+      music: false
+    chatluna-mcp-client:aq3m2y:
+      servers: '{"mcpServers":{}}'
+      tools: {}
+    chatluna-vector-store-service:0a9k5w:
+      vectorStore:
+        - ${{ env.CHATLUNA_VECTOR_STORE || 'luna-vdb' }}
+      redisUrl: ${{ env.CHATLUNA_VECTOR_STORE_REDIS_URL || 'redis://127.0.0.1:6379' }}
+      milvusUrl: ${{ env.CHATLUNA_VECTOR_STORE_MILVUS_URL || 'http://127.0.0.1:19530' }}
+      milvusUsername: ${{ env.CHATLUNA_VECTOR_STORE_MILVUS_USERNAME || '' }}
+      milvusPassword: ${{ env.CHATLUNA_VECTOR_STORE_MILVUS_PASSWORD || '' }}
+    chatluna-long-memory:c6x0qv:
+      enabledLayers:
+        - Global
+        - Guild
+        - User
+      layerEngines:
+        - layer: Global
+          engine: HippoRAG
+        - layer: Guild
+          engine: HippoRAG
+        - layer: User
+          engine: HippoRAG
+      longMemoryExtractModel: >-
+        ${{ env.CHATLUNA_LONG_MEMORY_EXTRACT_MODEL || env.OPENAI_MODEL ||
+        'deepseek/deepseek-chat' }}
+      longMemoryExtractInterval: ${{ +env.CHATLUNA_LONG_MEMORY_EXTRACT_INTERVAL || 3 }}
+      longMemoryQueryRewrite: ${{ env.CHATLUNA_LONG_MEMORY_QUERY_REWRITE !== 'false' }}
+      hippoExtractModel: >-
+        ${{ env.CHATLUNA_HIPPO_EXTRACT_MODEL || env.OPENAI_MODEL ||
+        'deepseek/deepseek-chat' }}
+    ./dist/plugins/chatluna-model-guard:mjddgg: {}
     commands:qp6oxu:
       chatluna:
         config:
