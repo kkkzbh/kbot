@@ -10,6 +10,7 @@
     "docs:build": "vitepress build web",
     "docs:preview": "vitepress preview web",
     "start": "pnpm build && pnpm exec koishi start koishi.yml",
+    "smoke:start": "bash ./scripts/smoke-koishi-start.sh",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

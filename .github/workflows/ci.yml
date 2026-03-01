@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Typecheck + Test + Build
+    name: Typecheck + Test + Build + Smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,3 +44,11 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Koishi startup smoke test
+        env:
+          ONEBOT_SELF_ID: "100000001"
+          OPENAI_API_KEY: "sk-ci-smoke"
+          OPENAI_MODEL: "deepseek/deepseek-chat"
+          TASK_AUTOMATION_INTENT_ENABLED: "false"
+        run: pnpm smoke:start
