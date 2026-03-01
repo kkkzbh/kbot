@@ -6,13 +6,15 @@
 - 每个插件提供了什么功能
 - 如何通过 `.env` 与 `koishi.yml` 配置项目
 - 当前聊天链路与自动化链路触发契约
+- 自动化功能的使用入口与约束
 
-> 本站点不包含“如何实现”的源码讲解，也不提供面向群成员的使用说明。
+> 本站点不包含“如何实现”的源码讲解，也不提供面向群成员的完整操作手册。
 
 ## 当前状态
 
 - 当前对话主链路为 `ChatLuna + DeepSeek Adapter + SQLite`。
-- 当前自动化链路为 `cron + task-automation`（独立于 ChatLuna 触发规则）。
+- 当前自动化链路由 `task-automation` 内部调度实现（独立于 ChatLuna 触发规则）。
+- 自动化时间基准固定为 `Asia/Shanghai (UTC+8)`。
 - 弃用的 `group-chat` 旧链路已从仓库移除。
 
 ## 快速入口
@@ -20,6 +22,7 @@
 - [Koishi 插件与功能](/developer/koishi-plugins)
 - [配置说明](/developer/configuration)
 - [聊天与自动化链路说明](/developer/chatluna-migration)
+- [自动化使用功能介绍](/developer/automation-usage)
 
 ## 文档维护边界
 

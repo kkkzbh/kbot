@@ -19,6 +19,11 @@
 2. `./dist/plugins/task-automation`
 3. `@koishijs/plugin-database-sqlite`
 
+说明：
+
+- `koishi-plugin-cron` 当前保持启用，但自动化周期任务的核心调度由 `task-automation` 内部实现。
+- 自动化任务的时间基准固定为 `Asia/Shanghai (UTC+8)`。
+
 ## 已移除组件
 
 以下弃用组件已从仓库删除，不再提供回滚路径：

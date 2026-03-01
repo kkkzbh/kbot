@@ -11,6 +11,7 @@ export default defineConfig({
       { text: 'Koishi 插件与功能', link: '/developer/koishi-plugins' },
       { text: '配置说明', link: '/developer/configuration' },
       { text: '聊天链路说明', link: '/developer/chatluna-migration' },
+      { text: '自动化使用介绍', link: '/developer/automation-usage' },
     ],
     sidebar: {
       '/developer/': [
@@ -20,6 +21,7 @@ export default defineConfig({
             { text: 'Koishi 插件与功能', link: '/developer/koishi-plugins' },
             { text: '配置说明', link: '/developer/configuration' },
             { text: '聊天链路说明', link: '/developer/chatluna-migration' },
+            { text: '自动化使用功能介绍', link: '/developer/automation-usage' },
           ],
         },
       ],

@@ -8,7 +8,7 @@
 - Koishi 运行时从 `koishi.yml` 读取插件配置。
 - `koishi.yml` 中大多数值来自环境变量引用（Koishi Loader `env` 表达式）。
 - 当前对话链路为 ChatLuna + DeepSeek 适配器。
-- 当前自动化链路为 `cron + task-automation`。
+- 当前自动化链路由 `task-automation` 插件内部调度实现。
 
 ## 必填配置
 
@@ -77,6 +77,12 @@
 | `TASK_AUTOMATION_INTENT_TIMEOUT_MS` | `12000` | `task-automation.intentTimeoutMs` | 意图模型请求超时 |
 | `TASK_AUTOMATION_POLL_MS` | `30000` | `task-automation.pollIntervalMs` | 一次性任务轮询间隔 |
 | `TASK_AUTOMATION_MAX_TASKS_PER_USER` | `20` | `task-automation.maxTasksPerUser` | 每用户任务上限 |
+
+## 自动化时间基准
+
+- 自动化任务时间解析与周期调度固定使用 `Asia/Shanghai (UTC+8)`。
+- 当前版本不提供独立的 `TASK_AUTOMATION_TIMEZONE` 配置项。
+- 这意味着部署环境不同时区不会改变自动化任务的执行时区。
 
 ## 已移除配置
 
