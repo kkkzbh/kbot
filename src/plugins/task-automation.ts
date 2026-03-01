@@ -21,6 +21,7 @@ import {
   extractMessageText,
   type AutomationLlmRuntime,
 } from './task-automation-llm.js';
+import { createBypassLineSplitOptions, sendByLinesWithSmartInterval } from './message-send-utils.js';
 
 const logger = new Logger('task-automation');
 const SHORT_ONCE_TASK_WINDOW_MS = 60_000;
@@ -467,19 +468,14 @@ function resolveTaskBot(ctx: Context, task: AutomationTask) {
   );
 }
 
-function splitMessageByLines(message: string): string[] {
-  const normalized = message.replace(/\r\n?/g, '\n');
-  const lines = normalized.split('\n').filter((line) => line.trim().length > 0);
-  if (lines.length) return lines;
-  const fallback = message.trim();
-  return fallback ? [fallback] : [];
+async function sendSessionMessageByLines(session: Session, message: string): Promise<void> {
+  await sendByLinesWithSmartInterval(message, async (line) => session.send(line));
 }
 
-async function sendSessionMessageByLines(session: Session, message: string): Promise<void> {
-  const lines = splitMessageByLines(message);
-  for (const line of lines) {
-    await session.send(line);
-  }
+async function sendSessionMessageOnce(session: Session, message: string): Promise<void> {
+  const content = message.trim();
+  if (!content) return;
+  await session.send(content, createBypassLineSplitOptions(session));
 }
 
 async function sendBotMessageByLines(
@@ -487,10 +483,7 @@ async function sendBotMessageByLines(
   channelId: string,
   message: string,
 ): Promise<void> {
-  const lines = splitMessageByLines(message);
-  for (const line of lines) {
-    await bot.sendMessage(channelId, line);
-  }
+  await sendByLinesWithSmartInterval(message, async (line) => bot.sendMessage(channelId, line));
 }
 
 async function sendTaskMessage(ctx: Context, task: AutomationTask, runtime: RuntimeConfig): Promise<boolean> {
@@ -726,7 +719,7 @@ export function apply(ctx: Context, config: Config): void {
           })
         ).filter(isVisibleInTaskList);
         tasks.sort((a, b) => a.id - b.id);
-        await sendSessionMessageByLines(session, formatTaskList(tasks));
+        await sendSessionMessageOnce(session, formatTaskList(tasks));
         return true;
       }
       case 'delete': {
@@ -889,7 +882,7 @@ export function apply(ctx: Context, config: Config): void {
       })
     ).filter(isVisibleInTaskList);
     tasks.sort((a, b) => a.id - b.id);
-    await sendSessionMessageByLines(session, formatTaskList(tasks));
+    await sendSessionMessageOnce(session, formatTaskList(tasks));
     return '';
   });
 
