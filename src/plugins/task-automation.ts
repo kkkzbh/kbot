@@ -25,6 +25,7 @@ import {
 const logger = new Logger('task-automation');
 const SHORT_ONCE_TASK_WINDOW_MS = 60_000;
 const SHORT_ONCE_DELIVERY_TIMEOUT_MS = 2500;
+const ONCE_PRELOAD_WINDOW_MS = 5 * 60_000;
 
 export const name = 'task-automation';
 export const inject = ['database'];
@@ -474,6 +475,7 @@ async function sendTaskMessage(ctx: Context, task: AutomationTask, runtime: Runt
   }
 
   const finalMessage = task.kind === 'once' ? task.message : await buildDeliveryMessage(task, runtime);
+
   const content = task.scope === 'group' ? `${h.at(task.creatorId)} ${finalMessage}` : finalMessage;
   try {
     await bot.sendMessage(task.channelId, content);
@@ -505,6 +507,7 @@ export function apply(ctx: Context, config: Config): void {
   ensureTaskTable(ctx);
 
   const cronDisposers = new Map<number, () => void>();
+  const preloadedOnceTasks = new Set<number>();
   let onceTimer: NodeJS.Timeout | null = null;
   let onceTicking = false;
 
@@ -575,11 +578,58 @@ export function apply(ctx: Context, config: Config): void {
     );
   };
 
+  const preloadOnceTask = async (task: AutomationTask): Promise<void> => {
+    if (task.kind !== 'once' || task.status !== 'active' || !task.runAt) return;
+    if (preloadedOnceTasks.has(task.id)) return;
+    preloadedOnceTasks.add(task.id);
+    try {
+      const rawMessage = task.message;
+      const finalMessage = await buildOnceTaskMessage(
+        runtime,
+        {
+          scope: task.scope as TaskScope,
+          channelId: task.channelId,
+          guildId: task.guildId,
+        },
+        task.runAt,
+        rawMessage,
+      );
+      if (!finalMessage || finalMessage === rawMessage) return;
+
+      const [latest] = await ctx.database.get('automation_task', { id: task.id });
+      if (!latest || latest.kind !== 'once' || latest.status !== 'active' || latest.message !== rawMessage) return;
+
+      await ctx.database.set(
+        'automation_task',
+        { id: task.id },
+        {
+          message: finalMessage,
+          updatedAt: Date.now(),
+        },
+      );
+    } catch (error) {
+      preloadedOnceTasks.delete(task.id);
+      logger.warn('task #%d preload generation failed: %s', task.id, (error as Error).message);
+    }
+  };
+
   const tickOnceTasks = async () => {
     if (onceTicking) return;
     onceTicking = true;
     try {
       const now = Date.now();
+      const preloadCandidates = await ctx.database.get('automation_task', {
+        kind: 'once',
+        status: 'active',
+        runAt: {
+          $gt: now,
+          $lte: now + ONCE_PRELOAD_WINDOW_MS,
+        },
+      });
+      for (const task of preloadCandidates) {
+        await preloadOnceTask(task);
+      }
+
       const dueTasks = await ctx.database.get('automation_task', {
         kind: 'once',
         status: 'active',
@@ -588,6 +638,7 @@ export function apply(ctx: Context, config: Config): void {
       for (const task of dueTasks) {
         await sendTaskMessage(ctx, task, runtime);
         await ctx.database.set('automation_task', { id: task.id }, { status: 'done', updatedAt: Date.now() });
+        preloadedOnceTasks.delete(task.id);
       }
     } finally {
       onceTicking = false;
@@ -636,33 +687,6 @@ export function apply(ctx: Context, config: Config): void {
     return ['当前任务：', ...tasks.slice(0, 30).map((task) => `- ${taskText(task)}`)].join('\n');
   };
 
-  const enrichOnceTaskMessageAsync = (
-    taskId: number,
-    scope: ScopeContext,
-    runAt: number,
-    rawMessage: string,
-  ): void => {
-    void (async () => {
-      const finalMessage = await buildOnceTaskMessage(runtime, scope, runAt, rawMessage);
-      if (!finalMessage || finalMessage === rawMessage) return;
-
-      const [latest] = await ctx.database.get('automation_task', { id: taskId });
-      if (!latest || latest.kind !== 'once' || latest.status !== 'active') return;
-      if (latest.message !== rawMessage) return;
-
-      await ctx.database.set(
-        'automation_task',
-        { id: taskId },
-        {
-          message: finalMessage,
-          updatedAt: Date.now(),
-        },
-      );
-    })().catch((error) => {
-      logger.warn('task #%d async once message generation failed: %s', taskId, (error as Error).message);
-    });
-  };
-
   const handleIntent = async (session: Session, scope: ScopeContext, intent: AutomationIntent): Promise<boolean> => {
     if (!session.userId) return false;
 
@@ -690,6 +714,7 @@ export function apply(ctx: Context, config: Config): void {
           return true;
         }
         disposeCronTask(task.id);
+        preloadedOnceTasks.delete(task.id);
         await ctx.database.set('automation_task', { id: task.id }, { status: 'deleted', updatedAt: Date.now() });
         await session.send(`已删除任务 #${task.id}。`);
         return true;
@@ -705,6 +730,7 @@ export function apply(ctx: Context, config: Config): void {
           return true;
         }
         disposeCronTask(task.id);
+        preloadedOnceTasks.delete(task.id);
         await ctx.database.set('automation_task', { id: task.id }, { status: 'paused', updatedAt: Date.now() });
         await session.send(`已暂停任务 #${task.id}。`);
         return true;
@@ -762,12 +788,15 @@ export function apply(ctx: Context, config: Config): void {
           message: rawMessage,
         });
         if (created) {
+          const shouldPreloadNow = Boolean(created.runAt && created.runAt - Date.now() < ONCE_PRELOAD_WINDOW_MS);
+          if (shouldPreloadNow) {
+            void preloadOnceTask(created);
+          }
           const reply = await buildNaturalCreateReply(runtime, {
             kind: 'once',
             runAt,
             message: rawMessage,
           });
-          enrichOnceTaskMessageAsync(created.id, scope, runAt, rawMessage);
           if (reply) {
             await session.send(reply);
             return true;
@@ -845,6 +874,7 @@ export function apply(ctx: Context, config: Config): void {
     const task = await getScopedTask(ctx, id, session.userId, scope);
     if (!task || task.status === 'deleted') return `删除失败：未找到任务 #${id}。`;
     disposeCronTask(task.id);
+    preloadedOnceTasks.delete(task.id);
     await ctx.database.set('automation_task', { id: task.id }, { status: 'deleted', updatedAt: Date.now() });
     return `已删除任务 #${task.id}。`;
   });
@@ -857,6 +887,7 @@ export function apply(ctx: Context, config: Config): void {
     const task = await getScopedTask(ctx, id, session.userId, scope);
     if (!task || task.status === 'deleted') return `暂停失败：未找到任务 #${id}。`;
     disposeCronTask(task.id);
+    preloadedOnceTasks.delete(task.id);
     await ctx.database.set('automation_task', { id: task.id }, { status: 'paused', updatedAt: Date.now() });
     return `已暂停任务 #${task.id}。`;
   });
@@ -886,13 +917,16 @@ export function apply(ctx: Context, config: Config): void {
       }
       const runAt = parseOnceRunAt(timePart.trim());
       if (!runAt || runAt <= Date.now()) return '创建失败：无法解析时间或时间已过。';
-      const finalMessage = await buildOnceTaskMessage(runtime, scope, runAt, message);
       const created = await createTask(session, scope, {
         kind: 'once',
         runAt,
-        message: finalMessage,
+        message,
       });
       if (!created) return '创建失败，请稍后重试。';
+      const shouldPreloadNow = Boolean(created.runAt && created.runAt - Date.now() < ONCE_PRELOAD_WINDOW_MS);
+      if (shouldPreloadNow) {
+        void preloadOnceTask(created);
+      }
       return `已创建一次性任务 #${created.id}，执行时间：${formatTimestamp(runAt)}。`;
     },
   );
@@ -943,6 +977,7 @@ export function apply(ctx: Context, config: Config): void {
       clearInterval(onceTimer);
       onceTimer = null;
     }
+    preloadedOnceTasks.clear();
     cronDisposers.forEach((dispose) => dispose());
     cronDisposers.clear();
   });

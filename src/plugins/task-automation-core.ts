@@ -405,8 +405,6 @@ function hasTimeSignal(content: string): boolean {
 export function shouldTryAutomationIntent(text: string): boolean {
   const content = normalizeWhitespace(text);
   if (!content) return false;
-  const hasCreateAction = CREATE_ACTION_HINT.test(content);
-  if (!hasCreateAction) return false;
   return hasTimeSignal(content) || Boolean(parseCronExpr(content));
 }
 

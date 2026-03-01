@@ -14,7 +14,6 @@ type SimTask = {
 type SimState = {
   tasks: SimTask[];
   nextId: number;
-  pendingOnceGeneration: Array<{ taskId: number; rawMessage: string }>;
 };
 
 function preGenerateOnceMessage(raw: string): string {
@@ -55,7 +54,6 @@ function handleChatMessage(state: SimState, message: string, now: number): strin
       runAt: intent.runAt,
       message: rawMessage,
     });
-    state.pendingOnceGeneration.push({ taskId: state.nextId - 1, rawMessage });
     return null;
   }
 
@@ -74,10 +72,9 @@ function handleChatMessage(state: SimState, message: string, now: number): strin
 }
 
 function runBackgroundOnceGeneration(state: SimState): void {
-  for (const pending of state.pendingOnceGeneration.splice(0)) {
-    const task = state.tasks.find((item) => item.id === pending.taskId && item.kind === 'once' && item.status === 'active');
-    if (!task) continue;
-    task.message = preGenerateOnceMessage(pending.rawMessage);
+  for (const task of state.tasks) {
+    if (task.kind !== 'once' || task.status !== 'active') continue;
+    task.message = preGenerateOnceMessage(task.message);
   }
 }
 
@@ -100,7 +97,7 @@ describe('QBOT context scenario regression', () => {
 
   it('replays deterministic user-QBOT conversation without API key (create reply passes through)', () => {
     const now = Date.parse('2026-03-01T16:40:16+08:00');
-    const state: SimState = { tasks: [] as SimTask[], nextId: 1, pendingOnceGeneration: [] };
+    const state: SimState = { tasks: [] as SimTask[], nextId: 1 };
 
     const transcript = [
       {
