@@ -13,3 +13,4 @@ data/chathub/presets/*.yml
 web/.vitepress/dist
 web/.vitepress/cache
 .codex/
+package-lock.json

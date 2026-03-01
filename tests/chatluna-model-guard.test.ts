@@ -84,4 +84,33 @@ describe('chatluna user+time prompt injection', () => {
     const output = injectUserStampedPrompt(original, '小祥');
     expect(output).toBe(original);
   });
+
+  it('uses group card (群名片) when non-empty for group message identification', () => {
+    const now = Date.parse('2026-03-01T16:40:16+08:00');
+    // Simulates: session.author.nick = '群里的小明' (group card), session.username = '平台昵称'
+    const groupNick = '群里的小明';
+    const output = formatUserStampedPrompt(groupNick, '今天天气怎么样', now);
+    expect(output).toBe('群里的小明, 2026-03-01 16:40:16: 今天天气怎么样');
+  });
+
+  it('resolves group nickname with || fallback chain (handles empty string)', () => {
+    // Mirrors the updated userName resolution logic in chatluna-model-guard:
+    // session.author?.nick?.trim() || session.username || session.author?.name || session.userId || '用户'
+    function resolveUserName(authorNick?: string, username?: string, authorName?: string, userId?: string): string {
+      return authorNick?.trim() || username || authorName || userId || '用户';
+    }
+
+    // Group card (群名片) takes priority
+    expect(resolveUserName('群内昵称', '平台昵称', 'QQ昵称', '123456')).toBe('群内昵称');
+    // Empty group card falls back to username
+    expect(resolveUserName('', '平台昵称', 'QQ昵称', '123456')).toBe('平台昵称');
+    // Whitespace-only group card falls back to username
+    expect(resolveUserName('  ', '平台昵称', 'QQ昵称', '123456')).toBe('平台昵称');
+    // Missing group card falls back through chain
+    expect(resolveUserName(undefined, '', 'QQ昵称', '123456')).toBe('QQ昵称');
+    // All empty falls back to userId
+    expect(resolveUserName(undefined, '', '', '123456')).toBe('123456');
+    // Everything missing falls back to '用户'
+    expect(resolveUserName(undefined, '', '', '')).toBe('用户');
+  });
 });
