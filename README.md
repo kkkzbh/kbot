@@ -154,6 +154,13 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - `TASK_AUTOMATION_INTENT_TIMEOUT_MS`：意图模型超时（默认 `12000`）。
 - `TASK_AUTOMATION_POLL_MS`：一次性任务轮询间隔（默认 `30000`）。
 - `TASK_AUTOMATION_MAX_TASKS_PER_USER`：单用户任务上限（默认 `20`）。
+- `TASK_AUTOMATION_DELIVERY_BASE_URL` / `TASK_AUTOMATION_DELIVERY_API_KEY` / `TASK_AUTOMATION_DELIVERY_MODEL`：
+  - 到点发送内容生成模型配置；默认复用 `OPENAI_BASE_URL` / `OPENAI_API_KEY`，模型默认 `deepseek-reasoner`。
+- `TASK_AUTOMATION_DELIVERY_TIMEOUT_MS`：到点发送内容生成超时（默认 `18000`）。
+- `TASK_AUTOMATION_DELIVERY_SYSTEM_PROMPT`：到点发送内容专用 system prompt（可选覆盖默认值）。
+- `TASK_AUTOMATION_CHAT_REPLY_MODEL`：自然语言创建任务时的回复模型（默认 `deepseek-reasoner`）。
+- `TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS`：创建任务自然回复超时（默认 `12000`）。
+- `TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT`：创建任务自然回复专用 system prompt（可选覆盖默认值）。
 
 ## 11. Quality checks
 

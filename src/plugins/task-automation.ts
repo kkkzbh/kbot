@@ -11,6 +11,14 @@ import {
   parseGroupSet,
   parseOnceRunAt,
 } from './task-automation-core.js';
+import {
+  DEFAULT_CHAT_REPLY_SYSTEM_PROMPT,
+  DEFAULT_DELIVERY_SYSTEM_PROMPT,
+  buildDeliveryMessageByModel,
+  buildNaturalCreateReplyByModel,
+  extractMessageText,
+  type AutomationLlmRuntime,
+} from './task-automation-llm.js';
 
 const logger = new Logger('task-automation');
 
@@ -29,6 +37,14 @@ export interface Config {
   intentTimeoutMs?: number;
   pollIntervalMs?: number;
   maxTasksPerUser?: number;
+  deliveryBaseUrl?: string;
+  deliveryApiKey?: string;
+  deliveryModel?: string;
+  deliveryTimeoutMs?: number;
+  deliverySystemPrompt?: string;
+  chatReplyModel?: string;
+  chatReplyTimeoutMs?: number;
+  chatReplySystemPrompt?: string;
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -50,6 +66,16 @@ export const Config: Schema<Config> = Schema.object({
   intentTimeoutMs: Schema.natural().role('time').default(12000).description('意图模型超时（毫秒）。'),
   pollIntervalMs: Schema.natural().role('time').default(30000).description('一次性任务轮询周期（毫秒）。'),
   maxTasksPerUser: Schema.natural().default(20).description('每个用户允许的任务上限（active+paused）。'),
+  deliveryBaseUrl: Schema.string()
+    .role('link')
+    .description('到点文案生成模型 API Base URL（默认复用 OPENAI_BASE_URL）。'),
+  deliveryApiKey: Schema.string().role('secret').description('到点文案生成模型 API Key（默认复用 OPENAI_API_KEY）。'),
+  deliveryModel: Schema.string().default('deepseek-reasoner').description('到点文案生成模型（默认 deepseek-reasoner）。'),
+  deliveryTimeoutMs: Schema.natural().role('time').default(18000).description('到点文案生成模型超时（毫秒）。'),
+  deliverySystemPrompt: Schema.string().description('到点文案生成 system prompt（可选覆盖默认值）。'),
+  chatReplyModel: Schema.string().default('deepseek-reasoner').description('自动化创建回复模型（默认 deepseek-reasoner）。'),
+  chatReplyTimeoutMs: Schema.natural().role('time').default(12000).description('自动化创建回复模型超时（毫秒）。'),
+  chatReplySystemPrompt: Schema.string().description('自动化创建回复 system prompt（可选覆盖默认值）。'),
 });
 
 interface RuntimeConfig {
@@ -64,6 +90,14 @@ interface RuntimeConfig {
   intentTimeoutMs: number;
   pollIntervalMs: number;
   maxTasksPerUser: number;
+  deliveryBaseUrl: string;
+  deliveryApiKey: string;
+  deliveryModel: string;
+  deliveryTimeoutMs: number;
+  deliverySystemPrompt: string;
+  chatReplyModel: string;
+  chatReplyTimeoutMs: number;
+  chatReplySystemPrompt: string;
 }
 
 interface ScopeContext {
@@ -85,10 +119,33 @@ interface ModelIntentResponse {
 const FIXED_TIMEZONE = 'Asia/Shanghai';
 
 function toRuntimeConfig(config: Config): RuntimeConfig {
+  const configuredIntentModel = config.intentModel?.trim();
+  const envIntentModel = process.env.TASK_AUTOMATION_INTENT_MODEL?.trim() || process.env.OPENAI_MODEL?.trim();
   const baseUrl = (config.intentBaseUrl ?? process.env.TASK_AUTOMATION_INTENT_BASE_URL ?? process.env.OPENAI_BASE_URL ?? '')
     .replace(/\/+$/, '');
   const apiKey = config.intentApiKey ?? process.env.TASK_AUTOMATION_INTENT_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
-  const model = config.intentModel ?? process.env.TASK_AUTOMATION_INTENT_MODEL ?? process.env.OPENAI_MODEL ?? '';
+  const model = configuredIntentModel || envIntentModel || '';
+  const configuredDeliveryModel = config.deliveryModel?.trim();
+  const envDeliveryModel = process.env.TASK_AUTOMATION_DELIVERY_MODEL?.trim();
+  const configuredChatReplyModel = config.chatReplyModel?.trim();
+  const envChatReplyModel = process.env.TASK_AUTOMATION_CHAT_REPLY_MODEL?.trim();
+  const deliveryBaseUrl = (
+    config.deliveryBaseUrl ??
+    process.env.TASK_AUTOMATION_DELIVERY_BASE_URL ??
+    process.env.OPENAI_BASE_URL ??
+    baseUrl
+  ).replace(/\/+$/, '');
+  const deliveryApiKey =
+    config.deliveryApiKey ??
+    process.env.TASK_AUTOMATION_DELIVERY_API_KEY ??
+    process.env.OPENAI_API_KEY ??
+    apiKey;
+  const deliveryModel = configuredDeliveryModel || envDeliveryModel || 'deepseek-reasoner';
+  const chatReplyModel = configuredChatReplyModel || envChatReplyModel || deliveryModel;
+  const envDeliveryPrompt = process.env.TASK_AUTOMATION_DELIVERY_SYSTEM_PROMPT?.trim();
+  const envChatReplyPrompt = process.env.TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT?.trim();
+  const deliverySystemPrompt = config.deliverySystemPrompt?.trim() || envDeliveryPrompt || DEFAULT_DELIVERY_SYSTEM_PROMPT;
+  const chatReplySystemPrompt = config.chatReplySystemPrompt?.trim() || envChatReplyPrompt || DEFAULT_CHAT_REPLY_SYSTEM_PROMPT;
 
   return {
     enabledGroups: parseGroupSet(config.enabledGroups ?? process.env.CHAT_ENABLED_GROUPS),
@@ -108,6 +165,15 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     intentTimeoutMs: config.intentTimeoutMs ?? Number(process.env.TASK_AUTOMATION_INTENT_TIMEOUT_MS || 12000),
     pollIntervalMs: config.pollIntervalMs ?? Number(process.env.TASK_AUTOMATION_POLL_MS || 30000),
     maxTasksPerUser: config.maxTasksPerUser ?? Number(process.env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20),
+    deliveryBaseUrl,
+    deliveryApiKey,
+    deliveryModel,
+    deliveryTimeoutMs: config.deliveryTimeoutMs ?? Number(process.env.TASK_AUTOMATION_DELIVERY_TIMEOUT_MS || 18000),
+    deliverySystemPrompt,
+    chatReplyModel,
+    chatReplyTimeoutMs:
+      config.chatReplyTimeoutMs ?? Number(process.env.TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS || 12000),
+    chatReplySystemPrompt,
   };
 }
 
@@ -139,6 +205,19 @@ function normalizeMessageContent(session: Session): string {
   const plain = session.stripped?.content?.trim();
   if (plain) return plain;
   return session.content?.trim() ?? '';
+}
+
+function toAutomationLlmRuntime(runtime: RuntimeConfig): AutomationLlmRuntime {
+  return {
+    baseUrl: runtime.deliveryBaseUrl,
+    apiKey: runtime.deliveryApiKey,
+    deliveryModel: runtime.deliveryModel,
+    deliveryTimeoutMs: runtime.deliveryTimeoutMs,
+    deliverySystemPrompt: runtime.deliverySystemPrompt,
+    chatReplyModel: runtime.chatReplyModel,
+    chatReplyTimeoutMs: runtime.chatReplyTimeoutMs,
+    chatReplySystemPrompt: runtime.chatReplySystemPrompt,
+  };
 }
 
 function resolveScopeContext(session: Session, runtime: RuntimeConfig): ScopeContext | null {
@@ -174,6 +253,27 @@ function taskText(task: AutomationTask): string {
   return `#${task.id} [${task.status}] ${formatTimestamp(task.runAt ?? Date.now())} ${task.message}`;
 }
 
+async function buildDeliveryMessage(task: AutomationTask, runtime: RuntimeConfig): Promise<string> {
+  return buildDeliveryMessageByModel(
+    toAutomationLlmRuntime(runtime),
+    {
+      kind: task.kind,
+      scope: task.scope,
+      runAt: task.runAt ?? null,
+      cronExpr: task.cronExpr ?? null,
+      message: task.message,
+    },
+    formatTimestamp,
+  );
+}
+
+async function buildNaturalCreateReply(
+  runtime: RuntimeConfig,
+  payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
+): Promise<string> {
+  return buildNaturalCreateReplyByModel(toAutomationLlmRuntime(runtime), payload, formatTimestamp);
+}
+
 async function parseIntentByModel(content: string, runtime: RuntimeConfig): Promise<AutomationIntent | null> {
   if (!runtime.intentEnabled || !runtime.intentBaseUrl || !runtime.intentApiKey || !runtime.intentModel) {
     return null;
@@ -196,7 +296,6 @@ async function parseIntentByModel(content: string, runtime: RuntimeConfig): Prom
       },
       body: JSON.stringify({
         model: runtime.intentModel,
-        temperature: 0,
         max_tokens: 220,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -214,10 +313,7 @@ async function parseIntentByModel(content: string, runtime: RuntimeConfig): Prom
       choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
     };
 
-    const rawContent = payload.choices?.[0]?.message?.content;
-    const contentText = Array.isArray(rawContent)
-      ? rawContent.map((item) => item?.text ?? '').join('')
-      : (rawContent ?? '').toString();
+    const contentText = extractMessageText(payload.choices?.[0]?.message?.content);
 
     const jsonText = extractJsonObject(contentText);
     if (!jsonText) return null;
@@ -310,14 +406,15 @@ function resolveTaskBot(ctx: Context, task: AutomationTask) {
   );
 }
 
-async function sendTaskMessage(ctx: Context, task: AutomationTask): Promise<boolean> {
+async function sendTaskMessage(ctx: Context, task: AutomationTask, runtime: RuntimeConfig): Promise<boolean> {
   const bot = resolveTaskBot(ctx, task);
   if (!bot) {
     logger.warn('task #%d skipped: no bot available', task.id);
     return false;
   }
 
-  const content = task.scope === 'group' ? `${h.at(task.creatorId)} ${task.message}` : task.message;
+  const finalMessage = await buildDeliveryMessage(task, runtime);
+  const content = task.scope === 'group' ? `${h.at(task.creatorId)} ${finalMessage}` : finalMessage;
   try {
     await bot.sendMessage(task.channelId, content);
     return true;
@@ -381,7 +478,7 @@ export function apply(ctx: Context, config: Config): void {
           void (async () => {
             const [latest] = await ctx.database.get('automation_task', { id: task.id });
             if (!latest || latest.status !== 'active' || latest.kind !== 'cron') return;
-            await sendTaskMessage(ctx, latest);
+            await sendTaskMessage(ctx, latest, runtime);
           })();
         };
 
@@ -429,7 +526,7 @@ export function apply(ctx: Context, config: Config): void {
         runAt: { $lte: now },
       });
       for (const task of dueTasks) {
-        await sendTaskMessage(ctx, task);
+        await sendTaskMessage(ctx, task, runtime);
         await ctx.database.set('automation_task', { id: task.id }, { status: 'done', updatedAt: Date.now() });
       }
     } finally {
@@ -552,7 +649,12 @@ export function apply(ctx: Context, config: Config): void {
           message: (intent.message ?? '定时提醒').trim() || '定时提醒',
         });
         if (created) {
-          await session.send(`已创建周期任务 #${created.id}（cron: ${cronExpr}）。`);
+          const reply = await buildNaturalCreateReply(runtime, {
+            kind: 'cron',
+            cronExpr,
+            message: created.message,
+          });
+          await session.send(reply);
         }
         return true;
       }
@@ -568,7 +670,12 @@ export function apply(ctx: Context, config: Config): void {
           message: (intent.message ?? '定时提醒').trim() || '定时提醒',
         });
         if (created) {
-          await session.send(`已创建一次性任务 #${created.id}，执行时间：${formatTimestamp(runAt)}。`);
+          const reply = await buildNaturalCreateReply(runtime, {
+            kind: 'once',
+            runAt,
+            message: created.message,
+          });
+          await session.send(reply);
         }
         return true;
       }
@@ -720,11 +827,13 @@ export function apply(ctx: Context, config: Config): void {
     cronTasks.forEach(registerCronTask);
     onceTimer = setInterval(() => void tickOnceTasks(), Math.max(5000, runtime.pollIntervalMs));
     logger.info(
-      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s, timezone=%s',
+      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s, timezone=%s, deliveryModel=%s, replyModel=%s',
       runtime.enabledGroups.size,
       runtime.listenPrivate,
       runtime.intentEnabled,
       FIXED_TIMEZONE,
+      runtime.deliveryModel,
+      runtime.chatReplyModel,
     );
   });
 

@@ -24,6 +24,14 @@ plugins:
       intentTimeoutMs: ${{ +env.TASK_AUTOMATION_INTENT_TIMEOUT_MS || 12000 }}
       pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}
       maxTasksPerUser: ${{ +env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20 }}
+      deliveryBaseUrl: ${{ env.TASK_AUTOMATION_DELIVERY_BASE_URL || env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
+      deliveryApiKey: ${{ env.TASK_AUTOMATION_DELIVERY_API_KEY || env.OPENAI_API_KEY || '' }}
+      deliveryModel: ${{ env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
+      deliveryTimeoutMs: ${{ +env.TASK_AUTOMATION_DELIVERY_TIMEOUT_MS || 18000 }}
+      deliverySystemPrompt: ${{ env.TASK_AUTOMATION_DELIVERY_SYSTEM_PROMPT || '' }}
+      chatReplyModel: ${{ env.TASK_AUTOMATION_CHAT_REPLY_MODEL || env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
+      chatReplyTimeoutMs: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS || 12000 }}
+      chatReplySystemPrompt: ${{ env.TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT || '' }}
     chatluna:0qm1bk:
       botNames:
         - 小祥
