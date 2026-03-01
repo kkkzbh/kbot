@@ -27,6 +27,57 @@ describe('task automation intent rule parsing', () => {
     expect(intent?.message).toBe('开会');
   });
 
+  it('parses once intent from second-based relative time', () => {
+    const base = new Date('2026-03-01T08:00:00+08:00').getTime();
+    const intent = parseAutomationIntentByRule('10s后给我打招呼', base);
+    expect(intent?.action).toBe('create-once');
+    expect(intent?.runAt).toBe(base + 10 * 1000);
+    expect(intent?.message).toBe('打招呼');
+  });
+
+  it('parses once intent from sentence-middle second-based expression', () => {
+    const base = new Date('2026-03-01T08:00:00+08:00').getTime();
+    const intent = parseAutomationIntentByRule('麻烦你在 10s 后给我打招呼', base);
+    expect(intent?.action).toBe('create-once');
+    expect(intent?.runAt).toBe(base + 10 * 1000);
+    expect(intent?.message).toBe('打招呼');
+  });
+
+  it('parses once intent from plain clock plus delivery action', () => {
+    const utc8OffsetMs = 8 * 60 * 60 * 1000;
+    const now = Date.UTC(2026, 2, 1, 16, 36, 0, 0) - utc8OffsetMs;
+    const intent = parseAutomationIntentByRule('16:38 给我发一条消息', now);
+    expect(intent?.action).toBe('create-once');
+    expect(intent?.runAt).toBe(Date.UTC(2026, 2, 1, 16, 38, 0, 0) - utc8OffsetMs);
+    expect(intent?.message).toBe('发一条消息');
+  });
+
+  it('parses once intent from sentence-middle plain clock expression', () => {
+    const utc8OffsetMs = 8 * 60 * 60 * 1000;
+    const now = Date.UTC(2026, 2, 1, 16, 36, 0, 0) - utc8OffsetMs;
+    const intent = parseAutomationIntentByRule('请帮我在16:38的时候给我发一条消息', now);
+    expect(intent?.action).toBe('create-once');
+    expect(intent?.runAt).toBe(Date.UTC(2026, 2, 1, 16, 38, 0, 0) - utc8OffsetMs);
+    expect(intent?.message).toBe('发一条消息');
+  });
+
+  it('parses once intent from named relative offsets', () => {
+    const base = new Date('2026-03-01T08:00:00+08:00').getTime();
+    const halfHour = parseAutomationIntentByRule('半小时后提醒我喝水', base);
+    const quarter = parseAutomationIntentByRule('一刻钟后提醒我休息', base);
+
+    expect(halfHour?.action).toBe('create-once');
+    expect(halfHour?.runAt).toBe(base + 30 * 60 * 1000);
+    expect(quarter?.action).toBe('create-once');
+    expect(quarter?.runAt).toBe(base + 15 * 60 * 1000);
+  });
+
+  it('does not trigger on plain status text containing only clock time', () => {
+    const utc8OffsetMs = 8 * 60 * 60 * 1000;
+    const now = Date.UTC(2026, 2, 1, 16, 36, 0, 0) - utc8OffsetMs;
+    expect(parseAutomationIntentByRule('现在16:38了', now)).toBeNull();
+  });
+
   it('parses cron intent from weekly expression', () => {
     const intent = parseAutomationIntentByRule('每周一早上9点提醒我交周报');
     expect(intent?.action).toBe('create-cron');
@@ -37,6 +88,9 @@ describe('task automation intent rule parsing', () => {
 describe('task automation helpers', () => {
   it('checks candidate text for automation intent', () => {
     expect(shouldTryAutomationIntent('明天提醒我拿快递')).toBe(true);
+    expect(shouldTryAutomationIntent('10s后给我打招呼')).toBe(true);
+    expect(shouldTryAutomationIntent('请在16:38给我发消息')).toBe(true);
+    expect(shouldTryAutomationIntent('半小时后叫我开会')).toBe(true);
     expect(shouldTryAutomationIntent('天气不错')).toBe(false);
   });
 

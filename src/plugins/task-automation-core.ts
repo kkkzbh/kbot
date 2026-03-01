@@ -16,9 +16,23 @@ const MANAGEMENT_PATTERNS = {
   resume: /(?:恢复|继续|开启|重启)[^\d]{0,8}(?:任务|提醒|定时)?\s*#?\s*(\d+)/,
 };
 
-const CREATE_HINT = /(提醒我|提醒|通知我|叫我|闹钟|定时|任务|计划|每周|每天|每月|分钟后|小时后|明天|后天|今天)/;
+const ABSOLUTE_DATE_PATTERN = /(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/;
+const RELATIVE_DAY_PATTERN = /(今天|明天|后天|今晚)/;
+const RELATIVE_OFFSET_PATTERN = /(\d+)\s*(秒钟|秒|s|sec|分钟|分|min|mins|小时|h|hr|hrs|天|d)\s*(?:后|以后|之后)/i;
+const NAMED_RELATIVE_OFFSET_PATTERNS: Array<{ pattern: RegExp; deltaMs: number }> = [
+  { pattern: /半(?:个)?小时(?:后|以后|之后)/, deltaMs: 30 * 60 * 1000 },
+  { pattern: /一刻钟(?:后|以后|之后)/, deltaMs: 15 * 60 * 1000 },
+  { pattern: /两刻钟(?:后|以后|之后)/, deltaMs: 30 * 60 * 1000 },
+  { pattern: /半天(?:后|以后|之后)/, deltaMs: 12 * 60 * 60 * 1000 },
+];
+const CLOCK_TIME_PATTERN = /(?:凌晨|早上|上午|中午|下午|晚上)?\s*\d{1,2}\s*(?::|点|时)\s*(?:\d{1,2}|半)?/;
+const CREATE_ACTION_HINT = /(提醒我|提醒|通知我|叫我|闹钟|定时|任务|计划|给我发|发我|发条|发一条|发个|告诉我|打招呼|喊我)/i;
 
-const CREATE_CANDIDATE = /(提醒|通知|叫我|闹钟|定时|任务|计划|每周|每天|每月|分钟后|小时后|明天|后天|今天|今晚)/;
+const CREATE_HINT =
+  /(提醒我|提醒|通知我|叫我|闹钟|定时|任务|计划|每周|每天|每月|分钟后|小时后|秒后|秒钟后|s后|明天|后天|今天|今晚|给我发|发我|告诉我|打招呼|一刻钟后|半小时后|以后|之后)/i;
+
+const CREATE_CANDIDATE =
+  /(提醒|通知|叫我|闹钟|定时|任务|计划|每周|每天|每月|分钟后|小时后|秒后|秒钟后|s后|明天|后天|今天|今晚|给我发|发我|告诉我|打招呼|一刻钟后|半小时后|以后|之后)/i;
 
 const WEEKDAY_MAP: Record<string, number> = {
   日: 0,
@@ -43,6 +57,14 @@ function clampHour(raw: number): number {
 
 function clampMinute(raw: number): number {
   return Math.min(59, Math.max(0, raw));
+}
+
+function parseMinuteToken(raw: string | undefined): number {
+  if (!raw) return 0;
+  if (raw === '半') return 30;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 0;
+  return clampMinute(value);
 }
 
 function normalizeHour(period: string | undefined, hour: number): number {
@@ -78,7 +100,7 @@ function setUtc8Clock(ts: number, hour: number, minute: number): number {
 
 function parseAbsoluteTime(text: string): number | null {
   const m = text.match(
-    /(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})(?:日)?(?:\s+|T)?(?:(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})(?:[:点时](\d{1,2}))?)?/,
+    /(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})(?:日)?(?:\s+|T)?(?:(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})(?:[:点时](\d{1,2}|半))?)?/,
   );
   if (!m) return null;
 
@@ -86,35 +108,44 @@ function parseAbsoluteTime(text: string): number | null {
   const month = Number(m[2]);
   const day = Number(m[3]);
   const hourRaw = m[5] ? Number(m[5]) : 9;
-  const minuteRaw = m[6] ? Number(m[6]) : 0;
+  const minuteRaw = parseMinuteToken(m[6]);
   const hour = normalizeHour(m[4], hourRaw);
   const minute = clampMinute(minuteRaw);
   return buildLocalDate(year, month, day, hour, minute);
 }
 
 function parseRelativeOffsetTime(text: string, now: number): number | null {
-  const m = text.match(/(\d+)\s*(分钟|分|小时|天)后/);
+  const m = text.match(RELATIVE_OFFSET_PATTERN);
   if (!m) return null;
   const value = Number(m[1]);
   if (!Number.isFinite(value) || value <= 0) return null;
 
+  const unit = m[2].toLowerCase();
   let deltaMs = 0;
-  if (m[2] === '天') deltaMs = value * 24 * 60 * 60 * 1000;
-  else if (m[2] === '小时') deltaMs = value * 60 * 60 * 1000;
-  else deltaMs = value * 60 * 1000;
+  if (unit === '天' || unit === 'd') deltaMs = value * 24 * 60 * 60 * 1000;
+  else if (unit === '小时' || unit === 'h' || unit === 'hr' || unit === 'hrs') deltaMs = value * 60 * 60 * 1000;
+  else if (unit === '秒' || unit === '秒钟' || unit === 's' || unit === 'sec') {
+    deltaMs = value * 1000;
+  } else deltaMs = value * 60 * 1000;
   return now + deltaMs;
+}
+
+function parseNamedRelativeOffsetTime(text: string, now: number): number | null {
+  const hit = NAMED_RELATIVE_OFFSET_PATTERNS.find((item) => item.pattern.test(text));
+  if (!hit) return null;
+  return now + hit.deltaMs;
 }
 
 function parseRelativeDayTime(text: string, now: number): number | null {
   const m = text.match(
-    /(今天|明天|后天|今晚)(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})?(?:[:点时](\d{1,2}))?/,
+    /(今天|明天|后天|今晚)(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})?(?:[:点时](\d{1,2}|半))?/,
   );
   if (!m) return null;
 
   const dayHint = m[1];
   const period = m[2];
   const hourRaw = m[3] ? Number(m[3]) : dayHint === '今晚' ? 20 : 9;
-  const minuteRaw = m[4] ? Number(m[4]) : 0;
+  const minuteRaw = parseMinuteToken(m[4]);
   const hour = normalizeHour(period, hourRaw);
   const minute = clampMinute(minuteRaw);
 
@@ -129,11 +160,11 @@ function parseRelativeDayTime(text: string, now: number): number | null {
 }
 
 function parseFallbackClockTime(text: string, now: number): number | null {
-  const m = text.match(/(?:凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})[:点时](\d{1,2})?/);
+  const m = text.match(/(?:凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})\s*(?::|点|时)\s*(\d{1,2}|半)?/);
   if (!m) return null;
   const periodMatch = text.match(/(凌晨|早上|上午|中午|下午|晚上)/);
   const hour = normalizeHour(periodMatch?.[1], Number(m[1]));
-  const minute = clampMinute(Number(m[2] ?? 0));
+  const minute = parseMinuteToken(m[2]);
 
   let target = setUtc8Clock(now, hour, minute);
   if (target <= now) {
@@ -146,40 +177,41 @@ export function parseOnceRunAt(text: string, now = Date.now()): number | null {
   return (
     parseAbsoluteTime(text) ??
     parseRelativeOffsetTime(text, now) ??
+    parseNamedRelativeOffsetTime(text, now) ??
     parseRelativeDayTime(text, now) ??
     parseFallbackClockTime(text, now)
   );
 }
 
 function parseDailyCron(text: string): string | null {
-  const m = text.match(/每(?:天|日)(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})(?:[:点时](\d{1,2}))?/);
+  const m = text.match(/每(?:天|日)(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})(?:[:点时](\d{1,2}|半))?/);
   if (!m) return null;
   const hour = normalizeHour(m[1], Number(m[2]));
-  const minute = clampMinute(Number(m[3] ?? 0));
+  const minute = parseMinuteToken(m[3]);
   return `${minute} ${hour} * * *`;
 }
 
 function parseWeeklyCron(text: string): string | null {
   const m = text.match(
-    /每(?:周|星期)\s*([一二三四五六日天])(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})(?:[:点时](\d{1,2}))?/,
+    /每(?:周|星期)\s*([一二三四五六日天])(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})(?:[:点时](\d{1,2}|半))?/,
   );
   if (!m) return null;
   const weekday = WEEKDAY_MAP[m[1]];
   if (weekday === undefined) return null;
   const hour = normalizeHour(m[2], Number(m[3]));
-  const minute = clampMinute(Number(m[4] ?? 0));
+  const minute = parseMinuteToken(m[4]);
   return `${minute} ${hour} * * ${weekday}`;
 }
 
 function parseMonthlyCron(text: string): string | null {
   const m = text.match(
-    /每月\s*(\d{1,2})[号日]?(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})(?:[:点时](\d{1,2}))?/,
+    /每月\s*(\d{1,2})[号日]?(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})(?:[:点时](\d{1,2}|半))?/,
   );
   if (!m) return null;
   const day = Number(m[1]);
   if (day < 1 || day > 31) return null;
   const hour = normalizeHour(m[2], Number(m[3]));
-  const minute = clampMinute(Number(m[4] ?? 0));
+  const minute = parseMinuteToken(m[4]);
   return `${minute} ${hour} ${day} * *`;
 }
 
@@ -212,11 +244,24 @@ export function isValidCronExpr(expr: string): boolean {
 }
 
 function extractReminderMessage(text: string): string {
-  const remindMatch =
-    text.match(/(?:提醒我|提醒|通知我|叫我)(.*)$/) ??
-    text.match(/(?:定时任务|任务|计划)(.*)$/) ??
-    text.match(/(?:定时|闹钟)(.*)$/);
-  let candidate = remindMatch?.[1] ?? text;
+  const extractors: Array<{ pattern: RegExp; map?: (value: string) => string }> = [
+    { pattern: /(?:提醒我|提醒|通知我|叫我)\s*(.*)$/ },
+    { pattern: /给我\s*(.*)$/ },
+    { pattern: /发我\s*(.*)$/, map: (value) => `发${value}` },
+    { pattern: /告诉我\s*(.*)$/ },
+    { pattern: /(打招呼.*)$/ },
+    { pattern: /(?:定时任务|任务|计划)\s*(.*)$/ },
+    { pattern: /(?:定时|闹钟)\s*(.*)$/ },
+  ];
+
+  let candidate = text;
+  for (const extractor of extractors) {
+    const matched = text.match(extractor.pattern);
+    const body = matched?.[1]?.trim();
+    if (!body) continue;
+    candidate = extractor.map ? extractor.map(body) : body;
+    break;
+  }
 
   const removable = [
     /(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})日?/g,
@@ -225,9 +270,12 @@ function extractReminderMessage(text: string): string {
     /每(?:天|日)/g,
     /每月\d{1,2}[号日]?/g,
     /每隔\d+(?:分钟|小时|天)/g,
-    /\d+\s*(?:分钟|分|小时|天)后/g,
-    /(凌晨|早上|上午|中午|下午|晚上)?\s*\d{1,2}(?:[:点时]\d{1,2})?/g,
-    /(提醒我|提醒|通知我|叫我|创建|设置|新增|任务|计划|定时|闹钟)/g,
+    /\d+\s*(?:秒钟|秒|s|sec|min|mins|分钟|分|小时|h|hr|hrs|天|d)\s*(?:后|以后|之后)/gi,
+    /半(?:个)?小时(?:后|以后|之后)/g,
+    /[一两]刻钟(?:后|以后|之后)/g,
+    /半天(?:后|以后|之后)/g,
+    /(凌晨|早上|上午|中午|下午|晚上)?\s*\d{1,2}\s*(?::|点|时)\s*(?:\d{1,2}|半)?/g,
+    /(提醒我|提醒|通知我|叫我|创建|设置|新增|任务|计划|定时|闹钟|给我发|发我|告诉我|到时候|时候)/g,
     /[\s,，。.!！?？]+/g,
   ];
 
@@ -235,7 +283,10 @@ function extractReminderMessage(text: string): string {
     candidate = candidate.replace(pattern, ' ');
   }
 
-  const normalized = normalizeWhitespace(candidate);
+  const normalized = normalizeWhitespace(candidate)
+    .replace(/^(给我|请|请你|麻烦|麻烦你|帮我|帮忙|你在|在|于|到|的时候|时候)+/, '')
+    .replace(/(的时候|时候)$/, '')
+    .trim();
   return normalized || '定时提醒';
 }
 
@@ -263,7 +314,18 @@ function parseManagementIntent(text: string): AutomationIntent | null {
 }
 
 export function shouldTryAutomationIntent(text: string): boolean {
-  return CREATE_CANDIDATE.test(text);
+  const content = normalizeWhitespace(text);
+  if (!content) return false;
+  return (
+    CREATE_CANDIDATE.test(content) ||
+    CREATE_ACTION_HINT.test(content) ||
+    ABSOLUTE_DATE_PATTERN.test(content) ||
+    RELATIVE_DAY_PATTERN.test(content) ||
+    RELATIVE_OFFSET_PATTERN.test(content) ||
+    NAMED_RELATIVE_OFFSET_PATTERNS.some((item) => item.pattern.test(content)) ||
+    (CLOCK_TIME_PATTERN.test(content) && CREATE_ACTION_HINT.test(content)) ||
+    Boolean(parseCronExpr(content))
+  );
 }
 
 export function parseAutomationIntentByRule(text: string, now = Date.now()): AutomationIntent | null {
@@ -272,8 +334,6 @@ export function parseAutomationIntentByRule(text: string, now = Date.now()): Aut
 
   const management = parseManagementIntent(content);
   if (management) return management;
-
-  if (!CREATE_HINT.test(content)) return null;
 
   const cronExpr = parseCronExpr(content);
   if (cronExpr) {
@@ -284,6 +344,16 @@ export function parseAutomationIntentByRule(text: string, now = Date.now()): Aut
       confidence: 0.9,
     };
   }
+
+  const allowOnceByRule =
+    CREATE_HINT.test(content) ||
+    CREATE_ACTION_HINT.test(content) ||
+    ABSOLUTE_DATE_PATTERN.test(content) ||
+    RELATIVE_DAY_PATTERN.test(content) ||
+    RELATIVE_OFFSET_PATTERN.test(content) ||
+    NAMED_RELATIVE_OFFSET_PATTERNS.some((item) => item.pattern.test(content)) ||
+    (CLOCK_TIME_PATTERN.test(content) && CREATE_ACTION_HINT.test(content));
+  if (!allowOnceByRule) return null;
 
   const runAt = parseOnceRunAt(content, now);
   if (runAt) {

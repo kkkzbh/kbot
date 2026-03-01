@@ -10,7 +10,6 @@ import {
   parseCronExpr,
   parseGroupSet,
   parseOnceRunAt,
-  shouldTryAutomationIntent,
 } from './task-automation-core.js';
 
 const logger = new Logger('task-automation');
@@ -580,7 +579,6 @@ export function apply(ctx: Context, config: Config): void {
   const parseIntent = async (content: string): Promise<AutomationIntent | null> => {
     const ruleIntent = parseAutomationIntentByRule(content);
     if (ruleIntent) return ruleIntent;
-    if (!shouldTryAutomationIntent(content)) return null;
     return parseIntentByModel(content, runtime);
   };
 
