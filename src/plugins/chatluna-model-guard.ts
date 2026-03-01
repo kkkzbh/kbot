@@ -1,4 +1,5 @@
 import { type Context, Logger, type Session } from 'koishi';
+import { resolvePlatform } from './model-utils.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
@@ -35,15 +36,6 @@ type MiddlewareContextLike = {
 };
 
 const logger = new Logger(name);
-
-function resolvePlatform(model?: string): string | null {
-  if (!model) return null;
-  const value = model.trim();
-  if (!value) return null;
-  const index = value.indexOf('/');
-  if (index <= 0) return null;
-  return value.slice(0, index);
-}
 
 export function apply(ctx: Context): void {
   ctx.on('ready', () => {

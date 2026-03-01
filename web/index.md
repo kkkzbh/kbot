@@ -5,20 +5,20 @@
 - Koishi 当前启用了哪些插件
 - 每个插件提供了什么功能
 - 如何通过 `.env` 与 `koishi.yml` 配置项目
-- ChatLuna 迁移后与旧链路的差异
+- 当前 ChatLuna 聊天链路与触发契约
 
 > 本站点不包含“如何实现”的源码讲解，也不提供面向群成员的使用说明。
 
 ## 当前状态
 
-- Milestone 1 主链路已切换到 `ChatLuna + DeepSeek Adapter + SQLite`。
-- 旧自定义群聊插件仅保留源码用于回滚，不参与默认运行链路。
+- 当前主链路为 `ChatLuna + DeepSeek Adapter + SQLite`。
+- 弃用的 `group-chat` 旧链路已从仓库移除，不再提供回滚说明。
 
 ## 快速入口
 
 - [Koishi 插件与功能](/developer/koishi-plugins)
 - [配置说明](/developer/configuration)
-- [ChatLuna 迁移说明](/developer/chatluna-migration)
+- [聊天链路说明](/developer/chatluna-migration)
 
 ## 文档维护边界
 
