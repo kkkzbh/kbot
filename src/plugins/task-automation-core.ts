@@ -31,6 +31,8 @@ const WEEKDAY_MAP: Record<string, number> = {
   六: 6,
 };
 
+const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
@@ -59,7 +61,19 @@ function buildLocalDate(
   hour: number,
   minute: number,
 ): number {
-  return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
+  return Date.UTC(year, month - 1, day, hour, minute, 0, 0) - UTC8_OFFSET_MS;
+}
+
+function addUtc8Days(ts: number, dayOffset: number): number {
+  const d = new Date(ts + UTC8_OFFSET_MS);
+  d.setUTCDate(d.getUTCDate() + dayOffset);
+  return d.getTime() - UTC8_OFFSET_MS;
+}
+
+function setUtc8Clock(ts: number, hour: number, minute: number): number {
+  const d = new Date(ts + UTC8_OFFSET_MS);
+  d.setUTCHours(hour, minute, 0, 0);
+  return d.getTime() - UTC8_OFFSET_MS;
 }
 
 function parseAbsoluteTime(text: string): number | null {
@@ -92,7 +106,6 @@ function parseRelativeOffsetTime(text: string, now: number): number | null {
 }
 
 function parseRelativeDayTime(text: string, now: number): number | null {
-  const nowDate = new Date(now);
   const m = text.match(
     /(今天|明天|后天|今晚)(?:\s*(凌晨|早上|上午|中午|下午|晚上))?\s*(\d{1,2})?(?:[:点时](\d{1,2}))?/,
   );
@@ -106,14 +119,13 @@ function parseRelativeDayTime(text: string, now: number): number | null {
   const minute = clampMinute(minuteRaw);
 
   const dayOffset = dayHint === '明天' ? 1 : dayHint === '后天' ? 2 : 0;
-  const target = new Date(nowDate);
-  target.setDate(target.getDate() + dayOffset);
-  target.setHours(hour, minute, 0, 0);
+  let target = addUtc8Days(now, dayOffset);
+  target = setUtc8Clock(target, hour, minute);
 
-  if (target.getTime() <= now && (dayHint === '今天' || dayHint === '今晚')) {
-    target.setDate(target.getDate() + 1);
+  if (target <= now && (dayHint === '今天' || dayHint === '今晚')) {
+    target = addUtc8Days(target, 1);
   }
-  return target.getTime();
+  return target;
 }
 
 function parseFallbackClockTime(text: string, now: number): number | null {
@@ -123,12 +135,11 @@ function parseFallbackClockTime(text: string, now: number): number | null {
   const hour = normalizeHour(periodMatch?.[1], Number(m[1]));
   const minute = clampMinute(Number(m[2] ?? 0));
 
-  const d = new Date(now);
-  d.setHours(hour, minute, 0, 0);
-  if (d.getTime() <= now) {
-    d.setDate(d.getDate() + 1);
+  let target = setUtc8Clock(now, hour, minute);
+  if (target <= now) {
+    target = addUtc8Days(target, 1);
   }
-  return d.getTime();
+  return target;
 }
 
 export function parseOnceRunAt(text: string, now = Date.now()): number | null {

@@ -1,5 +1,6 @@
 import 'koishi-plugin-cron';
 import { Context, h, Logger, Schema, Session } from 'koishi';
+import { parseExpression } from 'cron-parser';
 import type { AutomationTask, TaskScope } from '../types/task-automation.js';
 import {
   AutomationIntent,
@@ -81,6 +82,8 @@ interface ModelIntentResponse {
   timeText?: string;
 }
 
+const FIXED_TIMEZONE = 'Asia/Shanghai';
+
 function toRuntimeConfig(config: Config): RuntimeConfig {
   const baseUrl = (config.intentBaseUrl ?? process.env.TASK_AUTOMATION_INTENT_BASE_URL ?? process.env.OPENAI_BASE_URL ?? '')
     .replace(/\/+$/, '');
@@ -109,9 +112,18 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
 }
 
 function formatTimestamp(ts: number): string {
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: FIXED_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(ts));
+
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+  return `${lookup.get('year')}-${lookup.get('month')}-${lookup.get('day')} ${lookup.get('hour')}:${lookup.get('minute')}`;
 }
 
 function extractJsonObject(raw: string): string | null {
@@ -347,16 +359,43 @@ export function apply(ctx: Context, config: Config): void {
   };
 
   const registerCronTask = (task: AutomationTask) => {
+    const MAX_TIMEOUT_MS = 0x7fffffff;
     if (task.kind !== 'cron' || task.status !== 'active' || !task.cronExpr) return;
     disposeCronTask(task.id);
     try {
-      const dispose = ctx.cron(task.cronExpr, () => {
-        void (async () => {
-          const [latest] = await ctx.database.get('automation_task', { id: task.id });
-          if (!latest || latest.status !== 'active' || latest.kind !== 'cron') return;
-          await sendTaskMessage(ctx, latest);
-        })();
-      });
+      let timer: NodeJS.Timeout | null = null;
+      let disposed = false;
+
+      const scheduleNext = () => {
+        if (disposed) return;
+        const nextAt = parseExpression(task.cronExpr!, { currentDate: new Date(), tz: FIXED_TIMEZONE }).next().getTime();
+        const tick = () => {
+          if (disposed) return;
+          const remaining = nextAt - Date.now();
+          if (remaining > 0) {
+            timer = setTimeout(tick, Math.min(remaining, MAX_TIMEOUT_MS));
+            return;
+          }
+
+          scheduleNext();
+          void (async () => {
+            const [latest] = await ctx.database.get('automation_task', { id: task.id });
+            if (!latest || latest.status !== 'active' || latest.kind !== 'cron') return;
+            await sendTaskMessage(ctx, latest);
+          })();
+        };
+
+        tick();
+      };
+
+      scheduleNext();
+      const dispose = () => {
+        disposed = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
       cronDisposers.set(task.id, dispose);
     } catch (error) {
       logger.warn('task #%d invalid cron expression "%s": %s', task.id, task.cronExpr, (error as Error).message);
@@ -677,18 +716,16 @@ export function apply(ctx: Context, config: Config): void {
   );
 
   ctx.on('ready', async () => {
-    if (typeof ctx.cron !== 'function') {
-      throw new Error('task-automation requires koishi-plugin-cron.');
-    }
     await markExpiredOnceTasks();
     const cronTasks = await ctx.database.get('automation_task', { kind: 'cron', status: 'active' });
     cronTasks.forEach(registerCronTask);
     onceTimer = setInterval(() => void tickOnceTasks(), Math.max(5000, runtime.pollIntervalMs));
     logger.info(
-      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s',
+      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s, timezone=%s',
       runtime.enabledGroups.size,
       runtime.listenPrivate,
       runtime.intentEnabled,
+      FIXED_TIMEZONE,
     );
   });
 

@@ -41,9 +41,10 @@ describe('task automation helpers', () => {
   });
 
   it('parses once runAt clock in future', () => {
-    const now = new Date('2026-03-01T08:00:00+08:00').getTime();
+    const utc8OffsetMs = 8 * 60 * 60 * 1000;
+    const now = Date.UTC(2026, 2, 1, 8, 0, 0, 0) - utc8OffsetMs;
     const runAt = parseOnceRunAt('今天10:30提醒我喝水', now);
-    expect(runAt).toBe(new Date('2026-03-01T10:30:00+08:00').getTime());
+    expect(runAt).toBe(Date.UTC(2026, 2, 1, 10, 30, 0, 0) - utc8OffsetMs);
   });
 
   it('validates cron expression shape', () => {
