@@ -1,4 +1,5 @@
 import { type Context, Logger, type Session } from 'koishi';
+import { injectUserStampedPrompt } from './chat-time-context.js';
 import { resolvePlatform } from './model-utils.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
@@ -32,6 +33,9 @@ type MiddlewareContextLike = {
   send?: (message: string) => Promise<void>;
   options?: {
     room?: RoomLike;
+    inputMessage?: {
+      content?: unknown;
+    };
   };
 };
 
@@ -45,6 +49,19 @@ export function apply(ctx: Context): void {
       logger.warn('chatluna service is not available, skip model guard middleware.');
       return;
     }
+
+    chain
+      .middleware('chatluna_time_context', async (rawSession, rawContext) => {
+        const session = rawSession as Session;
+        const context = rawContext as MiddlewareContextLike;
+        const inputMessage = context.options?.inputMessage;
+        if (!inputMessage) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        const userName = session.username ?? session.author?.name ?? session.userId ?? '用户';
+        inputMessage.content = injectUserStampedPrompt(inputMessage.content, userName);
+        return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+      })
+      .after('read_chat_message')
+      .before('lifecycle-handle_command');
 
     chain
       .middleware('chatluna_model_guard', async (rawSession, rawContext) => {
