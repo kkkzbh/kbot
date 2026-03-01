@@ -15,6 +15,11 @@ type SimTask = {
   message: string;
 };
 
+function preGenerateOnceMessage(raw: string): string {
+  if (/1\s*\+\s*1/.test(raw)) return '2';
+  return raw;
+}
+
 function renderTask(task: SimTask): string {
   if (task.kind === 'cron') {
     return `#${task.id} [${task.status}] cron(${task.cronExpr ?? ''}) ${task.message}`;
@@ -40,18 +45,19 @@ function handleChatMessage(state: { tasks: SimTask[]; nextId: number }, message:
     if (!intent.runAt || intent.runAt <= now) {
       return '创建失败：时间无效或已过。';
     }
+    const finalMessage = preGenerateOnceMessage(intent.message ?? '定时提醒');
     state.tasks.push({
       id: state.nextId++,
       kind: 'once',
       status: 'active',
       runAt: intent.runAt,
-      message: intent.message ?? '定时提醒',
+      message: finalMessage,
     });
     return buildNaturalCreateFallbackReply({
       kind: 'once',
       runAt: intent.runAt,
-      message: intent.message ?? '定时提醒',
-    });
+      message: finalMessage,
+    }, now);
   }
 
   if (intent.action === 'create-cron') {
@@ -72,6 +78,16 @@ function handleChatMessage(state: { tasks: SimTask[]; nextId: number }, message:
   return null;
 }
 
+function emitDueOnce(state: { tasks: SimTask[] }, now: number): string[] {
+  const due = state.tasks.filter((task) => task.kind === 'once' && task.status === 'active' && (task.runAt ?? 0) <= now);
+  const outputs: string[] = [];
+  for (const task of due) {
+    outputs.push(task.message);
+    task.status = 'done';
+  }
+  return outputs;
+}
+
 describe('QBOT context scenario regression', () => {
   it('injects user name and UTC+8 time into chat content', () => {
     const now = Date.parse('2026-03-01T16:40:16+08:00');
@@ -85,12 +101,16 @@ describe('QBOT context scenario regression', () => {
 
     const transcript = [
       {
-        user: '麻烦你在 10s 后给我打招呼',
-        bot: handleChatMessage(state, '麻烦你在 10s 后给我打招呼', now),
+        user: '麻烦你在 10s 后给我发送1+1的计算结果',
+        bot: handleChatMessage(state, '麻烦你在 10s 后给我发送1+1的计算结果', now),
       },
       {
         user: '每周一早上9点提醒我交周报',
         bot: handleChatMessage(state, '每周一早上9点提醒我交周报', now),
+      },
+      {
+        event: 'due.once',
+        bot: emitDueOnce(state, now + 10_000),
       },
       {
         user: '查看我的任务列表',
@@ -104,16 +124,20 @@ describe('QBOT context scenario regression', () => {
 
     expect(transcript).toEqual([
       {
-        user: '麻烦你在 10s 后给我打招呼',
-        bot: '好，我记住了。到 2026-03-01 16:40 我会提醒你：打招呼',
+        user: '麻烦你在 10s 后给我发送1+1的计算结果',
+        bot: '好，我记住了。到 16:40 我会提醒你：2',
       },
       {
         user: '每周一早上9点提醒我交周报',
         bot: '好，我记住了。这个提醒我会按计划持续发你：交周报',
       },
       {
+        event: 'due.once',
+        bot: ['2'],
+      },
+      {
         user: '查看我的任务列表',
-        bot: '当前任务：\n- #1 [active] 2026-03-01 16:40 打招呼\n- #2 [active] cron(0 9 * * 1) 交周报',
+        bot: '当前任务：\n- #1 [done] 2026-03-01 16:40 2\n- #2 [active] cron(0 9 * * 1) 交周报',
       },
       {
         user: '现在16:38了',

@@ -199,12 +199,59 @@ export function formatAutomationTimestamp(ts: number): string {
   return `${lookup.get('year')}-${lookup.get('month')}-${lookup.get('day')} ${lookup.get('hour')}:${lookup.get('minute')}`;
 }
 
+type Utc8DateParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: string;
+  minute: string;
+};
+
+function getUtc8DateParts(ts: number): Utc8DateParts {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: FIXED_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(ts));
+
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(lookup.get('year') || 0),
+    month: Number(lookup.get('month') || 0),
+    day: Number(lookup.get('day') || 0),
+    hour: lookup.get('hour') || '00',
+    minute: lookup.get('minute') || '00',
+  };
+}
+
+function getUtc8DayIndex(parts: Utc8DateParts): number {
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / (24 * 60 * 60 * 1000));
+}
+
+export function formatNaturalRunAtText(runAt: number, now = Date.now()): string {
+  const target = getUtc8DateParts(runAt);
+  const base = getUtc8DateParts(now);
+  const hhmm = `${target.hour}:${target.minute}`;
+  const dayDiff = getUtc8DayIndex(target) - getUtc8DayIndex(base);
+
+  if (dayDiff === 0) return hhmm;
+  if (dayDiff === 1) return `明天${hhmm}`;
+  if (dayDiff === 2) return `后天${hhmm}`;
+  if (target.year === base.year) return `${target.month}月${target.day}日 ${hhmm}`;
+  return `${target.year}-${target.month}-${target.day} ${hhmm}`;
+}
+
 export function buildNaturalCreateFallbackReply(
   payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
   now = Date.now(),
 ): string {
   if (payload.kind === 'once') {
-    return `好，我记住了。到 ${formatAutomationTimestamp(payload.runAt ?? now)} 我会提醒你：${payload.message}`;
+    const naturalRunAt = formatNaturalRunAtText(payload.runAt ?? now, now);
+    return `好，我记住了。到 ${naturalRunAt} 我会提醒你：${payload.message}`;
   }
   return `好，我记住了。这个提醒我会按计划持续发你：${payload.message}`;
 }

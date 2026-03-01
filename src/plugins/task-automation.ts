@@ -41,9 +41,11 @@ export interface Config {
   deliveryApiKey?: string;
   deliveryModel?: string;
   deliveryTimeoutMs?: number;
+  deliveryMaxTokens?: number;
   deliverySystemPrompt?: string;
   chatReplyModel?: string;
   chatReplyTimeoutMs?: number;
+  chatReplyMaxTokens?: number;
   chatReplySystemPrompt?: string;
 }
 
@@ -72,9 +74,11 @@ export const Config: Schema<Config> = Schema.object({
   deliveryApiKey: Schema.string().role('secret').description('到点文案生成模型 API Key（默认复用 OPENAI_API_KEY）。'),
   deliveryModel: Schema.string().default('deepseek-reasoner').description('到点文案生成模型（默认 deepseek-reasoner）。'),
   deliveryTimeoutMs: Schema.natural().role('time').default(18000).description('到点文案生成模型超时（毫秒）。'),
+  deliveryMaxTokens: Schema.natural().default(10000).description('到点文案生成模型 max_tokens（默认 10000）。'),
   deliverySystemPrompt: Schema.string().description('到点文案生成 system prompt（可选覆盖默认值）。'),
   chatReplyModel: Schema.string().default('deepseek-reasoner').description('自动化创建回复模型（默认 deepseek-reasoner）。'),
   chatReplyTimeoutMs: Schema.natural().role('time').default(12000).description('自动化创建回复模型超时（毫秒）。'),
+  chatReplyMaxTokens: Schema.natural().default(10000).description('自动化创建回复模型 max_tokens（默认 10000）。'),
   chatReplySystemPrompt: Schema.string().description('自动化创建回复 system prompt（可选覆盖默认值）。'),
 });
 
@@ -94,9 +98,11 @@ interface RuntimeConfig {
   deliveryApiKey: string;
   deliveryModel: string;
   deliveryTimeoutMs: number;
+  deliveryMaxTokens: number;
   deliverySystemPrompt: string;
   chatReplyModel: string;
   chatReplyTimeoutMs: number;
+  chatReplyMaxTokens: number;
   chatReplySystemPrompt: string;
 }
 
@@ -169,10 +175,13 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     deliveryApiKey,
     deliveryModel,
     deliveryTimeoutMs: config.deliveryTimeoutMs ?? Number(process.env.TASK_AUTOMATION_DELIVERY_TIMEOUT_MS || 18000),
+    deliveryMaxTokens: config.deliveryMaxTokens ?? Number(process.env.TASK_AUTOMATION_DELIVERY_MAX_TOKENS || 10000),
     deliverySystemPrompt,
     chatReplyModel,
     chatReplyTimeoutMs:
       config.chatReplyTimeoutMs ?? Number(process.env.TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS || 12000),
+    chatReplyMaxTokens:
+      config.chatReplyMaxTokens ?? Number(process.env.TASK_AUTOMATION_CHAT_REPLY_MAX_TOKENS || 10000),
     chatReplySystemPrompt,
   };
 }
@@ -213,9 +222,11 @@ function toAutomationLlmRuntime(runtime: RuntimeConfig): AutomationLlmRuntime {
     apiKey: runtime.deliveryApiKey,
     deliveryModel: runtime.deliveryModel,
     deliveryTimeoutMs: runtime.deliveryTimeoutMs,
+    deliveryMaxTokens: runtime.deliveryMaxTokens,
     deliverySystemPrompt: runtime.deliverySystemPrompt,
     chatReplyModel: runtime.chatReplyModel,
     chatReplyTimeoutMs: runtime.chatReplyTimeoutMs,
+    chatReplyMaxTokens: runtime.chatReplyMaxTokens,
     chatReplySystemPrompt: runtime.chatReplySystemPrompt,
   };
 }
@@ -262,6 +273,25 @@ async function buildDeliveryMessage(task: AutomationTask, runtime: RuntimeConfig
       runAt: task.runAt ?? null,
       cronExpr: task.cronExpr ?? null,
       message: task.message,
+    },
+    formatTimestamp,
+  );
+}
+
+async function buildOnceTaskMessage(
+  runtime: RuntimeConfig,
+  scope: ScopeContext,
+  runAt: number,
+  rawMessage: string,
+): Promise<string> {
+  return buildDeliveryMessageByModel(
+    toAutomationLlmRuntime(runtime),
+    {
+      kind: 'once',
+      scope: scope.scope,
+      runAt,
+      cronExpr: null,
+      message: rawMessage,
     },
     formatTimestamp,
   );
@@ -413,7 +443,7 @@ async function sendTaskMessage(ctx: Context, task: AutomationTask, runtime: Runt
     return false;
   }
 
-  const finalMessage = await buildDeliveryMessage(task, runtime);
+  const finalMessage = task.kind === 'once' ? task.message : await buildDeliveryMessage(task, runtime);
   const content = task.scope === 'group' ? `${h.at(task.creatorId)} ${finalMessage}` : finalMessage;
   try {
     await bot.sendMessage(task.channelId, content);
@@ -664,10 +694,12 @@ export function apply(ctx: Context, config: Config): void {
           await session.send('创建失败：时间无效或已过。');
           return true;
         }
+        const rawMessage = (intent.message ?? '定时提醒').trim() || '定时提醒';
+        const finalMessage = await buildOnceTaskMessage(runtime, scope, runAt, rawMessage);
         const created = await createTask(session, scope, {
           kind: 'once',
           runAt,
-          message: (intent.message ?? '定时提醒').trim() || '定时提醒',
+          message: finalMessage,
         });
         if (created) {
           const reply = await buildNaturalCreateReply(runtime, {
@@ -788,10 +820,11 @@ export function apply(ctx: Context, config: Config): void {
       }
       const runAt = parseOnceRunAt(timePart.trim());
       if (!runAt || runAt <= Date.now()) return '创建失败：无法解析时间或时间已过。';
+      const finalMessage = await buildOnceTaskMessage(runtime, scope, runAt, message);
       const created = await createTask(session, scope, {
         kind: 'once',
         runAt,
-        message,
+        message: finalMessage,
       });
       if (!created) return '创建失败，请稍后重试。';
       return `已创建一次性任务 #${created.id}，执行时间：${formatTimestamp(runAt)}。`;
@@ -827,13 +860,15 @@ export function apply(ctx: Context, config: Config): void {
     cronTasks.forEach(registerCronTask);
     onceTimer = setInterval(() => void tickOnceTasks(), Math.max(5000, runtime.pollIntervalMs));
     logger.info(
-      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s, timezone=%s, deliveryModel=%s, replyModel=%s',
+      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s, timezone=%s, deliveryModel=%s, replyModel=%s, deliveryMaxTokens=%d, replyMaxTokens=%d',
       runtime.enabledGroups.size,
       runtime.listenPrivate,
       runtime.intentEnabled,
       FIXED_TIMEZONE,
       runtime.deliveryModel,
       runtime.chatReplyModel,
+      runtime.deliveryMaxTokens,
+      runtime.chatReplyMaxTokens,
     );
   });
 

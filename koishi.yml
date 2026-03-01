@@ -28,9 +28,11 @@ plugins:
       deliveryApiKey: ${{ env.TASK_AUTOMATION_DELIVERY_API_KEY || env.OPENAI_API_KEY || '' }}
       deliveryModel: ${{ env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
       deliveryTimeoutMs: ${{ +env.TASK_AUTOMATION_DELIVERY_TIMEOUT_MS || 18000 }}
+      deliveryMaxTokens: ${{ +env.TASK_AUTOMATION_DELIVERY_MAX_TOKENS || 10000 }}
       deliverySystemPrompt: ${{ env.TASK_AUTOMATION_DELIVERY_SYSTEM_PROMPT || '' }}
       chatReplyModel: ${{ env.TASK_AUTOMATION_CHAT_REPLY_MODEL || env.TASK_AUTOMATION_DELIVERY_MODEL || 'deepseek-reasoner' }}
       chatReplyTimeoutMs: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS || 12000 }}
+      chatReplyMaxTokens: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_MAX_TOKENS || 10000 }}
       chatReplySystemPrompt: ${{ env.TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT || '' }}
     chatluna:0qm1bk:
       botNames:

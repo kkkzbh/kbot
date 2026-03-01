@@ -1,13 +1,16 @@
 import type { TaskKind, TaskScope } from '../types/task-automation.js';
+import { formatNaturalRunAtText } from './task-automation-core.js';
 
 export interface AutomationLlmRuntime {
   baseUrl: string;
   apiKey: string;
   deliveryModel: string;
   deliveryTimeoutMs: number;
+  deliveryMaxTokens: number;
   deliverySystemPrompt: string;
   chatReplyModel: string;
   chatReplyTimeoutMs: number;
+  chatReplyMaxTokens: number;
   chatReplySystemPrompt: string;
 }
 
@@ -39,6 +42,7 @@ export const DEFAULT_DELIVERY_SYSTEM_PROMPT =
 export const DEFAULT_CHAT_REPLY_SYSTEM_PROMPT =
   '你是QQ聊天助手。用户刚刚创建了一个自动化任务。' +
   '请用一句自然口语化中文回复，像普通聊天：确认你记住了任务，并简要提到执行时间/周期和提醒内容。' +
+  '时间表达尽量简短：当天只写 HH:mm，明天/后天写 明天HH:mm/后天HH:mm。' +
   '不要使用编号、命令格式或机械模板，不要超过60个中文字符。';
 
 export function extractMessageText(raw: unknown): string {
@@ -75,9 +79,19 @@ async function generateModelReply(
     systemPrompt: string;
     userPrompt: string;
     maxTokens?: number;
+    reasonerMinTokens?: number;
   },
 ): Promise<string | null> {
   if (!runtime.baseUrl || !runtime.apiKey || !options.model) return null;
+  const modelName = options.model.trim().toLowerCase();
+  const isReasonerModel = modelName.includes('reasoner') || modelName.includes('r1');
+  const requestedRaw = Number(options.maxTokens ?? 10000);
+  const requested = Number.isFinite(requestedRaw) && requestedRaw > 0 ? Math.floor(requestedRaw) : 10000;
+  const reasonerMinRaw = Number(options.reasonerMinTokens ?? requested);
+  const reasonerMin =
+    Number.isFinite(reasonerMinRaw) && reasonerMinRaw > 0 ? Math.floor(reasonerMinRaw) : requested;
+  const finalMaxTokens =
+    isReasonerModel ? Math.max(requested, reasonerMin) : requested;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
@@ -89,7 +103,7 @@ async function generateModelReply(
       },
       body: JSON.stringify({
         model: options.model,
-        max_tokens: options.maxTokens ?? 180,
+        max_tokens: finalMaxTokens,
         messages: [
           { role: 'system', content: options.systemPrompt },
           { role: 'user', content: options.userPrompt },
@@ -134,7 +148,8 @@ export async function buildDeliveryMessageByModel(
     timeoutMs: runtime.deliveryTimeoutMs,
     systemPrompt: runtime.deliverySystemPrompt,
     userPrompt,
-    maxTokens: 180,
+    maxTokens: runtime.deliveryMaxTokens,
+    reasonerMinTokens: runtime.deliveryMaxTokens,
   });
   return cleanGeneratedText(generated) ?? task.message;
 }
@@ -142,16 +157,17 @@ export async function buildDeliveryMessageByModel(
 export async function buildNaturalCreateReplyByModel(
   runtime: AutomationLlmRuntime,
   payload: CreateReplyPayload,
-  formatTimestamp: (ts: number) => string,
+  _formatTimestamp: (ts: number) => string,
   now = Date.now(),
 ): Promise<string> {
+  const naturalRunAt = formatNaturalRunAtText(payload.runAt ?? now, now);
   const scheduleText =
     payload.kind === 'once'
-      ? `一次性，执行时间：${formatTimestamp(payload.runAt ?? now)}`
+      ? `一次性，执行时间：${naturalRunAt}`
       : `周期，cron：${payload.cronExpr ?? ''}`;
   const fallback =
     payload.kind === 'once'
-      ? `好，我记住了。到 ${formatTimestamp(payload.runAt ?? now)} 我会提醒你：${payload.message}`
+      ? `好，我记住了。到 ${naturalRunAt} 我会提醒你：${payload.message}`
       : `好，我记住了。这个提醒我会按计划持续发你：${payload.message}`;
   const userPrompt = [
     `任务类型：${scheduleText}`,
@@ -164,7 +180,8 @@ export async function buildNaturalCreateReplyByModel(
     timeoutMs: runtime.chatReplyTimeoutMs,
     systemPrompt: runtime.chatReplySystemPrompt,
     userPrompt,
-    maxTokens: 120,
+    maxTokens: runtime.chatReplyMaxTokens,
+    reasonerMinTokens: runtime.chatReplyMaxTokens,
   });
   return cleanGeneratedText(generated) ?? fallback;
 }

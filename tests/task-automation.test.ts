@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildNaturalCreateFallbackReply,
+  formatNaturalRunAtText,
   isValidCronExpr,
   normalizeGroupId,
   parseAutomationIntentByRule,
@@ -110,5 +112,30 @@ describe('task automation helpers', () => {
     expect(normalizeGroupId('group:123')).toBe('123');
     const groups = parseGroupSet('group:1, 2, guild:3');
     expect([...groups]).toEqual(['1', '2', '3']);
+  });
+
+  it('formats concise runAt text for same-day/tomorrow/day-after-tomorrow', () => {
+    const base = Date.parse('2026-03-01T20:00:00+08:00');
+    const sameDay = Date.parse('2026-03-01T22:30:00+08:00');
+    const tomorrow = Date.parse('2026-03-02T09:15:00+08:00');
+    const dayAfterTomorrow = Date.parse('2026-03-03T07:05:00+08:00');
+
+    expect(formatNaturalRunAtText(sameDay, base)).toBe('22:30');
+    expect(formatNaturalRunAtText(tomorrow, base)).toBe('明天09:15');
+    expect(formatNaturalRunAtText(dayAfterTomorrow, base)).toBe('后天07:05');
+  });
+
+  it('uses concise time text in natural create fallback reply', () => {
+    const base = Date.parse('2026-03-01T20:00:00+08:00');
+    const tomorrow = Date.parse('2026-03-02T09:15:00+08:00');
+    const reply = buildNaturalCreateFallbackReply(
+      {
+        kind: 'once',
+        runAt: tomorrow,
+        message: '交周报',
+      },
+      base,
+    );
+    expect(reply).toBe('好，我记住了。到 明天09:15 我会提醒你：交周报');
   });
 });

@@ -45,6 +45,9 @@ jobs:
       - name: Task automation regression tests
         run: pnpm test -- tests/task-automation-llm.test.ts
 
+      - name: Task automation context regression tests
+        run: pnpm test -- tests/qbot-context-scenarios.test.ts tests/task-automation.test.ts
+
       - name: Build
         run: pnpm build
 

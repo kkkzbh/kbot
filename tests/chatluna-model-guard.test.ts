@@ -28,4 +28,21 @@ describe('chatluna user+time prompt injection', () => {
     const output = injectUserStampedPrompt('随便聊聊', '小祥', now);
     expect(output).toBe('小祥, 2026-03-01 16:40:16: 随便聊聊');
   });
+
+  it('injects prefix block for array content and preserves original blocks', () => {
+    const now = Date.parse('2026-03-01T16:40:16+08:00');
+    const output = injectUserStampedPrompt(
+      [{ type: 'text', text: '你好' }],
+      '小祥',
+      now,
+    ) as Array<{ type: string; text?: string }>;
+    expect(output[0]).toEqual({ type: 'text', text: '小祥, 2026-03-01 16:40:16:' });
+    expect(output[1]).toEqual({ type: 'text', text: '你好' });
+  });
+
+  it('keeps non-string non-array content unchanged', () => {
+    const original = { type: 'tool', name: 'noop' };
+    const output = injectUserStampedPrompt(original, '小祥');
+    expect(output).toBe(original);
+  });
 });

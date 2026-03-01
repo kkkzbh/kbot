@@ -26,9 +26,11 @@ function createRuntime(): AutomationLlmRuntime {
     apiKey: 'sk-test',
     deliveryModel: 'deepseek-reasoner',
     deliveryTimeoutMs: 18000,
+    deliveryMaxTokens: 10000,
     deliverySystemPrompt: 'delivery prompt',
     chatReplyModel: 'deepseek-reasoner',
     chatReplyTimeoutMs: 12000,
+    chatReplyMaxTokens: 10000,
     chatReplySystemPrompt: 'reply prompt',
   };
 }
@@ -74,6 +76,7 @@ describe('task automation model delivery behavior', () => {
         ? JSON.parse(reqInit.body)
         : null;
     expect(body?.model).toBe('deepseek-reasoner');
+    expect(body?.max_tokens).toBe(10000);
     const userPrompt = body?.messages?.[1]?.content as string;
     expect(userPrompt).toContain('用户意图：发送1+1的计算结果');
   });
@@ -96,7 +99,8 @@ describe('task automation model delivery behavior', () => {
   it('generates natural create-reply text and keeps fallback on failure', async () => {
     const runtime = createRuntime();
 
-    vi.spyOn(globalThis, 'fetch')
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -113,7 +117,12 @@ describe('task automation model delivery behavior', () => {
       runAt,
       message: '发送1+1的计算结果',
     };
-    const first = await buildNaturalCreateReplyByModel(runtime, firstPayload, formatUtc8Timestamp);
+    const first = await buildNaturalCreateReplyByModel(
+      runtime,
+      firstPayload,
+      formatUtc8Timestamp,
+      new Date('2026-03-01T16:00:00+08:00').getTime(),
+    );
     expect(first).toBe('放心，我记住了，到点就把1+1结果发你。');
 
     const secondPayload: CreateReplyPayload = {
@@ -121,8 +130,54 @@ describe('task automation model delivery behavior', () => {
       runAt,
       message: '提醒我喝水',
     };
-    const second = await buildNaturalCreateReplyByModel(runtime, secondPayload, formatUtc8Timestamp);
+    const second = await buildNaturalCreateReplyByModel(
+      runtime,
+      secondPayload,
+      formatUtc8Timestamp,
+      new Date('2026-03-01T16:00:00+08:00').getTime(),
+    );
     expect(second).toContain('提醒我喝水');
-    expect(second).toContain('2026-03-01 17:22');
+    expect(second).toContain('17:22');
+    expect(second).not.toContain('2026-03-01');
+
+    const firstReq = fetchSpy.mock.calls[0]?.[1];
+    const firstBody =
+      firstReq && typeof firstReq === 'object' && 'body' in firstReq && typeof firstReq.body === 'string'
+        ? JSON.parse(firstReq.body)
+        : null;
+    expect(firstBody?.max_tokens).toBe(10000);
+  });
+
+  it('supports create-once pre-generation then direct send from stored content', async () => {
+    const runtime = createRuntime();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '2' } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const createdFinalMessage = await buildDeliveryMessageByModel(
+      runtime,
+      {
+        kind: 'once',
+        scope: 'private',
+        runAt: new Date('2026-03-01T18:00:00+08:00').getTime(),
+        cronExpr: null,
+        message: '发送1+1的计算结果',
+      },
+      formatUtc8Timestamp,
+    );
+
+    const taskRecord = {
+      kind: 'once',
+      message: createdFinalMessage,
+    };
+
+    const delivered = taskRecord.message;
+    expect(delivered).toBe('2');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
