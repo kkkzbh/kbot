@@ -19,4 +19,4 @@
 - 常用重启命令：`systemctl --user restart qqbot.target`
 
 ## 注意
-不要忽略了本地的.env文件，要与.env.example同步
+不要忽略了本地的.env文件，每次更新.env.example，必须及时更新.env
