@@ -40,8 +40,33 @@ plugins:
       chatReplyTimeoutMs: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_TIMEOUT_MS || 12000 }}
       chatReplyMaxTokens: ${{ +env.TASK_AUTOMATION_CHAT_REPLY_MAX_TOKENS || 10000 }}
       chatReplySystemPrompt: ${{ env.TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT || '' }}
+    ./dist/plugins/group-natural-trigger:natural-trigger:
+      enabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED !== 'false' }}
+      enabledGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
+      aliases: ${{ env.CHAT_NATURAL_TRIGGER_ALIASES || '' }}
+      directTriggerProbability: ${{ +env.CHAT_NATURAL_TRIGGER_DIRECT_PROBABILITY || 0.25 }}
+      focusWindowMs: ${{ +env.CHAT_NATURAL_TRIGGER_FOCUS_WINDOW_MS || 300000 }}
+      replyIntervalMs: ${{ +env.CHAT_NATURAL_TRIGGER_REPLY_INTERVAL_MS || 2000 }}
+      spamWindowMs: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_WINDOW_MS || 10000 }}
+      spamThreshold: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_THRESHOLD || 10 }}
+      spamMuteMs: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_MUTE_MS || 180000 }}
+      decisionEnabled: ${{ env.CHAT_NATURAL_TRIGGER_DECISION_ENABLED !== 'false' }}
+      decisionBaseUrl: >-
+        ${{ env.CHAT_NATURAL_TRIGGER_DECISION_BASE_URL || env.OPENAI_BASE_URL ||
+        'https://api.deepseek.com/v1' }}
+      decisionApiKey: ${{ env.CHAT_NATURAL_TRIGGER_DECISION_API_KEY || env.OPENAI_API_KEY || '' }}
+      decisionModel: ${{ env.CHAT_NATURAL_TRIGGER_DECISION_MODEL || env.OPENAI_MODEL || '' }}
+      decisionTimeoutMs: ${{ +env.CHAT_NATURAL_TRIGGER_DECISION_TIMEOUT_MS || 4000 }}
+      decisionMinConfidence: ${{ +env.CHAT_NATURAL_TRIGGER_DECISION_MIN_CONFIDENCE || 0.62 }}
     chatluna:0qm1bk:
       botNames:
+        - 祥子
+        - 祥
+        - 丰川
+        - 丰川祥子
+        - saki
+        - saki酱
+        - sakiko
         - 小祥
       isNickname: true
       isNickNameWithContent: true

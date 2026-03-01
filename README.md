@@ -94,12 +94,15 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 
 ## 5. Trigger contract
 
-- Runtime trigger path now follows **ChatLuna native behavior**.
-- Supported passive triggers (default): `@机器人`、昵称触发、私聊触发（由 ChatLuna 配置控制）。
-- Current config allows in-content trigger:
-  - `isNickNameWithContent=true` (nickname can appear anywhere in sentence)
-  - `allowAtReply=true` (`@机器人` can appear anywhere in sentence)
-- Legacy custom `group-chat` chain has been removed from this repository.
+- Runtime trigger path = `task-automation` (优先) + `group-natural-trigger` + ChatLuna native。
+- 群聊可自然触发，无需 `@` 或句首昵称：
+  - 任意消息有 `25%` 概率直接触发对话。
+  - 否则走“规则 + 模型”触发判定。
+  - 会话焦点窗口 `5` 分钟（同用户连续聊天更自然）。
+  - 机器人最小回复间隔 `2s`。
+  - 反刷屏：同一用户 `10s` 内 `10` 条消息，`3` 分钟内忽略该用户。
+- 昵称触发保留，默认别名包含：
+  - `祥子`、`祥`、`丰川`、`丰川祥子`、`saki`、`saki酱`、`sakiko`。
 - 新增自动化任务插件：
   - 自动化意图可在白名单群和私聊中通过自然语言触发，不要求必须 `@`。
   - 自动化命中时优先执行任务逻辑；未命中则继续走原对话流程。
@@ -143,7 +146,24 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - Task automation extension chain:
   - `cron` + `task-automation` (independent of ChatLuna trigger path)
 
-## 10. Task automation environment variables
+## 10. Group natural trigger environment variables
+
+- `CHAT_NATURAL_TRIGGER_ENABLED`：是否开启群聊自然触发（默认 `true`）。
+- `CHAT_NATURAL_TRIGGER_GROUPS`：自然触发生效群（逗号分隔，空表示所有群）。
+- `CHAT_NATURAL_TRIGGER_ALIASES`：别名列表（逗号分隔）。
+- `CHAT_NATURAL_TRIGGER_DIRECT_PROBABILITY`：任意消息直接触发概率（默认 `0.25`）。
+- `CHAT_NATURAL_TRIGGER_FOCUS_WINDOW_MS`：会话焦点窗口（默认 `300000`）。
+- `CHAT_NATURAL_TRIGGER_REPLY_INTERVAL_MS`：机器人最小回复间隔（默认 `2000`）。
+- `CHAT_NATURAL_TRIGGER_SPAM_WINDOW_MS`：刷屏判定窗口（默认 `10000`）。
+- `CHAT_NATURAL_TRIGGER_SPAM_THRESHOLD`：刷屏判定阈值（默认 `10`）。
+- `CHAT_NATURAL_TRIGGER_SPAM_MUTE_MS`：刷屏忽略时长（默认 `180000`）。
+- `CHAT_NATURAL_TRIGGER_DECISION_ENABLED`：是否启用模型判定（默认 `true`）。
+- `CHAT_NATURAL_TRIGGER_DECISION_BASE_URL` / `CHAT_NATURAL_TRIGGER_DECISION_API_KEY` / `CHAT_NATURAL_TRIGGER_DECISION_MODEL`：
+  - 未设置时复用 `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`。
+- `CHAT_NATURAL_TRIGGER_DECISION_TIMEOUT_MS`：模型判定超时（默认 `4000`）。
+- `CHAT_NATURAL_TRIGGER_DECISION_MIN_CONFIDENCE`：模型判定最小置信度（默认 `0.62`）。
+
+## 11. Task automation environment variables
 
 - `TASK_AUTOMATION_LISTEN_PRIVATE`：是否允许私聊自动化意图（默认 `true`）。
 - `TASK_AUTOMATION_PERMISSION`：`all` 或 `authority3`（默认 `all`）。
@@ -164,7 +184,7 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - `TASK_AUTOMATION_CHAT_REPLY_MAX_TOKENS`：创建任务自然回复 `max_tokens`（默认 `10000`）。
 - `TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT`：创建任务自然回复专用 system prompt（可选覆盖默认值）。
 
-## 11. Quality checks
+## 12. Quality checks
 
 ```bash
 pnpm docs:build
@@ -173,13 +193,13 @@ pnpm test
 pnpm build
 ```
 
-## 12. Fedora / Podman notes
+## 13. Fedora / Podman notes
 
 - This project is built for Podman (not Docker Desktop).
 - `compose.yaml` uses `:Z` on bind mount for SELinux Enforcing.
 - Container should call host via `host.containers.internal`, not `127.0.0.1`.
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 - No reply in group:
   - Confirm ChatLuna is loaded and DeepSeek adapter is loaded.
