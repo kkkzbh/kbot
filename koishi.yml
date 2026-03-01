@@ -52,7 +52,7 @@ plugins:
         ${{
         env.CHATLUNA_DEFAULT_MODEL || (env.OPENAI_MODEL && env.OPENAI_MODEL.includes('/') ?
         env.OPENAI_MODEL : 'deepseek/' + (env.OPENAI_MODEL || 'deepseek-chat')) }}
-      defaultEmbeddings: ${{ env.CHATLUNA_DEFAULT_EMBEDDINGS || 'deepseek/deepseek-embedding' }}
+      defaultEmbeddings: ${{ env.CHATLUNA_DEFAULT_EMBEDDINGS || '无' }}
       defaultVectorStore: ${{ env.CHATLUNA_DEFAULT_VECTOR_STORE || 'luna-vdb' }}
     chatluna-deepseek-adapter:0o3zho:
       apiKeys:
@@ -203,10 +203,7 @@ plugins:
       milvusUsername: ${{ env.CHATLUNA_VECTOR_STORE_MILVUS_USERNAME || '' }}
       milvusPassword: ${{ env.CHATLUNA_VECTOR_STORE_MILVUS_PASSWORD || '' }}
     chatluna-long-memory:c6x0qv:
-      enabledLayers:
-        - Global
-        - Guild
-        - User
+      enabledLayers: []
       layerEngines:
         - layer: Global
           engine: HippoRAG

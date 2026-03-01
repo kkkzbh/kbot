@@ -17,3 +17,6 @@
 - `qqbot-stack.service`：负责 Podman 容器（`pmhq + llbot`）
 - `qqbot-koishi.service`：负责 Koishi 进程
 - 常用重启命令：`systemctl --user restart qqbot.target`
+
+## 注意
+不要忽略了本地的.env文件，要与.env.example同步
