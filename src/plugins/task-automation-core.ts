@@ -28,12 +28,6 @@ const NAMED_RELATIVE_OFFSET_PATTERNS: Array<{ pattern: RegExp; deltaMs: number }
 const CLOCK_TIME_PATTERN = /(?:凌晨|早上|上午|中午|下午|晚上)?\s*\d{1,2}\s*(?::|点|时)\s*(?:\d{1,2}|半)?/;
 const CREATE_ACTION_HINT = /(提醒我|提醒|通知我|叫我|闹钟|定时|任务|计划|给我发|发我|发条|发一条|发个|告诉我|打招呼|喊我)/i;
 
-const CREATE_HINT =
-  /(提醒我|提醒|通知我|叫我|闹钟|定时|任务|计划|每周|每天|每月|分钟后|小时后|秒后|秒钟后|s后|明天|后天|今天|今晚|给我发|发我|告诉我|打招呼|一刻钟后|半小时后|以后|之后)/i;
-
-const CREATE_CANDIDATE =
-  /(提醒|通知|叫我|闹钟|定时|任务|计划|每周|每天|每月|分钟后|小时后|秒后|秒钟后|s后|明天|后天|今天|今晚|给我发|发我|告诉我|打招呼|一刻钟后|半小时后|以后|之后)/i;
-
 const WEEKDAY_MAP: Record<string, number> = {
   日: 0,
   天: 0,
@@ -409,19 +403,22 @@ function parseManagementIntent(text: string): AutomationIntent | null {
   return null;
 }
 
-export function shouldTryAutomationIntent(text: string): boolean {
-  const content = normalizeWhitespace(text);
-  if (!content) return false;
+function hasTimeSignal(content: string): boolean {
   return (
-    CREATE_CANDIDATE.test(content) ||
-    CREATE_ACTION_HINT.test(content) ||
     ABSOLUTE_DATE_PATTERN.test(content) ||
     RELATIVE_DAY_PATTERN.test(content) ||
     RELATIVE_OFFSET_PATTERN.test(content) ||
     NAMED_RELATIVE_OFFSET_PATTERNS.some((item) => item.pattern.test(content)) ||
-    (CLOCK_TIME_PATTERN.test(content) && CREATE_ACTION_HINT.test(content)) ||
-    Boolean(parseCronExpr(content))
+    CLOCK_TIME_PATTERN.test(content)
   );
+}
+
+export function shouldTryAutomationIntent(text: string): boolean {
+  const content = normalizeWhitespace(text);
+  if (!content) return false;
+  const hasCreateAction = CREATE_ACTION_HINT.test(content);
+  if (!hasCreateAction) return false;
+  return hasTimeSignal(content) || Boolean(parseCronExpr(content));
 }
 
 export function parseAutomationIntentByRule(text: string, now = Date.now()): AutomationIntent | null {
@@ -431,8 +428,9 @@ export function parseAutomationIntentByRule(text: string, now = Date.now()): Aut
   const management = parseManagementIntent(content);
   if (management) return management;
 
+  const hasCreateAction = CREATE_ACTION_HINT.test(content);
   const cronExpr = parseCronExpr(content);
-  if (cronExpr) {
+  if (hasCreateAction && cronExpr) {
     return {
       action: 'create-cron',
       cronExpr,
@@ -441,14 +439,7 @@ export function parseAutomationIntentByRule(text: string, now = Date.now()): Aut
     };
   }
 
-  const allowOnceByRule =
-    CREATE_HINT.test(content) ||
-    CREATE_ACTION_HINT.test(content) ||
-    ABSOLUTE_DATE_PATTERN.test(content) ||
-    RELATIVE_DAY_PATTERN.test(content) ||
-    RELATIVE_OFFSET_PATTERN.test(content) ||
-    NAMED_RELATIVE_OFFSET_PATTERNS.some((item) => item.pattern.test(content)) ||
-    (CLOCK_TIME_PATTERN.test(content) && CREATE_ACTION_HINT.test(content));
+  const allowOnceByRule = hasCreateAction && hasTimeSignal(content);
   if (!allowOnceByRule) return null;
 
   const runAt = parseOnceRunAt(content, now);

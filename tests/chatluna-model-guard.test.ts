@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatUserStampedPrompt, injectUserStampedPrompt } from '../src/plugins/chat-time-context.js';
-import { resolvePlatform } from '../src/plugins/model-utils.js';
+import { inferPlatformFromBaseUrl, normalizeRawModelName, resolvePlatform } from '../src/plugins/model-utils.js';
 
 describe('resolvePlatform', () => {
   it('returns platform from provider/model format', () => {
@@ -13,6 +13,45 @@ describe('resolvePlatform', () => {
     expect(resolvePlatform('   ')).toBeNull();
     expect(resolvePlatform('deepseek')).toBeNull();
     expect(resolvePlatform('/deepseek-chat')).toBeNull();
+  });
+});
+
+describe('normalizeRawModelName', () => {
+  it('keeps provider/model unchanged', () => {
+    expect(normalizeRawModelName('deepseek/deepseek-chat')).toBe('deepseek/deepseek-chat');
+  });
+
+  it('resolves plain model by available model suffix', () => {
+    expect(
+      normalizeRawModelName('deepseek-chat', {
+        availableModels: ['deepseek/deepseek-chat', 'openai/gpt-4o-mini'],
+      }),
+    ).toBe('deepseek/deepseek-chat');
+  });
+
+  it('falls back to preferred platform when suffix is ambiguous', () => {
+    expect(
+      normalizeRawModelName('chat', {
+        availableModels: ['deepseek/chat', 'openai/chat'],
+        preferredPlatform: 'openai',
+      }),
+    ).toBe('openai/chat');
+  });
+
+  it('fills missing model with default model', () => {
+    expect(
+      normalizeRawModelName('', {
+        defaultModel: 'deepseek/deepseek-chat',
+      }),
+    ).toBe('deepseek/deepseek-chat');
+  });
+});
+
+describe('inferPlatformFromBaseUrl', () => {
+  it('infers platform from base url', () => {
+    expect(inferPlatformFromBaseUrl('https://api.deepseek.com/v1')).toBe('deepseek');
+    expect(inferPlatformFromBaseUrl('https://api.openai.com/v1')).toBe('openai');
+    expect(inferPlatformFromBaseUrl('https://api.anthropic.com')).toBe('anthropic');
   });
 });
 

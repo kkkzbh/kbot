@@ -82,6 +82,11 @@ describe('task automation intent rule parsing', () => {
     expect(parseAutomationIntentByRule('现在16:38了', now)).toBeNull();
   });
 
+  it('does not trigger on weather question that only contains relative day words', () => {
+    const base = new Date('2026-03-01T19:52:00+08:00').getTime();
+    expect(parseAutomationIntentByRule('今天天气怎么样', base)).toBeNull();
+  });
+
   it('parses cron intent from weekly expression', () => {
     const intent = parseAutomationIntentByRule('每周一早上9点提醒我交周报');
     expect(intent?.action).toBe('create-cron');
@@ -95,6 +100,7 @@ describe('task automation helpers', () => {
     expect(shouldTryAutomationIntent('10s后给我打招呼')).toBe(true);
     expect(shouldTryAutomationIntent('请在16:38给我发消息')).toBe(true);
     expect(shouldTryAutomationIntent('半小时后叫我开会')).toBe(true);
+    expect(shouldTryAutomationIntent('今天天气怎么样')).toBe(false);
     expect(shouldTryAutomationIntent('天气不错')).toBe(false);
   });
 

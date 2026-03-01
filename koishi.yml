@@ -48,7 +48,10 @@ plugins:
       allowAtReply: true
       defaultPreset: sakiko
       defaultChatMode: plugin
-      defaultModel: ${{ env.OPENAI_MODEL || 'deepseek/deepseek-chat' }}
+      defaultModel: >-
+        ${{
+        env.CHATLUNA_DEFAULT_MODEL || (env.OPENAI_MODEL && env.OPENAI_MODEL.includes('/') ?
+        env.OPENAI_MODEL : 'deepseek/' + (env.OPENAI_MODEL || 'deepseek-chat')) }}
       defaultEmbeddings: ${{ env.CHATLUNA_DEFAULT_EMBEDDINGS || 'deepseek/deepseek-embedding' }}
       defaultVectorStore: ${{ env.CHATLUNA_DEFAULT_VECTOR_STORE || 'luna-vdb' }}
     chatluna-deepseek-adapter:0o3zho:

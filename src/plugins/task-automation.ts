@@ -11,6 +11,7 @@ import {
   parseGroupSet,
   parseOnceRunAt,
   selectDeliveryModelForTaskMessage,
+  shouldTryAutomationIntent,
 } from './task-automation-core.js';
 import {
   DEFAULT_CHAT_REPLY_SYSTEM_PROMPT,
@@ -272,6 +273,10 @@ function taskText(task: AutomationTask): string {
     return `#${task.id} [${task.status}] cron(${task.cronExpr}) ${task.message}`;
   }
   return `#${task.id} [${task.status}] ${formatTimestamp(task.runAt ?? Date.now())} ${task.message}`;
+}
+
+function isVisibleInTaskList(task: AutomationTask): boolean {
+  return task.status === 'active' || task.status === 'paused';
 }
 
 async function buildDeliveryMessage(task: AutomationTask, runtime: RuntimeConfig): Promise<string> {
@@ -669,7 +674,7 @@ export function apply(ctx: Context, config: Config): void {
             scope: scope.scope,
             channelId: scope.channelId,
           })
-        ).filter((task) => task.status !== 'deleted');
+        ).filter(isVisibleInTaskList);
         tasks.sort((a, b) => a.id - b.id);
         await session.send(formatTaskList(tasks));
         return true;
@@ -771,6 +776,7 @@ export function apply(ctx: Context, config: Config): void {
   const parseIntent = async (content: string): Promise<AutomationIntent | null> => {
     const ruleIntent = parseAutomationIntentByRule(content);
     if (ruleIntent) return ruleIntent;
+    if (!shouldTryAutomationIntent(content)) return null;
     return parseIntentByModel(content, runtime);
   };
 
@@ -818,7 +824,7 @@ export function apply(ctx: Context, config: Config): void {
         scope: scope.scope,
         channelId: scope.channelId,
       })
-    ).filter((task) => task.status !== 'deleted');
+    ).filter(isVisibleInTaskList);
     tasks.sort((a, b) => a.id - b.id);
     return formatTaskList(tasks);
   });

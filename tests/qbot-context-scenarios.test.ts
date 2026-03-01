@@ -34,7 +34,7 @@ function renderTask(task: SimTask): string {
 }
 
 function renderTaskList(tasks: SimTask[]): string {
-  const visible = tasks.filter((task) => task.status !== 'deleted');
+  const visible = tasks.filter((task) => task.status === 'active' || task.status === 'paused');
   if (!visible.length) return '当前没有任务。';
   return ['当前任务：', ...visible.map((task) => `- ${renderTask(task)}`)].join('\n');
 }
@@ -139,6 +139,10 @@ describe('QBOT context scenario regression', () => {
         bot: handleChatMessage(state, '查看我的任务列表', now),
       },
       {
+        user: '今天天气怎么样',
+        bot: handleChatMessage(state, '今天天气怎么样', now),
+      },
+      {
         user: '现在16:38了',
         bot: handleChatMessage(state, '现在16:38了', now),
       },
@@ -163,7 +167,11 @@ describe('QBOT context scenario regression', () => {
       },
       {
         user: '查看我的任务列表',
-        bot: '当前任务：\n- #1 [done] 2026-03-01 16:40 2\n- #2 [active] cron(0 9 * * 1) 交周报',
+        bot: '当前任务：\n- #2 [active] cron(0 9 * * 1) 交周报',
+      },
+      {
+        user: '今天天气怎么样',
+        bot: null,
       },
       {
         user: '现在16:38了',
