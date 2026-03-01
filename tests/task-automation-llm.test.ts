@@ -129,7 +129,7 @@ describe('task automation model delivery behavior', () => {
     expect(text).toBe('提醒我喝水');
   });
 
-  it('generates natural create-reply text and keeps fallback on failure', async () => {
+  it('generates natural create-reply text and returns null on failure', async () => {
     const runtime = createRuntime();
 
     const fetchSpy = vi
@@ -169,9 +169,7 @@ describe('task automation model delivery behavior', () => {
       formatUtc8Timestamp,
       new Date('2026-03-01T16:00:00+08:00').getTime(),
     );
-    expect(second).toContain('提醒我喝水');
-    expect(second).toContain('17:22');
-    expect(second).not.toContain('2026-03-01');
+    expect(second).toBeNull();
 
     const firstReq = fetchSpy.mock.calls[0]?.[1];
     const firstBody =

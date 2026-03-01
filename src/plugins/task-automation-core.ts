@@ -241,17 +241,6 @@ export function formatNaturalRunAtText(runAt: number, now = Date.now()): string 
   return `${target.year}-${target.month}-${target.day} ${hhmm}`;
 }
 
-export function buildNaturalCreateFallbackReply(
-  payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
-  now = Date.now(),
-): string {
-  if (payload.kind === 'once') {
-    const naturalRunAt = formatNaturalRunAtText(payload.runAt ?? now, now);
-    return `好，我记住了。到 ${naturalRunAt} 我会提醒你：${payload.message}`;
-  }
-  return `好，我记住了。这个提醒我会按计划持续发你：${payload.message}`;
-}
-
 export function shouldPreferReasonerForTaskMessage(message: string): boolean {
   const text = message.trim();
   if (!text) return false;

@@ -330,7 +330,7 @@ async function buildOnceTaskMessage(
 async function buildNaturalCreateReply(
   runtime: RuntimeConfig,
   payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
-): Promise<string> {
+): Promise<string | null> {
   return buildNaturalCreateReplyByModel(toAutomationLlmRuntime(runtime), payload, formatTimestamp);
 }
 
@@ -741,7 +741,11 @@ export function apply(ctx: Context, config: Config): void {
             cronExpr,
             message: created.message,
           });
-          await session.send(reply);
+          if (reply) {
+            await session.send(reply);
+            return true;
+          }
+          return false;
         }
         return true;
       }
@@ -763,8 +767,12 @@ export function apply(ctx: Context, config: Config): void {
             runAt,
             message: rawMessage,
           });
-          await session.send(reply);
           enrichOnceTaskMessageAsync(created.id, scope, runAt, rawMessage);
+          if (reply) {
+            await session.send(reply);
+            return true;
+          }
+          return false;
         }
         return true;
       }

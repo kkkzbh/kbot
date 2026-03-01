@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { injectUserStampedPrompt } from '../src/plugins/chat-time-context.js';
-import {
-  buildNaturalCreateFallbackReply,
-  formatAutomationTimestamp,
-  parseAutomationIntentByRule,
-} from '../src/plugins/task-automation-core.js';
+import { formatAutomationTimestamp, parseAutomationIntentByRule } from '../src/plugins/task-automation-core.js';
 
 type SimTask = {
   id: number;
@@ -60,11 +56,7 @@ function handleChatMessage(state: SimState, message: string, now: number): strin
       message: rawMessage,
     });
     state.pendingOnceGeneration.push({ taskId: state.nextId - 1, rawMessage });
-    return buildNaturalCreateFallbackReply({
-      kind: 'once',
-      runAt: intent.runAt,
-      message: rawMessage,
-    }, now);
+    return null;
   }
 
   if (intent.action === 'create-cron') {
@@ -75,11 +67,7 @@ function handleChatMessage(state: SimState, message: string, now: number): strin
       cronExpr: intent.cronExpr,
       message: intent.message ?? '定时提醒',
     });
-    return buildNaturalCreateFallbackReply({
-      kind: 'cron',
-      cronExpr: intent.cronExpr,
-      message: intent.message ?? '定时提醒',
-    });
+    return null;
   }
 
   return null;
@@ -110,7 +98,7 @@ describe('QBOT context scenario regression', () => {
     expect(stamped).toBe('小祥, 2026-03-01 16:40:16: 麻烦你在 10s 后给我打招呼');
   });
 
-  it('replays deterministic user-QBOT conversation without API key', () => {
+  it('replays deterministic user-QBOT conversation without API key (create reply passes through)', () => {
     const now = Date.parse('2026-03-01T16:40:16+08:00');
     const state: SimState = { tasks: [] as SimTask[], nextId: 1, pendingOnceGeneration: [] };
 
@@ -151,11 +139,11 @@ describe('QBOT context scenario regression', () => {
     expect(transcript).toEqual([
       {
         user: '麻烦你在 10s 后给我发送1+1的计算结果',
-        bot: '好，我记住了。到 16:40 我会提醒你：发送1+1的计算结果',
+        bot: null,
       },
       {
         user: '每周一早上9点提醒我交周报',
-        bot: '好，我记住了。这个提醒我会按计划持续发你：交周报',
+        bot: null,
       },
       {
         event: 'bg.once.generate',

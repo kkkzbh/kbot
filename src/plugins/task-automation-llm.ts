@@ -166,16 +166,12 @@ export async function buildNaturalCreateReplyByModel(
   payload: CreateReplyPayload,
   _formatTimestamp: (ts: number) => string,
   now = Date.now(),
-): Promise<string> {
+): Promise<string | null> {
   const naturalRunAt = formatNaturalRunAtText(payload.runAt ?? now, now);
   const scheduleText =
     payload.kind === 'once'
       ? `一次性，执行时间：${naturalRunAt}`
       : `周期，cron：${payload.cronExpr ?? ''}`;
-  const fallback =
-    payload.kind === 'once'
-      ? `好，我记住了。到 ${naturalRunAt} 我会提醒你：${payload.message}`
-      : `好，我记住了。这个提醒我会按计划持续发你：${payload.message}`;
   const userPrompt = [
     `任务类型：${scheduleText}`,
     `提醒内容：${payload.message}`,
@@ -190,5 +186,5 @@ export async function buildNaturalCreateReplyByModel(
     maxTokens: runtime.chatReplyMaxTokens,
     reasonerMinTokens: runtime.chatReplyMaxTokens,
   });
-  return cleanGeneratedText(generated) ?? fallback;
+  return cleanGeneratedText(generated);
 }
