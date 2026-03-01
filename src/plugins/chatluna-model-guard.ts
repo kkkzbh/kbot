@@ -111,7 +111,7 @@ export function apply(ctx: Context): void {
         const context = rawContext as MiddlewareContextLike;
         const inputMessage = context.options?.inputMessage;
         if (!inputMessage) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
-        const userName = session.username ?? session.author?.name ?? session.userId ?? '用户';
+        const userName = session.author?.nick?.trim() || session.username || session.author?.name || session.userId || '用户';
         inputMessage.content = injectUserStampedPrompt(inputMessage.content, userName);
         return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
       })
