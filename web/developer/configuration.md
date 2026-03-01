@@ -7,7 +7,8 @@
 - 敏感项统一放在 `.env`，不得硬编码。
 - Koishi 运行时从 `koishi.yml` 读取插件配置。
 - `koishi.yml` 中大多数值来自环境变量引用（Koishi Loader `env` 表达式）。
-- 当前聊天主链路为 ChatLuna + DeepSeek 适配器。
+- 当前对话链路为 ChatLuna + DeepSeek 适配器。
+- 当前自动化链路为 `cron + task-automation`。
 
 ## 必填配置
 
@@ -61,11 +62,26 @@
 | `isNickNameWithContent` | `true` | `chatluna.isNickNameWithContent` | 允许句中任意位置昵称触发 |
 | `allowAtReply` | `true` | `chatluna.allowAtReply` | 允许消息中 `@机器人` 触发 |
 
+## 自动化任务配置
+
+| 变量 | 默认值 | 对应 `koishi.yml` | 说明 |
+| --- | --- | --- | --- |
+| `CHAT_ENABLED_GROUPS` | 空 | `task-automation.enabledGroups` | 自动化可生效的群白名单（逗号分隔） |
+| `TASK_AUTOMATION_LISTEN_PRIVATE` | `true` | `task-automation.listenPrivate` | 是否允许私聊触发自动化意图 |
+| `TASK_AUTOMATION_PERMISSION` | `all` | `task-automation.permissionMode` | `all` 或 `authority3` |
+| `TASK_AUTOMATION_INTENT_ENABLED` | `true` | `task-automation.intentEnabled` | 是否启用自然语言意图判定 |
+| `TASK_AUTOMATION_INTENT_MIN_CONFIDENCE` | `0.78` | `task-automation.intentMinConfidence` | 模型兜底最小置信度 |
+| `TASK_AUTOMATION_INTENT_BASE_URL` | 空（回落到 `OPENAI_BASE_URL`） | `task-automation.intentBaseUrl` | 意图模型 API 地址 |
+| `TASK_AUTOMATION_INTENT_API_KEY` | 空（回落到 `OPENAI_API_KEY`） | `task-automation.intentApiKey` | 意图模型 API Key（敏感） |
+| `TASK_AUTOMATION_INTENT_MODEL` | 空（回落到 `OPENAI_MODEL`） | `task-automation.intentModel` | 意图模型名称 |
+| `TASK_AUTOMATION_INTENT_TIMEOUT_MS` | `12000` | `task-automation.intentTimeoutMs` | 意图模型请求超时 |
+| `TASK_AUTOMATION_POLL_MS` | `30000` | `task-automation.pollIntervalMs` | 一次性任务轮询间隔 |
+| `TASK_AUTOMATION_MAX_TASKS_PER_USER` | `20` | `task-automation.maxTasksPerUser` | 每用户任务上限 |
+
 ## 已移除配置
 
 以下旧 `group-chat` 变量已弃用并从 `.env.example` 移除：
 
-- `CHAT_ENABLED_GROUPS`
 - `CHAT_TRIGGER_MODE`
 - `CHAT_MAX_CONTEXT_TURNS`
 - `CHAT_TIMEOUT_MS`
@@ -78,8 +94,9 @@
 
 1. 复制模板：`cp .env.example .env`
 2. 按“必填配置”补齐关键变量。
-3. 确认 `koishi.yml` 中插件均引用对应环境变量。
-4. 运行 `pnpm start` 验证 Koishi 能成功启动。
+3. 按自动化需求设置 `CHAT_ENABLED_GROUPS` 与 `TASK_AUTOMATION_*`。
+4. 确认 `koishi.yml` 中插件均引用对应环境变量。
+5. 运行 `pnpm start` 验证 Koishi 能成功启动。
 
 ## 安全要求
 

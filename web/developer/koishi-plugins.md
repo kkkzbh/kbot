@@ -23,7 +23,20 @@
 ### `@koishijs/plugin-database-sqlite`
 
 - 功能：提供 SQLite 数据库存储。
-- 在本项目中的作用：持久化 ChatLuna 房间、会话与上下文。
+- 在本项目中的作用：持久化 ChatLuna 会话与自动化任务数据。
+
+### `koishi-plugin-cron`
+
+- 功能：提供 `ctx.cron()` 周期任务调度能力。
+- 在本项目中的作用：承载自动化任务的周期调度执行。
+
+### `./dist/plugins/task-automation`（本地插件）
+
+- 功能：自然语言任务意图判定、任务管理命令、一次性任务轮询执行。
+- 在本项目中的作用：
+  - 解析群聊/私聊消息中的任务意图（创建、查询、删除、暂停、恢复）。
+  - 命中自动化意图时优先处理，不走 ChatLuna 普通对话回复。
+  - 支持群任务触发时 `@创建者`，私聊任务私发。
 
 ### `koishi-plugin-chatluna`
 
@@ -40,6 +53,11 @@
 
 - 功能：覆盖 Koishi 指令元配置（如 authority）。
 - 在本项目中的作用：统一将 `chatluna.*` 命令权限提升到 `authority >= 3`（默认值，可配置）。
+
+### `./dist/plugins/chatluna-model-guard`（本地插件）
+
+- 功能：在模型不可用时拦截 ChatLuna 调用并返回统一提示。
+- 在本项目中的作用：避免模型异常时返回原始错误细节到群聊。
 
 ## 已安装但未启用插件
 
@@ -59,11 +77,16 @@
 
 ## 触发契约（当前链路）
 
-- 当前被动触发遵循 ChatLuna 原生规则（`@`/昵称/私聊）。
-- 触发策略已配置为“句中包含即可触发”：
+- 对话触发遵循 ChatLuna 原生规则（`@`/昵称/私聊）。
+- 对话触发策略已配置为“句中包含即可触发”：
   - `isNickNameWithContent=true`（昵称不要求句首）
   - `allowAtReply=true`（`@机器人` 不要求句首）
-- 命令触发（`chatluna.*`）由 `@koishijs/plugin-commands` 统一做权限门槛控制。
+- 自动化触发由本地 `task-automation` 插件独立处理：
+  - 白名单群与私聊中可自然语言触发任务，无需 `@机器人`。
+  - 自动化命中时优先处理；未命中才进入对话链路。
+- 命令触发：
+  - `chatluna.*` 由 `@koishijs/plugin-commands` 控制权限门槛。
+  - `task.*` 由 `task-automation` 内部权限模式控制（`all`/`authority3`）。
 - 运行链路详情见：[聊天链路说明](/developer/chatluna-migration)。
 
 ## 功能总览
@@ -74,6 +97,7 @@
 - ChatLuna 原生触发路径（昵称/私聊/@）
 - ChatLuna 房间与上下文持久化（SQLite）
 - `chatluna.*` 命令权限分层（默认 `authority >= 3`）
+- 智能自动化任务（自然语言触发 + `task.*` 命令管理 + cron/once 调度）
 
 不在当前里程碑范围内的能力：
 
