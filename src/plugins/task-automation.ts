@@ -1,0 +1,703 @@
+import 'koishi-plugin-cron';
+import { Context, h, Logger, Schema, Session } from 'koishi';
+import type { AutomationTask, TaskScope } from '../types/task-automation.js';
+import {
+  AutomationIntent,
+  isValidCronExpr,
+  normalizeGroupId,
+  parseAutomationIntentByRule,
+  parseCronExpr,
+  parseGroupSet,
+  parseOnceRunAt,
+  shouldTryAutomationIntent,
+} from './task-automation-core.js';
+
+const logger = new Logger('task-automation');
+
+export const name = 'task-automation';
+
+export interface Config {
+  enabledGroups?: string[] | string;
+  listenPrivate?: boolean;
+  permissionMode?: 'all' | 'authority3';
+  intentEnabled?: boolean;
+  intentMinConfidence?: number;
+  intentBaseUrl?: string;
+  intentApiKey?: string;
+  intentModel?: string;
+  intentTimeoutMs?: number;
+  pollIntervalMs?: number;
+  maxTasksPerUser?: number;
+}
+
+export const Config: Schema<Config> = Schema.object({
+  enabledGroups: Schema.union([
+    Schema.array(Schema.string()).role('table').description('允许自动化生效的群号列表。'),
+    Schema.string().description('允许自动化生效的群号（逗号分隔）。'),
+  ]).description('自动化白名单群。'),
+  listenPrivate: Schema.boolean().default(true).description('是否允许私聊智能创建/管理任务。'),
+  permissionMode: Schema.union([Schema.const('all'), Schema.const('authority3')])
+    .default('all')
+    .description('任务权限模式。all=所有成员，authority3=仅 authority>=3。'),
+  intentEnabled: Schema.boolean().default(true).description('是否启用自然语言意图判定。'),
+  intentMinConfidence: Schema.number().min(0).max(1).default(0.78).description('模型意图最小置信度。'),
+  intentBaseUrl: Schema.string()
+    .role('link')
+    .description('意图判定模型 API Base URL（默认复用 OPENAI_BASE_URL）。'),
+  intentApiKey: Schema.string().role('secret').description('意图判定模型 API Key（默认复用 OPENAI_API_KEY）。'),
+  intentModel: Schema.string().description('意图判定模型名（默认复用 OPENAI_MODEL）。'),
+  intentTimeoutMs: Schema.natural().role('time').default(12000).description('意图模型超时（毫秒）。'),
+  pollIntervalMs: Schema.natural().role('time').default(30000).description('一次性任务轮询周期（毫秒）。'),
+  maxTasksPerUser: Schema.natural().default(20).description('每个用户允许的任务上限（active+paused）。'),
+});
+
+interface RuntimeConfig {
+  enabledGroups: Set<string>;
+  listenPrivate: boolean;
+  permissionMode: 'all' | 'authority3';
+  intentEnabled: boolean;
+  intentMinConfidence: number;
+  intentBaseUrl: string;
+  intentApiKey: string;
+  intentModel: string;
+  intentTimeoutMs: number;
+  pollIntervalMs: number;
+  maxTasksPerUser: number;
+}
+
+interface ScopeContext {
+  scope: TaskScope;
+  channelId: string;
+  guildId: string;
+}
+
+interface ModelIntentResponse {
+  action?: string;
+  confidence?: number;
+  runAt?: string | number;
+  cronExpr?: string;
+  message?: string;
+  taskId?: number | string;
+  timeText?: string;
+}
+
+function toRuntimeConfig(config: Config): RuntimeConfig {
+  const baseUrl = (config.intentBaseUrl ?? process.env.TASK_AUTOMATION_INTENT_BASE_URL ?? process.env.OPENAI_BASE_URL ?? '')
+    .replace(/\/+$/, '');
+  const apiKey = config.intentApiKey ?? process.env.TASK_AUTOMATION_INTENT_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
+  const model = config.intentModel ?? process.env.TASK_AUTOMATION_INTENT_MODEL ?? process.env.OPENAI_MODEL ?? '';
+
+  return {
+    enabledGroups: parseGroupSet(config.enabledGroups ?? process.env.CHAT_ENABLED_GROUPS),
+    listenPrivate:
+      config.listenPrivate ?? String(process.env.TASK_AUTOMATION_LISTEN_PRIVATE ?? 'true').toLowerCase() !== 'false',
+    permissionMode:
+      (config.permissionMode ?? (process.env.TASK_AUTOMATION_PERMISSION === 'authority3' ? 'authority3' : 'all')) ===
+      'authority3'
+        ? 'authority3'
+        : 'all',
+    intentEnabled:
+      config.intentEnabled ?? String(process.env.TASK_AUTOMATION_INTENT_ENABLED ?? 'true').toLowerCase() !== 'false',
+    intentMinConfidence: config.intentMinConfidence ?? Number(process.env.TASK_AUTOMATION_INTENT_MIN_CONFIDENCE || 0.78),
+    intentBaseUrl: baseUrl,
+    intentApiKey: apiKey,
+    intentModel: model,
+    intentTimeoutMs: config.intentTimeoutMs ?? Number(process.env.TASK_AUTOMATION_INTENT_TIMEOUT_MS || 12000),
+    pollIntervalMs: config.pollIntervalMs ?? Number(process.env.TASK_AUTOMATION_POLL_MS || 30000),
+    maxTasksPerUser: config.maxTasksPerUser ?? Number(process.env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20),
+  };
+}
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function extractJsonObject(raw: string): string | null {
+  const fenced = raw.match(/```json\s*([\s\S]*?)```/i) ?? raw.match(/```\s*([\s\S]*?)```/);
+  if (fenced?.[1]) return fenced[1].trim();
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) return raw.slice(start, end + 1);
+  return null;
+}
+
+function normalizeMessageContent(session: Session): string {
+  const plain = session.stripped?.content?.trim();
+  if (plain) return plain;
+  return session.content?.trim() ?? '';
+}
+
+function resolveScopeContext(session: Session, runtime: RuntimeConfig): ScopeContext | null {
+  if (!session.channelId) return null;
+  if (session.isDirect) {
+    if (!runtime.listenPrivate) return null;
+    return { scope: 'private', channelId: session.channelId, guildId: '' };
+  }
+
+  const groupId = normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
+  if (!groupId || !runtime.enabledGroups.has(groupId)) return null;
+  return { scope: 'group', channelId: session.channelId, guildId: session.guildId ?? '' };
+}
+
+async function checkPermission(session: Session, runtime: RuntimeConfig): Promise<boolean> {
+  if (runtime.permissionMode === 'all') return true;
+  try {
+    const user = await session.observeUser(['authority']);
+    return (user.authority ?? 0) >= 3;
+  } catch {
+    return false;
+  }
+}
+
+function isCommandLike(content: string): boolean {
+  return /^[./][\w-]+/.test(content);
+}
+
+function taskText(task: AutomationTask): string {
+  if (task.kind === 'cron') {
+    return `#${task.id} [${task.status}] cron(${task.cronExpr}) ${task.message}`;
+  }
+  return `#${task.id} [${task.status}] ${formatTimestamp(task.runAt ?? Date.now())} ${task.message}`;
+}
+
+async function parseIntentByModel(content: string, runtime: RuntimeConfig): Promise<AutomationIntent | null> {
+  if (!runtime.intentEnabled || !runtime.intentBaseUrl || !runtime.intentApiKey || !runtime.intentModel) {
+    return null;
+  }
+
+  const now = new Date();
+  const systemPrompt =
+    '你是任务意图解析器。请仅输出 JSON：' +
+    '{"action":"none|create_once|create_cron|list|delete|pause|resume","confidence":0~1,' +
+    '"runAt":"ISO8601或null","timeText":"自然语言时间或null","cronExpr":"cron或null","message":"提醒内容或null","taskId":数字或null}。';
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), runtime.intentTimeoutMs);
+  try {
+    const response = await fetch(`${runtime.intentBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${runtime.intentApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: runtime.intentModel,
+        temperature: 0,
+        max_tokens: 220,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: `当前时间: ${now.toISOString()}\n文本: ${content}`,
+          },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return null;
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
+    };
+
+    const rawContent = payload.choices?.[0]?.message?.content;
+    const contentText = Array.isArray(rawContent)
+      ? rawContent.map((item) => item?.text ?? '').join('')
+      : (rawContent ?? '').toString();
+
+    const jsonText = extractJsonObject(contentText);
+    if (!jsonText) return null;
+    const parsed = JSON.parse(jsonText) as ModelIntentResponse;
+    const confidence = Number(parsed.confidence ?? 0);
+    if (!Number.isFinite(confidence) || confidence < runtime.intentMinConfidence) return null;
+
+    const action = parsed.action?.toLowerCase();
+    if (action === 'list') return { action: 'list', confidence };
+    if (action === 'delete') {
+      const id = Number(parsed.taskId);
+      return Number.isFinite(id) && id > 0 ? { action: 'delete', taskId: id, confidence } : null;
+    }
+    if (action === 'pause') {
+      const id = Number(parsed.taskId);
+      return Number.isFinite(id) && id > 0 ? { action: 'pause', taskId: id, confidence } : null;
+    }
+    if (action === 'resume') {
+      const id = Number(parsed.taskId);
+      return Number.isFinite(id) && id > 0 ? { action: 'resume', taskId: id, confidence } : null;
+    }
+    if (action === 'create_cron') {
+      const cronExpr = (parsed.cronExpr ?? '').trim();
+      if (!cronExpr || !isValidCronExpr(cronExpr)) return null;
+      return {
+        action: 'create-cron',
+        cronExpr,
+        message: (parsed.message ?? '定时提醒').trim() || '定时提醒',
+        confidence,
+      };
+    }
+    if (action === 'create_once') {
+      let runAt: number | null = null;
+      if (typeof parsed.runAt === 'string') {
+        const value = Date.parse(parsed.runAt);
+        if (Number.isFinite(value)) runAt = value;
+      } else if (typeof parsed.runAt === 'number' && Number.isFinite(parsed.runAt)) {
+        runAt = parsed.runAt;
+      }
+      if (!runAt && typeof parsed.timeText === 'string') {
+        runAt = parseOnceRunAt(parsed.timeText);
+      }
+      if (!runAt) return null;
+      return {
+        action: 'create-once',
+        runAt,
+        message: (parsed.message ?? '定时提醒').trim() || '定时提醒',
+        confidence,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function ensureTaskTable(ctx: Context): void {
+  ctx.model.extend(
+    'automation_task',
+    {
+      id: 'unsigned',
+      creatorId: 'string',
+      scope: 'string',
+      channelId: 'string',
+      guildId: 'string',
+      platform: 'string',
+      botSelfId: 'string',
+      kind: 'string',
+      runAt: { type: 'double', nullable: true },
+      cronExpr: { type: 'text', nullable: true },
+      message: 'text',
+      status: 'string',
+      createdAt: 'double',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      indexes: [['creatorId'], ['status', 'kind'], ['status', 'runAt'], ['scope', 'channelId']],
+    },
+  );
+}
+
+function resolveTaskBot(ctx: Context, task: AutomationTask) {
+  return (
+    ctx.bots.find((bot) => bot.selfId === task.botSelfId && bot.platform === task.platform) ??
+    ctx.bots.find((bot) => bot.platform === task.platform) ??
+    ctx.bots[0]
+  );
+}
+
+async function sendTaskMessage(ctx: Context, task: AutomationTask): Promise<boolean> {
+  const bot = resolveTaskBot(ctx, task);
+  if (!bot) {
+    logger.warn('task #%d skipped: no bot available', task.id);
+    return false;
+  }
+
+  const content = task.scope === 'group' ? `${h.at(task.creatorId)} ${task.message}` : task.message;
+  try {
+    await bot.sendMessage(task.channelId, content);
+    return true;
+  } catch (error) {
+    logger.warn('task #%d delivery failed: %s', task.id, (error as Error).message);
+    return false;
+  }
+}
+
+async function getScopedTask(
+  ctx: Context,
+  id: number,
+  userId: string,
+  scope: ScopeContext,
+): Promise<AutomationTask | null> {
+  const query = {
+    id,
+    creatorId: userId,
+    scope: scope.scope,
+    channelId: scope.channelId,
+  };
+  const [task] = await ctx.database.get('automation_task', query);
+  return task ?? null;
+}
+
+export function apply(ctx: Context, config: Config): void {
+  const runtime = toRuntimeConfig(config);
+  ensureTaskTable(ctx);
+
+  const cronDisposers = new Map<number, () => void>();
+  let onceTimer: NodeJS.Timeout | null = null;
+  let onceTicking = false;
+
+  const disposeCronTask = (taskId: number) => {
+    const dispose = cronDisposers.get(taskId);
+    if (!dispose) return;
+    dispose();
+    cronDisposers.delete(taskId);
+  };
+
+  const registerCronTask = (task: AutomationTask) => {
+    if (task.kind !== 'cron' || task.status !== 'active' || !task.cronExpr) return;
+    disposeCronTask(task.id);
+    try {
+      const dispose = ctx.cron(task.cronExpr, () => {
+        void (async () => {
+          const [latest] = await ctx.database.get('automation_task', { id: task.id });
+          if (!latest || latest.status !== 'active' || latest.kind !== 'cron') return;
+          await sendTaskMessage(ctx, latest);
+        })();
+      });
+      cronDisposers.set(task.id, dispose);
+    } catch (error) {
+      logger.warn('task #%d invalid cron expression "%s": %s', task.id, task.cronExpr, (error as Error).message);
+    }
+  };
+
+  const markExpiredOnceTasks = async () => {
+    const now = Date.now();
+    await ctx.database.set(
+      'automation_task',
+      {
+        kind: 'once',
+        status: 'active',
+        runAt: { $lte: now },
+      },
+      {
+        status: 'done',
+        updatedAt: now,
+      },
+    );
+  };
+
+  const tickOnceTasks = async () => {
+    if (onceTicking) return;
+    onceTicking = true;
+    try {
+      const now = Date.now();
+      const dueTasks = await ctx.database.get('automation_task', {
+        kind: 'once',
+        status: 'active',
+        runAt: { $lte: now },
+      });
+      for (const task of dueTasks) {
+        await sendTaskMessage(ctx, task);
+        await ctx.database.set('automation_task', { id: task.id }, { status: 'done', updatedAt: Date.now() });
+      }
+    } finally {
+      onceTicking = false;
+    }
+  };
+
+  const createTask = async (
+    session: Session,
+    scope: ScopeContext,
+    payload: Pick<AutomationTask, 'kind' | 'message'> & { runAt?: number; cronExpr?: string },
+  ): Promise<AutomationTask | null> => {
+    if (!session.userId || !session.bot?.selfId) return null;
+    const alive = (await ctx.database.get('automation_task', { creatorId: session.userId })).filter(
+      (task) => task.status === 'active' || task.status === 'paused',
+    );
+    if (alive.length >= runtime.maxTasksPerUser) {
+      await session.send(`任务创建失败：你已达到上限（${runtime.maxTasksPerUser}）。`);
+      return null;
+    }
+
+    const now = Date.now();
+    const created = await ctx.database.create('automation_task', {
+      creatorId: session.userId,
+      scope: scope.scope,
+      channelId: scope.channelId,
+      guildId: scope.guildId,
+      platform: session.platform,
+      botSelfId: session.bot.selfId,
+      kind: payload.kind,
+      runAt: payload.runAt ?? null,
+      cronExpr: payload.cronExpr ?? null,
+      message: payload.message,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    if (created.kind === 'cron') {
+      registerCronTask(created);
+    }
+    return created;
+  };
+
+  const formatTaskList = (tasks: AutomationTask[]): string => {
+    if (!tasks.length) return '当前没有任务。';
+    return ['当前任务：', ...tasks.slice(0, 30).map((task) => `- ${taskText(task)}`)].join('\n');
+  };
+
+  const handleIntent = async (session: Session, scope: ScopeContext, intent: AutomationIntent): Promise<boolean> => {
+    if (!session.userId) return false;
+
+    switch (intent.action) {
+      case 'list': {
+        const tasks = (
+          await ctx.database.get('automation_task', {
+            creatorId: session.userId,
+            scope: scope.scope,
+            channelId: scope.channelId,
+          })
+        ).filter((task) => task.status !== 'deleted');
+        tasks.sort((a, b) => a.id - b.id);
+        await session.send(formatTaskList(tasks));
+        return true;
+      }
+      case 'delete': {
+        if (!intent.taskId) {
+          await session.send('删除失败：请提供任务编号。');
+          return true;
+        }
+        const task = await getScopedTask(ctx, intent.taskId, session.userId, scope);
+        if (!task || task.status === 'deleted') {
+          await session.send(`删除失败：未找到任务 #${intent.taskId}。`);
+          return true;
+        }
+        disposeCronTask(task.id);
+        await ctx.database.set('automation_task', { id: task.id }, { status: 'deleted', updatedAt: Date.now() });
+        await session.send(`已删除任务 #${task.id}。`);
+        return true;
+      }
+      case 'pause': {
+        if (!intent.taskId) {
+          await session.send('暂停失败：请提供任务编号。');
+          return true;
+        }
+        const task = await getScopedTask(ctx, intent.taskId, session.userId, scope);
+        if (!task || task.status === 'deleted') {
+          await session.send(`暂停失败：未找到任务 #${intent.taskId}。`);
+          return true;
+        }
+        disposeCronTask(task.id);
+        await ctx.database.set('automation_task', { id: task.id }, { status: 'paused', updatedAt: Date.now() });
+        await session.send(`已暂停任务 #${task.id}。`);
+        return true;
+      }
+      case 'resume': {
+        if (!intent.taskId) {
+          await session.send('恢复失败：请提供任务编号。');
+          return true;
+        }
+        const task = await getScopedTask(ctx, intent.taskId, session.userId, scope);
+        if (!task || task.status === 'deleted') {
+          await session.send(`恢复失败：未找到任务 #${intent.taskId}。`);
+          return true;
+        }
+        await ctx.database.set('automation_task', { id: task.id }, { status: 'active', updatedAt: Date.now() });
+        if (task.kind === 'cron') registerCronTask({ ...task, status: 'active' });
+        await session.send(`已恢复任务 #${task.id}。`);
+        return true;
+      }
+      case 'create-cron': {
+        const cronExpr = (intent.cronExpr ?? '').trim();
+        if (!cronExpr || !isValidCronExpr(cronExpr)) {
+          await session.send('创建失败：无法识别有效的周期表达式。');
+          return true;
+        }
+        const created = await createTask(session, scope, {
+          kind: 'cron',
+          cronExpr,
+          message: (intent.message ?? '定时提醒').trim() || '定时提醒',
+        });
+        if (created) {
+          await session.send(`已创建周期任务 #${created.id}（cron: ${cronExpr}）。`);
+        }
+        return true;
+      }
+      case 'create-once': {
+        const runAt = intent.runAt;
+        if (!runAt || runAt <= Date.now()) {
+          await session.send('创建失败：时间无效或已过。');
+          return true;
+        }
+        const created = await createTask(session, scope, {
+          kind: 'once',
+          runAt,
+          message: (intent.message ?? '定时提醒').trim() || '定时提醒',
+        });
+        if (created) {
+          await session.send(`已创建一次性任务 #${created.id}，执行时间：${formatTimestamp(runAt)}。`);
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  };
+
+  const parseIntent = async (content: string): Promise<AutomationIntent | null> => {
+    const ruleIntent = parseAutomationIntentByRule(content);
+    if (ruleIntent) return ruleIntent;
+    if (!shouldTryAutomationIntent(content)) return null;
+    return parseIntentByModel(content, runtime);
+  };
+
+  ctx.middleware(
+    async (session, next) => {
+      if (!runtime.intentEnabled) return next();
+      if (!session.userId || !session.content || session.userId === session.bot?.selfId) return next();
+
+      const scope = resolveScopeContext(session, runtime);
+      if (!scope) return next();
+
+      const content = normalizeMessageContent(session);
+      if (!content || isCommandLike(content)) return next();
+
+      const intent = await parseIntent(content);
+      if (!intent) return next();
+
+      if (!(await checkPermission(session, runtime))) {
+        await session.send('你没有权限管理自动化任务。');
+        return;
+      }
+
+      try {
+        const handled = await handleIntent(session, scope, intent);
+        if (handled) return;
+      } catch (error) {
+        logger.warn('automation intent handling failed: %s', (error as Error).message);
+        await session.send('自动化任务处理失败，请稍后重试。');
+        return;
+      }
+
+      return next();
+    },
+    true,
+  );
+
+  ctx.command('task.list', '查看当前会话下的任务').action(async ({ session }) => {
+    if (!session?.userId) return '';
+    const scope = resolveScopeContext(session, runtime);
+    if (!scope) return '当前会话不支持任务管理。';
+    if (!(await checkPermission(session, runtime))) return '你没有权限管理自动化任务。';
+    const tasks = (
+      await ctx.database.get('automation_task', {
+        creatorId: session.userId,
+        scope: scope.scope,
+        channelId: scope.channelId,
+      })
+    ).filter((task) => task.status !== 'deleted');
+    tasks.sort((a, b) => a.id - b.id);
+    return formatTaskList(tasks);
+  });
+
+  ctx.command('task.del <id:number>', '删除任务').action(async ({ session }, id) => {
+    if (!session?.userId || !id) return '删除失败：请提供任务编号。';
+    const scope = resolveScopeContext(session, runtime);
+    if (!scope) return '当前会话不支持任务管理。';
+    if (!(await checkPermission(session, runtime))) return '你没有权限管理自动化任务。';
+    const task = await getScopedTask(ctx, id, session.userId, scope);
+    if (!task || task.status === 'deleted') return `删除失败：未找到任务 #${id}。`;
+    disposeCronTask(task.id);
+    await ctx.database.set('automation_task', { id: task.id }, { status: 'deleted', updatedAt: Date.now() });
+    return `已删除任务 #${task.id}。`;
+  });
+
+  ctx.command('task.pause <id:number>', '暂停任务').action(async ({ session }, id) => {
+    if (!session?.userId || !id) return '暂停失败：请提供任务编号。';
+    const scope = resolveScopeContext(session, runtime);
+    if (!scope) return '当前会话不支持任务管理。';
+    if (!(await checkPermission(session, runtime))) return '你没有权限管理自动化任务。';
+    const task = await getScopedTask(ctx, id, session.userId, scope);
+    if (!task || task.status === 'deleted') return `暂停失败：未找到任务 #${id}。`;
+    disposeCronTask(task.id);
+    await ctx.database.set('automation_task', { id: task.id }, { status: 'paused', updatedAt: Date.now() });
+    return `已暂停任务 #${task.id}。`;
+  });
+
+  ctx.command('task.resume <id:number>', '恢复任务').action(async ({ session }, id) => {
+    if (!session?.userId || !id) return '恢复失败：请提供任务编号。';
+    const scope = resolveScopeContext(session, runtime);
+    if (!scope) return '当前会话不支持任务管理。';
+    if (!(await checkPermission(session, runtime))) return '你没有权限管理自动化任务。';
+    const task = await getScopedTask(ctx, id, session.userId, scope);
+    if (!task || task.status === 'deleted') return `恢复失败：未找到任务 #${id}。`;
+    await ctx.database.set('automation_task', { id: task.id }, { status: 'active', updatedAt: Date.now() });
+    if (task.kind === 'cron') registerCronTask({ ...task, status: 'active' });
+    return `已恢复任务 #${task.id}。`;
+  });
+
+  ctx.command('task.add.once <input:text>', '创建一次性任务（格式：task.add.once <time> -- <message>）').action(
+    async ({ session }, input) => {
+      if (!session?.userId) return '创建失败：缺少用户信息。';
+      const scope = resolveScopeContext(session, runtime);
+      if (!scope) return '当前会话不支持任务管理。';
+      if (!(await checkPermission(session, runtime))) return '你没有权限管理自动化任务。';
+      const [timePart, ...rest] = (input ?? '').split('--');
+      const message = rest.join('--').trim();
+      if (!timePart?.trim() || !message) {
+        return '格式错误：task.add.once <time> -- <message>';
+      }
+      const runAt = parseOnceRunAt(timePart.trim());
+      if (!runAt || runAt <= Date.now()) return '创建失败：无法解析时间或时间已过。';
+      const created = await createTask(session, scope, {
+        kind: 'once',
+        runAt,
+        message,
+      });
+      if (!created) return '创建失败，请稍后重试。';
+      return `已创建一次性任务 #${created.id}，执行时间：${formatTimestamp(runAt)}。`;
+    },
+  );
+
+  ctx.command('task.add.cron <input:text>', '创建周期任务（格式：task.add.cron <cron> -- <message>）').action(
+    async ({ session }, input) => {
+      if (!session?.userId) return '创建失败：缺少用户信息。';
+      const scope = resolveScopeContext(session, runtime);
+      if (!scope) return '当前会话不支持任务管理。';
+      if (!(await checkPermission(session, runtime))) return '你没有权限管理自动化任务。';
+      const [cronPart, ...rest] = (input ?? '').split('--');
+      const message = rest.join('--').trim();
+      if (!cronPart?.trim() || !message) {
+        return '格式错误：task.add.cron <cron> -- <message>';
+      }
+      const cronExpr = parseCronExpr(cronPart.trim()) ?? cronPart.trim();
+      if (!cronExpr || !isValidCronExpr(cronExpr)) return '创建失败：无效的 cron 表达式。';
+      const created = await createTask(session, scope, {
+        kind: 'cron',
+        cronExpr,
+        message,
+      });
+      if (!created) return '创建失败，请稍后重试。';
+      return `已创建周期任务 #${created.id}（cron: ${cronExpr}）。`;
+    },
+  );
+
+  ctx.on('ready', async () => {
+    if (typeof ctx.cron !== 'function') {
+      throw new Error('task-automation requires koishi-plugin-cron.');
+    }
+    await markExpiredOnceTasks();
+    const cronTasks = await ctx.database.get('automation_task', { kind: 'cron', status: 'active' });
+    cronTasks.forEach(registerCronTask);
+    onceTimer = setInterval(() => void tickOnceTasks(), Math.max(5000, runtime.pollIntervalMs));
+    logger.info(
+      'task automation loaded: groups=%d, listenPrivate=%s, intent=%s',
+      runtime.enabledGroups.size,
+      runtime.listenPrivate,
+      runtime.intentEnabled,
+    );
+  });
+
+  ctx.on('dispose', () => {
+    if (onceTimer) {
+      clearInterval(onceTimer);
+      onceTimer = null;
+    }
+    cronDisposers.forEach((dispose) => dispose());
+    cronDisposers.clear();
+  });
+}

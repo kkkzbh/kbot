@@ -11,6 +11,19 @@ plugins:
       port: ${{ +env.KOISHI_PORT || 5140 }}
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
+    cron:task: {}
+    ./dist/plugins/task-automation:automation:
+      enabledGroups: ${{ env.CHAT_ENABLED_GROUPS || '' }}
+      listenPrivate: ${{ env.TASK_AUTOMATION_LISTEN_PRIVATE !== 'false' }}
+      permissionMode: ${{ env.TASK_AUTOMATION_PERMISSION || 'all' }}
+      intentEnabled: ${{ env.TASK_AUTOMATION_INTENT_ENABLED !== 'false' }}
+      intentMinConfidence: ${{ +env.TASK_AUTOMATION_INTENT_MIN_CONFIDENCE || 0.78 }}
+      intentBaseUrl: ${{ env.TASK_AUTOMATION_INTENT_BASE_URL || env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
+      intentApiKey: ${{ env.TASK_AUTOMATION_INTENT_API_KEY || env.OPENAI_API_KEY || '' }}
+      intentModel: ${{ env.TASK_AUTOMATION_INTENT_MODEL || env.OPENAI_MODEL || '' }}
+      intentTimeoutMs: ${{ +env.TASK_AUTOMATION_INTENT_TIMEOUT_MS || 12000 }}
+      pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}
+      maxTasksPerUser: ${{ +env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20 }}
     chatluna:0qm1bk:
       botNames:
         - 小祥

@@ -92,7 +92,7 @@ Then in LLBot WebUI enable **WebSocket正向** (server mode) on port `3001`.
 
 If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 
-## 5. Trigger contract (ChatLuna native)
+## 5. Trigger contract
 
 - Runtime trigger path now follows **ChatLuna native behavior**.
 - Supported passive triggers (default): `@机器人`、昵称触发、私聊触发（由 ChatLuna 配置控制）。
@@ -100,31 +100,62 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
   - `isNickNameWithContent=true` (nickname can appear anywhere in sentence)
   - `allowAtReply=true` (`@机器人` can appear anywhere in sentence)
 - Legacy custom `group-chat` chain has been removed from this repository.
+- 新增自动化任务插件：
+  - 自动化意图可在白名单群和私聊中通过自然语言触发，不要求必须 `@`。
+  - 自动化命中时优先执行任务逻辑；未命中则继续走原对话流程。
+  - 群任务触发时在原群 `@创建者`，私聊任务触发时私聊发送。
+  - 白名单群来源：`CHAT_ENABLED_GROUPS`。
 
 ## 6. Command authority
 
 - `chatluna.*` command family is overridden by `@koishijs/plugin-commands`.
 - Default required authority is `>= 3` (configurable by `CHATLUNA_COMMAND_AUTHORITY`).
 - Passive conversation triggers still work for normal group members (subject to ChatLuna room/trigger settings).
+- 任务命令（`task.*`）默认按 `TASK_AUTOMATION_PERMISSION=all` 允许群成员使用。
+- 可切换 `TASK_AUTOMATION_PERMISSION=authority3` 仅允许高权限用户使用。
 
-## 7. SQLite persistence
+## 7. Task automation commands
+
+- `task.list` 查看当前会话任务。
+- `task.add.once <time> -- <message>` 创建一次性任务（例如 `task.add.once 明天8点 -- 交周报`）。
+- `task.add.cron <cron> -- <message>` 创建周期任务（例如 `task.add.cron 0 9 * * 1 -- 周会提醒`）。
+- `task.pause <id>` 暂停任务。
+- `task.resume <id>` 恢复任务。
+- `task.del <id>` 删除任务。
+
+## 8. SQLite persistence
 
 - SQLite file DB is enabled via `@koishijs/plugin-database-sqlite`.
 - Default DB path: `./data/koishi.db` (override with `SQLITE_PATH`).
 - No extra DB container is required.
 - ChatLuna rooms and context can persist across Koishi restarts.
+- 自动化任务也持久化到同一 SQLite 数据库。
 
-## 8. Legacy removal status
+## 9. Legacy removal status
 
 - Deprecated `group-chat` implementation has been removed:
   - `src/plugins/group-chat.ts`
   - `src/plugins/group-chat-core.ts`
   - `tests/group-chat.test.ts`
   - `src/types/chat.ts`
-- Current and only supported chain:
-  - `chatluna` + `chatluna-deepseek-adapter` + `database-sqlite` + `commands`
+- Current conversation chain:
+  - `chatluna` + `chatluna-deepseek-adapter` + `chatluna-model-guard` + `database-sqlite` + `commands`
+- Task automation extension chain:
+  - `cron` + `task-automation` (independent of ChatLuna trigger path)
 
-## 9. Quality checks
+## 10. Task automation environment variables
+
+- `TASK_AUTOMATION_LISTEN_PRIVATE`：是否允许私聊自动化意图（默认 `true`）。
+- `TASK_AUTOMATION_PERMISSION`：`all` 或 `authority3`（默认 `all`）。
+- `TASK_AUTOMATION_INTENT_ENABLED`：是否开启自然语言意图识别（默认 `true`）。
+- `TASK_AUTOMATION_INTENT_MIN_CONFIDENCE`：模型兜底最小置信度（默认 `0.78`）。
+- `TASK_AUTOMATION_INTENT_BASE_URL` / `TASK_AUTOMATION_INTENT_API_KEY` / `TASK_AUTOMATION_INTENT_MODEL`：
+  - 未设置时复用 `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`。
+- `TASK_AUTOMATION_INTENT_TIMEOUT_MS`：意图模型超时（默认 `12000`）。
+- `TASK_AUTOMATION_POLL_MS`：一次性任务轮询间隔（默认 `30000`）。
+- `TASK_AUTOMATION_MAX_TASKS_PER_USER`：单用户任务上限（默认 `20`）。
+
+## 11. Quality checks
 
 ```bash
 pnpm docs:build
@@ -133,17 +164,21 @@ pnpm test
 pnpm build
 ```
 
-## 10. Fedora / Podman notes
+## 12. Fedora / Podman notes
 
 - This project is built for Podman (not Docker Desktop).
 - `compose.yaml` uses `:Z` on bind mount for SELinux Enforcing.
 - Container should call host via `host.containers.internal`, not `127.0.0.1`.
 
-## 11. Troubleshooting
+## 13. Troubleshooting
 
 - No reply in group:
   - Confirm ChatLuna is loaded and DeepSeek adapter is loaded.
   - Confirm trigger pattern matches ChatLuna native rules (`@`/昵称/私聊).
+- 自动化未触发：
+  - 确认 `./dist/plugins/task-automation` 与 `cron` 已在 `koishi.yml` 启用。
+  - 确认当前群在 `CHAT_ENABLED_GROUPS` 白名单。
+  - 确认意图模型配置可用（或已复用 `OPENAI_*`）。
 - OneBot WS cannot connect:
   - Confirm Koishi process is running.
   - Confirm LLBot `WebSocket正向` is enabled at `3001`.
@@ -156,9 +191,10 @@ pnpm build
   - Recommended DeepSeek endpoint is `https://api.deepseek.com/v1`.
   - Check network/proxy for model endpoint.
 - Command denied:
-  - Confirm your account authority is >= `CHATLUNA_COMMAND_AUTHORITY`.
+  - `chatluna.*`：确认账号 authority >= `CHATLUNA_COMMAND_AUTHORITY`。
+  - `task.*`：若 `TASK_AUTOMATION_PERMISSION=authority3`，确认账号 authority >= 3。
 
-## 12. Run as `systemd --user` (recommended)
+## 14. Run as `systemd --user` (recommended)
 
 This project can be managed as a user-level systemd stack so you do not need to keep WebStorm open.
 
@@ -200,7 +236,7 @@ Enable linger so services can run without an active desktop login:
 loginctl enable-linger kkkzbh
 ```
 
-## 13. `systemd` logs and troubleshooting
+## 15. `systemd` logs and troubleshooting
 
 Check unit status:
 
@@ -228,7 +264,7 @@ Common issues:
 - `qqbot-stack.service` fails: confirm Podman compose plugin is installed and `compose.yaml` exists.
 - Service not started after reboot: confirm `systemctl --user is-enabled qqbot.target` and `loginctl show-user kkkzbh | grep Linger`.
 
-## 14. GitHub CI/CD auto deploy (push to `main`)
+## 16. GitHub CI/CD auto deploy (push to `main`)
 
 This repo now includes:
 
@@ -241,7 +277,7 @@ Behavior:
 - `Deploy` runs on `push` to `main` (or manual `workflow_dispatch`).
 - `Deploy` SSHes to your server, `rsync`s project files, then runs `pnpm install`, `pnpm build`, and restarts `qqbot.target`.
 
-### 14.1 GitHub Actions secrets (required)
+### 16.1 GitHub Actions secrets (required)
 
 - `QQBOT_SERVER_HOST`: deploy server host/IP
 - `QQBOT_SERVER_USER`: SSH login user
@@ -249,13 +285,13 @@ Behavior:
 - `QQBOT_SSH_KNOWN_HOSTS`: optional but recommended (`ssh-keyscan` output)
 - `QQBOT_DOTENV`: production `.env` full content (multiline secret)
 
-### 14.2 GitHub Actions variables (optional)
+### 16.2 GitHub Actions variables (optional)
 
 - `QQBOT_SERVER_PORT` (default: `22`)
 - `QQBOT_SERVER_APP_DIR` (default: `/opt/qqbot/current`)
 - `QQBOT_SYSTEMD_TARGET` (default: `qqbot.target`)
 
-### 14.3 One-time server preparation
+### 16.3 One-time server preparation
 
 1. Prepare deploy directory (example uses default path):
 
@@ -297,7 +333,7 @@ systemctl --user enable qqbot.target
 loginctl enable-linger <server_user>
 ```
 
-### 14.4 First push to GitHub
+### 16.4 First push to GitHub
 
 ```bash
 git remote add origin git@github.com:kkkzbh/kbot.git
@@ -307,11 +343,11 @@ git push -u origin main
 
 After this push, GitHub Actions will run CI and then deploy automatically.
 
-### 14.5 Manual deploy trigger
+### 16.5 Manual deploy trigger
 
 GitHub repo -> `Actions` -> `Deploy` -> `Run workflow`.
 
-### 14.6 Common deploy failures
+### 16.6 Common deploy failures
 
 - `User systemd bus not available`:
   - run `loginctl enable-linger <server_user>` on server, and ensure user service session bus exists.

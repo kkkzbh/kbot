@@ -38,6 +38,9 @@ importers:
       koishi-plugin-chatluna-storage-service:
         specifier: ^1.0.3
         version: 1.0.3(koishi@4.18.10(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))
+      koishi-plugin-cron:
+        specifier: ^3.1.0
+        version: 3.1.0(koishi@4.18.10(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))
     devDependencies:
       '@types/node':
         specifier: ^25.3.0
@@ -1136,6 +1139,10 @@ packages:
   cosmokit@1.8.1:
     resolution: {integrity: sha512-PDBv4l90xZKrUsZ0vtoycgZpO/j4iFsqJXrAxsyBDsnQRI7ZMJXIjgDJsKNjd5L8jnVnnlrDCdhkFbTncgCVjQ==}
 
+  cron-parser@4.9.0:
+    resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
+    engines: {node: '>=12.0.0'}
+
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
@@ -1450,6 +1457,11 @@ packages:
       koishi-plugin-chatluna-storage-service:
         optional: true
 
+  koishi-plugin-cron@3.1.0:
+    resolution: {integrity: sha512-otBrjpLnYXyWRr2PxPEuwyyoQvIqP6HbCa1Ql/dIM69cPApPMtJdVFqUf9EGnyijZtbDzM4NBpZcghcvbkpl1g==}
+    peerDependencies:
+      koishi: ^4.15.6
+
   koishi-plugin-markdown@1.1.1:
     resolution: {integrity: sha512-PM3WMFoiMjhHKQV1341wfGl/qsHB5wasqwS5Ga0g/yb1kC7k8gXM+DlKMS3E/tT3Vtc4yyS0DGS5BO2hdwLAbQ==}
     peerDependencies:
@@ -1479,6 +1491,10 @@ packages:
   lru-cache@11.2.6:
     resolution: {integrity: sha512-ESL2CrkS/2wTPfuend7Zhkzo2u0daGJ/A2VucJOgQ/C48S/zB8MMeMHSGKYpXhIjbPxfuezITkaBH1wqv00DDQ==}
     engines: {node: 20 || >=22}
+
+  luxon@3.7.2:
+    resolution: {integrity: sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew==}
+    engines: {node: '>=12'}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -3118,6 +3134,10 @@ snapshots:
 
   cosmokit@1.8.1: {}
 
+  cron-parser@4.9.0:
+    dependencies:
+      luxon: 3.7.2
+
   csstype@3.2.3: {}
 
   debug@4.4.3:
@@ -3517,6 +3537,11 @@ snapshots:
       - supports-color
       - utf-8-validate
 
+  koishi-plugin-cron@3.1.0(koishi@4.18.10(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)):
+    dependencies:
+      cron-parser: 4.9.0
+      koishi: 4.18.10(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)
+
   koishi-plugin-markdown@1.1.1(koishi@4.18.10(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)):
     dependencies:
       koishi: 4.18.10(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)
@@ -3550,6 +3575,8 @@ snapshots:
       uuid: 10.0.0
 
   lru-cache@11.2.6: {}
+
+  luxon@3.7.2: {}
 
   magic-string@0.30.21:
     dependencies:
