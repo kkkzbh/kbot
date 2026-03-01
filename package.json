@@ -31,6 +31,7 @@
     "koishi-plugin-chatluna-deepseek-adapter": "^1.3.10",
     "koishi-plugin-chatluna-long-memory": "^1.3.1",
     "koishi-plugin-chatluna-mcp-client": "^1.3.3",
+    "koishi-plugin-chatluna-ollama-adapter": "^1.3.6",
     "koishi-plugin-chatluna-plugin-common": "^1.3.4",
     "koishi-plugin-chatluna-search-service": "^1.3.3",
     "koishi-plugin-chatluna-storage-service": "^1.0.3",

@@ -1,6 +1,27 @@
 name: qqbot-stack
 
 services:
+  ollama:
+    image: ${OLLAMA_IMAGE:-docker.io/ollama/ollama}:${OLLAMA_TAG:-latest}
+    container_name: ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text:latest}
+      TZ: ${TZ:-Asia/Shanghai}
+    command: >-
+      sh -lc "ollama serve &
+      pid=$!;
+      until ollama list >/dev/null 2>&1; do sleep 1; done;
+      ollama pull \"$OLLAMA_EMBED_MODEL\" || true;
+      wait $pid"
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - app_network
+    restart: unless-stopped
+
   pmhq:
     image: ${PMHQ_IMAGE:-docker.io/linyuchen/pmhq}:${PMHQ_TAG:-latest}
     container_name: pmhq
@@ -48,6 +69,7 @@ services:
 
 volumes:
   qq_volume:
+  ollama_data:
 
 networks:
   app_network:

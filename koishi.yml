@@ -52,13 +52,21 @@ plugins:
         ${{
         env.CHATLUNA_DEFAULT_MODEL || (env.OPENAI_MODEL && env.OPENAI_MODEL.includes('/') ?
         env.OPENAI_MODEL : 'deepseek/' + (env.OPENAI_MODEL || 'deepseek-chat')) }}
-      defaultEmbeddings: ${{ env.CHATLUNA_DEFAULT_EMBEDDINGS || '无' }}
+      defaultEmbeddings: >-
+        ${{ !env.CHATLUNA_DEFAULT_EMBEDDINGS || env.CHATLUNA_DEFAULT_EMBEDDINGS === '无' ||
+        env.CHATLUNA_DEFAULT_EMBEDDINGS === 'deepseek/deepseek-embedding' ? '无' :
+        env.CHATLUNA_DEFAULT_EMBEDDINGS }}
       defaultVectorStore: ${{ env.CHATLUNA_DEFAULT_VECTOR_STORE || 'luna-vdb' }}
     chatluna-deepseek-adapter:0o3zho:
       apiKeys:
         - - ${{ env.OPENAI_API_KEY || '' }}
           - ${{ env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
           - true
+    chatluna-ollama-adapter:2w5c8d:
+      apiEndpoints:
+        - - ${{ env.CHATLUNA_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434' }}
+          - ${{ env.CHATLUNA_OLLAMA_ENABLED !== 'false' }}
+      keepAlive: ${{ env.CHATLUNA_OLLAMA_KEEP_ALIVE !== 'false' }}
     puppeteer:0vx5c7: {}
     chatluna-search-service:3p16t2:
       searchEngine:
