@@ -4,12 +4,14 @@ import { parseExpression } from 'cron-parser';
 import type { AutomationTask, TaskScope } from '../types/task-automation.js';
 import {
   AutomationIntent,
+  buildNaturalCreateFallbackReply,
   isValidCronExpr,
   normalizeGroupId,
   parseAutomationIntentByRule,
   parseCronExpr,
   parseGroupSet,
   parseOnceRunAt,
+  selectDeliveryModelForTaskMessage,
 } from './task-automation-core.js';
 import {
   DEFAULT_CHAT_REPLY_SYSTEM_PROMPT,
@@ -21,6 +23,8 @@ import {
 } from './task-automation-llm.js';
 
 const logger = new Logger('task-automation');
+const SHORT_ONCE_TASK_WINDOW_MS = 60_000;
+const SHORT_ONCE_DELIVERY_TIMEOUT_MS = 2500;
 
 export const name = 'task-automation';
 export const inject = ['database'];
@@ -40,6 +44,7 @@ export interface Config {
   deliveryBaseUrl?: string;
   deliveryApiKey?: string;
   deliveryModel?: string;
+  deliveryFastModel?: string;
   deliveryTimeoutMs?: number;
   deliveryMaxTokens?: number;
   deliverySystemPrompt?: string;
@@ -73,6 +78,7 @@ export const Config: Schema<Config> = Schema.object({
     .description('到点文案生成模型 API Base URL（默认复用 OPENAI_BASE_URL）。'),
   deliveryApiKey: Schema.string().role('secret').description('到点文案生成模型 API Key（默认复用 OPENAI_API_KEY）。'),
   deliveryModel: Schema.string().default('deepseek-reasoner').description('到点文案生成模型（默认 deepseek-reasoner）。'),
+  deliveryFastModel: Schema.string().default('deepseek-chat').description('到点文案快速模型（默认 deepseek-chat）。'),
   deliveryTimeoutMs: Schema.natural().role('time').default(18000).description('到点文案生成模型超时（毫秒）。'),
   deliveryMaxTokens: Schema.natural().default(10000).description('到点文案生成模型 max_tokens（默认 10000）。'),
   deliverySystemPrompt: Schema.string().description('到点文案生成 system prompt（可选覆盖默认值）。'),
@@ -97,6 +103,7 @@ interface RuntimeConfig {
   deliveryBaseUrl: string;
   deliveryApiKey: string;
   deliveryModel: string;
+  deliveryFastModel: string;
   deliveryTimeoutMs: number;
   deliveryMaxTokens: number;
   deliverySystemPrompt: string;
@@ -133,6 +140,8 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
   const model = configuredIntentModel || envIntentModel || '';
   const configuredDeliveryModel = config.deliveryModel?.trim();
   const envDeliveryModel = process.env.TASK_AUTOMATION_DELIVERY_MODEL?.trim();
+  const configuredDeliveryFastModel = config.deliveryFastModel?.trim();
+  const envDeliveryFastModel = process.env.TASK_AUTOMATION_DELIVERY_FAST_MODEL?.trim();
   const configuredChatReplyModel = config.chatReplyModel?.trim();
   const envChatReplyModel = process.env.TASK_AUTOMATION_CHAT_REPLY_MODEL?.trim();
   const deliveryBaseUrl = (
@@ -147,6 +156,7 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     process.env.OPENAI_API_KEY ??
     apiKey;
   const deliveryModel = configuredDeliveryModel || envDeliveryModel || 'deepseek-reasoner';
+  const deliveryFastModel = configuredDeliveryFastModel || envDeliveryFastModel || 'deepseek-chat';
   const chatReplyModel = configuredChatReplyModel || envChatReplyModel || deliveryModel;
   const envDeliveryPrompt = process.env.TASK_AUTOMATION_DELIVERY_SYSTEM_PROMPT?.trim();
   const envChatReplyPrompt = process.env.TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT?.trim();
@@ -174,6 +184,7 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     deliveryBaseUrl,
     deliveryApiKey,
     deliveryModel,
+    deliveryFastModel,
     deliveryTimeoutMs: config.deliveryTimeoutMs ?? Number(process.env.TASK_AUTOMATION_DELIVERY_TIMEOUT_MS || 18000),
     deliveryMaxTokens: config.deliveryMaxTokens ?? Number(process.env.TASK_AUTOMATION_DELIVERY_MAX_TOKENS || 10000),
     deliverySystemPrompt,
@@ -265,8 +276,14 @@ function taskText(task: AutomationTask): string {
 }
 
 async function buildDeliveryMessage(task: AutomationTask, runtime: RuntimeConfig): Promise<string> {
+  const llmRuntime = toAutomationLlmRuntime(runtime);
+  llmRuntime.deliveryModel = selectDeliveryModelForTaskMessage(
+    task.message,
+    runtime.deliveryModel,
+    runtime.deliveryFastModel,
+  );
   return buildDeliveryMessageByModel(
-    toAutomationLlmRuntime(runtime),
+    llmRuntime,
     {
       kind: task.kind,
       scope: task.scope,
@@ -284,8 +301,16 @@ async function buildOnceTaskMessage(
   runAt: number,
   rawMessage: string,
 ): Promise<string> {
+  const now = Date.now();
+  const remainingMs = runAt - now;
+  const llmRuntime = toAutomationLlmRuntime(runtime);
+  llmRuntime.deliveryModel = selectDeliveryModelForTaskMessage(rawMessage, runtime.deliveryModel, runtime.deliveryFastModel);
+  if (remainingMs > 0 && remainingMs <= SHORT_ONCE_TASK_WINDOW_MS) {
+    llmRuntime.deliveryModel = runtime.deliveryFastModel;
+    llmRuntime.deliveryTimeoutMs = Math.min(llmRuntime.deliveryTimeoutMs, SHORT_ONCE_DELIVERY_TIMEOUT_MS);
+  }
   return buildDeliveryMessageByModel(
-    toAutomationLlmRuntime(runtime),
+    llmRuntime,
     {
       kind: 'once',
       scope: scope.scope,
@@ -294,6 +319,7 @@ async function buildOnceTaskMessage(
       message: rawMessage,
     },
     formatTimestamp,
+    now,
   );
 }
 
@@ -301,6 +327,13 @@ async function buildNaturalCreateReply(
   runtime: RuntimeConfig,
   payload: { kind: 'once' | 'cron'; runAt?: number | null; cronExpr?: string | null; message: string },
 ): Promise<string> {
+  const now = Date.now();
+  if (payload.kind === 'once') {
+    const runAt = payload.runAt ?? now;
+    if (runAt - now <= SHORT_ONCE_TASK_WINDOW_MS) {
+      return buildNaturalCreateFallbackReply(payload, now);
+    }
+  }
   return buildNaturalCreateReplyByModel(toAutomationLlmRuntime(runtime), payload, formatTimestamp);
 }
 
@@ -606,6 +639,33 @@ export function apply(ctx: Context, config: Config): void {
     return ['当前任务：', ...tasks.slice(0, 30).map((task) => `- ${taskText(task)}`)].join('\n');
   };
 
+  const enrichOnceTaskMessageAsync = (
+    taskId: number,
+    scope: ScopeContext,
+    runAt: number,
+    rawMessage: string,
+  ): void => {
+    void (async () => {
+      const finalMessage = await buildOnceTaskMessage(runtime, scope, runAt, rawMessage);
+      if (!finalMessage || finalMessage === rawMessage) return;
+
+      const [latest] = await ctx.database.get('automation_task', { id: taskId });
+      if (!latest || latest.kind !== 'once' || latest.status !== 'active') return;
+      if (latest.message !== rawMessage) return;
+
+      await ctx.database.set(
+        'automation_task',
+        { id: taskId },
+        {
+          message: finalMessage,
+          updatedAt: Date.now(),
+        },
+      );
+    })().catch((error) => {
+      logger.warn('task #%d async once message generation failed: %s', taskId, (error as Error).message);
+    });
+  };
+
   const handleIntent = async (session: Session, scope: ScopeContext, intent: AutomationIntent): Promise<boolean> => {
     if (!session.userId) return false;
 
@@ -695,19 +755,22 @@ export function apply(ctx: Context, config: Config): void {
           return true;
         }
         const rawMessage = (intent.message ?? '定时提醒').trim() || '定时提醒';
-        const finalMessage = await buildOnceTaskMessage(runtime, scope, runAt, rawMessage);
         const created = await createTask(session, scope, {
           kind: 'once',
           runAt,
-          message: finalMessage,
+          message: rawMessage,
         });
         if (created) {
-          const reply = await buildNaturalCreateReply(runtime, {
-            kind: 'once',
-            runAt,
-            message: created.message,
-          });
+          const reply = buildNaturalCreateFallbackReply(
+            {
+              kind: 'once',
+              runAt,
+              message: rawMessage,
+            },
+            Date.now(),
+          );
           await session.send(reply);
+          enrichOnceTaskMessageAsync(created.id, scope, runAt, rawMessage);
         }
         return true;
       }

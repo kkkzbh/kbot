@@ -7,6 +7,8 @@ import {
   parseAutomationIntentByRule,
   parseGroupSet,
   parseOnceRunAt,
+  selectDeliveryModelForTaskMessage,
+  shouldPreferReasonerForTaskMessage,
   shouldTryAutomationIntent,
 } from '../src/plugins/task-automation-core.js';
 
@@ -137,5 +139,14 @@ describe('task automation helpers', () => {
       base,
     );
     expect(reply).toBe('好，我记住了。到 明天09:15 我会提醒你：交周报');
+  });
+
+  it('prefers reasoner model for complex task messages', () => {
+    expect(shouldPreferReasonerForTaskMessage('帮我分析一下这段周报并给出优化方案')).toBe(true);
+    expect(shouldPreferReasonerForTaskMessage('晚上好')).toBe(false);
+    expect(selectDeliveryModelForTaskMessage('晚上好', 'deepseek-reasoner', 'deepseek-chat')).toBe('deepseek-chat');
+    expect(selectDeliveryModelForTaskMessage('帮我分析一下并给出优化方案', 'deepseek-reasoner', 'deepseek-chat')).toBe(
+      'deepseek-reasoner',
+    );
   });
 });

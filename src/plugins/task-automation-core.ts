@@ -47,6 +47,8 @@ const WEEKDAY_MAP: Record<string, number> = {
 
 const FIXED_TIMEZONE = 'Asia/Shanghai';
 const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
+const COMPLEX_REASONER_HINT =
+  /(分析|推理|证明|解释|归纳|总结|比较|方案|计划|提纲|润色|改写|翻译|算法|代码|脚本|sql|正则|多步骤|详细)/i;
 
 function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -254,6 +256,27 @@ export function buildNaturalCreateFallbackReply(
     return `好，我记住了。到 ${naturalRunAt} 我会提醒你：${payload.message}`;
   }
   return `好，我记住了。这个提醒我会按计划持续发你：${payload.message}`;
+}
+
+export function shouldPreferReasonerForTaskMessage(message: string): boolean {
+  const text = message.trim();
+  if (!text) return false;
+  if (text.length >= 48) return true;
+  if (/[\n\r]/.test(text)) return true;
+  if (COMPLEX_REASONER_HINT.test(text)) return true;
+  return false;
+}
+
+export function selectDeliveryModelForTaskMessage(
+  message: string,
+  deliveryModel: string,
+  fastModel = 'deepseek-chat',
+): string {
+  const complex = shouldPreferReasonerForTaskMessage(message);
+  const normalized = deliveryModel.trim().toLowerCase();
+  const isReasoner = normalized.includes('reasoner') || normalized.includes('r1');
+  if (complex) return deliveryModel;
+  return isReasoner ? fastModel : deliveryModel;
 }
 
 function parseDailyCron(text: string): string | null {
