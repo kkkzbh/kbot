@@ -1,6 +1,6 @@
-# ChatLuna 迁移说明
+# 聊天链路说明（ChatLuna）
 
-本页用于说明“从旧自定义群聊插件链路迁移到 ChatLuna 原生链路”后的行为变化与运维要点。
+本页描述当前唯一受支持的聊天链路、触发契约与验证要点。
 
 ## 当前主链路
 
@@ -12,46 +12,38 @@
 4. `@koishijs/plugin-database-sqlite`
 5. `@koishijs/plugin-commands`
 
-旧链路源码仍保留在 `src/plugins/group-chat.ts` / `src/plugins/group-chat-core.ts`，但默认不加载。
+## 已移除组件
 
-## 关键行为变化
+以下弃用组件已从仓库删除，不再提供回滚路径：
 
-### 1. 触发契约变化
+- `src/plugins/group-chat.ts`
+- `src/plugins/group-chat-core.ts`
+- `tests/group-chat.test.ts`
+- `src/types/chat.ts`
 
-- 迁移前（旧链路）：`CHAT_ENABLED_GROUPS + @机器人 + 文本` 触发。
-- 迁移后（当前）：遵循 ChatLuna 原生触发规则（`@`、昵称、私聊）。
+## 触发与权限契约
 
-这意味着：
-
-- 群聊是否响应不再由 `CHAT_ENABLED_GROUPS` 控制。
-- 被动触发策略由 ChatLuna 自身配置决定。
-
-### 2. 命令权限控制变化
-
-- 迁移后 `chatluna.*` 命令统一由 `@koishijs/plugin-commands` 控制。
+- 被动聊天触发遵循 ChatLuna 原生规则（`@`、昵称、私聊）。
+- 当前配置已启用“句中触发”：
+  - `isNickNameWithContent=true`：消息中任意位置包含机器人昵称即可触发。
+  - `allowAtReply=true`：消息中出现 `@机器人` 可触发（不要求句首）。
+- `chatluna.*` 命令统一由 `@koishijs/plugin-commands` 控制。
 - 默认权限门槛：`CHATLUNA_COMMAND_AUTHORITY=3`。
 - 被动聊天和命令权限是两条独立控制面，排障时需分别检查。
 
-### 3. 持久化能力变化
+## 持久化能力
 
-- 迁移后启用 `@koishijs/plugin-database-sqlite`。
+- 当前启用 `@koishijs/plugin-database-sqlite`。
 - 默认数据库路径：`./data/koishi.db`（可通过 `SQLITE_PATH` 覆盖）。
 - ChatLuna 房间/上下文可以跨 Koishi 重启保留。
 
-## 配置迁移建议
+## 配置建议
 
 1. 必填：`ONEBOT_SELF_ID`、`OPENAI_API_KEY`、`OPENAI_MODEL`、`SQLITE_PATH`、`CHATLUNA_COMMAND_AUTHORITY`。
 2. 建议保留 `OPENAI_BASE_URL=https://api.deepseek.com/v1`（按服务商调整）。
-3. 旧链路变量（如 `CHAT_ENABLED_GROUPS`、`CHAT_TRIGGER_MODE`）仅作回滚预留，不参与当前默认链路。
+3. 旧 `group-chat` 变量已移除，现有 `.env` 中如仍保留可手动清理。
 
-## 回滚路径（如需）
-
-1. 在 `koishi.yml` 恢复并启用旧 `./dist/plugins/group-chat` 插件配置块。
-2. 停用 `chatluna` 与 `chatluna-deepseek-adapter` 实例，避免重复回复。
-3. 按旧链路恢复 `CHAT_ENABLED_GROUPS`、`CHAT_TRIGGER_MODE` 等配置。
-4. 重启 Koishi 后在测试群验证触发行为。
-
-## 迁移后验证清单
+## 运行验证清单
 
 - `pnpm start` 启动后 Koishi 无插件加载错误。
 - OneBot WS 与 LLOneBot 正常连通（默认 `ws://127.0.0.1:3001`）。

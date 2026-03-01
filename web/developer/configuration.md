@@ -57,10 +57,13 @@
 | `defaultChatMode` | `plugin` | `chatluna.defaultChatMode` | 默认聊天模式 |
 | `OPENAI_MODEL` | `deepseek/deepseek-chat` | `chatluna.defaultModel` | 默认模型名 |
 | `CHATLUNA_COMMAND_AUTHORITY` | `3` | `commands.*.config.authority` | `chatluna.*` 命令所需权限 |
+| `isNickname` | `true` | `chatluna.isNickname` | 允许句首昵称触发 |
+| `isNickNameWithContent` | `true` | `chatluna.isNickNameWithContent` | 允许句中任意位置昵称触发 |
+| `allowAtReply` | `true` | `chatluna.allowAtReply` | 允许消息中 `@机器人` 触发 |
 
-## 旧链路（仅回滚）配置
+## 已移除配置
 
-以下变量保留在 `.env.example`，仅用于回滚到旧自定义群聊插件时：
+以下旧 `group-chat` 变量已弃用并从 `.env.example` 移除：
 
 - `CHAT_ENABLED_GROUPS`
 - `CHAT_TRIGGER_MODE`

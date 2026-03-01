@@ -96,7 +96,10 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 
 - Runtime trigger path now follows **ChatLuna native behavior**.
 - Supported passive triggers (default): `@机器人`、昵称触发、私聊触发（由 ChatLuna 配置控制）。
-- Group replies are no longer constrained by the old `CHAT_ENABLED_GROUPS + mention-only` custom plugin chain.
+- Current config allows in-content trigger:
+  - `isNickNameWithContent=true` (nickname can appear anywhere in sentence)
+  - `allowAtReply=true` (`@机器人` can appear anywhere in sentence)
+- Legacy custom `group-chat` chain has been removed from this repository.
 
 ## 6. Command authority
 
@@ -111,17 +114,15 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - No extra DB container is required.
 - ChatLuna rooms and context can persist across Koishi restarts.
 
-## 8. Migration and rollback
+## 8. Legacy removal status
 
-- Migration result:
-  - Old custom plugin source is retained: `src/plugins/group-chat.ts` / `src/plugins/group-chat-core.ts`.
-  - Old plugin loading is disabled in `koishi.yml`.
-  - New chain: `chatluna` + `chatluna-deepseek-adapter` + `database-sqlite` + `commands`.
-- Rollback steps:
-  - Re-enable the legacy `./dist/plugins/group-chat` block (template is kept as comments in `koishi.yml`).
-  - Disable `chatluna` and `chatluna-deepseek-adapter` instances.
-  - Keep/disable `database-sqlite` according to your rollback target.
-  - Restart Koishi and verify no duplicate replies.
+- Deprecated `group-chat` implementation has been removed:
+  - `src/plugins/group-chat.ts`
+  - `src/plugins/group-chat-core.ts`
+  - `tests/group-chat.test.ts`
+  - `src/types/chat.ts`
+- Current and only supported chain:
+  - `chatluna` + `chatluna-deepseek-adapter` + `database-sqlite` + `commands`
 
 ## 9. Quality checks
 

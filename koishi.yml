@@ -14,6 +14,9 @@ plugins:
     chatluna:0qm1bk:
       botNames:
         - 小祥
+      isNickname: true
+      isNickNameWithContent: true
+      allowAtReply: true
       defaultPreset: sakiko
       defaultModel: ${{ env.OPENAI_MODEL || 'deepseek/deepseek-chat' }}
     chatluna-deepseek-adapter:0o3zho:

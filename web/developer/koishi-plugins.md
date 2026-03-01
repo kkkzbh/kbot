@@ -53,16 +53,18 @@
 - 状态：当前已安装但未启用。
 - 说明：预留后续扩展使用，当前不参与运行链路。
 
-### `./dist/plugins/group-chat`（旧自定义链路）
+## 已移除组件
 
-- 状态：源码保留，但插件实例已在 `koishi.yml` 停用。
-- 说明：仅用于回滚场景，不参与当前主链路。
+- 弃用的 `group-chat` 自定义链路已从仓库移除，不属于可选插件。
 
 ## 触发契约（当前链路）
 
-- 当前被动触发遵循 ChatLuna 原生规则（`@`/昵称/私聊），不再由旧插件执行 `群白名单 + mention-only` 判定。
+- 当前被动触发遵循 ChatLuna 原生规则（`@`/昵称/私聊）。
+- 触发策略已配置为“句中包含即可触发”：
+  - `isNickNameWithContent=true`（昵称不要求句首）
+  - `allowAtReply=true`（`@机器人` 不要求句首）
 - 命令触发（`chatluna.*`）由 `@koishijs/plugin-commands` 统一做权限门槛控制。
-- 旧触发契约和回滚策略见：[ChatLuna 迁移说明](/developer/chatluna-migration)。
+- 运行链路详情见：[聊天链路说明](/developer/chatluna-migration)。
 
 ## 功能总览
 
