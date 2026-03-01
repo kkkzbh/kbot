@@ -1,4 +1,4 @@
-import { type Context, Logger, type Session } from 'koishi';
+import { type Context, Logger, type Session, type Universal } from 'koishi';
 import { injectUserStampedPrompt } from './chat-time-context.js';
 import { inferPlatformFromBaseUrl, normalizeRawModelName, resolvePlatform } from './model-utils.js';
 
@@ -47,6 +47,15 @@ type MiddlewareContextLike = {
 
 const logger = new Logger(name);
 const LLM_MODEL_TYPE = ChatLunaPlatformTypes.ModelType?.llm ?? 1;
+const splitSendOptions = new WeakSet<Universal.SendOptions>();
+
+function splitMessageByLines(message: string): string[] {
+  const normalized = message.replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n').filter((line) => line.trim().length > 0);
+  if (lines.length) return lines;
+  const fallback = message.trim();
+  return fallback ? [fallback] : [];
+}
 
 function listAllLlmModels(chatluna: ChatLunaLike): string[] {
   try {
@@ -76,6 +85,25 @@ function resolvePreferredPlatformForGuard(defaultModel: string | null): string |
 }
 
 export function apply(ctx: Context): void {
+  ctx.on('before-send', async (session, options) => {
+    if (splitSendOptions.has(options)) return;
+    if (session.platform !== 'onebot') return;
+    if (!session.channelId || !session.content || !session.content.includes('\n')) return;
+
+    const lines = splitMessageByLines(session.content);
+    if (lines.length <= 1) return;
+
+    for (const line of lines) {
+      const lineOptions: Universal.SendOptions = {
+        ...options,
+        session,
+      };
+      splitSendOptions.add(lineOptions);
+      await session.bot.sendMessage(session.channelId, line, undefined, lineOptions);
+    }
+    return true;
+  });
+
   ctx.on('ready', () => {
     const chatluna = (ctx as ContextWithChatLuna).chatluna;
     const chain = chatluna?.chatChain;

@@ -467,6 +467,32 @@ function resolveTaskBot(ctx: Context, task: AutomationTask) {
   );
 }
 
+function splitMessageByLines(message: string): string[] {
+  const normalized = message.replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n').filter((line) => line.trim().length > 0);
+  if (lines.length) return lines;
+  const fallback = message.trim();
+  return fallback ? [fallback] : [];
+}
+
+async function sendSessionMessageByLines(session: Session, message: string): Promise<void> {
+  const lines = splitMessageByLines(message);
+  for (const line of lines) {
+    await session.send(line);
+  }
+}
+
+async function sendBotMessageByLines(
+  bot: { sendMessage: (channelId: string, content: string) => Promise<unknown> },
+  channelId: string,
+  message: string,
+): Promise<void> {
+  const lines = splitMessageByLines(message);
+  for (const line of lines) {
+    await bot.sendMessage(channelId, line);
+  }
+}
+
 async function sendTaskMessage(ctx: Context, task: AutomationTask, runtime: RuntimeConfig): Promise<boolean> {
   const bot = resolveTaskBot(ctx, task);
   if (!bot) {
@@ -478,7 +504,7 @@ async function sendTaskMessage(ctx: Context, task: AutomationTask, runtime: Runt
 
   const content = task.scope === 'group' ? `${h.at(task.creatorId)} ${finalMessage}` : finalMessage;
   try {
-    await bot.sendMessage(task.channelId, content);
+    await sendBotMessageByLines(bot, task.channelId, content);
     return true;
   } catch (error) {
     logger.warn('task #%d delivery failed: %s', task.id, (error as Error).message);
@@ -655,7 +681,7 @@ export function apply(ctx: Context, config: Config): void {
       (task) => task.status === 'active' || task.status === 'paused',
     );
     if (alive.length >= runtime.maxTasksPerUser) {
-      await session.send(`任务创建失败：你已达到上限（${runtime.maxTasksPerUser}）。`);
+      await sendSessionMessageByLines(session, `任务创建失败：你已达到上限（${runtime.maxTasksPerUser}）。`);
       return null;
     }
 
@@ -700,60 +726,60 @@ export function apply(ctx: Context, config: Config): void {
           })
         ).filter(isVisibleInTaskList);
         tasks.sort((a, b) => a.id - b.id);
-        await session.send(formatTaskList(tasks));
+        await sendSessionMessageByLines(session, formatTaskList(tasks));
         return true;
       }
       case 'delete': {
         if (!intent.taskId) {
-          await session.send('删除失败：请提供任务编号。');
+          await sendSessionMessageByLines(session, '删除失败：请提供任务编号。');
           return true;
         }
         const task = await getScopedTask(ctx, intent.taskId, session.userId, scope);
         if (!task || task.status === 'deleted') {
-          await session.send(`删除失败：未找到任务 #${intent.taskId}。`);
+          await sendSessionMessageByLines(session, `删除失败：未找到任务 #${intent.taskId}。`);
           return true;
         }
         disposeCronTask(task.id);
         preloadedOnceTasks.delete(task.id);
         await ctx.database.set('automation_task', { id: task.id }, { status: 'deleted', updatedAt: Date.now() });
-        await session.send(`已删除任务 #${task.id}。`);
+        await sendSessionMessageByLines(session, `已删除任务 #${task.id}。`);
         return true;
       }
       case 'pause': {
         if (!intent.taskId) {
-          await session.send('暂停失败：请提供任务编号。');
+          await sendSessionMessageByLines(session, '暂停失败：请提供任务编号。');
           return true;
         }
         const task = await getScopedTask(ctx, intent.taskId, session.userId, scope);
         if (!task || task.status === 'deleted') {
-          await session.send(`暂停失败：未找到任务 #${intent.taskId}。`);
+          await sendSessionMessageByLines(session, `暂停失败：未找到任务 #${intent.taskId}。`);
           return true;
         }
         disposeCronTask(task.id);
         preloadedOnceTasks.delete(task.id);
         await ctx.database.set('automation_task', { id: task.id }, { status: 'paused', updatedAt: Date.now() });
-        await session.send(`已暂停任务 #${task.id}。`);
+        await sendSessionMessageByLines(session, `已暂停任务 #${task.id}。`);
         return true;
       }
       case 'resume': {
         if (!intent.taskId) {
-          await session.send('恢复失败：请提供任务编号。');
+          await sendSessionMessageByLines(session, '恢复失败：请提供任务编号。');
           return true;
         }
         const task = await getScopedTask(ctx, intent.taskId, session.userId, scope);
         if (!task || task.status === 'deleted') {
-          await session.send(`恢复失败：未找到任务 #${intent.taskId}。`);
+          await sendSessionMessageByLines(session, `恢复失败：未找到任务 #${intent.taskId}。`);
           return true;
         }
         await ctx.database.set('automation_task', { id: task.id }, { status: 'active', updatedAt: Date.now() });
         if (task.kind === 'cron') registerCronTask({ ...task, status: 'active' });
-        await session.send(`已恢复任务 #${task.id}。`);
+        await sendSessionMessageByLines(session, `已恢复任务 #${task.id}。`);
         return true;
       }
       case 'create-cron': {
         const cronExpr = (intent.cronExpr ?? '').trim();
         if (!cronExpr || !isValidCronExpr(cronExpr)) {
-          await session.send('创建失败：无法识别有效的周期表达式。');
+          await sendSessionMessageByLines(session, '创建失败：无法识别有效的周期表达式。');
           return true;
         }
         const created = await createTask(session, scope, {
@@ -768,7 +794,7 @@ export function apply(ctx: Context, config: Config): void {
             message: created.message,
           });
           if (reply) {
-            await session.send(reply);
+            await sendSessionMessageByLines(session, reply);
             return true;
           }
           return false;
@@ -778,7 +804,7 @@ export function apply(ctx: Context, config: Config): void {
       case 'create-once': {
         const runAt = intent.runAt;
         if (!runAt || runAt <= Date.now()) {
-          await session.send('创建失败：时间无效或已过。');
+          await sendSessionMessageByLines(session, '创建失败：时间无效或已过。');
           return true;
         }
         const rawMessage = (intent.message ?? '定时提醒').trim() || '定时提醒';
@@ -798,7 +824,7 @@ export function apply(ctx: Context, config: Config): void {
             message: rawMessage,
           });
           if (reply) {
-            await session.send(reply);
+            await sendSessionMessageByLines(session, reply);
             return true;
           }
           return false;
@@ -832,7 +858,7 @@ export function apply(ctx: Context, config: Config): void {
       if (!intent) return next();
 
       if (!(await checkPermission(session, runtime))) {
-        await session.send('你没有权限管理自动化任务。');
+        await sendSessionMessageByLines(session, '你没有权限管理自动化任务。');
         return;
       }
 
@@ -841,7 +867,7 @@ export function apply(ctx: Context, config: Config): void {
         if (handled) return;
       } catch (error) {
         logger.warn('automation intent handling failed: %s', (error as Error).message);
-        await session.send('自动化任务处理失败，请稍后重试。');
+        await sendSessionMessageByLines(session, '自动化任务处理失败，请稍后重试。');
         return;
       }
 
@@ -863,7 +889,8 @@ export function apply(ctx: Context, config: Config): void {
       })
     ).filter(isVisibleInTaskList);
     tasks.sort((a, b) => a.id - b.id);
-    return formatTaskList(tasks);
+    await sendSessionMessageByLines(session, formatTaskList(tasks));
+    return '';
   });
 
   ctx.command('task.del <id:number>', '删除任务').action(async ({ session }, id) => {
