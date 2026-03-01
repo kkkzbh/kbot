@@ -15,6 +15,7 @@ import {
 const logger = new Logger('task-automation');
 
 export const name = 'task-automation';
+export const inject = ['database'];
 
 export interface Config {
   enabledGroups?: string[] | string;
