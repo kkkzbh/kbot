@@ -145,6 +145,27 @@ describe('chatluna user+time prompt injection', () => {
     ).toBe('用户');
   });
 
+  it('falls back when group card is invisible unicode', () => {
+    // U+2062 INVISIBLE TIMES should be treated as empty display name.
+    expect(
+      resolveSessionDisplayName({
+        author: { nick: '⁢', name: 'QQ昵称' },
+        username: '平台昵称',
+        userId: '123456',
+      }),
+    ).toBe('平台昵称');
+  });
+
+  it('falls back when all higher-priority names are invisible unicode', () => {
+    expect(
+      resolveSessionDisplayName({
+        author: { nick: '⁢', name: '​' },
+        username: '⁠',
+        userId: '123456',
+      }),
+    ).toBe('123456');
+  });
+
   it('injects prefix using resolved group display name from production path', () => {
     const now = Date.parse('2026-03-01T16:40:16+08:00');
     const userName = resolveSessionDisplayName({
