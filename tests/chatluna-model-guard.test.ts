@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { formatUserStampedPrompt, injectUserStampedPrompt } from '../src/plugins/chat-time-context.js';
 import { inferPlatformFromBaseUrl, normalizeRawModelName, resolvePlatform } from '../src/plugins/model-utils.js';
+import { resolveSessionDisplayName } from '../src/plugins/session-user-name.js';
 
 describe('resolvePlatform', () => {
   it('returns platform from provider/model format', () => {
@@ -94,23 +95,64 @@ describe('chatluna user+time prompt injection', () => {
   });
 
   it('resolves group nickname with || fallback chain (handles empty string)', () => {
-    // Mirrors the updated userName resolution logic in chatluna-model-guard:
-    // session.author?.nick?.trim() || session.username || session.author?.name || session.userId || '用户'
-    function resolveUserName(authorNick?: string, username?: string, authorName?: string, userId?: string): string {
-      return authorNick?.trim() || username || authorName || userId || '用户';
-    }
-
     // Group card (群名片) takes priority
-    expect(resolveUserName('群内昵称', '平台昵称', 'QQ昵称', '123456')).toBe('群内昵称');
+    expect(
+      resolveSessionDisplayName({
+        author: { nick: '群内昵称', name: 'QQ昵称' },
+        username: '平台昵称',
+        userId: '123456',
+      }),
+    ).toBe('群内昵称');
     // Empty group card falls back to username
-    expect(resolveUserName('', '平台昵称', 'QQ昵称', '123456')).toBe('平台昵称');
+    expect(
+      resolveSessionDisplayName({
+        author: { nick: '', name: 'QQ昵称' },
+        username: '平台昵称',
+        userId: '123456',
+      }),
+    ).toBe('平台昵称');
     // Whitespace-only group card falls back to username
-    expect(resolveUserName('  ', '平台昵称', 'QQ昵称', '123456')).toBe('平台昵称');
+    expect(
+      resolveSessionDisplayName({
+        author: { nick: '  ', name: 'QQ昵称' },
+        username: '平台昵称',
+        userId: '123456',
+      }),
+    ).toBe('平台昵称');
     // Missing group card falls back through chain
-    expect(resolveUserName(undefined, '', 'QQ昵称', '123456')).toBe('QQ昵称');
+    expect(
+      resolveSessionDisplayName({
+        author: { name: 'QQ昵称' },
+        username: '',
+        userId: '123456',
+      }),
+    ).toBe('QQ昵称');
     // All empty falls back to userId
-    expect(resolveUserName(undefined, '', '', '123456')).toBe('123456');
+    expect(
+      resolveSessionDisplayName({
+        author: { name: '' },
+        username: '',
+        userId: '123456',
+      }),
+    ).toBe('123456');
     // Everything missing falls back to '用户'
-    expect(resolveUserName(undefined, '', '', '')).toBe('用户');
+    expect(
+      resolveSessionDisplayName({
+        author: { name: '' },
+        username: '',
+        userId: '',
+      }),
+    ).toBe('用户');
+  });
+
+  it('injects prefix using resolved group display name from production path', () => {
+    const now = Date.parse('2026-03-01T16:40:16+08:00');
+    const userName = resolveSessionDisplayName({
+      author: { nick: '群里的小明', name: 'QQ昵称' },
+      username: '平台昵称',
+      userId: '123456',
+    });
+    const output = injectUserStampedPrompt('今天天气怎么样', userName, now);
+    expect(output).toBe('群里的小明, 2026-03-01 16:40:16: 今天天气怎么样');
   });
 });

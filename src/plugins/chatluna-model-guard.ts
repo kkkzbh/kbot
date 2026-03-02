@@ -7,6 +7,7 @@ import {
   splitMessageByLines,
 } from './message-send-utils.js';
 import { inferPlatformFromBaseUrl, normalizeRawModelName, resolvePlatform } from './model-utils.js';
+import { resolveSessionDisplayName } from './session-user-name.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
@@ -111,7 +112,7 @@ export function apply(ctx: Context): void {
         const context = rawContext as MiddlewareContextLike;
         const inputMessage = context.options?.inputMessage;
         if (!inputMessage) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
-        const userName = session.author?.nick?.trim() || session.username || session.author?.name || session.userId || '用户';
+        const userName = resolveSessionDisplayName(session);
         inputMessage.content = injectUserStampedPrompt(inputMessage.content, userName);
         return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
       })
