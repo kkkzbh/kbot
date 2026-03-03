@@ -4,12 +4,81 @@ const MIN_SMART_SEND_DELAY_MS = 1000;
 const MAX_SMART_SEND_DELAY_MS = 4000;
 const bypassSplitOptions = new WeakSet<Universal.SendOptions>();
 
+type AsyncTask<T> = () => Promise<T>;
+
+export interface KeyedStrandRunner {
+  run<T>(key: string, task: AsyncTask<T>): Promise<T>;
+}
+
+export type SessionStrandLike = {
+  platform?: string;
+  isDirect?: boolean;
+  channelId?: string;
+  guildId?: string;
+  userId?: string;
+  bot?: {
+    selfId?: string;
+  };
+};
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function createKeyedStrandRunner(): KeyedStrandRunner {
+  const tails = new Map<string, Promise<void>>();
+
+  return {
+    async run<T>(key: string, task: AsyncTask<T>): Promise<T> {
+      const tail = tails.get(key);
+      const previous = tail ? tail.catch(() => undefined) : Promise.resolve();
+      let releaseCurrent: () => void = () => {};
+      const current = new Promise<void>((resolve) => {
+        releaseCurrent = () => resolve();
+      });
+      const nextTail = previous.then(() => current);
+      tails.set(key, nextTail);
+
+      await previous;
+
+      try {
+        return await task();
+      } finally {
+        releaseCurrent();
+        if (tails.get(key) === nextTail) {
+          tails.delete(key);
+        }
+      }
+    },
+  };
+}
+
+function resolveSessionStrandScope(session: SessionStrandLike): string | null {
+  if (session.isDirect) {
+    const privateId = session.channelId?.trim() || session.userId?.trim();
+    return privateId ? `private:${privateId}` : null;
+  }
+
+  const groupId = session.channelId?.trim() || session.guildId?.trim();
+  if (groupId) return `group:${groupId}`;
+
+  const fallbackPrivateId = session.userId?.trim();
+  return fallbackPrivateId ? `private:${fallbackPrivateId}` : null;
+}
+
+export function resolveSessionStrandKey(session: SessionStrandLike): string | null {
+  const platform = session.platform?.trim();
+  if (!platform) return null;
+
+  const botSelfId = session.bot?.selfId?.trim() || 'default-bot';
+  const scope = resolveSessionStrandScope(session);
+  if (!scope) return null;
+
+  return `${platform}:${botSelfId}:${scope}`;
 }
 
 export function createBypassLineSplitOptions(session?: Session): Universal.SendOptions {

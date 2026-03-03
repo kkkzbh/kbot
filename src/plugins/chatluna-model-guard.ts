@@ -1,7 +1,9 @@
 import { type Context, Logger, type Session } from 'koishi';
 import { injectUserStampedPrompt } from './chat-time-context.js';
 import {
+  createKeyedStrandRunner,
   createBypassLineSplitOptions,
+  resolveSessionStrandKey,
   sendByLinesWithSmartInterval,
   shouldBypassLineSplit,
   splitMessageByLines,
@@ -83,18 +85,46 @@ function resolvePreferredPlatformForGuard(defaultModel: string | null): string |
 }
 
 export function apply(ctx: Context): void {
+  const inboundStrand = createKeyedStrandRunner();
+  const sendStrand = createKeyedStrandRunner();
+
+  ctx.middleware(
+    async (session, next) => {
+      if (session.platform !== 'onebot') return next();
+      if (!session.userId || session.userId === session.bot?.selfId) return next();
+
+      const strandKey = resolveSessionStrandKey(session);
+      if (!strandKey) return next();
+
+      return inboundStrand.run(strandKey, async () => next());
+    },
+    true,
+  );
+
   ctx.on('before-send', async (session, options) => {
     if (shouldBypassLineSplit(options)) return;
     if (session.platform !== 'onebot') return;
     if (!session.channelId || !session.content || !session.content.includes('\n')) return;
 
+    const content = session.content;
+    const channelId = session.channelId;
     const lines = splitMessageByLines(session.content);
     if (lines.length <= 1) return;
 
-    await sendByLinesWithSmartInterval(session.content, async (line) => {
-      const lineOptions = createBypassLineSplitOptions(session);
-      await session.bot.sendMessage(session.channelId!, line, undefined, lineOptions);
-    });
+    const strandKey = resolveSessionStrandKey(session);
+    const sendTask = async () => {
+      await sendByLinesWithSmartInterval(content, async (line) => {
+        const lineOptions = createBypassLineSplitOptions(session);
+        await session.bot.sendMessage(channelId, line, undefined, lineOptions);
+      });
+    };
+
+    if (strandKey) {
+      await sendStrand.run(strandKey, sendTask);
+    } else {
+      await sendTask();
+    }
+
     return true;
   });
 
