@@ -54,7 +54,13 @@ export function apply(ctx: Context, config: Config): void {
     // 宝可梦关键词优先：命中后直接进入游戏命令链路，避免被普通聊天中间件吞掉。
     (session as any)[ROUTE_GUARD_KEY] = true;
     try {
-      await session.execute(routedCommand);
+      const rendered = await session.execute(routedCommand, true);
+      if (rendered.length) {
+        await session.send(rendered);
+      } else {
+        logger.warn('pokemon command returned empty response: %s', routedCommand);
+        await session.send('宝可梦指令未返回结果，请先发送“宝可梦”查看帮助。');
+      }
     } finally {
       delete (session as any)[ROUTE_GUARD_KEY];
     }
