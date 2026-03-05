@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { apply } from '../src/plugins/chatluna-search-hotfix.js';
-import { dedupeSearchResults, parseBingWebResults } from '../src/plugins/chatluna-search-hotfix-core.js';
+import {
+  dedupeSearchResults,
+  parseBingWebResults,
+  parseRewrittenSearchTerms,
+  rankSearchResultsByRelevance,
+  sanitizeSearchQueryInput,
+} from '../src/plugins/chatluna-search-hotfix-core.js';
 
 vi.mock('koishi', () => {
   type MockSchemaNode = {
@@ -81,6 +87,31 @@ describe('chatluna-search-hotfix', () => {
       { title: 'A', url: 'https://example.com/a', description: '1' },
       { title: 'C', url: 'https://example.com/c', description: '3' },
     ]);
+  });
+
+  it('sanitizes conversational search prompt into direct query', () => {
+    expect(sanitizeSearchQueryInput('你再搜一下 彩叶与绯叶是谁')).toBe('彩叶与绯叶是谁');
+    expect(sanitizeSearchQueryInput('@小祥 查一下 高康嘉 是谁 呢')).toBe('高康嘉 是谁');
+  });
+
+  it('parses rewritten zh/en terms from json content', () => {
+    const payload =
+      '```json\n{"zh_terms":["彩叶 与 绯叶","彩叶和绯夜 人物"],"en_terms":["Sayo and Hiye"]}\n```';
+    expect(parseRewrittenSearchTerms(payload)).toEqual({
+      zhTerms: ['彩叶 与 绯叶', '彩叶和绯夜 人物'],
+      enTerms: ['Sayo and Hiye'],
+    });
+  });
+
+  it('ranks by relevance and drops unrelated result set', () => {
+    const results = [
+      { title: '彩叶角色介绍', url: 'https://example.com/a', description: '角色资料' },
+      { title: 'Pascal 语法总结', url: 'https://example.com/pascal', description: '编程语言' },
+    ];
+    expect(rankSearchResultsByRelevance(results, ['彩叶'], 5)).toEqual([
+      { title: '彩叶角色介绍', url: 'https://example.com/a', description: '角色资料' },
+    ]);
+    expect(rankSearchResultsByRelevance(results, ['完全不存在的实体'], 5)).toEqual([]);
   });
 
   it('registers web_search tool when chatluna platform is available on ready', () => {

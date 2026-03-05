@@ -1,5 +1,12 @@
 import { Context, Logger, Schema } from 'koishi';
-import { dedupeSearchResults, parseBingWebResults, type SearchResult } from './chatluna-search-hotfix-core.js';
+import {
+  extractRelevanceKeywords,
+  parseBingWebResults,
+  parseRewrittenSearchTerms,
+  rankSearchResultsByRelevance,
+  sanitizeSearchQueryInput,
+  type SearchResult,
+} from './chatluna-search-hotfix-core.js';
 
 export const name = 'chatluna-search-hotfix';
 export const inject = ['chatluna'];
@@ -8,12 +15,31 @@ const logger = new Logger(name);
 const DEFAULT_TOP_K = 5;
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_WIKIPEDIA_BASE_URLS = ['https://zh.wikipedia.org/w/api.php', 'https://en.wikipedia.org/w/api.php'];
+const DEFAULT_QUERY_REWRITE_MODEL = process.env.OPENAI_MODEL || 'deepseek/deepseek-chat';
+const DEFAULT_QUERY_REWRITE_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1';
+const DEFAULT_QUERY_REWRITE_MAX_TERMS = 3;
+const QUERY_REWRITE_SYSTEM_PROMPT = [
+  '你是搜索词规划器，只输出 JSON。',
+  '你要把用户输入改写为“可直接用于搜索引擎”的词条，按中文和英文分组。',
+  '输出格式必须是：{"zh_terms":["..."],"en_terms":["..."]}',
+  '要求：',
+  '1) 删除口语前缀（例如：你搜一下、帮我查一下、麻烦你搜）。',
+  '2) 必须保留关键实体（人名、作品名、组织名）的原始写法。',
+  '3) zh_terms 每项 2-16 个中文字符；en_terms 每项 1-6 个英文词。',
+  '4) 每组最多 3 项，按相关性从高到低。',
+  '5) 禁止解释、禁止 markdown、禁止输出除 JSON 之外的内容。',
+].join('\n');
 
 export interface Config {
   enabled?: boolean;
   topK?: number;
   timeoutMs?: number;
   wikipediaBaseURL?: string[] | string;
+  queryRewriteEnabled?: boolean;
+  queryRewriteModel?: string;
+  queryRewriteBaseURL?: string;
+  queryRewriteApiKey?: string;
+  queryRewriteMaxTerms?: number;
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -24,12 +50,24 @@ export const Config: Schema<Config> = Schema.object({
     Schema.array(Schema.string()).role('table').description('Wikipedia API 基础 URL 列表。'),
     Schema.string().description('Wikipedia API 基础 URL（逗号分隔）。'),
   ]).description('Bing 结果不足时的 Wikipedia 兜底源。'),
+  queryRewriteEnabled: Schema.boolean().default(true).description('是否启用 DeepSeek 查询改写（输出中英文搜索词条）。'),
+  queryRewriteModel: Schema.string().default(DEFAULT_QUERY_REWRITE_MODEL).description('查询改写使用的模型。'),
+  queryRewriteBaseURL: Schema.string()
+    .default(DEFAULT_QUERY_REWRITE_BASE_URL)
+    .description('查询改写 API Base URL（OpenAI 兼容）。'),
+  queryRewriteApiKey: Schema.string().default('').description('查询改写 API Key（为空则跳过改写）。'),
+  queryRewriteMaxTerms: Schema.number().min(1).max(6).default(DEFAULT_QUERY_REWRITE_MAX_TERMS).description('查询改写最多保留词条数。'),
 });
 
 type RuntimeConfig = {
   topK: number;
   timeoutMs: number;
   wikipediaBaseURLs: string[];
+  queryRewriteEnabled: boolean;
+  queryRewriteModel: string;
+  queryRewriteBaseURL: string;
+  queryRewriteApiKey: string;
+  queryRewriteMaxTerms: number;
 };
 
 type HotfixToolDescriptor = {
@@ -51,6 +89,27 @@ function normalizeText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function normalizeBaseURL(raw: string): string {
+  return raw.trim().replace(/\/+$/, '');
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function takeUnique(items: string[], limit: number): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const raw of items) {
+    const normalized = normalizeText(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(normalized);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
 function parseWikipediaBaseURLs(raw?: string[] | string): string[] {
   if (Array.isArray(raw)) {
     const values = raw.map((item) => item.trim()).filter(Boolean);
@@ -67,10 +126,22 @@ function parseWikipediaBaseURLs(raw?: string[] | string): string[] {
 function toRuntimeConfig(config: Config): RuntimeConfig {
   const topK = Number(config.topK ?? DEFAULT_TOP_K);
   const timeoutMs = Number(config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const queryRewriteMaxTerms = Number(config.queryRewriteMaxTerms ?? DEFAULT_QUERY_REWRITE_MAX_TERMS);
+  const queryRewriteModel = normalizeText(config.queryRewriteModel ?? DEFAULT_QUERY_REWRITE_MODEL);
+  const queryRewriteBaseURL = normalizeBaseURL(config.queryRewriteBaseURL ?? DEFAULT_QUERY_REWRITE_BASE_URL);
+  const queryRewriteApiKey = normalizeText(config.queryRewriteApiKey ?? process.env.OPENAI_API_KEY ?? '');
+
   return {
-    topK: Number.isFinite(topK) ? Math.max(1, Math.min(10, Math.floor(topK))) : DEFAULT_TOP_K,
+    topK: Number.isFinite(topK) ? clampInteger(topK, 1, 10) : DEFAULT_TOP_K,
     timeoutMs: Number.isFinite(timeoutMs) ? Math.max(3000, Math.floor(timeoutMs)) : DEFAULT_TIMEOUT_MS,
     wikipediaBaseURLs: parseWikipediaBaseURLs(config.wikipediaBaseURL),
+    queryRewriteEnabled: config.queryRewriteEnabled !== false,
+    queryRewriteModel,
+    queryRewriteBaseURL,
+    queryRewriteApiKey,
+    queryRewriteMaxTerms: Number.isFinite(queryRewriteMaxTerms)
+      ? clampInteger(queryRewriteMaxTerms, 1, 6)
+      : DEFAULT_QUERY_REWRITE_MAX_TERMS,
   };
 }
 
@@ -104,12 +175,78 @@ async function searchByBingWeb(query: string, limit: number, timeoutMs: number):
   return parseBingWebResults(html, limit);
 }
 
+type ChatCompletionResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string | Array<{ type?: string; text?: string }>;
+    };
+  }>;
+};
+
+type QueryRewriteOutput = {
+  zhTerms: string[];
+  enTerms: string[];
+};
+
+function extractMessageText(content: string | Array<{ type?: string; text?: string }> | undefined): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => (typeof item.text === 'string' ? item.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function rewriteSearchTerms(query: string, runtime: RuntimeConfig): Promise<QueryRewriteOutput | null> {
+  if (!runtime.queryRewriteEnabled) return null;
+  if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
+
+  const response = await fetchWithTimeout(
+    `${runtime.queryRewriteBaseURL}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${runtime.queryRewriteApiKey}`,
+      },
+      body: JSON.stringify({
+        model: runtime.queryRewriteModel,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: QUERY_REWRITE_SYSTEM_PROMPT },
+          { role: 'user', content: `用户搜索请求：${query}` },
+        ],
+      }),
+    },
+    runtime.timeoutMs,
+  );
+
+  if (!response.ok) {
+    throw new Error(`query rewrite status=${response.status}`);
+  }
+
+  const payload = (await response.json()) as ChatCompletionResponse;
+  const messageText = extractMessageText(payload.choices?.[0]?.message?.content);
+  if (!messageText) return null;
+
+  const rewritten = parseRewrittenSearchTerms(messageText);
+  const zhTerms = takeUnique(rewritten.zhTerms, runtime.queryRewriteMaxTerms);
+  const enTerms = takeUnique(rewritten.enTerms, runtime.queryRewriteMaxTerms);
+  if (!zhTerms.length && !enTerms.length) return null;
+
+  return { zhTerms, enTerms };
+}
+
 function appendSearchParams(baseURL: string, params: Record<string, string>): string {
   const url = new URL(baseURL);
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.set(key, value);
   });
   return url.toString();
+}
+
+function shouldRequireStrictMatch(query: string): boolean {
+  return /(?:是谁|是什么人|人物|角色|资料|百科|是哪位)/.test(query);
 }
 
 async function searchByMediaWiki(
@@ -170,36 +307,68 @@ class StableWebSearchTool {
   constructor(private runtime: RuntimeConfig) {}
 
   async invoke(input: unknown): Promise<string> {
-    const query = normalizeText(typeof input === 'string' ? input : String(input ?? ''));
-    if (!query) return '[]';
+    const rawQuery = normalizeText(typeof input === 'string' ? input : String(input ?? ''));
+    if (!rawQuery) return '[]';
+
+    const normalizedQuery = sanitizeSearchQueryInput(rawQuery) || rawQuery;
+    let rewrittenTerms: QueryRewriteOutput | null = null;
+    try {
+      rewrittenTerms = await rewriteSearchTerms(normalizedQuery, this.runtime);
+    } catch (error) {
+      logger.warn('query rewrite failed: %s', (error as Error).message);
+    }
+
+    const searchTerms = takeUnique(
+      [
+        ...(rewrittenTerms?.zhTerms ?? []),
+        ...(rewrittenTerms?.enTerms ?? []),
+        normalizedQuery,
+      ],
+      this.runtime.queryRewriteMaxTerms,
+    );
+    const relevanceKeywords = extractRelevanceKeywords([rawQuery, normalizedQuery, ...searchTerms]);
 
     const merged: SearchResult[] = [];
 
-    try {
-      const bingResults = await searchByBingWeb(query, this.runtime.topK, this.runtime.timeoutMs);
-      merged.push(...bingResults);
-    } catch (error) {
-      logger.warn('bing web search failed: %s', (error as Error).message);
+    for (const term of searchTerms) {
+      try {
+        const bingResults = await searchByBingWeb(term, this.runtime.topK * 2, this.runtime.timeoutMs);
+        merged.push(...bingResults);
+      } catch (error) {
+        logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
+      }
+      if (merged.length >= this.runtime.topK * 4) break;
     }
 
-    if (merged.length < this.runtime.topK) {
+    let ranked = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
+
+    if (ranked.length < this.runtime.topK) {
+      const wikiTerms = searchTerms.filter((term) => /[\u3400-\u9fff]/.test(term)).slice(0, 2);
+      if (!wikiTerms.length) wikiTerms.push(normalizedQuery);
       for (const baseURL of this.runtime.wikipediaBaseURLs) {
-        try {
-          const wikiResults = await searchByMediaWiki(
-            query,
-            baseURL,
-            this.runtime.topK - merged.length,
-            this.runtime.timeoutMs,
-          );
-          merged.push(...wikiResults);
-        } catch (error) {
-          logger.debug('wikipedia fallback failed (%s): %s', baseURL, (error as Error).message);
+        for (const term of wikiTerms) {
+          if (ranked.length >= this.runtime.topK) break;
+          try {
+            const wikiResults = await searchByMediaWiki(
+              term,
+              baseURL,
+              this.runtime.topK,
+              this.runtime.timeoutMs,
+            );
+            merged.push(...wikiResults);
+          } catch (error) {
+            logger.debug('wikipedia fallback failed (%s, term=%s): %s', baseURL, term, (error as Error).message);
+          }
+          ranked = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
         }
-        if (merged.length >= this.runtime.topK) break;
+        if (ranked.length >= this.runtime.topK) break;
       }
     }
 
-    const output = dedupeSearchResults(merged, this.runtime.topK);
+    let output = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
+    if (!output.length && merged.length && !shouldRequireStrictMatch(normalizedQuery)) {
+      output = rankSearchResultsByRelevance(merged, [], this.runtime.topK);
+    }
     if (!output.length) {
       return JSON.stringify([{ title: 'No results found', description: 'No results found', url: '' }]);
     }
