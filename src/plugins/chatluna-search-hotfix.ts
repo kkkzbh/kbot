@@ -134,6 +134,63 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
   };
 }
 
+function buildModelCandidates(model: string): string[] {
+  const normalized = normalizeText(model);
+  if (!normalized) return [];
+  const candidates = [normalized];
+  if (normalized.includes('/')) {
+    const shortName = normalizeText(normalized.split('/').pop() ?? '');
+    if (shortName && shortName !== normalized) candidates.push(shortName);
+  }
+  return takeUnique(candidates, 2);
+}
+
+async function invokeOpenAICompatible(
+  runtime: RuntimeConfig,
+  systemPrompt: string,
+  userPrompt: string,
+): Promise<string> {
+  const modelCandidates = buildModelCandidates(runtime.queryRewriteModel);
+  if (!modelCandidates.length) {
+    throw new Error('no available model candidates');
+  }
+
+  let lastError: Error | null = null;
+  for (const model of modelCandidates) {
+    const response = await fetchWithTimeout(
+      `${runtime.queryRewriteBaseURL}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${runtime.queryRewriteApiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        }),
+      },
+      runtime.timeoutMs,
+    );
+
+    if (response.ok) {
+      const payload = (await response.json()) as ChatCompletionResponse;
+      return extractMessageText(payload.choices?.[0]?.message?.content);
+    }
+
+    const error = new Error(`openai-compatible status=${response.status} model=${model}`);
+    lastError = error;
+    if (response.status < 500) continue;
+    throw error;
+  }
+
+  throw lastError ?? new Error('openai-compatible request failed');
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -190,32 +247,7 @@ async function rewriteSearchTerms(query: string, runtime: RuntimeConfig): Promis
   if (!runtime.queryRewriteEnabled) return null;
   if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
 
-  const response = await fetchWithTimeout(
-    `${runtime.queryRewriteBaseURL}/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${runtime.queryRewriteApiKey}`,
-      },
-      body: JSON.stringify({
-        model: runtime.queryRewriteModel,
-        temperature: 0,
-        messages: [
-          { role: 'system', content: QUERY_REWRITE_SYSTEM_PROMPT },
-          { role: 'user', content: `用户搜索请求：${query}` },
-        ],
-      }),
-    },
-    runtime.timeoutMs,
-  );
-
-  if (!response.ok) {
-    throw new Error(`query rewrite status=${response.status}`);
-  }
-
-  const payload = (await response.json()) as ChatCompletionResponse;
-  const messageText = extractMessageText(payload.choices?.[0]?.message?.content);
+  const messageText = await invokeOpenAICompatible(runtime, QUERY_REWRITE_SYSTEM_PROMPT, `用户搜索请求：${query}`);
   if (!messageText) return null;
 
   const rewritten = parseRewrittenSearchTerms(messageText);
@@ -245,34 +277,15 @@ async function summarizeSearchResults(
   if (!runtime.queryRewriteEnabled) return null;
   if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
 
-  const response = await fetchWithTimeout(
-    `${runtime.queryRewriteBaseURL}/chat/completions`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${runtime.queryRewriteApiKey}`,
-      },
-      body: JSON.stringify({
-        model: runtime.queryRewriteModel,
-        temperature: 0,
-        messages: [
-          { role: 'system', content: SEARCH_SUMMARY_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: `用户问题：${query}\n候选搜索结果(JSON)：${JSON.stringify(rankedResults)}`,
-          },
-        ],
-      }),
-    },
-    runtime.timeoutMs,
-  );
-  if (!response.ok) {
-    throw new Error(`search summary status=${response.status}`);
-  }
-
-  const payload = (await response.json()) as ChatCompletionResponse;
-  const messageText = extractMessageText(payload.choices?.[0]?.message?.content).replace(/\r\n?/g, '\n').trim();
+  const messageText = (
+    await invokeOpenAICompatible(
+      runtime,
+      SEARCH_SUMMARY_SYSTEM_PROMPT,
+      `用户问题：${query}\n候选搜索结果(JSON)：${JSON.stringify(rankedResults)}`,
+    )
+  )
+    .replace(/\r\n?/g, '\n')
+    .trim();
   return messageText || null;
 }
 

@@ -398,4 +398,57 @@ describe('chatluna-search-hotfix', () => {
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].url).toBe('https://example.com/sayo');
   });
+
+  it('falls back to provider-stripped model name when openai endpoint rejects prefixed model', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.example.com/v1',
+      queryRewriteModel: 'deepseek/deepseek-chat',
+    });
+    const requestedModels: string[] = [];
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          model?: string;
+          messages?: Array<{ content?: string }>;
+        };
+        const model = body.model ?? '';
+        requestedModels.push(model);
+        if (model === 'deepseek/deepseek-chat') {
+          return createJsonResponse({ error: 'Model Not Exist' }, 400);
+        }
+        const systemPrompt = body.messages?.[0]?.content ?? '';
+        if (systemPrompt.includes('搜索关键词规划器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '{"zh_terms":["彩叶"],"en_terms":[]}' } }],
+          });
+        }
+        if (systemPrompt.includes('搜索结果总结器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '结论：彩叶是角色名\n来源：https://example.com/sayo' } }],
+          });
+        }
+      }
+      if (url.includes('cn.bing.com/search')) {
+        return new Response(
+          createBingHtml([
+            {
+              title: '彩叶 角色介绍',
+              url: 'https://example.com/sayo',
+              description: '彩叶是某作品角色',
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = await tool.invoke('彩叶');
+    expect(output).toContain('结论：彩叶是角色名');
+    expect(requestedModels).toContain('deepseek/deepseek-chat');
+    expect(requestedModels).toContain('deepseek-chat');
+  });
 });
