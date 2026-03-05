@@ -32,14 +32,17 @@ type RuntimeConfig = {
   wikipediaBaseURLs: string[];
 };
 
+type HotfixToolDescriptor = {
+  createTool: (params: unknown) => unknown;
+  selector: () => boolean;
+};
+
+type PlatformLike = {
+  registerTool?: (name: string, tool: HotfixToolDescriptor) => unknown;
+};
+
 type ChatLunaLike = {
-  registerTool?: (
-    name: string,
-    tool: {
-      createTool: (params: unknown) => unknown;
-      selector: () => boolean;
-    },
-  ) => void;
+  platform?: PlatformLike;
 };
 
 type ContextWithChatLuna = Context & { chatluna?: ChatLunaLike };
@@ -204,21 +207,35 @@ class StableWebSearchTool {
   }
 }
 
+function registerWebSearchHotfix(platform: PlatformLike | undefined, runtime: RuntimeConfig): boolean {
+  if (!platform?.registerTool) return false;
+  platform.registerTool('web_search', {
+    createTool: () => new StableWebSearchTool(runtime),
+    selector: () => true,
+  });
+  return true;
+}
+
 export function apply(ctx: Context, config: Config): void {
   const runtime = toRuntimeConfig(config);
-  ctx.on('ready', () => {
-    if (config.enabled === false) return;
+  let registered = false;
+  let warnedUnavailable = false;
+  const ensureHotfixRegistered = (trigger: string) => {
+    if (config.enabled === false || registered) return;
     const chatluna = (ctx as ContextWithChatLuna).chatluna;
-    if (!chatluna?.registerTool) {
-      logger.warn('chatluna service is not available, skip web_search hotfix.');
+    if (!registerWebSearchHotfix(chatluna?.platform, runtime)) {
+      if (!warnedUnavailable || trigger === 'ready') {
+        logger.warn('chatluna platform is not available yet, retry web_search hotfix later.');
+        warnedUnavailable = true;
+      }
       return;
     }
-
-    chatluna.registerTool('web_search', {
-      createTool: () => new StableWebSearchTool(runtime),
-      selector: () => true,
-    });
-
+    registered = true;
     logger.info('registered stable web_search hotfix (topK=%d).', runtime.topK);
+  };
+
+  ctx.on('ready', () => {
+    ensureHotfixRegistered('ready');
   });
+  ctx.setInterval(() => ensureHotfixRegistered('interval'), 15_000);
 }
