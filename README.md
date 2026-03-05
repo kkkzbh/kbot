@@ -203,6 +203,7 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - Common issues:
   - startup reports missing `downloads` service: confirm `downloads:*` exists in `koishi.yml`.
   - startup reports missing `canvas` service or puppeteer/chrome errors: confirm `canvas:*` exists in `koishi.yml`.
+  - pokemon image text shows square/tofu glyphs: ensure `downloads` subdirs are traversable (`x` bit). Bridge plugin now auto-fixes `bucket2-*` mode and auto-registers `zpix.ttf`.
   - image load failure/timeouts: switch `POKEMON_BATTLE_IMAGE_SOURCE` to gitee source:
     `https://gitee.com/maikama/pokemon-fusion-image/raw/master`.
 - Deploy note:
