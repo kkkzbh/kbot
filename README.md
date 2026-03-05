@@ -184,7 +184,28 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - `TASK_AUTOMATION_CHAT_REPLY_MAX_TOKENS`：创建任务自然回复 `max_tokens`（默认 `10000`）。
 - `TASK_AUTOMATION_CHAT_REPLY_SYSTEM_PROMPT`：创建任务自然回复专用 system prompt（可选覆盖默认值）。
 
-## 12. Quality checks
+## 12. Pokemon battle plugin
+
+- `koishi-plugin-pokemon-battle` is loaded through local bridge plugin `./dist/plugins/pokemon-battle-bridge`.
+- Runtime dependencies are provided by:
+  - `koishi-plugin-downloads` (`downloads` service)
+  - `koishi-plugin-puppeteer` (`canvas` service)
+  - existing `database-sqlite` + `cron`
+- Default command access is open to all group members (no extra authority gate).
+- Environment variables:
+  - `POKEMON_BATTLE_ENABLED`：whether to enable pokemon plugin (default `true`).
+  - `POKEMON_BATTLE_IMAGE_SOURCE`：pokemon image base URL (default `https://raw.githubusercontent.com/MAIxxxIAM/pokemonFusionImage/main`).
+  - `POKEMON_DOWNLOADS_OUTPUT`：downloads plugin output directory (default `./downloads`).
+- Quick rollback:
+  - set `POKEMON_BATTLE_ENABLED=false`, then restart `qqbot.target`.
+- Common issues:
+  - startup reports missing `downloads` service: confirm `downloads:*` exists in `koishi.yml`.
+  - image load failure/timeouts: switch `POKEMON_BATTLE_IMAGE_SOURCE` to gitee source:
+    `https://gitee.com/maikama/pokemon-fusion-image/raw/master`.
+- Deploy note:
+  - `Deploy` workflow always overwrites server `.env` from secret `QQBOT_DOTENV`, so update this secret after changing pokemon env vars.
+
+## 13. Quality checks
 
 ```bash
 pnpm docs:build
@@ -193,13 +214,13 @@ pnpm test
 pnpm build
 ```
 
-## 13. Fedora / Podman notes
+## 14. Fedora / Podman notes
 
 - This project is built for Podman (not Docker Desktop).
 - `compose.yaml` uses `:Z` on bind mount for SELinux Enforcing.
 - Container should call host via `host.containers.internal`, not `127.0.0.1`.
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 - No reply in group:
   - Confirm ChatLuna is loaded and DeepSeek adapter is loaded.
@@ -223,7 +244,7 @@ pnpm build
   - `chatluna.*`：确认账号 authority >= `CHATLUNA_COMMAND_AUTHORITY`。
   - `task.*`：若 `TASK_AUTOMATION_PERMISSION=authority3`，确认账号 authority >= 3。
 
-## 14. Run as `systemd --user` (recommended)
+## 16. Run as `systemd --user` (recommended)
 
 This project can be managed as a user-level systemd stack so you do not need to keep WebStorm open.
 
@@ -265,7 +286,7 @@ Enable linger so services can run without an active desktop login:
 loginctl enable-linger kkkzbh
 ```
 
-## 15. `systemd` logs and troubleshooting
+## 17. `systemd` logs and troubleshooting
 
 Check unit status:
 
@@ -293,7 +314,7 @@ Common issues:
 - `qqbot-stack.service` fails: confirm Podman compose plugin is installed and `compose.yaml` exists.
 - Service not started after reboot: confirm `systemctl --user is-enabled qqbot.target` and `loginctl show-user kkkzbh | grep Linger`.
 
-## 16. GitHub CI/CD auto deploy (push to `main`)
+## 18. GitHub CI/CD auto deploy (push to `main`)
 
 This repo now includes:
 
@@ -306,7 +327,7 @@ Behavior:
 - `Deploy` runs on `push` to `main` (or manual `workflow_dispatch`).
 - `Deploy` SSHes to your server, `rsync`s project files, then runs `pnpm install`, `pnpm build`, and restarts `qqbot.target`.
 
-### 16.1 GitHub Actions secrets (required)
+### 18.1 GitHub Actions secrets (required)
 
 - `QQBOT_SERVER_HOST`: deploy server host/IP
 - `QQBOT_SERVER_USER`: SSH login user
@@ -314,13 +335,13 @@ Behavior:
 - `QQBOT_SSH_KNOWN_HOSTS`: optional but recommended (`ssh-keyscan` output)
 - `QQBOT_DOTENV`: production `.env` full content (multiline secret)
 
-### 16.2 GitHub Actions variables (optional)
+### 18.2 GitHub Actions variables (optional)
 
 - `QQBOT_SERVER_PORT` (default: `22`)
 - `QQBOT_SERVER_APP_DIR` (default: `/opt/qqbot/current`)
 - `QQBOT_SYSTEMD_TARGET` (default: `qqbot.target`)
 
-### 16.3 One-time server preparation
+### 18.3 One-time server preparation
 
 1. Prepare deploy directory (example uses default path):
 
@@ -362,7 +383,7 @@ systemctl --user enable qqbot.target
 loginctl enable-linger <server_user>
 ```
 
-### 16.4 First push to GitHub
+### 18.4 First push to GitHub
 
 ```bash
 git remote add origin git@github.com:kkkzbh/kbot.git
@@ -372,11 +393,11 @@ git push -u origin main
 
 After this push, GitHub Actions will run CI and then deploy automatically.
 
-### 16.5 Manual deploy trigger
+### 18.5 Manual deploy trigger
 
 GitHub repo -> `Actions` -> `Deploy` -> `Run workflow`.
 
-### 16.6 Common deploy failures
+### 18.6 Common deploy failures
 
 - `User systemd bus not available`:
   - run `loginctl enable-linger <server_user>` on server, and ensure user service session bus exists.

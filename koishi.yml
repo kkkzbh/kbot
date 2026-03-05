@@ -14,7 +14,14 @@ plugins:
       uiPath: ${{ env.KOISHI_CONSOLE_UI_PATH || '/console' }}
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
+    downloads:pokemon:
+      output: ${{ env.POKEMON_DOWNLOADS_OUTPUT || './downloads' }}
     cron:task: {}
+    ./dist/plugins/pokemon-battle-bridge:pokemon-battle:
+      enabled: ${{ env.POKEMON_BATTLE_ENABLED !== 'false' }}
+      imageSource: >-
+        ${{ env.POKEMON_BATTLE_IMAGE_SOURCE ||
+        'https://raw.githubusercontent.com/MAIxxxIAM/pokemonFusionImage/main' }}
     ./dist/plugins/task-automation:automation:
       enabledGroups: ${{ env.CHAT_ENABLED_GROUPS || '' }}
       listenPrivate: ${{ env.TASK_AUTOMATION_LISTEN_PRIVATE !== 'false' }}

@@ -11,6 +11,7 @@ export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.deepseek.com/v1}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-ci-smoke}"
 export OPENAI_MODEL="${OPENAI_MODEL:-deepseek/deepseek-chat}"
 export TASK_AUTOMATION_INTENT_ENABLED="${TASK_AUTOMATION_INTENT_ENABLED:-false}"
+export POKEMON_BATTLE_ENABLED="${POKEMON_BATTLE_ENABLED:-false}"
 
 LOG_FILE="$(mktemp)"
 TMP_KOISHI_YML="$(mktemp "$ROOT_DIR/koishi-smoke-XXXXXX.yml")"
