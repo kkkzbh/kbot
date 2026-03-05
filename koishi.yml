@@ -112,6 +112,7 @@ plugins:
       tavilyApiKey: ${{ env.CHATLUNA_TAVILY_API_KEY || '' }}
       bingSearchApiKey: ${{ env.CHATLUNA_BING_SEARCH_API_KEY || '' }}
       searxngBaseURL: ${{ env.CHATLUNA_SEARXNG_BASE_URL || 'https://paulgo.io' }}
+    ./dist/plugins/chatluna-search-hotfix:8u12rm: {}
     chatluna-plugin-common:qf1a6x:
       think: ${{ env.CHATLUNA_COMMON_THINK === 'true' }}
       send: ${{ env.CHATLUNA_COMMON_SEND !== 'false' }}
