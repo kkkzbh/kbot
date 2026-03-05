@@ -191,7 +191,7 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - 关键词优先路由：命中宝可梦指令关键词时，优先进入宝可梦命令链路；未命中才进入普通聊天链路。
 - Runtime dependencies are provided by:
   - `koishi-plugin-downloads` (`downloads` service)
-  - `koishi-plugin-puppeteer` (`canvas` service)
+  - `koishi-plugin-canvas` (`canvas` service)
   - existing `database-sqlite` + `cron`
 - Default command access is open to all group members (no extra authority gate).
 - Environment variables:
@@ -202,6 +202,7 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
   - set `POKEMON_BATTLE_ENABLED=false`, then restart `qqbot.target`.
 - Common issues:
   - startup reports missing `downloads` service: confirm `downloads:*` exists in `koishi.yml`.
+  - startup reports missing `canvas` service or puppeteer/chrome errors: confirm `canvas:*` exists in `koishi.yml`.
   - image load failure/timeouts: switch `POKEMON_BATTLE_IMAGE_SOURCE` to gitee source:
     `https://gitee.com/maikama/pokemon-fusion-image/raw/master`.
 - Deploy note:

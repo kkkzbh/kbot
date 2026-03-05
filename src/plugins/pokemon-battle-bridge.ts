@@ -38,6 +38,14 @@ function parseEnabled(raw?: string): boolean | undefined {
   return undefined;
 }
 
+function hasRenderableOutput(rendered: unknown): boolean {
+  if (rendered == null) return false;
+  if (typeof rendered === 'string') return rendered.length > 0;
+  if (Array.isArray(rendered)) return rendered.length > 0;
+
+  return true;
+}
+
 export function apply(ctx: Context, config: Config): void {
   const enabledFromEnv = parseEnabled(process.env.POKEMON_BATTLE_ENABLED);
   const isCi = String(process.env.CI ?? '').toLowerCase() === 'true';
@@ -55,12 +63,15 @@ export function apply(ctx: Context, config: Config): void {
     (session as any)[ROUTE_GUARD_KEY] = true;
     try {
       const rendered = await session.execute(routedCommand, true);
-      if (rendered.length) {
+      if (hasRenderableOutput(rendered)) {
         await session.send(rendered);
       } else {
         logger.warn('pokemon command returned empty response: %s', routedCommand);
         await session.send('宝可梦指令未返回结果，请先发送“宝可梦”查看帮助。');
       }
+    } catch (error) {
+      logger.warn('pokemon command failed: %s (%o)', routedCommand, error);
+      await session.send('宝可梦指令执行异常，请稍后重试。');
     } finally {
       delete (session as any)[ROUTE_GUARD_KEY];
     }

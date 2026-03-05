@@ -14,6 +14,7 @@ plugins:
       uiPath: ${{ env.KOISHI_CONSOLE_UI_PATH || '/console' }}
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
+    canvas:pokemon: {}
     downloads:pokemon:
       output: ${{ env.POKEMON_DOWNLOADS_OUTPUT || './downloads' }}
     cron:task: {}
