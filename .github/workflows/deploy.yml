@@ -105,6 +105,8 @@ jobs:
             --exclude='dist' \
             --exclude='.env' \
             --exclude='data' \
+            --exclude='downloads' \
+            --exclude='zpix.ttf' \
             --exclude='koishi-runtime.log' \
             -e "ssh -p ${DEPLOY_PORT}" \
             ./ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_APP_DIR}/"
