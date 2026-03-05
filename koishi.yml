@@ -9,6 +9,9 @@ plugins:
     server:0b8t2q:
       host: ${{ env.KOISHI_HOST || '0.0.0.0' }}
       port: ${{ +env.KOISHI_PORT || 5140 }}
+    console:9xw6ka:
+      open: false
+      uiPath: ${{ env.KOISHI_CONSOLE_UI_PATH || '/console' }}
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
     cron:task: {}

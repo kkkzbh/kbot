@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@koishijs/plugin-commands": "^3.5.5",
+    "@koishijs/plugin-console": "^5.30.11",
     "@koishijs/plugin-database-sqlite": "^4.7.0",
     "@koishijs/plugin-http": "^0.6.3",
     "@koishijs/plugin-proxy-agent": "^0.3.3",
