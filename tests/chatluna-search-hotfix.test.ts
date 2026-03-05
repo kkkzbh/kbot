@@ -3,7 +3,15 @@ import { apply } from '../src/plugins/chatluna-search-hotfix.js';
 import { dedupeSearchResults, parseBingWebResults } from '../src/plugins/chatluna-search-hotfix-core.js';
 
 vi.mock('koishi', () => {
-  const createSchemaNode = (): Record<string, (...args: unknown[]) => ReturnType<typeof createSchemaNode>> => ({
+  type MockSchemaNode = {
+    default: () => MockSchemaNode;
+    description: () => MockSchemaNode;
+    min: () => MockSchemaNode;
+    max: () => MockSchemaNode;
+    role: () => MockSchemaNode;
+  };
+
+  const createSchemaNode = (): MockSchemaNode => ({
     default: () => createSchemaNode(),
     description: () => createSchemaNode(),
     min: () => createSchemaNode(),
