@@ -5,6 +5,7 @@ import {
   createBypassLineSplitOptions,
   dropLeadingLeakedReasoningLines,
   resolveSessionStrandKey,
+  sanitizeLeakedReasoningMessage,
   sendByLinesWithSmartInterval,
   shouldBypassLineSplit,
   splitMessageByLines,
@@ -105,7 +106,15 @@ export function apply(ctx: Context): void {
   ctx.on('before-send', async (session, options) => {
     if (shouldBypassLineSplit(options)) return;
     if (session.platform !== 'onebot') return;
-    if (!session.channelId || !session.content || !session.content.includes('\n')) return;
+    if (!session.channelId || !session.content) return;
+
+    const sanitizedContent = sanitizeLeakedReasoningMessage(session.content);
+    if (sanitizedContent && sanitizedContent !== session.content) {
+      session.content = sanitizedContent;
+      logger.warn('sanitized leaked reasoning output for onebot reply.');
+    }
+
+    if (!session.content.includes('\n')) return;
 
     const channelId = session.channelId;
     const rawLines = splitMessageByLines(session.content);

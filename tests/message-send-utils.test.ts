@@ -5,6 +5,7 @@ import {
   dropLeadingLeakedReasoningLines,
   looksLikeLeakedReasoningLine,
   resolveSessionStrandKey,
+  sanitizeLeakedReasoningMessage,
   sendByLinesWithSmartInterval,
   splitMessageByLines,
 } from '../src/plugins/message-send-utils.js';
@@ -34,6 +35,18 @@ describe('message send utils', () => {
 
     expect(looksLikeLeakedReasoningLine(lines[0])).toBe(false);
     expect(dropLeadingLeakedReasoningLines(lines)).toEqual(lines);
+  });
+
+  it('sanitizes single-line leaked reasoning into fallback search clarification', () => {
+    const input =
+      '用户让我搜索“彩叶与辉叶”，但搜索工具似乎不可用。我需要确认是否应该尝试其他方式获取信息，还是直接告知用户工具问题。根据我的身份设定，我是丰川祥子，一个普通高中生，不应该有特殊的技术能力。我应该以角色身份自然回应。';
+
+    expect(sanitizeLeakedReasoningMessage(input)).toBe('你想让我搜什么具体内容呢？');
+  });
+
+  it('keeps useful sentence when leaked sentence and normal sentence are mixed in one line', () => {
+    const input = '根据之前的对话，用户只说“搜一下”。你想让我搜什么具体内容呢？';
+    expect(sanitizeLeakedReasoningMessage(input)).toBe('你想让我搜什么具体内容呢？');
   });
 
   it('keeps smart delay within 1-4 seconds', () => {
