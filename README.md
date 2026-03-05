@@ -187,6 +187,8 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 ## 12. Pokemon battle plugin
 
 - `koishi-plugin-pokemon-battle` is loaded through local bridge plugin `./dist/plugins/pokemon-battle-bridge`.
+- CI 环境默认禁用该插件（除非显式设置 `POKEMON_BATTLE_ENABLED=true`），避免 CI 触发资源下载。
+- 关键词优先路由：命中宝可梦指令关键词时，优先进入宝可梦命令链路；未命中才进入普通聊天链路。
 - Runtime dependencies are provided by:
   - `koishi-plugin-downloads` (`downloads` service)
   - `koishi-plugin-puppeteer` (`canvas` service)
