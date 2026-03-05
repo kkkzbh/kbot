@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   calculateSmartSendDelayMs,
   createKeyedStrandRunner,
+  dropLeadingLeakedReasoningLines,
+  looksLikeLeakedReasoningLine,
   resolveSessionStrandKey,
   sendByLinesWithSmartInterval,
   splitMessageByLines,
@@ -14,6 +16,24 @@ describe('message send utils', () => {
 
   it('splits multiline text and removes blank lines', () => {
     expect(splitMessageByLines('第一行\r\n\r\n第二行\n  \n第三行')).toEqual(['第一行', '第二行', '第三行']);
+  });
+
+  it('drops leaked reasoning first line when normal reply lines follow', () => {
+    const lines = splitMessageByLines(
+      '用户让我搜索东西，但没说具体搜什么。我需要确认用户想让我搜什么具体内容。\n你想让我搜什么具体内容呢？\n告诉我具体内容我才能帮你搜啊',
+    );
+
+    expect(dropLeadingLeakedReasoningLines(lines)).toEqual([
+      '你想让我搜什么具体内容呢？',
+      '告诉我具体内容我才能帮你搜啊',
+    ]);
+  });
+
+  it('keeps normal lines that merely start with 用户', () => {
+    const lines = splitMessageByLines('用户协议你看过吗？\n我还没看完');
+
+    expect(looksLikeLeakedReasoningLine(lines[0])).toBe(false);
+    expect(dropLeadingLeakedReasoningLines(lines)).toEqual(lines);
   });
 
   it('keeps smart delay within 1-4 seconds', () => {

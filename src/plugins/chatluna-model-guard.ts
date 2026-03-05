@@ -3,6 +3,7 @@ import { injectUserStampedPrompt } from './chat-time-context.js';
 import {
   createKeyedStrandRunner,
   createBypassLineSplitOptions,
+  dropLeadingLeakedReasoningLines,
   resolveSessionStrandKey,
   sendByLinesWithSmartInterval,
   shouldBypassLineSplit,
@@ -106,14 +107,23 @@ export function apply(ctx: Context): void {
     if (session.platform !== 'onebot') return;
     if (!session.channelId || !session.content || !session.content.includes('\n')) return;
 
-    const content = session.content;
     const channelId = session.channelId;
-    const lines = splitMessageByLines(session.content);
-    if (lines.length <= 1) return;
+    const rawLines = splitMessageByLines(session.content);
+    if (rawLines.length <= 1) return;
+    const lines = dropLeadingLeakedReasoningLines(rawLines);
+    const shouldIntercept = lines.length !== rawLines.length || lines.length > 1;
+    if (!shouldIntercept) return;
 
     const strandKey = resolveSessionStrandKey(session);
     const sendTask = async () => {
-      await sendByLinesWithSmartInterval(content, async (line) => {
+      if (!lines.length) return;
+      if (lines.length === 1) {
+        const lineOptions = createBypassLineSplitOptions(session);
+        await session.bot.sendMessage(channelId, lines[0], undefined, lineOptions);
+        return;
+      }
+
+      await sendByLinesWithSmartInterval(lines.join('\n'), async (line) => {
         const lineOptions = createBypassLineSplitOptions(session);
         await session.bot.sendMessage(channelId, line, undefined, lineOptions);
       });

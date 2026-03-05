@@ -3,6 +3,8 @@ import type { Session, Universal } from 'koishi';
 const MIN_SMART_SEND_DELAY_MS = 1000;
 const MAX_SMART_SEND_DELAY_MS = 4000;
 const bypassSplitOptions = new WeakSet<Universal.SendOptions>();
+const LEAKED_REASONING_LINE_PATTERN =
+  /(根据(?:之前|以上|当前)?的?对话|用户(?:让我|让我去|让我搜|只说|曾(?:经)?|问|想|没有|没说)|我(?:需要|得|先|要)(?:确认|判断|看看|先确认)|没有指定(?:具体)?(?:搜索)?内容|确认用户想让|搜索什么具体内容)/;
 
 type AsyncTask<T> = () => Promise<T>;
 
@@ -97,6 +99,20 @@ export function splitMessageByLines(message: string): string[] {
   if (lines.length) return lines;
   const fallback = message.trim();
   return fallback ? [fallback] : [];
+}
+
+export function looksLikeLeakedReasoningLine(line: string): boolean {
+  const text = line.trim();
+  if (text.length < 20) return false;
+  return LEAKED_REASONING_LINE_PATTERN.test(text);
+}
+
+export function dropLeadingLeakedReasoningLines(lines: string[]): string[] {
+  let index = 0;
+  while (lines.length - index > 1 && looksLikeLeakedReasoningLine(lines[index])) {
+    index += 1;
+  }
+  return index > 0 ? lines.slice(index) : lines;
 }
 
 export function calculateSmartSendDelayMs(line: string): number {
