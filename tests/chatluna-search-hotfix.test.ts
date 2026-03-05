@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apply } from '../src/plugins/chatluna-search-hotfix.js';
 import {
   dedupeSearchResults,
@@ -46,7 +46,64 @@ vi.mock('koishi', () => {
   };
 });
 
+function createJsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function createBingHtml(results: Array<{ title: string; url: string; description: string }>): string {
+  const items = results
+    .map(
+      (item) => `
+        <li class="b_algo">
+          <h2><a href="${item.url}">${item.title}</a></h2>
+          <div class="b_caption"><p>${item.description}</p></div>
+        </li>
+      `,
+    )
+    .join('\n');
+  return `<ul id="b_results">${items}</ul>`;
+}
+
+function createTool(overrides: Record<string, unknown> = {}): { invoke: (input: unknown) => Promise<string> } {
+  const readyHandlers: Array<() => void> = [];
+  const registerTool = vi.fn();
+  const ctx = {
+    chatluna: {
+      platform: { registerTool },
+    },
+    on: vi.fn((event: string, handler: () => void) => {
+      if (event === 'ready') readyHandlers.push(handler);
+    }),
+    setInterval: vi.fn(() => ({}) as unknown),
+  };
+
+  apply(ctx as never, {
+    enabled: true,
+    topK: 5,
+    timeoutMs: 12_000,
+    ...overrides,
+  });
+  readyHandlers[0]();
+  const [, descriptor] = registerTool.mock.calls[0] as [string, { createTool: (params: unknown) => unknown }];
+  return descriptor.createTool({}) as { invoke: (input: unknown) => Promise<string> };
+}
+
 describe('chatluna-search-hotfix', () => {
+  const originalFetch = globalThis.fetch;
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   it('parses bing html search blocks into structured results', () => {
     const html = `
       <ul id="b_results">
@@ -175,5 +232,170 @@ describe('chatluna-search-hotfix', () => {
 
     intervalHandlers[0]();
     expect(registerTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses raw query for rewrite and limits bing search terms to 6', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.example.com/v1',
+      queryRewriteModel: 'deepseek/test-model',
+    });
+    const bingQueries: string[] = [];
+    const rewriteTerms = {
+      zh_terms: ['彩叶', '辉夜', '角色', '人物'],
+      en_terms: ['Sayo', 'Kaguya', 'BanG Dream'],
+    };
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = body.messages?.[0]?.content ?? '';
+        const userPrompt = body.messages?.[1]?.content ?? '';
+        if (systemPrompt.includes('搜索关键词规划器')) {
+          expect(userPrompt).toContain('用户搜索请求：你搜一下 彩叶和辉夜');
+          return createJsonResponse({
+            choices: [{ message: { content: JSON.stringify(rewriteTerms) } }],
+          });
+        }
+        if (systemPrompt.includes('搜索结果总结器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '总结：这两个词更像角色名\n来源：https://example.com/source' } }],
+          });
+        }
+      }
+      if (url.includes('cn.bing.com/search')) {
+        const query = new URL(url).searchParams.get('q') ?? '';
+        bingQueries.push(query);
+        return new Response(
+          createBingHtml([
+            {
+              title: `${query} 词条`,
+              url: `https://example.com/${encodeURIComponent(query)}`,
+              description: `${query} 相关介绍`,
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = await tool.invoke('你搜一下 彩叶和辉夜');
+    expect(output).toContain('总结：');
+    expect(bingQueries).toEqual(['彩叶', '辉夜', '角色', '人物', 'Sayo', 'Kaguya']);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('wikipedia.org'))).toBe(false);
+  });
+
+  it('runs bing fetches in parallel for generated terms', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.example.com/v1',
+      queryRewriteModel: 'deepseek/test-model',
+    });
+    const bingQueries: string[] = [];
+    const bingResolvers = new Map<string, (value: Response) => void>();
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = body.messages?.[0]?.content ?? '';
+        if (systemPrompt.includes('搜索关键词规划器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '{"zh_terms":["彩叶","辉夜"],"en_terms":[]}' } }],
+          });
+        }
+        if (systemPrompt.includes('搜索结果总结器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '并发总结\n来源：https://example.com/a' } }],
+          });
+        }
+      }
+      if (url.includes('cn.bing.com/search')) {
+        const query = new URL(url).searchParams.get('q') ?? '';
+        bingQueries.push(query);
+        return await new Promise<Response>((resolve) => {
+          bingResolvers.set(
+            query,
+            () =>
+              resolve(
+                new Response(
+                  createBingHtml([
+                    {
+                      title: `${query} 介绍`,
+                      url: `https://example.com/${encodeURIComponent(query)}`,
+                      description: `${query} 描述`,
+                    },
+                  ]),
+                  { status: 200 },
+                ),
+              ),
+          );
+        });
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const invokePromise = tool.invoke('彩叶和辉夜');
+    for (let i = 0; i < 20 && bingQueries.length < 2; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(bingQueries).toHaveLength(2);
+    expect(bingResolvers.size).toBe(2);
+
+    bingResolvers.get('彩叶')?.(new Response());
+    bingResolvers.get('辉夜')?.(new Response());
+
+    const output = await invokePromise;
+    expect(output).toContain('并发总结');
+  });
+
+  it('falls back to json search results when summary model fails', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.example.com/v1',
+      queryRewriteModel: 'deepseek/test-model',
+    });
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = body.messages?.[0]?.content ?? '';
+        if (systemPrompt.includes('搜索关键词规划器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '{"zh_terms":["彩叶"],"en_terms":[]}' } }],
+          });
+        }
+        if (systemPrompt.includes('搜索结果总结器')) {
+          return createJsonResponse({ error: 'summary failed' }, 500);
+        }
+      }
+      if (url.includes('cn.bing.com/search')) {
+        return new Response(
+          createBingHtml([
+            {
+              title: '彩叶 角色介绍',
+              url: 'https://example.com/sayo',
+              description: '彩叶是某作品角色',
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = await tool.invoke('彩叶');
+    const parsed = JSON.parse(output) as Array<{ title: string; url: string; description: string }>;
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].url).toBe('https://example.com/sayo');
   });
 });

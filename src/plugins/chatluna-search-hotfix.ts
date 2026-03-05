@@ -4,7 +4,6 @@ import {
   parseBingWebResults,
   parseRewrittenSearchTerms,
   rankSearchResultsByRelevance,
-  sanitizeSearchQueryInput,
   type SearchResult,
 } from './chatluna-search-hotfix-core.js';
 
@@ -14,20 +13,25 @@ export const inject = ['chatluna'];
 const logger = new Logger(name);
 const DEFAULT_TOP_K = 5;
 const DEFAULT_TIMEOUT_MS = 12_000;
-const DEFAULT_WIKIPEDIA_BASE_URLS = ['https://zh.wikipedia.org/w/api.php', 'https://en.wikipedia.org/w/api.php'];
 const DEFAULT_QUERY_REWRITE_MODEL = process.env.OPENAI_MODEL || 'deepseek/deepseek-chat';
 const DEFAULT_QUERY_REWRITE_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1';
-const DEFAULT_QUERY_REWRITE_MAX_TERMS = 3;
+const DEFAULT_QUERY_REWRITE_MAX_TERMS = 6;
 const QUERY_REWRITE_SYSTEM_PROMPT = [
-  '你是搜索词规划器，只输出 JSON。',
-  '你要把用户输入改写为“可直接用于搜索引擎”的词条，按中文和英文分组。',
-  '输出格式必须是：{"zh_terms":["..."],"en_terms":["..."]}',
-  '要求：',
-  '1) 删除口语前缀（例如：你搜一下、帮我查一下、麻烦你搜）。',
-  '2) 必须保留关键实体（人名、作品名、组织名）的原始写法。',
-  '3) zh_terms 每项 2-16 个中文字符；en_terms 每项 1-6 个英文词。',
-  '4) 每组最多 3 项，按相关性从高到低。',
-  '5) 禁止解释、禁止 markdown、禁止输出除 JSON 之外的内容。',
+  '你是搜索关键词规划器。',
+  '你只输出 JSON，不要解释。',
+  '输出格式固定为 {"zh_terms":[],"en_terms":[]}。',
+  '目标是把用户原始查询转换为可用于搜索引擎的关键词。',
+  '必须保留核心实体名称，不得臆造不存在实体。',
+  '可补充常见英文写法/别名。',
+  '总关键词数(zh_terms+en_terms)不得超过6，每项简短可检索。',
+].join('\n');
+const SEARCH_SUMMARY_SYSTEM_PROMPT = [
+  '你是搜索结果总结器。',
+  '输入包含用户问题与候选搜索结果(title/url/description)。',
+  '只基于输入结果总结，不得编造。',
+  '先给简洁结论，再给2-4条来源链接。',
+  '若证据不足或结果明显不相关，直接输出澄清提问（例如让用户确认人物/作品/游戏）。',
+  '输出纯文本，不要 JSON，不要 markdown 代码块。',
 ].join('\n');
 
 export interface Config {
@@ -49,7 +53,7 @@ export const Config: Schema<Config> = Schema.object({
   wikipediaBaseURL: Schema.union([
     Schema.array(Schema.string()).role('table').description('Wikipedia API 基础 URL 列表。'),
     Schema.string().description('Wikipedia API 基础 URL（逗号分隔）。'),
-  ]).description('Bing 结果不足时的 Wikipedia 兜底源。'),
+  ]).description('兼容保留字段（当前热修复链路不再使用）。'),
   queryRewriteEnabled: Schema.boolean().default(true).description('是否启用 DeepSeek 查询改写（输出中英文搜索词条）。'),
   queryRewriteModel: Schema.string().default(DEFAULT_QUERY_REWRITE_MODEL).description('查询改写使用的模型。'),
   queryRewriteBaseURL: Schema.string()
@@ -62,7 +66,6 @@ export const Config: Schema<Config> = Schema.object({
 type RuntimeConfig = {
   topK: number;
   timeoutMs: number;
-  wikipediaBaseURLs: string[];
   queryRewriteEnabled: boolean;
   queryRewriteModel: string;
   queryRewriteBaseURL: string;
@@ -110,19 +113,6 @@ function takeUnique(items: string[], limit: number): string[] {
   return output;
 }
 
-function parseWikipediaBaseURLs(raw?: string[] | string): string[] {
-  if (Array.isArray(raw)) {
-    const values = raw.map((item) => item.trim()).filter(Boolean);
-    return values.length ? values : [...DEFAULT_WIKIPEDIA_BASE_URLS];
-  }
-
-  const fromText = (raw ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return fromText.length ? fromText : [...DEFAULT_WIKIPEDIA_BASE_URLS];
-}
-
 function toRuntimeConfig(config: Config): RuntimeConfig {
   const topK = Number(config.topK ?? DEFAULT_TOP_K);
   const timeoutMs = Number(config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -134,7 +124,6 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
   return {
     topK: Number.isFinite(topK) ? clampInteger(topK, 1, 10) : DEFAULT_TOP_K,
     timeoutMs: Number.isFinite(timeoutMs) ? Math.max(3000, Math.floor(timeoutMs)) : DEFAULT_TIMEOUT_MS,
-    wikipediaBaseURLs: parseWikipediaBaseURLs(config.wikipediaBaseURL),
     queryRewriteEnabled: config.queryRewriteEnabled !== false,
     queryRewriteModel,
     queryRewriteBaseURL,
@@ -230,79 +219,67 @@ async function rewriteSearchTerms(query: string, runtime: RuntimeConfig): Promis
   if (!messageText) return null;
 
   const rewritten = parseRewrittenSearchTerms(messageText);
-  const zhTerms = takeUnique(rewritten.zhTerms, runtime.queryRewriteMaxTerms);
-  const enTerms = takeUnique(rewritten.enTerms, runtime.queryRewriteMaxTerms);
+  const zhTerms = takeUnique(rewritten.zhTerms, 6);
+  const enTerms = takeUnique(rewritten.enTerms, 6);
   if (!zhTerms.length && !enTerms.length) return null;
 
   return { zhTerms, enTerms };
 }
 
-function appendSearchParams(baseURL: string, params: Record<string, string>): string {
-  const url = new URL(baseURL);
-  Object.entries(params).forEach(([key, value]) => {
-    url.searchParams.set(key, value);
-  });
-  return url.toString();
+function buildSearchTerms(rewritten: QueryRewriteOutput | null, limit: number, fallbackQuery: string): string[] {
+  const terms = takeUnique([...(rewritten?.zhTerms ?? []), ...(rewritten?.enTerms ?? [])], limit);
+  if (terms.length) return terms;
+  return [fallbackQuery];
 }
 
-function shouldRequireStrictMatch(query: string): boolean {
-  return /(?:是谁|是什么人|人物|角色|资料|百科|是哪位)/.test(query);
+function toSearchObservation(results: SearchResult[]): string {
+  if (results.length) return JSON.stringify(results);
+  return JSON.stringify([{ title: 'No results found', description: 'No results found', url: '' }]);
 }
 
-async function searchByMediaWiki(
+async function summarizeSearchResults(
   query: string,
-  baseURL: string,
-  limit: number,
-  timeoutMs: number,
-): Promise<SearchResult[]> {
-  const searchUrl = appendSearchParams(baseURL, {
-    action: 'query',
-    list: 'search',
-    srsearch: query,
-    srlimit: String(limit),
-    format: 'json',
-  });
-  const response = await fetchWithTimeout(searchUrl, {}, timeoutMs);
-  if (!response.ok) throw new Error(`wikipedia status=${response.status}`);
-  const payload = (await response.json()) as {
-    query?: { search?: Array<{ title?: string }> };
-  };
-  const titles = (payload.query?.search ?? [])
-    .map((item) => (item.title ?? '').trim())
-    .filter(Boolean)
-    .slice(0, limit);
-  if (!titles.length) return [];
+  rankedResults: SearchResult[],
+  runtime: RuntimeConfig,
+): Promise<string | null> {
+  if (!runtime.queryRewriteEnabled) return null;
+  if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
 
-  const detailUrl = appendSearchParams(baseURL, {
-    action: 'query',
-    prop: 'extracts|info',
-    inprop: 'url',
-    explaintext: '1',
-    redirects: '1',
-    format: 'json',
-    titles: titles.join('|'),
-  });
-  const detailResponse = await fetchWithTimeout(detailUrl, {}, timeoutMs);
-  if (!detailResponse.ok) throw new Error(`wikipedia detail status=${detailResponse.status}`);
-  const detailPayload = (await detailResponse.json()) as {
-    query?: {
-      pages?: Record<string, { title?: string; extract?: string; fullurl?: string }>;
-    };
-  };
+  const response = await fetchWithTimeout(
+    `${runtime.queryRewriteBaseURL}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${runtime.queryRewriteApiKey}`,
+      },
+      body: JSON.stringify({
+        model: runtime.queryRewriteModel,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: SEARCH_SUMMARY_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `用户问题：${query}\n候选搜索结果(JSON)：${JSON.stringify(rankedResults)}`,
+          },
+        ],
+      }),
+    },
+    runtime.timeoutMs,
+  );
+  if (!response.ok) {
+    throw new Error(`search summary status=${response.status}`);
+  }
 
-  return Object.values(detailPayload.query?.pages ?? {})
-    .map((page) => ({
-      title: (page.title ?? '').trim(),
-      description: normalizeText((page.extract ?? '').slice(0, 420)),
-      url: (page.fullurl ?? '').trim(),
-    }))
-    .filter((item) => item.title && item.url);
+  const payload = (await response.json()) as ChatCompletionResponse;
+  const messageText = extractMessageText(payload.choices?.[0]?.message?.content).replace(/\r\n?/g, '\n').trim();
+  return messageText || null;
 }
 
 class StableWebSearchTool {
   name = 'web_search';
   description =
-    'A reliable web search tool that returns JSON search results (title/url/description) for current knowledge questions.';
+    'A reliable web search tool for current questions. It returns concise summary text with source links, and falls back to JSON results when summary fails.';
 
   constructor(private runtime: RuntimeConfig) {}
 
@@ -310,69 +287,45 @@ class StableWebSearchTool {
     const rawQuery = normalizeText(typeof input === 'string' ? input : String(input ?? ''));
     if (!rawQuery) return '[]';
 
-    const normalizedQuery = sanitizeSearchQueryInput(rawQuery) || rawQuery;
     let rewrittenTerms: QueryRewriteOutput | null = null;
     try {
-      rewrittenTerms = await rewriteSearchTerms(normalizedQuery, this.runtime);
+      rewrittenTerms = await rewriteSearchTerms(rawQuery, this.runtime);
     } catch (error) {
       logger.warn('query rewrite failed: %s', (error as Error).message);
     }
 
-    const searchTerms = takeUnique(
-      [
-        ...(rewrittenTerms?.zhTerms ?? []),
-        ...(rewrittenTerms?.enTerms ?? []),
-        normalizedQuery,
-      ],
-      this.runtime.queryRewriteMaxTerms,
-    );
-    const relevanceKeywords = extractRelevanceKeywords([rawQuery, normalizedQuery, ...searchTerms]);
+    const searchTerms = buildSearchTerms(rewrittenTerms, this.runtime.queryRewriteMaxTerms, rawQuery);
+    const relevanceKeywords = extractRelevanceKeywords([rawQuery, ...searchTerms]);
 
     const merged: SearchResult[] = [];
-
-    for (const term of searchTerms) {
-      try {
-        const bingResults = await searchByBingWeb(term, this.runtime.topK * 2, this.runtime.timeoutMs);
-        merged.push(...bingResults);
-      } catch (error) {
-        logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
-      }
-      if (merged.length >= this.runtime.topK * 4) break;
-    }
-
-    let ranked = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
-
-    if (ranked.length < this.runtime.topK) {
-      const wikiTerms = searchTerms.filter((term) => /[\u3400-\u9fff]/.test(term)).slice(0, 2);
-      if (!wikiTerms.length) wikiTerms.push(normalizedQuery);
-      for (const baseURL of this.runtime.wikipediaBaseURLs) {
-        for (const term of wikiTerms) {
-          if (ranked.length >= this.runtime.topK) break;
-          try {
-            const wikiResults = await searchByMediaWiki(
-              term,
-              baseURL,
-              this.runtime.topK,
-              this.runtime.timeoutMs,
-            );
-            merged.push(...wikiResults);
-          } catch (error) {
-            logger.debug('wikipedia fallback failed (%s, term=%s): %s', baseURL, term, (error as Error).message);
-          }
-          ranked = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
+    const searchBatches = await Promise.allSettled(
+      searchTerms.map(async (term) => {
+        try {
+          return await searchByBingWeb(term, this.runtime.topK * 2, this.runtime.timeoutMs);
+        } catch (error) {
+          logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
+          return [] as SearchResult[];
         }
-        if (ranked.length >= this.runtime.topK) break;
+      }),
+    );
+    for (const batch of searchBatches) {
+      if (batch.status === 'fulfilled') {
+        merged.push(...batch.value);
       }
     }
 
-    let output = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
-    if (!output.length && merged.length && !shouldRequireStrictMatch(normalizedQuery)) {
-      output = rankSearchResultsByRelevance(merged, [], this.runtime.topK);
+    const ranked = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
+    try {
+      const summary = await summarizeSearchResults(rawQuery, ranked, this.runtime);
+      if (summary) return summary;
+    } catch (error) {
+      logger.warn('search summary failed: %s', (error as Error).message);
     }
-    if (!output.length) {
-      return JSON.stringify([{ title: 'No results found', description: 'No results found', url: '' }]);
-    }
-    return JSON.stringify(output);
+
+    const fallbackResults = ranked.length
+      ? ranked
+      : rankSearchResultsByRelevance(merged, [], this.runtime.topK);
+    return toSearchObservation(fallbackResults);
   }
 }
 
