@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { injectUserStampedPrompt } from '../src/plugins/chat-time-context.js';
+import { sanitizeLeakedReasoningMessage } from '../src/plugins/message-send-utils.js';
 import { formatAutomationTimestamp, parseAutomationIntentByRule } from '../src/plugins/task-automation-core.js';
 
 type SimTask = {
@@ -161,6 +162,46 @@ describe('QBOT context scenario regression', () => {
       {
         user: '现在16:38了',
         bot: null,
+      },
+    ]);
+  });
+
+  it('replays guided-search conversation and strips leaked reasoning reply', () => {
+    const transcript = [
+      {
+        user: '祥，你可以上网搜索东西吗？',
+        qbot: '可以啊...你想让我搜什么？',
+      },
+      {
+        user: '现在还会出问题吗？你搜一下',
+        raw:
+          '用户让我搜索东西，但没说具体搜什么。根据之前的对话，用户曾让我搜索“三角初音”和“高康嘉”，但搜索工具似乎有问题。现在用户问“现在还会出问题吗？你搜一下”，但没有指定搜索内容。我需要确认用户想让我搜索什么具体内容。',
+        qbot: sanitizeLeakedReasoningMessage(
+          '用户让我搜索东西，但没说具体搜什么。根据之前的对话，用户曾让我搜索“三角初音”和“高康嘉”，但搜索工具似乎有问题。现在用户问“现在还会出问题吗？你搜一下”，但没有指定搜索内容。我需要确认用户想让我搜索什么具体内容。',
+        ),
+      },
+      {
+        user: '你搜一下 彩叶与绯叶是谁',
+        raw: '我先帮你搜了一下，给你整理一版简要结果。',
+        qbot: sanitizeLeakedReasoningMessage('我先帮你搜了一下，给你整理一版简要结果。'),
+      },
+    ];
+
+    expect(transcript).toEqual([
+      {
+        user: '祥，你可以上网搜索东西吗？',
+        qbot: '可以啊...你想让我搜什么？',
+      },
+      {
+        user: '现在还会出问题吗？你搜一下',
+        raw:
+          '用户让我搜索东西，但没说具体搜什么。根据之前的对话，用户曾让我搜索“三角初音”和“高康嘉”，但搜索工具似乎有问题。现在用户问“现在还会出问题吗？你搜一下”，但没有指定搜索内容。我需要确认用户想让我搜索什么具体内容。',
+        qbot: '你想让我搜什么具体内容呢？',
+      },
+      {
+        user: '你搜一下 彩叶与绯叶是谁',
+        raw: '我先帮你搜了一下，给你整理一版简要结果。',
+        qbot: '我先帮你搜了一下，给你整理一版简要结果。',
       },
     ]);
   });
