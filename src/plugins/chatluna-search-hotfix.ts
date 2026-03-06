@@ -438,8 +438,22 @@ function buildSearchObservation(
     .map(([work]) => work)
     .slice(0, 4);
 
+  const combinedResultsText = normalizeText(
+    results
+      .map((result) => `${result.title}\n${result.description}`)
+      .join('\n'),
+  ).toLowerCase();
+  const matchedEntities = plan.primaryEntities.filter((entity) =>
+    combinedResultsText.includes(entity.toLowerCase()),
+  );
+  const hasMeaningfulEvidence =
+    matchedEntities.length > 0 ||
+    likelyWorks.some((work) => combinedResultsText.includes(work.toLowerCase()));
+
   const status: SearchObservation['status'] = results.length
-    ? likelyWorks.length > 1 && plan.primaryEntities.length <= 1
+    ? !hasMeaningfulEvidence
+      ? 'no_match'
+      : likelyWorks.length > 1 && plan.primaryEntities.length <= 1
       ? 'ambiguous'
       : 'resolved'
     : 'no_match';

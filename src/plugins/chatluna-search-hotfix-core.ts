@@ -139,7 +139,7 @@ function splitEntityCandidates(text: string): string[] {
   }
 
   results.push(...enTokens);
-  return takeUnique(results, 12);
+  return takeUnique(results.filter((token) => isUsefulKeyword(token)), 12);
 }
 
 function isUsefulKeyword(token: string): boolean {
