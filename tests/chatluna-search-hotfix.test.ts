@@ -203,7 +203,9 @@ describe('chatluna-search-hotfix', () => {
       expect.arrayContaining(['彩叶和辉夜是谁', '彩叶 辉夜 超时空辉夜姬']),
     );
 
-    expect(parseQueryPlan('', '彩叶和辉夜是谁').queries).toContain('彩叶 辉夜 角色');
+    expect(parseQueryPlan('', '彩叶和辉夜是谁').queries).toEqual(
+      expect.arrayContaining(['彩叶 辉夜 角色', '彩叶 辉夜 同一作品']),
+    );
   });
 
   it('ranks results by entity and related work relevance', () => {
@@ -446,6 +448,30 @@ describe('chatluna-search-hotfix', () => {
 
     const output = await tool.invoke('彩叶和辉夜是谁');
     expect(output).toContain('超时空辉夜姬');
+  });
+
+  it('prefers multi-entity ddg hit over single-entity wikipedia pages', () => {
+    const plan: QueryPlan = {
+      primaryEntities: ['彩叶', '辉夜'],
+      relatedWorks: [],
+      aliasesZh: [],
+      aliasesEn: [],
+      queries: ['彩叶和辉夜是谁', '彩叶 辉夜 同一作品'],
+    };
+    const ddgResult = {
+      title: '超时空辉夜姬! - 萌娘百科',
+      url: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fmzh.moegirl.org.cn%2F%E8%B6%85%E6%97%B6%E7%A9%BA%E8%BE%89%E5%A4%9C%E5%A7%AC%EF%BC%81',
+      description: '酒寄彩叶与辉夜是该作品主要角色',
+      source: 'duckduckgo-lite' as const,
+    };
+    const wikiResult = {
+      title: '辉夜月',
+      url: 'https://zh.wikipedia.org/wiki/%E8%BE%89%E5%A4%9C%E6%9C%88',
+      description: '日本虚拟YouTuber',
+      source: 'wikipedia' as const,
+    };
+
+    expect(rankSearchResultsByRelevance([wikiResult, ddgResult], plan, 5, '彩叶和辉夜是谁')[0]).toEqual(ddgResult);
   });
 
   it('falls back to json search results when summary model fails but ddg still succeeds', async () => {

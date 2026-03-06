@@ -179,6 +179,8 @@ function buildFallbackQueries(query: string, entities: string[], relatedWorks: s
   if (entities.length >= 2) {
     fallbackQueries.push(`${entities.join(' ')} 角色`);
     fallbackQueries.push(`${entities.join(' ')} 作品`);
+    fallbackQueries.push(`${entities.join(' ')} 同一作品`);
+    fallbackQueries.push(`${entities.join(' ')} 关系`);
   }
   for (const work of relatedWorks) {
     fallbackQueries.push(`${query} ${work}`);
@@ -453,8 +455,24 @@ function calculateResultScore(result: SearchResult, plan: QueryPlan, keywords: s
     if (pattern.test(url)) score += weight;
   }
 
+  if ((result as Partial<SearchProviderResult>).source === 'duckduckgo-lite') {
+    score += 2;
+  }
+
+  if ((result as Partial<SearchProviderResult>).source === 'wikipedia' && plan.primaryEntities.length >= 2) {
+    score -= 2;
+  }
+
   if (plan.primaryEntities.length && entityHits.length === 0 && workHits.length === 0) {
     score -= 12;
+  }
+
+  if (plan.primaryEntities.length >= 2) {
+    if (entityHits.length >= 2) {
+      score += 20;
+    } else if (entityHits.length === 1 && workHits.length === 0) {
+      score -= 10;
+    }
   }
 
   return score;
