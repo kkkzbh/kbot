@@ -450,6 +450,77 @@ describe('chatluna-search-hotfix', () => {
     expect(output).toContain('超时空辉夜姬');
   });
 
+  it('avoids single-entity wikipedia fallback for ambiguous multi-entity queries', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.example.com/v1',
+      queryRewriteModel: 'deepseek/test-model',
+    });
+    const requestedWikipediaUrls: string[] = [];
+    const requestedSearchTerms: string[] = [];
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = body.messages?.[0]?.content ?? '';
+        if (systemPrompt.includes('搜索查询规划器')) {
+          return createJsonResponse({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    primary_entities: ['彩叶', '辉夜'],
+                    related_works: [],
+                    aliases_zh: [],
+                    aliases_en: [],
+                    queries: ['彩叶和辉夜是谁', '彩叶', '辉夜'],
+                  }),
+                },
+              },
+            ],
+          });
+        }
+        if (systemPrompt.includes('搜索结果总结器')) {
+          return createJsonResponse({
+            choices: [{ message: { content: '结论：彩叶与辉夜指向《超时空辉夜姬！》\n来源：https://example.com/moe' } }],
+          });
+        }
+      }
+      if (url.includes('lite.duckduckgo.com/lite/')) {
+        requestedSearchTerms.push(new URL(url).searchParams.get('q') ?? '');
+        return new Response(
+          createDuckDuckGoLiteHtml([
+            {
+              title: '超时空辉夜姬! - 萌娘百科',
+              url: 'https://example.com/moe',
+              description: '酒寄彩叶与辉夜是该作品主要角色',
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (url.includes('cn.bing.com/search')) {
+        requestedSearchTerms.push(new URL(url).searchParams.get('q') ?? '');
+        return new Response(createBingHtml([]), { status: 200 });
+      }
+      if (url.includes('wikipedia.org/w/api.php')) {
+        requestedWikipediaUrls.push(url);
+        return createJsonResponse(['彩叶', ['彩叶万年青'], ['植物'], ['https://zh.wikipedia.org/wiki/%E5%BD%A9%E5%8F%B6%E4%B8%87%E5%B9%B4%E9%9D%92']]);
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = await tool.invoke('彩叶和辉夜是谁');
+    expect(output).toContain('超时空辉夜姬');
+    expect(requestedSearchTerms).toContain('彩叶和辉夜是谁');
+    expect(requestedSearchTerms).not.toContain('彩叶');
+    expect(requestedSearchTerms).not.toContain('辉夜');
+    expect(requestedWikipediaUrls).toHaveLength(0);
+  });
+
   it('prefers multi-entity ddg hit over single-entity wikipedia pages', () => {
     const plan: QueryPlan = {
       primaryEntities: ['彩叶', '辉夜'],

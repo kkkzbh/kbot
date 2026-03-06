@@ -131,6 +131,11 @@ function takeUnique(items: string[], limit: number): string[] {
   return output;
 }
 
+function queryContainsAllEntities(query: string, entities: string[]): boolean {
+  const normalizedQuery = normalizeText(query);
+  return entities.every((entity) => normalizedQuery.includes(entity));
+}
+
 function normalizeWikipediaBaseURLs(raw: Config['wikipediaBaseURL']): string[] {
   if (Array.isArray(raw)) {
     const normalized = takeUnique(raw.map((item) => normalizeBaseURL(item)), 4);
@@ -378,14 +383,20 @@ class StableWebSearchTool {
       logger.warn('query rewrite failed: %s', (error as Error).message);
     }
 
-    const searchQueries = takeUnique(queryPlan.queries.length ? queryPlan.queries : [sanitizedQuery], this.runtime.queryRewriteMaxTerms);
-    const wikipediaQueries = takeUnique(
-      [sanitizedQuery, ...queryPlan.primaryEntities, ...queryPlan.relatedWorks],
-      Math.min(4, this.runtime.queryRewriteMaxTerms),
+    const isAmbiguousMultiEntityQuery = queryPlan.primaryEntities.length >= 2 && queryPlan.relatedWorks.length === 0;
+    const searchQueries = takeUnique(
+      (queryPlan.queries.length ? queryPlan.queries : [sanitizedQuery]).filter(
+        (query) => !isAmbiguousMultiEntityQuery || queryContainsAllEntities(query, queryPlan.primaryEntities),
+      ),
+      this.runtime.queryRewriteMaxTerms,
     );
+    const effectiveSearchQueries = searchQueries.length ? searchQueries : [sanitizedQuery];
+    const wikipediaQueries = isAmbiguousMultiEntityQuery
+      ? []
+      : takeUnique([sanitizedQuery, ...queryPlan.primaryEntities, ...queryPlan.relatedWorks], Math.min(4, this.runtime.queryRewriteMaxTerms));
 
     const searchTasks: Array<Promise<SearchProviderResult[]>> = [];
-    for (const term of searchQueries) {
+    for (const term of effectiveSearchQueries) {
       searchTasks.push(
         searchByDuckDuckGoLite(term, this.runtime.topK * 2, this.runtime.timeoutMs).catch((error) => {
           logger.warn('duckduckgo-lite search failed (term=%s): %s', term, (error as Error).message);
