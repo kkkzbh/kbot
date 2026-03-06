@@ -203,8 +203,8 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 - Common issues:
   - startup reports missing `downloads` service: confirm `downloads:*` exists in `koishi.yml`.
   - startup reports missing `canvas` service or puppeteer/chrome errors: confirm `canvas:*` exists in `koishi.yml`.
-  - pokemon image text shows square/tofu glyphs: ensure `downloads` subdirs are traversable (`x` bit). Bridge plugin auto-fixes `bucket2-*` mode, auto-registers `zpix.ttf`, injects fallback font families for `zpix`, and normalizes known missing symbols (for example `：` -> `:`).
-  - rare nickname glyphs still show tofu: install one of these CJK fonts on server (`Noto Sans CJK SC`, `Source Han Sans SC`, or `WenQuanYi Micro Hei`) and restart `qqbot.target`.
+  - pokemon image text shows square/tofu glyphs: ensure `downloads` subdirs are traversable (`x` bit). Bridge plugin auto-fixes `bucket2-*` mode, auto-registers `zpix.ttf`, prefers bundled `NotoSansCJKsc-Regular.otf` as CJK fallback, injects fallback font families for `zpix`, and normalizes known missing symbols (for example `：` -> `:`).
+  - rare nickname glyphs still show tofu: confirm deploy contains `src/plugins/assets/fonts/NotoSansCJKsc-Regular.otf` and check koishi logs for `pokemon fallback ready` / `pokemon fallback missing` before considering server font installation.
   - image load failure/timeouts: switch `POKEMON_BATTLE_IMAGE_SOURCE` to gitee source:
     `https://gitee.com/maikama/pokemon-fusion-image/raw/master`.
 - Deploy note:

@@ -14,6 +14,7 @@ const DEFAULT_DOWNLOADS_OUTPUT = './downloads';
 const ZPIX_FONT_FILE = 'zpix.ttf';
 const ZPIX_FONT_FAMILY = 'zpix';
 const POKEMON_FALLBACK_FONT_FAMILY = 'pokemon-fallback';
+const BUNDLED_FALLBACK_FONT_PATH = 'src/plugins/assets/fonts/NotoSansCJKsc-Regular.otf';
 const ZPIX_REPAIR_MAX_ATTEMPTS = 24;
 const ZPIX_REPAIR_INTERVAL_MS = 5000;
 const ROUTE_GUARD_KEY = '__pokemonBattleRouteGuard';
@@ -145,6 +146,15 @@ async function findZpixFontFromDownloads(downloadsRoot: string): Promise<string 
   return null;
 }
 
+async function resolveZpixFontPath(downloadsRoot: string): Promise<string | null> {
+  const rootZpixPath = resolve(process.cwd(), ZPIX_FONT_FILE);
+  if (await isReadableFile(rootZpixPath)) {
+    return rootZpixPath;
+  }
+
+  return findZpixFontFromDownloads(downloadsRoot);
+}
+
 async function copyZpixToProjectRoot(fontPath: string): Promise<void> {
   const target = resolve(process.cwd(), ZPIX_FONT_FILE);
   if (target === fontPath) return;
@@ -182,6 +192,14 @@ function registerFallbackFont(ctx: Context, fontPath: string): boolean {
   return registerFont(ctx, POKEMON_FALLBACK_FONT_FAMILY, fontPath, 'pokemon fallback');
 }
 
+export async function resolveBundledFallbackFontPath(): Promise<string | null> {
+  const bundledPath = resolve(process.cwd(), BUNDLED_FALLBACK_FONT_PATH);
+  if (await isReadableFile(bundledPath)) {
+    return bundledPath;
+  }
+  return null;
+}
+
 function normalizePokemonCanvasText(raw: string): string {
   let normalized = raw;
   for (const [source, target] of ZPIX_MISSING_GLYPH_REPLACEMENTS) {
@@ -196,6 +214,10 @@ function withPokemonFontFallback(font: string): string {
     return font;
   }
   return `${font}, ${ZPIX_FONT_FALLBACK_FAMILIES.join(', ')}`;
+}
+
+export function patchPokemonFontForRendering(font: string): string {
+  return withPokemonFontFallback(font);
 }
 
 function patchPokemonCanvasContext(canvasCtx: unknown): void {
@@ -256,16 +278,34 @@ async function findSystemCjkFallbackFontPath(): Promise<string | null> {
   return null;
 }
 
+type FallbackFontResolution =
+  | { path: string; source: 'bundled' | 'system' }
+  | { path: null; source: 'missing' };
+
+export async function resolvePokemonFallbackFont(): Promise<FallbackFontResolution> {
+  const bundledPath = await resolveBundledFallbackFontPath();
+  if (bundledPath) {
+    return { path: bundledPath, source: 'bundled' };
+  }
+
+  const systemPath = await findSystemCjkFallbackFontPath();
+  if (systemPath) {
+    return { path: systemPath, source: 'system' };
+  }
+
+  return { path: null, source: 'missing' };
+}
+
 async function bootstrapZpixFont(ctx: Context): Promise<void> {
   let zpixReady = false;
   const downloadsRoot = resolveDownloadsOutputPath();
   for (let attempt = 1; attempt <= ZPIX_REPAIR_MAX_ATTEMPTS; attempt++) {
     try {
-      const zpixPath = await findZpixFontFromDownloads(downloadsRoot);
+      const zpixPath = await resolveZpixFontPath(downloadsRoot);
       if (zpixPath) {
         await copyZpixToProjectRoot(zpixPath);
         if (registerZpixFont(ctx, zpixPath)) {
-          logger.info('zpix font is ready: %s', zpixPath);
+          logger.info('pokemon zpix ready: %s', zpixPath);
           zpixReady = true;
           break;
         }
@@ -278,20 +318,20 @@ async function bootstrapZpixFont(ctx: Context): Promise<void> {
   }
 
   if (!zpixReady) {
-    logger.warn('zpix font is not ready after retries, pokemon images may show tofu glyphs.');
+    logger.warn('pokemon zpix missing: zpix font is not ready after retries, pokemon images may show tofu glyphs.');
   }
 
   try {
-    const fallbackPath = await findSystemCjkFallbackFontPath();
-    if (!fallbackPath) {
-      logger.warn('no readable system CJK fallback font found, rare nicknames may still show tofu glyphs.');
+    const fallback = await resolvePokemonFallbackFont();
+    if (!fallback.path) {
+      logger.warn('pokemon fallback missing: no readable bundled/system CJK fallback font found.');
       return;
     }
-    if (registerFallbackFont(ctx, fallbackPath)) {
-      logger.info('pokemon fallback font is ready: %s', fallbackPath);
+    if (registerFallbackFont(ctx, fallback.path)) {
+      logger.info('pokemon fallback ready (%s): %s', fallback.source, fallback.path);
     }
   } catch {
-    logger.warn('failed to bootstrap fallback font, rare nicknames may still show tofu glyphs.');
+    logger.warn('pokemon fallback missing: failed to bootstrap fallback font.');
   }
 }
 
