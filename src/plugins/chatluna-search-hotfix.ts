@@ -4,6 +4,8 @@ import {
   looksLikeDuckDuckGoLiteAnomalyPage,
   parseBingWebResults,
   parseDuckDuckGoLiteResults,
+  parseMediaWikiExtractMap,
+  parseMediaWikiOpenSearchResults,
   parseQueryPlan,
   parseWikipediaOpenSearchResults,
   rankSearchResultsByRelevance,
@@ -22,6 +24,7 @@ const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_QUERY_REWRITE_MODEL = process.env.OPENAI_MODEL || 'deepseek/deepseek-chat';
 const DEFAULT_QUERY_REWRITE_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1';
 const DEFAULT_QUERY_REWRITE_MAX_TERMS = 6;
+const DEFAULT_MOEGIRL_BASE_URL = 'https://mzh.moegirl.org.cn/api.php';
 const DEFAULT_WIKIPEDIA_BASE_URLS = ['https://zh.wikipedia.org/w/api.php', 'https://en.wikipedia.org/w/api.php'];
 const QUERY_REWRITE_SYSTEM_PROMPT = [
   '你是搜索查询规划器。',
@@ -347,6 +350,50 @@ async function searchByWikipedia(
   return parseWikipediaOpenSearchResults(await response.text(), limit, baseURL);
 }
 
+async function searchByMoegirl(term: string, limit: number, timeoutMs: number): Promise<SearchProviderResult[]> {
+  const searchUrl = `${DEFAULT_MOEGIRL_BASE_URL}?action=opensearch&search=${encodeURIComponent(term)}&limit=${limit}&namespace=0&format=json`;
+  const response = await fetchWithTimeout(
+    searchUrl,
+    {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+      },
+    },
+    timeoutMs,
+  );
+  if (!response.ok) {
+    throw new Error(`moegirl status=${response.status}`);
+  }
+
+  const initialResults = parseMediaWikiOpenSearchResults(await response.text(), limit, DEFAULT_MOEGIRL_BASE_URL, 'moegirl');
+  if (!initialResults.length) return [];
+
+  const titleList = takeUnique(initialResults.map((result) => result.title), limit).join('|');
+  const extractUrl =
+    `${DEFAULT_MOEGIRL_BASE_URL}?action=query&prop=extracts&explaintext=1&exintro=1&titles=` +
+    `${encodeURIComponent(titleList)}&format=json`;
+  const extractResponse = await fetchWithTimeout(
+    extractUrl,
+    {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+      },
+    },
+    timeoutMs,
+  );
+  if (!extractResponse.ok) {
+    return initialResults;
+  }
+
+  const extractMap = parseMediaWikiExtractMap(await extractResponse.text());
+  return initialResults.map((result) => ({
+    ...result,
+    description: extractMap.get(result.title) || result.description,
+  }));
+}
+
 async function rewriteSearchPlan(query: string, runtime: RuntimeConfig): Promise<QueryPlan | null> {
   if (!runtime.queryRewriteEnabled) return null;
   if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
@@ -471,6 +518,23 @@ async function executeSearchPlan(
     );
   }
 
+  const moegirlSeeds = takeUnique(
+    [
+      ...plan.primaryEntities,
+      ...plan.relatedWorks,
+      sanitizedQuery,
+    ],
+    Math.min(4, runtime.queryRewriteMaxTerms),
+  );
+  for (const term of moegirlSeeds) {
+    searchTasks.push(
+      searchByMoegirl(term, runtime.topK, runtime.timeoutMs).catch((error) => {
+        logger.warn('moegirl search failed (term=%s): %s', term, (error as Error).message);
+        return [] as SearchProviderResult[];
+      }),
+    );
+  }
+
   for (const baseURL of runtime.wikipediaBaseURLs) {
     for (const term of buildWikipediaQueries(plan, runtime, sanitizedQuery)) {
       searchTasks.push(
@@ -482,7 +546,32 @@ async function executeSearchPlan(
     }
   }
 
-  return (await Promise.all(searchTasks)).flat();
+  const merged = (await Promise.all(searchTasks)).flat();
+  const moegirlWorkTerms = takeUnique(
+    merged.flatMap((result) => extractWorkTitleCandidates(`${result.title}\n${result.description}`)),
+    3,
+  );
+  if (!moegirlWorkTerms.length) return merged;
+
+  const followUpTasks: Array<Promise<SearchProviderResult[]>> = [];
+  for (const work of moegirlWorkTerms) {
+    followUpTasks.push(
+      searchByMoegirl(work, runtime.topK, runtime.timeoutMs).catch((error) => {
+        logger.warn('moegirl follow-up search failed (term=%s): %s', work, (error as Error).message);
+        return [] as SearchProviderResult[];
+      }),
+    );
+    for (const entity of plan.primaryEntities) {
+      followUpTasks.push(
+        searchByMoegirl(`${entity} ${work}`, runtime.topK, runtime.timeoutMs).catch((error) => {
+          logger.warn('moegirl follow-up search failed (term=%s %s): %s', entity, work, (error as Error).message);
+          return [] as SearchProviderResult[];
+        }),
+      );
+    }
+  }
+
+  return [...merged, ...(await Promise.all(followUpTasks)).flat()];
 }
 
 class StableWebSearchTool {

@@ -6,7 +6,7 @@ export type SearchResult = {
 };
 
 export type SearchProviderResult = SearchResult & {
-  source: 'duckduckgo-lite' | 'bing-web' | 'wikipedia';
+  source: 'duckduckgo-lite' | 'bing-web' | 'wikipedia' | 'moegirl';
 };
 
 export type QueryPlan = {
@@ -357,7 +357,12 @@ export function parseBingWebResults(html: string, limit: number): SearchProvider
   return results;
 }
 
-export function parseWikipediaOpenSearchResults(payload: string, limit: number, sourceUrl: string): SearchProviderResult[] {
+export function parseMediaWikiOpenSearchResults(
+  payload: string,
+  limit: number,
+  sourceUrl: string,
+  source: 'wikipedia' | 'moegirl',
+): SearchProviderResult[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(payload);
@@ -387,11 +392,37 @@ export function parseWikipediaOpenSearchResults(payload: string, limit: number, 
       title,
       url,
       description: description || `${title} - ${host}`,
-      source: 'wikipedia',
+      source,
     });
   }
 
   return results;
+}
+
+export function parseWikipediaOpenSearchResults(payload: string, limit: number, sourceUrl: string): SearchProviderResult[] {
+  return parseMediaWikiOpenSearchResults(payload, limit, sourceUrl, 'wikipedia');
+}
+
+export function parseMediaWikiExtractMap(payload: string): Map<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return new Map<string, string>();
+  }
+
+  const pages = (parsed as { query?: { pages?: Record<string, { title?: string; extract?: string }> } })?.query?.pages;
+  if (!pages || typeof pages !== 'object') return new Map<string, string>();
+
+  const extracts = new Map<string, string>();
+  for (const page of Object.values(pages)) {
+    const title = normalizeSearchToken(String(page?.title ?? ''));
+    const extract = normalizeText(String(page?.extract ?? ''));
+    if (!title || !extract) continue;
+    extracts.set(title, extract);
+  }
+
+  return extracts;
 }
 
 export function dedupeSearchResults<T extends SearchResult>(results: T[], limit: number): T[] {

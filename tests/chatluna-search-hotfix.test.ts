@@ -100,6 +100,24 @@ function createDuckDuckGoAnomalyHtml(): string {
   `;
 }
 
+function createMediaWikiExtractPayload(pages: Array<{ title: string; extract: string }>): Record<string, unknown> {
+  return {
+    query: {
+      pages: Object.fromEntries(
+        pages.map((page, index) => [
+          String(index + 1),
+          {
+            pageid: index + 1,
+            ns: 0,
+            title: page.title,
+            extract: page.extract,
+          },
+        ]),
+      ),
+    },
+  };
+}
+
 function createTool(overrides: Record<string, unknown> = {}): { invoke: (input: unknown) => Promise<string> } {
   const readyHandlers: Array<() => void> = [];
   const registerTool = vi.fn();
@@ -361,6 +379,10 @@ describe('chatluna-search-hotfix', () => {
       if (url.includes('wikipedia.org/w/api.php')) {
         return createJsonResponse(['彩叶', [], [], []]);
       }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) return createJsonResponse(createMediaWikiExtractPayload([]));
+        return createJsonResponse(['', [], [], []]);
+      }
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
@@ -406,6 +428,10 @@ describe('chatluna-search-hotfix', () => {
       }
       if (url.includes('wikipedia.org/w/api.php')) {
         return createJsonResponse(['彩叶', [], [], []]);
+      }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) return createJsonResponse(createMediaWikiExtractPayload([]));
+        return createJsonResponse(['', [], [], []]);
       }
       throw new Error(`unexpected fetch url: ${url}`);
     });
@@ -484,6 +510,10 @@ describe('chatluna-search-hotfix', () => {
           ['https://zh.wikipedia.org/wiki/%E8%BE%89%E5%A4%9C%E5%A7%AC'],
         ]);
       }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) return createJsonResponse(createMediaWikiExtractPayload([]));
+        return createJsonResponse(['', [], [], []]);
+      }
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
@@ -553,6 +583,10 @@ describe('chatluna-search-hotfix', () => {
         requestedWikipediaUrls.push(url);
         return createJsonResponse(['彩叶', ['彩叶万年青'], ['植物'], ['https://zh.wikipedia.org/wiki/%E5%BD%A9%E5%8F%B6%E4%B8%87%E5%B9%B4%E9%9D%92']]);
       }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) return createJsonResponse(createMediaWikiExtractPayload([]));
+        return createJsonResponse(['', [], [], []]);
+      }
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
@@ -600,6 +634,10 @@ describe('chatluna-search-hotfix', () => {
       if (url.includes('wikipedia.org/w/api.php')) {
         return createJsonResponse(['彩叶', [], [], []]);
       }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) return createJsonResponse(createMediaWikiExtractPayload([]));
+        return createJsonResponse(['', [], [], []]);
+      }
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
@@ -611,6 +649,87 @@ describe('chatluna-search-hotfix', () => {
     expect(output.top_results[0].url).toBe('https://example.com/moe');
     expect(requestedTerms).toContain('彩叶和辉夜是谁');
     expect(requestedTerms).toContain('彩叶 辉夜 关系');
+  });
+
+  it('uses moegirl fallback when general search providers miss', async () => {
+    const tool = createTool();
+
+    fetchMock.mockImplementation(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('lite.duckduckgo.com/lite/')) {
+        return new Response(createDuckDuckGoAnomalyHtml(), { status: 200 });
+      }
+      if (url.includes('cn.bing.com/search')) {
+        return new Response(createBingHtml([]), { status: 200 });
+      }
+      if (url.includes('wikipedia.org/w/api.php')) {
+        return createJsonResponse(['彩叶', [], [], []]);
+      }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) {
+          return createJsonResponse(
+            createMediaWikiExtractPayload([
+              {
+                title: '酒寄彩叶',
+                extract: '酒寄彩叶是动画《超时空辉夜姬！》及其衍生作品的登场角色。',
+              },
+              {
+                title: '超时空辉夜姬！',
+                extract: '《超时空辉夜姬！》是原创网络动画电影。',
+              },
+              {
+                title: '辉夜(超时空辉夜姬！)',
+                extract: '辉夜是动画《超时空辉夜姬！》的登场角色。',
+              },
+            ]),
+          );
+        }
+        if (url.includes('%E8%BE%89%E5%A4%9C%20%E8%B6%85%E6%97%B6%E7%A9%BA%E8%BE%89%E5%A4%9C%E5%A7%AC')) {
+          return createJsonResponse([
+            '辉夜 超时空辉夜姬',
+            ['辉夜(超时空辉夜姬！)', '超时空辉夜姬！'],
+            ['', ''],
+            [
+              'https://mzh.moegirl.org.cn/%E8%BE%89%E5%A4%9C(%E8%B6%85%E6%97%B6%E7%A9%BA%E8%BE%89%E5%A4%9C%E5%A7%AC%EF%BC%81)',
+              'https://mzh.moegirl.org.cn/%E8%B6%85%E6%97%B6%E7%A9%BA%E8%BE%89%E5%A4%9C%E5%A7%AC%EF%BC%81',
+            ],
+          ]);
+        }
+        if (url.includes(encodeURIComponent('超时空辉夜姬'))) {
+          return createJsonResponse([
+            '超时空辉夜姬',
+            ['超时空辉夜姬！', '辉夜(超时空辉夜姬！)'],
+            ['', ''],
+            [
+              'https://mzh.moegirl.org.cn/%E8%B6%85%E6%97%B6%E7%A9%BA%E8%BE%89%E5%A4%9C%E5%A7%AC%EF%BC%81',
+              'https://mzh.moegirl.org.cn/%E8%BE%89%E5%A4%9C(%E8%B6%85%E6%97%B6%E7%A9%BA%E8%BE%89%E5%A4%9C%E5%A7%AC%EF%BC%81)',
+            ],
+          ]);
+        }
+        if (url.includes(encodeURIComponent('彩叶'))) {
+          return createJsonResponse([
+            '彩叶',
+            ['酒寄彩叶'],
+            [''],
+            ['https://mzh.moegirl.org.cn/%E9%85%92%E5%AF%84%E5%BD%A9%E5%8F%B6'],
+          ]);
+        }
+        if (url.includes(encodeURIComponent('辉夜'))) {
+          return createJsonResponse(['辉夜', ['辉夜'], [''], ['https://mzh.moegirl.org.cn/%E8%BE%89%E5%A4%9C']]);
+        }
+        return createJsonResponse(['', [], [], []]);
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = JSON.parse(await tool.invoke('你搜一下 彩叶和辉夜是谁')) as {
+      status: string;
+      likely_works: string[];
+      top_results: Array<{ title: string }>;
+    };
+    expect(output.status).toBe('resolved');
+    expect(output.likely_works.join(' ')).toContain('超时空辉夜姬');
+    expect(output.top_results.map((item) => item.title).join(' ')).toContain('酒寄彩叶');
   });
 
   it('prefers multi-entity ddg hit over single-entity wikipedia pages', () => {
@@ -696,6 +815,10 @@ describe('chatluna-search-hotfix', () => {
       }
       if (url.includes('wikipedia.org/w/api.php')) {
         return createJsonResponse(['彩叶', [], [], []]);
+      }
+      if (url.includes('mzh.moegirl.org.cn/api.php')) {
+        if (url.includes('action=query')) return createJsonResponse(createMediaWikiExtractPayload([]));
+        return createJsonResponse(['', [], [], []]);
       }
       throw new Error(`unexpected fetch url: ${url}`);
     });
