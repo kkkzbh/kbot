@@ -297,13 +297,14 @@ describe('chatluna-search-hotfix', () => {
     expect(registerTool).toHaveBeenCalledTimes(1);
   });
 
-  it('prefers DeepSeek short model name on official base url and uses sanitized query for planner', async () => {
+  it('prefers DeepSeek short model name on official base url for summary requests', async () => {
     const tool = createTool({
       queryRewriteApiKey: 'test-key',
       queryRewriteBaseURL: 'https://api.deepseek.com/v1',
       queryRewriteModel: 'deepseek/deepseek-chat',
     });
     const requestedModels: string[] = [];
+    const plannerPrompts: string[] = [];
 
     fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
       const url = String(input);
@@ -316,7 +317,7 @@ describe('chatluna-search-hotfix', () => {
         const systemPrompt = body.messages?.[0]?.content ?? '';
         const userPrompt = body.messages?.[1]?.content ?? '';
         if (systemPrompt.includes('搜索查询规划器')) {
-          expect(userPrompt).toContain('用户搜索请求：彩叶和辉夜是谁');
+          plannerPrompts.push(userPrompt);
           return createJsonResponse({
             choices: [
               {
@@ -372,6 +373,61 @@ describe('chatluna-search-hotfix', () => {
     const output = await tool.invoke('你搜一下 彩叶和辉夜是谁');
     expect(output).toContain('超时空辉夜姬');
     expect(requestedModels[0]).toBe('deepseek-chat');
+    expect(plannerPrompts).toHaveLength(0);
+  });
+
+  it('uses sanitized query for planner only after baseline search is exhausted', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.deepseek.com/v1',
+      queryRewriteModel: 'deepseek/deepseek-chat',
+    });
+    const plannerPrompts: string[] = [];
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = body.messages?.[0]?.content ?? '';
+        const userPrompt = body.messages?.[1]?.content ?? '';
+        if (systemPrompt.includes('搜索查询规划器')) {
+          plannerPrompts.push(userPrompt);
+          return createJsonResponse({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    primary_entities: ['彩叶', '辉夜'],
+                    related_works: ['超时空辉夜姬'],
+                    aliases_zh: ['酒寄彩叶'],
+                    aliases_en: [],
+                    queries: ['彩叶和辉夜是谁', '彩叶 辉夜 超时空辉夜姬'],
+                  }),
+                },
+              },
+            ],
+          });
+        }
+        if (systemPrompt.includes('搜索结果总结器')) {
+          return createJsonResponse({ error: 'summary failed' }, 500);
+        }
+      }
+      if (url.includes('lite.duckduckgo.com/lite/')) {
+        return new Response(createDuckDuckGoLiteHtml([]), { status: 200 });
+      }
+      if (url.includes('cn.bing.com/search')) {
+        return new Response(createBingHtml([]), { status: 200 });
+      }
+      if (url.includes('wikipedia.org/w/api.php')) {
+        return createJsonResponse(['彩叶', [], [], []]);
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    await tool.invoke('你搜一下 彩叶和辉夜是谁');
+    expect(plannerPrompts).toContain('用户搜索请求：彩叶和辉夜是谁');
   });
 
   it('returns summary from multi-source results even when bing drifts badly', async () => {

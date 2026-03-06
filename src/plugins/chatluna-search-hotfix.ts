@@ -136,6 +136,11 @@ function queryContainsAllEntities(query: string, entities: string[]): boolean {
   return entities.every((entity) => normalizedQuery.includes(entity));
 }
 
+function queryContainsAnyEntity(query: string, entities: string[]): boolean {
+  const normalizedQuery = normalizeText(query);
+  return entities.some((entity) => normalizedQuery.includes(entity));
+}
+
 function normalizeWikipediaBaseURLs(raw: Config['wikipediaBaseURL']): string[] {
   if (Array.isArray(raw)) {
     const normalized = takeUnique(raw.map((item) => normalizeBaseURL(item)), 4);
@@ -356,6 +361,75 @@ async function summarizeSearchResults(
   return messageText || null;
 }
 
+function buildSearchQueries(plan: QueryPlan, runtime: RuntimeConfig, sanitizedQuery: string): string[] {
+  const isAmbiguousMultiEntityQuery = plan.primaryEntities.length >= 2 && plan.relatedWorks.length === 0;
+  const searchQueries = takeUnique(
+    (plan.queries.length ? plan.queries : [sanitizedQuery]).filter(
+      (query) => !isAmbiguousMultiEntityQuery || queryContainsAllEntities(query, plan.primaryEntities),
+    ),
+    runtime.queryRewriteMaxTerms,
+  );
+  return searchQueries.length ? searchQueries : [sanitizedQuery];
+}
+
+function buildWikipediaQueries(plan: QueryPlan, runtime: RuntimeConfig, sanitizedQuery: string): string[] {
+  const isAmbiguousMultiEntityQuery = plan.primaryEntities.length >= 2 && plan.relatedWorks.length === 0;
+  if (isAmbiguousMultiEntityQuery) return [];
+  return takeUnique([sanitizedQuery, ...plan.primaryEntities, ...plan.relatedWorks], Math.min(4, runtime.queryRewriteMaxTerms));
+}
+
+function extractEntityPreservingQueries(
+  rewrittenPlan: QueryPlan,
+  fallbackPlan: QueryPlan,
+  runtime: RuntimeConfig,
+): string[] {
+  if (!fallbackPlan.primaryEntities.length) return [];
+
+  const guard = fallbackPlan.primaryEntities.length >= 2
+    ? (query: string) => queryContainsAllEntities(query, fallbackPlan.primaryEntities)
+    : (query: string) => queryContainsAnyEntity(query, fallbackPlan.primaryEntities);
+
+  return takeUnique(
+    rewrittenPlan.queries.filter((query) => guard(query)),
+    runtime.queryRewriteMaxTerms,
+  );
+}
+
+async function executeSearchPlan(
+  plan: QueryPlan,
+  sanitizedQuery: string,
+  runtime: RuntimeConfig,
+): Promise<SearchProviderResult[]> {
+  const searchTasks: Array<Promise<SearchProviderResult[]>> = [];
+  for (const term of buildSearchQueries(plan, runtime, sanitizedQuery)) {
+    searchTasks.push(
+      searchByDuckDuckGoLite(term, runtime.topK * 2, runtime.timeoutMs).catch((error) => {
+        logger.warn('duckduckgo-lite search failed (term=%s): %s', term, (error as Error).message);
+        return [] as SearchProviderResult[];
+      }),
+    );
+    searchTasks.push(
+      searchByBingWeb(term, runtime.topK * 2, runtime.timeoutMs).catch((error) => {
+        logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
+        return [] as SearchProviderResult[];
+      }),
+    );
+  }
+
+  for (const baseURL of runtime.wikipediaBaseURLs) {
+    for (const term of buildWikipediaQueries(plan, runtime, sanitizedQuery)) {
+      searchTasks.push(
+        searchByWikipedia(term, baseURL, runtime.topK, runtime.timeoutMs).catch((error) => {
+          logger.warn('wikipedia search failed (base=%s term=%s): %s', baseURL, term, (error as Error).message);
+          return [] as SearchProviderResult[];
+        }),
+      );
+    }
+  }
+
+  return (await Promise.all(searchTasks)).flat();
+}
+
 class StableWebSearchTool {
   name = 'web_search';
   description =
@@ -369,60 +443,31 @@ class StableWebSearchTool {
 
     const sanitizedQuery = sanitizeSearchQueryInput(originalQuery);
     const fallbackPlan = parseQueryPlan('', sanitizedQuery);
+    let merged = await executeSearchPlan(fallbackPlan, sanitizedQuery, this.runtime);
+    let ranked = rankSearchResultsByRelevance(merged, fallbackPlan, this.runtime.topK, sanitizedQuery);
 
-    let queryPlan = fallbackPlan;
-    try {
-      const rewrittenPlan = await rewriteSearchPlan(sanitizedQuery, this.runtime);
-      if (rewrittenPlan) {
-        queryPlan = {
-          ...rewrittenPlan,
-          queries: takeUnique(rewrittenPlan.queries, this.runtime.queryRewriteMaxTerms),
-        };
-      }
-    } catch (error) {
-      logger.warn('query rewrite failed: %s', (error as Error).message);
-    }
-
-    const isAmbiguousMultiEntityQuery = queryPlan.primaryEntities.length >= 2 && queryPlan.relatedWorks.length === 0;
-    const searchQueries = takeUnique(
-      (queryPlan.queries.length ? queryPlan.queries : [sanitizedQuery]).filter(
-        (query) => !isAmbiguousMultiEntityQuery || queryContainsAllEntities(query, queryPlan.primaryEntities),
-      ),
-      this.runtime.queryRewriteMaxTerms,
-    );
-    const effectiveSearchQueries = searchQueries.length ? searchQueries : [sanitizedQuery];
-    const wikipediaQueries = isAmbiguousMultiEntityQuery
-      ? []
-      : takeUnique([sanitizedQuery, ...queryPlan.primaryEntities, ...queryPlan.relatedWorks], Math.min(4, this.runtime.queryRewriteMaxTerms));
-
-    const searchTasks: Array<Promise<SearchProviderResult[]>> = [];
-    for (const term of effectiveSearchQueries) {
-      searchTasks.push(
-        searchByDuckDuckGoLite(term, this.runtime.topK * 2, this.runtime.timeoutMs).catch((error) => {
-          logger.warn('duckduckgo-lite search failed (term=%s): %s', term, (error as Error).message);
-          return [] as SearchProviderResult[];
-        }),
-      );
-      searchTasks.push(
-        searchByBingWeb(term, this.runtime.topK * 2, this.runtime.timeoutMs).catch((error) => {
-          logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
-          return [] as SearchProviderResult[];
-        }),
-      );
-    }
-    for (const baseURL of this.runtime.wikipediaBaseURLs) {
-      for (const term of wikipediaQueries) {
-        searchTasks.push(
-          searchByWikipedia(term, baseURL, this.runtime.topK, this.runtime.timeoutMs).catch((error) => {
-            logger.warn('wikipedia search failed (base=%s term=%s): %s', baseURL, term, (error as Error).message);
-            return [] as SearchProviderResult[];
-          }),
-        );
+    if (!ranked.length) {
+      try {
+        const rewrittenPlan = await rewriteSearchPlan(sanitizedQuery, this.runtime);
+        if (rewrittenPlan) {
+          const expandedQueries = extractEntityPreservingQueries(rewrittenPlan, fallbackPlan, this.runtime);
+          if (expandedQueries.length) {
+            const expandedPlan: QueryPlan = {
+              ...fallbackPlan,
+              queries: takeUnique([...fallbackPlan.queries, ...expandedQueries], this.runtime.queryRewriteMaxTerms),
+            };
+            merged = dedupeSearchResults(
+              [...merged, ...(await executeSearchPlan(expandedPlan, sanitizedQuery, this.runtime))],
+              Math.max(this.runtime.topK * this.runtime.queryRewriteMaxTerms, this.runtime.topK * 2),
+            );
+            ranked = rankSearchResultsByRelevance(merged, fallbackPlan, this.runtime.topK, sanitizedQuery);
+          }
+        }
+      } catch (error) {
+        logger.warn('query rewrite failed: %s', (error as Error).message);
       }
     }
 
-    const merged = (await Promise.all(searchTasks)).flat();
-    const ranked = rankSearchResultsByRelevance(merged, queryPlan, this.runtime.topK, sanitizedQuery);
     const summaryCandidates = ranked.length ? ranked : dedupeSearchResults(merged, this.runtime.topK);
     const serializableCandidates = summaryCandidates.map(({ title, url, description, image }) => ({
       title,
