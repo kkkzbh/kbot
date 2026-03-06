@@ -1,9 +1,14 @@
 import { Context, Logger, Schema } from 'koishi';
 import {
-  extractRelevanceKeywords,
+  dedupeSearchResults,
   parseBingWebResults,
-  parseRewrittenSearchTerms,
+  parseDuckDuckGoLiteResults,
+  parseQueryPlan,
+  parseWikipediaOpenSearchResults,
   rankSearchResultsByRelevance,
+  sanitizeSearchQueryInput,
+  type QueryPlan,
+  type SearchProviderResult,
   type SearchResult,
 } from './chatluna-search-hotfix-core.js';
 
@@ -16,18 +21,20 @@ const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_QUERY_REWRITE_MODEL = process.env.OPENAI_MODEL || 'deepseek/deepseek-chat';
 const DEFAULT_QUERY_REWRITE_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1';
 const DEFAULT_QUERY_REWRITE_MAX_TERMS = 6;
+const DEFAULT_WIKIPEDIA_BASE_URLS = ['https://zh.wikipedia.org/w/api.php', 'https://en.wikipedia.org/w/api.php'];
 const QUERY_REWRITE_SYSTEM_PROMPT = [
-  '你是搜索关键词规划器。',
+  '你是搜索查询规划器。',
   '你只输出 JSON，不要解释。',
-  '输出格式固定为 {"zh_terms":[],"en_terms":[]}。',
-  '目标是把用户原始查询转换为可用于搜索引擎的关键词。',
-  '必须保留核心实体名称，不得臆造不存在实体。',
-  '可补充常见英文写法/别名。',
-  '总关键词数(zh_terms+en_terms)不得超过6，每项简短可检索。',
+  '输出格式固定为 {"primary_entities":[],"related_works":[],"aliases_zh":[],"aliases_en":[],"queries":[]}。',
+  'primary_entities: 用户要找的核心人物/组织/地点/概念，最多4项。',
+  'related_works: 这些实体最可能关联的作品名/系列名/世界观，最多4项。',
+  'aliases_zh / aliases_en: 常见别名、译名、英文写法，最多各4项。',
+  'queries: 适合搜索引擎的查询串，最多6项，必须优先保留原始实体，可加入作品名辅助 disambiguation。',
+  '禁止臆造不存在的实体；如果不确定作品名，可以留空，不要瞎编。',
 ].join('\n');
 const SEARCH_SUMMARY_SYSTEM_PROMPT = [
   '你是搜索结果总结器。',
-  '输入包含用户问题与候选搜索结果(title/url/description)。',
+  '输入包含用户问题与候选搜索结果(title/url/description/source)。',
   '只基于输入结果总结，不得编造。',
   '先给简洁结论，再给2-4条来源链接。',
   '若证据不足或结果明显不相关，直接输出澄清提问（例如让用户确认人物/作品/游戏）。',
@@ -53,19 +60,20 @@ export const Config: Schema<Config> = Schema.object({
   wikipediaBaseURL: Schema.union([
     Schema.array(Schema.string()).role('table').description('Wikipedia API 基础 URL 列表。'),
     Schema.string().description('Wikipedia API 基础 URL（逗号分隔）。'),
-  ]).description('兼容保留字段（当前热修复链路不再使用）。'),
-  queryRewriteEnabled: Schema.boolean().default(true).description('是否启用 DeepSeek 查询改写（输出中英文搜索词条）。'),
-  queryRewriteModel: Schema.string().default(DEFAULT_QUERY_REWRITE_MODEL).description('查询改写使用的模型。'),
+  ]).description('可选的 Wikipedia API Base URL 列表。'),
+  queryRewriteEnabled: Schema.boolean().default(true).description('是否启用 DeepSeek 查询规划与总结。'),
+  queryRewriteModel: Schema.string().default(DEFAULT_QUERY_REWRITE_MODEL).description('查询规划与总结使用的模型。'),
   queryRewriteBaseURL: Schema.string()
     .default(DEFAULT_QUERY_REWRITE_BASE_URL)
-    .description('查询改写 API Base URL（OpenAI 兼容）。'),
-  queryRewriteApiKey: Schema.string().default('').description('查询改写 API Key（为空则跳过改写）。'),
-  queryRewriteMaxTerms: Schema.number().min(1).max(6).default(DEFAULT_QUERY_REWRITE_MAX_TERMS).description('查询改写最多保留词条数。'),
+    .description('查询规划 API Base URL（OpenAI 兼容）。'),
+  queryRewriteApiKey: Schema.string().default('').description('查询规划 API Key（为空则跳过规划）。'),
+  queryRewriteMaxTerms: Schema.number().min(1).max(6).default(DEFAULT_QUERY_REWRITE_MAX_TERMS).description('查询规划最多保留词条数。'),
 });
 
 type RuntimeConfig = {
   topK: number;
   timeoutMs: number;
+  wikipediaBaseURLs: string[];
   queryRewriteEnabled: boolean;
   queryRewriteModel: string;
   queryRewriteBaseURL: string;
@@ -88,6 +96,14 @@ type ChatLunaLike = {
 
 type ContextWithChatLuna = Context & { chatluna?: ChatLunaLike };
 
+type ChatCompletionResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string | Array<{ type?: string; text?: string }>;
+    };
+  }>;
+};
+
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -105,12 +121,34 @@ function takeUnique(items: string[], limit: number): string[] {
   const output: string[] = [];
   for (const raw of items) {
     const normalized = normalizeText(raw);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     output.push(normalized);
     if (output.length >= limit) break;
   }
   return output;
+}
+
+function normalizeWikipediaBaseURLs(raw: Config['wikipediaBaseURL']): string[] {
+  if (Array.isArray(raw)) {
+    const normalized = takeUnique(raw.map((item) => normalizeBaseURL(item)), 4);
+    return normalized.length ? normalized : DEFAULT_WIKIPEDIA_BASE_URLS;
+  }
+
+  if (typeof raw === 'string') {
+    const normalized = takeUnique(
+      raw
+        .split(',')
+        .map((item) => normalizeBaseURL(item))
+        .filter(Boolean),
+      4,
+    );
+    return normalized.length ? normalized : DEFAULT_WIKIPEDIA_BASE_URLS;
+  }
+
+  return DEFAULT_WIKIPEDIA_BASE_URLS;
 }
 
 function toRuntimeConfig(config: Config): RuntimeConfig {
@@ -124,6 +162,7 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
   return {
     topK: Number.isFinite(topK) ? clampInteger(topK, 1, 10) : DEFAULT_TOP_K,
     timeoutMs: Number.isFinite(timeoutMs) ? Math.max(3000, Math.floor(timeoutMs)) : DEFAULT_TIMEOUT_MS,
+    wikipediaBaseURLs: normalizeWikipediaBaseURLs(config.wikipediaBaseURL),
     queryRewriteEnabled: config.queryRewriteEnabled !== false,
     queryRewriteModel,
     queryRewriteBaseURL,
@@ -134,15 +173,39 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
   };
 }
 
-function buildModelCandidates(model: string): string[] {
+function isDeepSeekCompatibleBaseURL(baseURL: string): boolean {
+  return /(^https?:\/\/)?api\.deepseek\.com(?:\/|$)/i.test(baseURL);
+}
+
+function buildModelCandidates(model: string, baseURL: string): string[] {
   const normalized = normalizeText(model);
   if (!normalized) return [];
-  const candidates = [normalized];
-  if (normalized.includes('/')) {
-    const shortName = normalizeText(normalized.split('/').pop() ?? '');
-    if (shortName && shortName !== normalized) candidates.push(shortName);
+
+  const shortName = normalized.includes('/') ? normalizeText(normalized.split('/').pop() ?? '') : '';
+  if (isDeepSeekCompatibleBaseURL(baseURL) && shortName) {
+    return takeUnique([shortName, normalized], 2);
   }
-  return takeUnique(candidates, 2);
+
+  return takeUnique([normalized, shortName], 2);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractMessageText(content: string | Array<{ type?: string; text?: string }> | undefined): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => (typeof item.text === 'string' ? item.text : ''))
+    .filter(Boolean)
+    .join('\n');
 }
 
 async function invokeOpenAICompatible(
@@ -150,7 +213,7 @@ async function invokeOpenAICompatible(
   systemPrompt: string,
   userPrompt: string,
 ): Promise<string> {
-  const modelCandidates = buildModelCandidates(runtime.queryRewriteModel);
+  const modelCandidates = buildModelCandidates(runtime.queryRewriteModel, runtime.queryRewriteBaseURL);
   if (!modelCandidates.length) {
     throw new Error('no available model candidates');
   }
@@ -191,17 +254,27 @@ async function invokeOpenAICompatible(
   throw lastError ?? new Error('openai-compatible request failed');
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+async function searchByDuckDuckGoLite(query: string, limit: number, timeoutMs: number): Promise<SearchProviderResult[]> {
+  const url = `https://lite.duckduckgo.com/lite/?dc=${limit}&q=${encodeURIComponent(query)}`;
+  const response = await fetchWithTimeout(
+    url,
+    {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0 Safari/537.36',
+        Referer: 'https://lite.duckduckgo.com/',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+      },
+    },
+    timeoutMs,
+  );
+  if (!response.ok) {
+    throw new Error(`duckduckgo-lite status=${response.status}`);
   }
+  return parseDuckDuckGoLiteResults(await response.text(), limit);
 }
 
-async function searchByBingWeb(query: string, limit: number, timeoutMs: number): Promise<SearchResult[]> {
+async function searchByBingWeb(query: string, limit: number, timeoutMs: number): Promise<SearchProviderResult[]> {
   const url = `https://cn.bing.com/search?form=QBRE&q=${encodeURIComponent(query)}`;
   const response = await fetchWithTimeout(
     url,
@@ -217,51 +290,40 @@ async function searchByBingWeb(query: string, limit: number, timeoutMs: number):
   if (!response.ok) {
     throw new Error(`bing-web status=${response.status}`);
   }
-  const html = await response.text();
-  return parseBingWebResults(html, limit);
+  return parseBingWebResults(await response.text(), limit);
 }
 
-type ChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string | Array<{ type?: string; text?: string }>;
-    };
-  }>;
-};
-
-type QueryRewriteOutput = {
-  zhTerms: string[];
-  enTerms: string[];
-};
-
-function extractMessageText(content: string | Array<{ type?: string; text?: string }> | undefined): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .map((item) => (typeof item.text === 'string' ? item.text : ''))
-    .filter(Boolean)
-    .join('\n');
+async function searchByWikipedia(
+  query: string,
+  baseURL: string,
+  limit: number,
+  timeoutMs: number,
+): Promise<SearchProviderResult[]> {
+  const url = `${baseURL}?action=opensearch&search=${encodeURIComponent(query)}&limit=${limit}&namespace=0&format=json`;
+  const response = await fetchWithTimeout(
+    url,
+    {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
+      },
+    },
+    timeoutMs,
+  );
+  if (!response.ok) {
+    throw new Error(`wikipedia status=${response.status}`);
+  }
+  return parseWikipediaOpenSearchResults(await response.text(), limit, baseURL);
 }
 
-async function rewriteSearchTerms(query: string, runtime: RuntimeConfig): Promise<QueryRewriteOutput | null> {
+async function rewriteSearchPlan(query: string, runtime: RuntimeConfig): Promise<QueryPlan | null> {
   if (!runtime.queryRewriteEnabled) return null;
   if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
 
   const messageText = await invokeOpenAICompatible(runtime, QUERY_REWRITE_SYSTEM_PROMPT, `用户搜索请求：${query}`);
   if (!messageText) return null;
 
-  const rewritten = parseRewrittenSearchTerms(messageText);
-  const zhTerms = takeUnique(rewritten.zhTerms, 6);
-  const enTerms = takeUnique(rewritten.enTerms, 6);
-  if (!zhTerms.length && !enTerms.length) return null;
-
-  return { zhTerms, enTerms };
-}
-
-function buildSearchTerms(rewritten: QueryRewriteOutput | null, limit: number, fallbackQuery: string): string[] {
-  const terms = takeUnique([...(rewritten?.zhTerms ?? []), ...(rewritten?.enTerms ?? [])], limit);
-  if (terms.length) return terms;
-  return [fallbackQuery];
+  return parseQueryPlan(messageText, query);
 }
 
 function toSearchObservation(results: SearchResult[]): string {
@@ -297,48 +359,75 @@ class StableWebSearchTool {
   constructor(private runtime: RuntimeConfig) {}
 
   async invoke(input: unknown): Promise<string> {
-    const rawQuery = normalizeText(typeof input === 'string' ? input : String(input ?? ''));
-    if (!rawQuery) return '[]';
+    const originalQuery = normalizeText(typeof input === 'string' ? input : String(input ?? ''));
+    if (!originalQuery) return '[]';
 
-    let rewrittenTerms: QueryRewriteOutput | null = null;
+    const sanitizedQuery = sanitizeSearchQueryInput(originalQuery);
+    const fallbackPlan = parseQueryPlan('', sanitizedQuery);
+
+    let queryPlan = fallbackPlan;
     try {
-      rewrittenTerms = await rewriteSearchTerms(rawQuery, this.runtime);
+      const rewrittenPlan = await rewriteSearchPlan(sanitizedQuery, this.runtime);
+      if (rewrittenPlan) {
+        queryPlan = {
+          ...rewrittenPlan,
+          queries: takeUnique(rewrittenPlan.queries, this.runtime.queryRewriteMaxTerms),
+        };
+      }
     } catch (error) {
       logger.warn('query rewrite failed: %s', (error as Error).message);
     }
 
-    const searchTerms = buildSearchTerms(rewrittenTerms, this.runtime.queryRewriteMaxTerms, rawQuery);
-    const relevanceKeywords = extractRelevanceKeywords([rawQuery, ...searchTerms]);
-
-    const merged: SearchResult[] = [];
-    const searchBatches = await Promise.allSettled(
-      searchTerms.map(async (term) => {
-        try {
-          return await searchByBingWeb(term, this.runtime.topK * 2, this.runtime.timeoutMs);
-        } catch (error) {
-          logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
-          return [] as SearchResult[];
-        }
-      }),
+    const searchQueries = takeUnique(queryPlan.queries.length ? queryPlan.queries : [sanitizedQuery], this.runtime.queryRewriteMaxTerms);
+    const wikipediaQueries = takeUnique(
+      [sanitizedQuery, ...queryPlan.primaryEntities, ...queryPlan.relatedWorks],
+      Math.min(4, this.runtime.queryRewriteMaxTerms),
     );
-    for (const batch of searchBatches) {
-      if (batch.status === 'fulfilled') {
-        merged.push(...batch.value);
+
+    const searchTasks: Array<Promise<SearchProviderResult[]>> = [];
+    for (const term of searchQueries) {
+      searchTasks.push(
+        searchByDuckDuckGoLite(term, this.runtime.topK * 2, this.runtime.timeoutMs).catch((error) => {
+          logger.warn('duckduckgo-lite search failed (term=%s): %s', term, (error as Error).message);
+          return [] as SearchProviderResult[];
+        }),
+      );
+      searchTasks.push(
+        searchByBingWeb(term, this.runtime.topK * 2, this.runtime.timeoutMs).catch((error) => {
+          logger.warn('bing web search failed (term=%s): %s', term, (error as Error).message);
+          return [] as SearchProviderResult[];
+        }),
+      );
+    }
+    for (const baseURL of this.runtime.wikipediaBaseURLs) {
+      for (const term of wikipediaQueries) {
+        searchTasks.push(
+          searchByWikipedia(term, baseURL, this.runtime.topK, this.runtime.timeoutMs).catch((error) => {
+            logger.warn('wikipedia search failed (base=%s term=%s): %s', baseURL, term, (error as Error).message);
+            return [] as SearchProviderResult[];
+          }),
+        );
       }
     }
 
-    const ranked = rankSearchResultsByRelevance(merged, relevanceKeywords, this.runtime.topK);
+    const merged = (await Promise.all(searchTasks)).flat();
+    const ranked = rankSearchResultsByRelevance(merged, queryPlan, this.runtime.topK, sanitizedQuery);
+    const summaryCandidates = ranked.length ? ranked : dedupeSearchResults(merged, this.runtime.topK);
+    const serializableCandidates = summaryCandidates.map(({ title, url, description, image }) => ({
+      title,
+      url,
+      description,
+      ...(image ? { image } : {}),
+    }));
+
     try {
-      const summary = await summarizeSearchResults(rawQuery, ranked, this.runtime);
+      const summary = await summarizeSearchResults(originalQuery, serializableCandidates, this.runtime);
       if (summary) return summary;
     } catch (error) {
       logger.warn('search summary failed: %s', (error as Error).message);
     }
 
-    const fallbackResults = ranked.length
-      ? ranked
-      : rankSearchResultsByRelevance(merged, [], this.runtime.topK);
-    return toSearchObservation(fallbackResults);
+    return toSearchObservation(serializableCandidates);
   }
 }
 
