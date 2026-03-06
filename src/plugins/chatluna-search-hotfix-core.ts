@@ -276,6 +276,10 @@ function cleanDuckDuckGoRedirect(rawUrl: string): string {
   return normalized;
 }
 
+export function looksLikeDuckDuckGoLiteAnomalyPage(html: string): boolean {
+  return /anomaly-modal|Unfortunately, bots use DuckDuckGo too|challenge-form/i.test(html);
+}
+
 function canonicalizeUrl(rawUrl: string): string {
   const cleaned = cleanDuckDuckGoRedirect(rawUrl);
   if (!cleaned) return '';

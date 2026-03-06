@@ -1,6 +1,7 @@
 import { Context, Logger, Schema } from 'koishi';
 import {
   dedupeSearchResults,
+  looksLikeDuckDuckGoLiteAnomalyPage,
   parseBingWebResults,
   parseDuckDuckGoLiteResults,
   parseQueryPlan,
@@ -31,14 +32,6 @@ const QUERY_REWRITE_SYSTEM_PROMPT = [
   'aliases_zh / aliases_en: 常见别名、译名、英文写法，最多各4项。',
   'queries: 适合搜索引擎的查询串，最多6项，必须优先保留原始实体，可加入作品名辅助 disambiguation。',
   '禁止臆造不存在的实体；如果不确定作品名，可以留空，不要瞎编。',
-].join('\n');
-const SEARCH_SUMMARY_SYSTEM_PROMPT = [
-  '你是搜索结果总结器。',
-  '输入包含用户问题与候选搜索结果(title/url/description/source)。',
-  '只基于输入结果总结，不得编造。',
-  '先给简洁结论，再给2-4条来源链接。',
-  '若证据不足或结果明显不相关，直接输出澄清提问（例如让用户确认人物/作品/游戏）。',
-  '输出纯文本，不要 JSON，不要 markdown 代码块。',
 ].join('\n');
 
 export interface Config {
@@ -139,6 +132,30 @@ function queryContainsAllEntities(query: string, entities: string[]): boolean {
 function queryContainsAnyEntity(query: string, entities: string[]): boolean {
   const normalizedQuery = normalizeText(query);
   return entities.some((entity) => normalizedQuery.includes(entity));
+}
+
+function extractWorkTitleCandidates(text: string): string[] {
+  const normalized = normalizeText(text);
+  if (!normalized) return [];
+
+  const results: string[] = [];
+  for (const match of normalized.matchAll(/《([^》]{2,40})》/g)) {
+    results.push(normalizeText(match[1]));
+  }
+
+  const titlePrefix = normalized.split(/\s*[-|｜]\s*/)[0];
+  if (
+    titlePrefix &&
+    /[\u3400-\u9fff]/.test(titlePrefix) &&
+    titlePrefix.length >= 3 &&
+    titlePrefix.length <= 20 &&
+    !/[：:]/.test(titlePrefix) &&
+    !/(百度百科|萌娘百科|维基百科|bilibili|知乎|微博|论坛|讨论|角色|人物|百科全书)/i.test(titlePrefix)
+  ) {
+    results.push(normalizeText(titlePrefix));
+  }
+
+  return takeUnique(results, 4);
 }
 
 function normalizeWikipediaBaseURLs(raw: Config['wikipediaBaseURL']): string[] {
@@ -278,10 +295,14 @@ async function searchByDuckDuckGoLite(query: string, limit: number, timeoutMs: n
     },
     timeoutMs,
   );
-  if (!response.ok) {
+  if (!response.ok || response.status !== 200) {
     throw new Error(`duckduckgo-lite status=${response.status}`);
   }
-  return parseDuckDuckGoLiteResults(await response.text(), limit);
+  const html = await response.text();
+  if (looksLikeDuckDuckGoLiteAnomalyPage(html)) {
+    throw new Error('duckduckgo-lite anomaly challenge');
+  }
+  return parseDuckDuckGoLiteResults(html, limit);
 }
 
 async function searchByBingWeb(query: string, limit: number, timeoutMs: number): Promise<SearchProviderResult[]> {
@@ -336,29 +357,63 @@ async function rewriteSearchPlan(query: string, runtime: RuntimeConfig): Promise
   return parseQueryPlan(messageText, query);
 }
 
-function toSearchObservation(results: SearchResult[]): string {
-  if (results.length) return JSON.stringify(results);
-  return JSON.stringify([{ title: 'No results found', description: 'No results found', url: '' }]);
-}
+type SearchObservation = {
+  query: string;
+  normalized_query: string;
+  status: 'resolved' | 'ambiguous' | 'no_match';
+  entities: string[];
+  likely_works: string[];
+  top_results: Array<{
+    title: string;
+    url: string;
+    description: string;
+    source?: string;
+    image?: string;
+  }>;
+};
 
-async function summarizeSearchResults(
-  query: string,
-  rankedResults: SearchResult[],
-  runtime: RuntimeConfig,
-): Promise<string | null> {
-  if (!runtime.queryRewriteEnabled) return null;
-  if (!runtime.queryRewriteApiKey || !runtime.queryRewriteBaseURL || !runtime.queryRewriteModel) return null;
+function buildSearchObservation(
+  originalQuery: string,
+  sanitizedQuery: string,
+  plan: QueryPlan,
+  results: SearchResult[],
+): string {
+  const workCounts = new Map<string, number>();
+  for (const result of results) {
+    const weight = Math.max(1, 5 - results.indexOf(result));
+    for (const work of extractWorkTitleCandidates(`${result.title}\n${result.description}`)) {
+      workCounts.set(work, (workCounts.get(work) ?? 0) + weight);
+    }
+  }
 
-  const messageText = (
-    await invokeOpenAICompatible(
-      runtime,
-      SEARCH_SUMMARY_SYSTEM_PROMPT,
-      `用户问题：${query}\n候选搜索结果(JSON)：${JSON.stringify(rankedResults)}`,
-    )
-  )
-    .replace(/\r\n?/g, '\n')
-    .trim();
-  return messageText || null;
+  const likelyWorks = [...workCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([work]) => work)
+    .slice(0, 4);
+
+  const status: SearchObservation['status'] = results.length
+    ? likelyWorks.length > 1 && plan.primaryEntities.length <= 1
+      ? 'ambiguous'
+      : 'resolved'
+    : 'no_match';
+
+  const payload: SearchObservation = {
+    query: originalQuery,
+    normalized_query: sanitizedQuery,
+    status,
+    entities: plan.primaryEntities,
+    likely_works: likelyWorks,
+    top_results: results.length
+      ? results.map(({ title, url, description, image }) => ({
+          title,
+          url,
+          description,
+          ...(image ? { image } : {}),
+        }))
+      : [{ title: 'No results found', url: '', description: 'No relevant search results were found.' }],
+  };
+
+  return JSON.stringify(payload, null, 2);
 }
 
 function buildSearchQueries(plan: QueryPlan, runtime: RuntimeConfig, sanitizedQuery: string): string[] {
@@ -468,22 +523,8 @@ class StableWebSearchTool {
       }
     }
 
-    const summaryCandidates = ranked.length ? ranked : dedupeSearchResults(merged, this.runtime.topK);
-    const serializableCandidates = summaryCandidates.map(({ title, url, description, image }) => ({
-      title,
-      url,
-      description,
-      ...(image ? { image } : {}),
-    }));
-
-    try {
-      const summary = await summarizeSearchResults(originalQuery, serializableCandidates, this.runtime);
-      if (summary) return summary;
-    } catch (error) {
-      logger.warn('search summary failed: %s', (error as Error).message);
-    }
-
-    return toSearchObservation(serializableCandidates);
+    const observationResults = ranked.length ? ranked : dedupeSearchResults(merged, this.runtime.topK);
+    return buildSearchObservation(originalQuery, sanitizedQuery, fallbackPlan, observationResults);
   }
 }
 

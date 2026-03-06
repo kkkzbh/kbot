@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apply } from '../src/plugins/chatluna-search-hotfix.js';
 import {
+  looksLikeDuckDuckGoLiteAnomalyPage,
   parseBingWebResults,
   parseDuckDuckGoLiteResults,
   parseQueryPlan,
@@ -88,6 +89,17 @@ function createDuckDuckGoLiteHtml(results: Array<{ title: string; url: string; d
   `;
 }
 
+function createDuckDuckGoAnomalyHtml(): string {
+  return `
+    <html>
+      <body>
+        <form id="challenge-form"></form>
+        <div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>
+      </body>
+    </html>
+  `;
+}
+
 function createTool(overrides: Record<string, unknown> = {}): { invoke: (input: unknown) => Promise<string> } {
   const readyHandlers: Array<() => void> = [];
   const registerTool = vi.fn();
@@ -160,6 +172,11 @@ describe('chatluna-search-hotfix', () => {
         source: 'duckduckgo-lite',
       },
     ]);
+  });
+
+  it('detects duckduckgo lite anomaly pages', () => {
+    expect(looksLikeDuckDuckGoLiteAnomalyPage(createDuckDuckGoAnomalyHtml())).toBe(true);
+    expect(looksLikeDuckDuckGoLiteAnomalyPage(createDuckDuckGoLiteHtml([]))).toBe(false);
   });
 
   it('parses wikipedia opensearch payload', () => {
@@ -297,7 +314,7 @@ describe('chatluna-search-hotfix', () => {
     expect(registerTool).toHaveBeenCalledTimes(1);
   });
 
-  it('prefers DeepSeek short model name on official base url for summary requests', async () => {
+  it('prefers DeepSeek short model name on official base url when planner fallback is needed', async () => {
     const tool = createTool({
       queryRewriteApiKey: 'test-key',
       queryRewriteBaseURL: 'https://api.deepseek.com/v1',
@@ -324,84 +341,8 @@ describe('chatluna-search-hotfix', () => {
                 message: {
                   content: JSON.stringify({
                     primary_entities: ['彩叶', '辉夜'],
-                    related_works: ['超时空辉夜姬'],
-                    aliases_zh: ['酒寄彩叶'],
-                    aliases_en: ['Kaguya'],
-                    queries: ['彩叶和辉夜是谁', '彩叶 辉夜 超时空辉夜姬'],
-                  }),
-                },
-              },
-            ],
-          });
-        }
-        if (systemPrompt.includes('搜索结果总结器')) {
-          return createJsonResponse({
-            choices: [{ message: { content: '结论：彩叶与辉夜来自《超时空辉夜姬》\n来源：https://example.com/moe' } }],
-          });
-        }
-      }
-      if (url.includes('lite.duckduckgo.com/lite/')) {
-        return new Response(
-          createDuckDuckGoLiteHtml([
-            {
-              title: '超时空辉夜姬! - 萌娘百科',
-              url: 'https://example.com/moe',
-              description: '彩叶与辉夜是该作品主要角色',
-            },
-          ]),
-          { status: 200 },
-        );
-      }
-      if (url.includes('cn.bing.com/search')) {
-        return new Response(
-          createBingHtml([
-            {
-              title: '无关结果',
-              url: 'https://example.com/irrelevant',
-              description: '浇花技巧',
-            },
-          ]),
-          { status: 200 },
-        );
-      }
-      if (url.includes('wikipedia.org/w/api.php')) {
-        return createJsonResponse(['彩叶', [], [], []]);
-      }
-      throw new Error(`unexpected fetch url: ${url}`);
-    });
-
-    const output = await tool.invoke('你搜一下 彩叶和辉夜是谁');
-    expect(output).toContain('超时空辉夜姬');
-    expect(requestedModels[0]).toBe('deepseek-chat');
-    expect(plannerPrompts).toHaveLength(0);
-  });
-
-  it('uses sanitized query for planner only after baseline search is exhausted', async () => {
-    const tool = createTool({
-      queryRewriteApiKey: 'test-key',
-      queryRewriteBaseURL: 'https://api.deepseek.com/v1',
-      queryRewriteModel: 'deepseek/deepseek-chat',
-    });
-    const plannerPrompts: string[] = [];
-
-    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith('/chat/completions')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as {
-          messages?: Array<{ content?: string }>;
-        };
-        const systemPrompt = body.messages?.[0]?.content ?? '';
-        const userPrompt = body.messages?.[1]?.content ?? '';
-        if (systemPrompt.includes('搜索查询规划器')) {
-          plannerPrompts.push(userPrompt);
-          return createJsonResponse({
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    primary_entities: ['彩叶', '辉夜'],
-                    related_works: ['超时空辉夜姬'],
-                    aliases_zh: ['酒寄彩叶'],
+                    related_works: [],
+                    aliases_zh: [],
                     aliases_en: [],
                     queries: ['彩叶和辉夜是谁', '彩叶 辉夜 超时空辉夜姬'],
                   }),
@@ -409,9 +350,6 @@ describe('chatluna-search-hotfix', () => {
               },
             ],
           });
-        }
-        if (systemPrompt.includes('搜索结果总结器')) {
-          return createJsonResponse({ error: 'summary failed' }, 500);
         }
       }
       if (url.includes('lite.duckduckgo.com/lite/')) {
@@ -426,11 +364,62 @@ describe('chatluna-search-hotfix', () => {
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
-    await tool.invoke('你搜一下 彩叶和辉夜是谁');
+    const output = JSON.parse(await tool.invoke('你搜一下 彩叶和辉夜是谁')) as {
+      status: string;
+    };
+    expect(output.status).toBe('no_match');
+    expect(requestedModels[0]).toBe('deepseek-chat');
     expect(plannerPrompts).toContain('用户搜索请求：彩叶和辉夜是谁');
   });
 
-  it('returns summary from multi-source results even when bing drifts badly', async () => {
+  it('skips planner when baseline search already has strong results', async () => {
+    const tool = createTool({
+      queryRewriteApiKey: 'test-key',
+      queryRewriteBaseURL: 'https://api.deepseek.com/v1',
+      queryRewriteModel: 'deepseek/deepseek-chat',
+    });
+    const requestedModels: string[] = [];
+
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          model?: string;
+        };
+        requestedModels.push(body.model ?? '');
+        return createJsonResponse({ error: 'planner should not be called' }, 500);
+      }
+      if (url.includes('lite.duckduckgo.com/lite/')) {
+        return new Response(
+          createDuckDuckGoLiteHtml([
+            {
+              title: '超时空辉夜姬! - 萌娘百科',
+              url: 'https://example.com/moe',
+              description: '酒寄彩叶与辉夜是该作品主要角色',
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (url.includes('cn.bing.com/search')) {
+        return new Response(createBingHtml([]), { status: 200 });
+      }
+      if (url.includes('wikipedia.org/w/api.php')) {
+        return createJsonResponse(['彩叶', [], [], []]);
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = JSON.parse(await tool.invoke('你搜一下 彩叶和辉夜是谁')) as {
+      status: string;
+      top_results: Array<{ url: string }>;
+    };
+    expect(output.status).toBe('resolved');
+    expect(output.top_results[0].url).toBe('https://example.com/moe');
+    expect(requestedModels).toEqual([]);
+  });
+
+  it('returns structured observation from multi-source results even when bing drifts badly', async () => {
     const tool = createTool({
       queryRewriteApiKey: 'test-key',
       queryRewriteBaseURL: 'https://api.example.com/v1',
@@ -461,11 +450,7 @@ describe('chatluna-search-hotfix', () => {
             ],
           });
         }
-        if (systemPrompt.includes('搜索结果总结器')) {
-          return createJsonResponse({
-            choices: [{ message: { content: '结论：彩叶与辉夜是《超时空辉夜姬！》相关角色\n来源：https://example.com/moe' } }],
-          });
-        }
+        return createJsonResponse({ error: 'planner should not be called' }, 500);
       }
       if (url.includes('lite.duckduckgo.com/lite/')) {
         return new Response(
@@ -502,8 +487,14 @@ describe('chatluna-search-hotfix', () => {
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
-    const output = await tool.invoke('彩叶和辉夜是谁');
-    expect(output).toContain('超时空辉夜姬');
+    const output = JSON.parse(await tool.invoke('彩叶和辉夜是谁')) as {
+      status: string;
+      top_results: Array<{ title: string }>;
+      likely_works: string[];
+    };
+    expect(output.status).toBe('resolved');
+    expect(output.likely_works.join(' ')).toContain('超时空辉夜姬');
+    expect(output.top_results[0].title).toContain('超时空辉夜姬');
   });
 
   it('avoids single-entity wikipedia fallback for ambiguous multi-entity queries', async () => {
@@ -539,11 +530,7 @@ describe('chatluna-search-hotfix', () => {
             ],
           });
         }
-        if (systemPrompt.includes('搜索结果总结器')) {
-          return createJsonResponse({
-            choices: [{ message: { content: '结论：彩叶与辉夜指向《超时空辉夜姬！》\n来源：https://example.com/moe' } }],
-          });
-        }
+        return createJsonResponse({ error: 'planner should not be called' }, 500);
       }
       if (url.includes('lite.duckduckgo.com/lite/')) {
         requestedSearchTerms.push(new URL(url).searchParams.get('q') ?? '');
@@ -569,12 +556,61 @@ describe('chatluna-search-hotfix', () => {
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
-    const output = await tool.invoke('彩叶和辉夜是谁');
-    expect(output).toContain('超时空辉夜姬');
+    const output = JSON.parse(await tool.invoke('彩叶和辉夜是谁')) as {
+      status: string;
+      top_results: Array<{ url: string }>;
+    };
+    expect(output.status).toBe('resolved');
+    expect(output.top_results[0].url).toBe('https://example.com/moe');
     expect(requestedSearchTerms).toContain('彩叶和辉夜是谁');
     expect(requestedSearchTerms).not.toContain('彩叶');
     expect(requestedSearchTerms).not.toContain('辉夜');
     expect(requestedWikipediaUrls).toHaveLength(0);
+  });
+
+  it('survives duckduckgo anomaly on one query variant by using other entity-preserving queries', async () => {
+    const tool = createTool();
+    const requestedTerms: string[] = [];
+
+    fetchMock.mockImplementation(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('lite.duckduckgo.com/lite/')) {
+        const term = new URL(url).searchParams.get('q') ?? '';
+        requestedTerms.push(term);
+        if (term === '彩叶和辉夜是谁') {
+          return new Response(createDuckDuckGoAnomalyHtml(), { status: 200 });
+        }
+        if (term === '彩叶 辉夜 关系') {
+          return new Response(
+            createDuckDuckGoLiteHtml([
+              {
+                title: '超时空辉夜姬! - 萌娘百科',
+                url: 'https://example.com/moe',
+                description: '酒寄彩叶与辉夜是该作品主要角色',
+              },
+            ]),
+            { status: 200 },
+          );
+        }
+        return new Response(createDuckDuckGoLiteHtml([]), { status: 200 });
+      }
+      if (url.includes('cn.bing.com/search')) {
+        return new Response(createBingHtml([]), { status: 200 });
+      }
+      if (url.includes('wikipedia.org/w/api.php')) {
+        return createJsonResponse(['彩叶', [], [], []]);
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    });
+
+    const output = JSON.parse(await tool.invoke('彩叶和辉夜是谁')) as {
+      status: string;
+      top_results: Array<{ url: string }>;
+    };
+    expect(output.status).toBe('resolved');
+    expect(output.top_results[0].url).toBe('https://example.com/moe');
+    expect(requestedTerms).toContain('彩叶和辉夜是谁');
+    expect(requestedTerms).toContain('彩叶 辉夜 关系');
   });
 
   it('prefers multi-entity ddg hit over single-entity wikipedia pages', () => {
@@ -601,7 +637,7 @@ describe('chatluna-search-hotfix', () => {
     expect(rankSearchResultsByRelevance([wikiResult, ddgResult], plan, 5, '彩叶和辉夜是谁')[0]).toEqual(ddgResult);
   });
 
-  it('falls back to json search results when summary model fails but ddg still succeeds', async () => {
+  it('returns structured json observation when ddg succeeds', async () => {
     const tool = createTool({
       queryRewriteApiKey: 'test-key',
       queryRewriteBaseURL: 'https://api.example.com/v1',
@@ -632,9 +668,7 @@ describe('chatluna-search-hotfix', () => {
             ],
           });
         }
-        if (systemPrompt.includes('搜索结果总结器')) {
-          return createJsonResponse({ error: 'summary failed' }, 500);
-        }
+        return createJsonResponse({ error: 'planner should not be called' }, 500);
       }
       if (url.includes('lite.duckduckgo.com/lite/')) {
         return new Response(
@@ -666,8 +700,11 @@ describe('chatluna-search-hotfix', () => {
       throw new Error(`unexpected fetch url: ${url}`);
     });
 
-    const output = await tool.invoke('彩叶和辉夜是谁');
-    const parsed = JSON.parse(output) as Array<{ title: string; url: string; description: string }>;
-    expect(parsed[0].url).toBe('https://example.com/moe');
+    const output = JSON.parse(await tool.invoke('彩叶和辉夜是谁')) as {
+      status: string;
+      top_results: Array<{ title: string; url: string; description: string }>;
+    };
+    expect(output.status).toBe('resolved');
+    expect(output.top_results[0].url).toBe('https://example.com/moe');
   });
 });
