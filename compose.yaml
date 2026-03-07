@@ -4,23 +4,27 @@ services:
   ollama:
     image: ${OLLAMA_IMAGE:-docker.io/ollama/ollama}:${OLLAMA_TAG:-latest}
     container_name: ollama
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/ollama-startup.sh
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text:latest}
       TZ: ${TZ:-Asia/Shanghai}
-    command: >-
-      sh -lc "ollama serve &
-      pid=$!;
-      until ollama list >/dev/null 2>&1; do sleep 1; done;
-      ollama pull \"$OLLAMA_EMBED_MODEL\" || true;
-      wait $pid"
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
+      - ./docker/ollama-startup.sh:/usr/local/bin/ollama-startup.sh:ro,Z
     networks:
       - app_network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   pmhq:
     image: ${PMHQ_IMAGE:-docker.io/linyuchen/pmhq}:${PMHQ_TAG:-latest}

@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+ollama serve &
+pid=$!
+
+until OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1; do
+  sleep 1
+done
+
+OLLAMA_HOST=http://127.0.0.1:11434 ollama pull "${OLLAMA_EMBED_MODEL}" || true
+
+wait "${pid}"

@@ -65,15 +65,19 @@ Koishi uses **OneBot WebSocket 正向连接** to LLBot:
 - `ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001`
 - Only OneBot protocol is supported in this project.
 
+ChatLuna long-memory does not read host `syslog`/`journalctl` logs as memory.
+Long-memory uses the configured vector store plus embeddings instead.
+
 ## 4. Start LLBot stack (Podman)
 
 ```bash
 podman compose pull
-podman compose up -d pmhq llbot
+podman compose up -d ollama pmhq llbot
 ```
 
-Official docker mode uses two services:
+Official docker mode uses three services:
 
+- `ollama`: local embedding service for ChatLuna long-memory (`nomic-embed-text:latest` by default)
 - `pmhq`: QQ client runtime and login session
 - `llbot`: OneBot + WebUI
 - Compose defaults to fully-qualified images (`docker.io/linyuchen/...`) to avoid Fedora short-name prompt issues.
@@ -91,6 +95,9 @@ Open WebUI after services are up:
 Then in LLBot WebUI enable **WebSocket正向** (server mode) on port `3001`.
 
 If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
+
+`ollama` now starts through an explicit shell entrypoint so the image can both
+serve on `11434` and pre-pull the configured embedding model on startup.
 
 ## 5. Trigger contract
 
@@ -318,6 +325,10 @@ Common issues:
 - `qqbot-koishi.service` fails with `ExecStart`: confirm configured pnpm path exists (current file uses `/home/kkkzbh/.local/bin/pnpm`; check with `which pnpm`).
 - `qqbot-stack.service` fails: confirm Podman compose plugin is installed and `compose.yaml` exists.
 - Service not started after reboot: confirm `systemctl --user is-enabled qqbot.target` and `loginctl show-user kkkzbh | grep Linger`.
+- Host logs grow too quickly:
+  - deploy installs `/etc/systemd/journald.conf.d/qqbot.conf` plus a root timer `qqbot-log-maintenance.timer` when `sudo -n` is available
+  - journald is capped to `512M` persistent + `128M` runtime
+  - the maintenance timer runs daily, forces `rsyslog` rotation when `/var/log/syslog` exceeds `100M`, and vacuums old journal data
 
 ## 18. GitHub CI/CD auto deploy (push to `main`)
 

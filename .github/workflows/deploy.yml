@@ -145,6 +145,8 @@ jobs:
             exit 1
           fi
 
+          bash "${APP_DIR}/scripts/install-host-log-policy.sh"
+
           if ! command -v pnpm >/dev/null 2>&1; then
             if command -v corepack >/dev/null 2>&1; then
               corepack enable
