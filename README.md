@@ -99,6 +99,10 @@ If token is set, keep LLBot token consistent with `ONEBOT_TOKEN`.
 `ollama` now starts through an explicit shell entrypoint so the image can both
 serve on `11434` and pre-pull the configured embedding model on startup.
 
+`qqbot-stack.service` also exports a dedicated Podman `containers.conf` with
+`keyring = false` to avoid rootless `runc` startup failures caused by exhausted
+session key quotas on the host.
+
 ## 5. Trigger contract
 
 - Runtime trigger path = `task-automation` (优先) + `group-natural-trigger` + ChatLuna native。
@@ -328,7 +332,7 @@ Common issues:
 - Host logs grow too quickly:
   - deploy installs `/etc/systemd/journald.conf.d/qqbot.conf` plus a root timer `qqbot-log-maintenance.timer` when `sudo -n` is available
   - journald is capped to `512M` persistent + `128M` runtime
-  - the maintenance timer runs daily, forces `rsyslog` rotation when `/var/log/syslog` exceeds `100M`, and vacuums old journal data
+  - the maintenance timer runs daily, uses a dedicated `logrotate` policy with `su root syslog` when `/var/log/syslog` exceeds `100M`, and vacuums old journal data
 
 ## 18. GitHub CI/CD auto deploy (push to `main`)
 

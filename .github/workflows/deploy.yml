@@ -177,6 +177,7 @@ jobs:
           [Service]
           Type=oneshot
           WorkingDirectory=${APP_DIR}
+          Environment=CONTAINERS_CONF=${APP_DIR}/config/podman/containers.conf
           ExecStart=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml up -d ollama pmhq llbot
           ExecStop=/usr/bin/podman-compose -f ${APP_DIR}/compose.yaml stop ollama pmhq llbot
           RemainAfterExit=yes
