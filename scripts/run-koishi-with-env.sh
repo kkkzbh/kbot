@@ -41,6 +41,21 @@ load_env_file() {
   set +a
 }
 
+append_no_proxy_host() {
+  local env_name="$1"
+  local host="$2"
+  local current="${!env_name:-}"
+  case ",${current}," in
+    *",${host},"*) ;;
+    *) export "${env_name}=${current:+${current},}${host}" ;;
+  esac
+}
+
+configure_hbu_jw_proxy_bypass() {
+  append_no_proxy_host NO_PROXY zhjw.hbu.cn
+  append_no_proxy_host no_proxy zhjw.hbu.cn
+}
+
 BASE_ENV_FILE="$(resolve_optional_env_file "${QQBOT_ENV_BASE_FILE:-}" || true)"
 OVERRIDE_ENV_FILE="$(resolve_optional_env_file "${QQBOT_ENV_OVERRIDE_FILE:-}" || true)"
 
@@ -72,6 +87,8 @@ else
     echo "[info] Loaded bot env: $ENV_FILE"
   fi
 fi
+
+configure_hbu_jw_proxy_bypass
 
 cd "$ROOT_DIR"
 ./scripts/ensure-chatluna-build.sh --check

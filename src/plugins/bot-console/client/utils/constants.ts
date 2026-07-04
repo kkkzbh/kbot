@@ -39,6 +39,15 @@ export const FIELD_LABELS: Record<string, string> = {
   CHATLUNA_MIMO_DEFAULT_MODEL: 'MIMO 默认模型',
   CHATLUNA_DEFAULT_PRESET: '默认预设',
   CHAT_NATURAL_TRIGGER_GROUPS: '自然触发白名单群',
+  HBU_JW_ALLOWED_GROUPS: '教务系统白名单群',
+  HBU_JW_PUBLIC_BASE_URL: '绑定外部地址',
+  HBU_JW_BIND_PAGE_PATH: '绑定页路径',
+  HBU_JW_BIND_TOKEN_TTL_MS: '绑定链接有效期',
+  HBU_JW_CREDENTIAL_KEK_PATH: '凭据 KEK 路径',
+  HBU_JW_AUTO_RELOGIN_ENABLED: '自动重新登录',
+  HBU_JW_KEEP_ALIVE_ENABLED: '登录态保活',
+  HBU_JW_KEEP_ALIVE_INTERVAL_MS: '保活周期',
+  HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS: '保活最近使用窗口',
   CHAT_NATURAL_TRIGGER_ALIASES: '触发别名',
   CHATLUNA_COMMAND_AUTHORITY: '命令权限等级',
 }
@@ -64,6 +73,24 @@ export const FIELD_HINTS: Record<string, string> = {
     'GitHub Copilot Tab 当前按 OAuth + 本地 bridge 处理，并从 OAuth 可用模型列表选择模型，默认推荐 openai/gpt-5.4-mini。',
   CHAT_NATURAL_TRIGGER_GROUPS:
     '只有填在这里的群号才会命中群聊自然触发。多个群号用英文逗号分隔；留空时不会在任何群自动触发。',
+  HBU_JW_ALLOWED_GROUPS:
+    '只有填在这里的群号才可以在群聊里使用教务绑定、状态、解绑和 GPA 查询。多个群号用英文逗号分隔；留空时群聊不可用，私聊仍可用。',
+  HBU_JW_PUBLIC_BASE_URL:
+    '群聊或私聊回复绑定链接时使用的外部可访问地址。留空时运行时使用本机 Koishi 端口。',
+  HBU_JW_BIND_PAGE_PATH:
+    '教务绑定网页路径，必须以 / 开头。留空时使用 /jw/bind。',
+  HBU_JW_BIND_TOKEN_TTL_MS:
+    '绑定链接有效期，单位毫秒。',
+  HBU_JW_CREDENTIAL_KEK_PATH:
+    '本机加密密钥文件路径。用于加密保存教务凭据，文件权限必须只允许运行用户读取。',
+  HBU_JW_AUTO_RELOGIN_ENABLED:
+    '教务 cookie 失效后，是否使用已加密保存的凭据自动重新登录。',
+  HBU_JW_KEEP_ALIVE_ENABLED:
+    '是否定期探活最近使用过的教务登录态。',
+  HBU_JW_KEEP_ALIVE_INTERVAL_MS:
+    '登录态保活检查间隔，单位毫秒。',
+  HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS:
+    '只对最近这段时间内验证过的登录态执行保活，单位毫秒。',
   QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT:
     '每次主链路触发时，最多注入这么多条尚未写入会话历史的实时消息；注入后旧缓存会整体清空。',
   QQ_VOICE_TTS_BASE_URL:

@@ -163,6 +163,18 @@ export const FILE_SYSTEM_CONTROL_KEYS = [
   'CHATLUNA_COMMON_FS_ALLOWED_GROUPS',
 ] as const
 
+export const HBU_JW_ENV_KEYS = [
+  'HBU_JW_ALLOWED_GROUPS',
+  'HBU_JW_PUBLIC_BASE_URL',
+  'HBU_JW_BIND_PAGE_PATH',
+  'HBU_JW_BIND_TOKEN_TTL_MS',
+  'HBU_JW_CREDENTIAL_KEK_PATH',
+  'HBU_JW_AUTO_RELOGIN_ENABLED',
+  'HBU_JW_KEEP_ALIVE_ENABLED',
+  'HBU_JW_KEEP_ALIVE_INTERVAL_MS',
+  'HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS',
+] as const
+
 export const PRIVATE_DEFAULT_SCOPE_ID = 'private-default'
 export const PRIVATE_UNSUPPORTED_FEATURE_KEYS = ['CHAT_NATURAL_TRIGGER_ENABLED', 'QQBOT_REALTIME_MESSAGE_ENABLED'] as const
 
@@ -226,6 +238,7 @@ export const ALL_ENV_KEYS = [
   ...FEATURE_NUMBER_KEYS,
   ...TTS_BOT_ENV_KEYS,
   ...FILE_SYSTEM_CONTROL_KEYS,
+  ...HBU_JW_ENV_KEYS,
   ...PRESET_SCOPE_KEYS,
   ...BASIC_KEYS,
   ...MEMORY_KEYS,
@@ -658,6 +671,16 @@ export function useBotConsole() {
 
   const canSaveTtsSettings = computed(() => changedTtsBotEnvKeys.value.size > 0 || changedTtsEnvKeys.value.size > 0)
 
+  const changedHbuJwEnvKeys = computed<Set<string>>(() => {
+    const keys = new Set<string>()
+    for (const key of HBU_JW_ENV_KEYS) {
+      if (changedKeys.value.has(key)) keys.add(key)
+    }
+    return keys
+  })
+
+  const canSaveHbuJwSettings = computed(() => changedHbuJwEnvKeys.value.size > 0)
+
   const dirtyModelTabIds = computed<BotConsoleModelTabId[]>(() => {
     const dirty: BotConsoleModelTabId[] = []
     const originalById = new Map<BotConsoleModelTabId, BotConsoleBuiltinModelTab>()
@@ -1072,6 +1095,10 @@ export function useBotConsole() {
     })
     syncTtsState(result.env, result.tts)
     return result
+  }
+
+  async function saveHbuJwSettings(restartAfter = false): Promise<SaveEnvResponse> {
+    return saveEnvPatch(HBU_JW_ENV_KEYS, restartAfter)
   }
 
   async function probeTtsHealth(): Promise<ProbeTtsHealthResponse> {
@@ -1710,7 +1737,9 @@ export function useBotConsole() {
     canSaveEnv,
     changedTtsEnvKeys,
     changedTtsBotEnvKeys,
+    changedHbuJwEnvKeys,
     canSaveTtsSettings,
+    canSaveHbuJwSettings,
     modelTabsChanged,
     dirtyModelTabIds,
     currentModelValidation,
@@ -1737,6 +1766,7 @@ export function useBotConsole() {
     saveEnv,
     saveEnvPatch,
     saveTtsSettings,
+    saveHbuJwSettings,
     probeTtsHealth,
     synthesizeTtsSample,
     saveModelTabs,

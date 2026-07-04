@@ -9,6 +9,7 @@ import AnalyticsPanel from './components/panels/AnalyticsPanel.vue'
 import ServicesPanel from './components/panels/ServicesPanel.vue'
 import FeaturesPanel from './components/panels/FeaturesPanel.vue'
 import ToolPolicyPanel from './components/panels/ToolPolicyPanel.vue'
+import HbuJwPanel from './components/panels/HbuJwPanel.vue'
 import MemoryPanel from './components/panels/MemoryPanel.vue'
 import AffinityPanel from './components/panels/AffinityPanel.vue'
 import ModelsPanel from './components/panels/ModelsPanel.vue'
@@ -39,6 +40,7 @@ const TABS = [
   { id: 'analytics', label: '数据统计' },
   { id: 'services', label: '运行控制' },
   { id: 'features', label: '功能开关' },
+  { id: 'hbu-jw', label: '教务系统' },
   { id: 'tools', label: '工具控制' },
   { id: 'affinity', label: '关系事件' },
   { id: 'memory', label: '长期记忆' },
@@ -53,6 +55,7 @@ const panelMap: Record<string, Component> = {
   analytics: AnalyticsPanel,
   services: ServicesPanel,
   features: FeaturesPanel,
+  'hbu-jw': HbuJwPanel,
   tools: ToolPolicyPanel,
   affinity: AffinityPanel,
   memory: MemoryPanel,

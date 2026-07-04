@@ -56,7 +56,18 @@ plugins:
       ratingChartHeight: ${{ +env.QQBOT_OJ_TOOLS_RATING_CHART_HEIGHT || 838 }}
     ./dist/plugins/hbu-jw:hbu-jw:
       bindPagePath: ${{ env.HBU_JW_BIND_PAGE_PATH || '/jw/bind' }}
-      bindPreviewQq: ${{ env.HBU_JW_BIND_PREVIEW_QQ || '1405359129' }}
+      publicBaseUrl: >-
+        ${{ env.HBU_JW_PUBLIC_BASE_URL || ('http://127.0.0.1:' +
+        (+env.KOISHI_PORT || 5140)) }}
+      bindTokenTtlMs: ${{ +env.HBU_JW_BIND_TOKEN_TTL_MS || 600000 }}
+      credentialKekPath: >-
+        ${{ env.HBU_JW_CREDENTIAL_KEK_PATH ||
+        './.runtime/hbu-jw/credential-kek.key' }}
+      autoReloginEnabled: ${{ env.HBU_JW_AUTO_RELOGIN_ENABLED !== 'false' }}
+      keepAliveEnabled: ${{ env.HBU_JW_KEEP_ALIVE_ENABLED === 'true' }}
+      keepAliveIntervalMs: ${{ +env.HBU_JW_KEEP_ALIVE_INTERVAL_MS || 180000 }}
+      keepAliveRecentUseWindowMs: ${{ +env.HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS || 86400000 }}
+      allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
     ./dist/plugins/triggers/group-natural:natural-trigger:
       enabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
       enabledGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
