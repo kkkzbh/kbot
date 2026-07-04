@@ -5,13 +5,14 @@ import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwGpaService } from './gpa.js';
 import { HbuJwHttpClient } from './jw-client.js';
+import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
 import { HbuJwService } from './service.js';
 import { ensureHbuJwTables, HbuJwStore } from './store.js';
 import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.js';
 import { renderBindPage } from './web/bind-page.js';
 
 export const name = 'hbu-jw';
-export const inject = ['server', 'database'] as const;
+export const inject = ['server', 'database', 'puppeteer'] as const;
 
 const logger = new Logger(name);
 const CAMPUS_BACKGROUND_FILE = join(__dirname, 'assets/campus-bg.jpg');
@@ -49,6 +50,7 @@ export const Config: Schema<Config> = Schema.object({
 
 interface HbuJwServicesLike {
   database: DatabaseLike;
+  puppeteer: HbuJwSchedulePuppeteerLike;
   server: {
     get(path: string, handler: (koaCtx: any) => unknown): void;
     post(path: string, handler: (koaCtx: any) => unknown): void;
@@ -89,9 +91,10 @@ export function apply(ctx: Context, config: Config): void {
     autoReloginEnabled: runtime.autoReloginEnabled,
   });
   const gpaService = new HbuJwGpaService(service, jwClient);
+  const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer);
 
   registerWebRoutes(hbuCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, gpaService, runtime);
+  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, runtime);
   registerKeepAlive(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -184,7 +187,13 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
   });
 }
 
-function registerKeywordMiddleware(ctx: Context, service: HbuJwService, gpaService: HbuJwGpaService, runtime: RuntimeConfig): void {
+function registerKeywordMiddleware(
+  ctx: Context,
+  service: HbuJwService,
+  gpaService: HbuJwGpaService,
+  scheduleService: HbuJwScheduleService,
+  runtime: RuntimeConfig,
+): void {
   ctx.middleware(async (session, next) => {
     const text = normalizeCommandText(session);
     const command = parseHbuJwCommand(text);
@@ -247,6 +256,16 @@ function registerKeywordMiddleware(ctx: Context, service: HbuJwService, gpaServi
       try {
         const identity = resolveOwnerIdentity(session);
         await session.send(await gpaService.queryGpa(identity));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'schedule') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await session.send(await scheduleService.querySchedule(identity, command.mode));
       } catch (error) {
         await session.send(toUserMessage(error));
       }
@@ -319,7 +338,8 @@ type HbuJwCommand =
   | { kind: 'confirm'; confirmCode: string }
   | { kind: 'status' }
   | { kind: 'unbind' }
-  | { kind: 'gpa' };
+  | { kind: 'gpa' }
+  | { kind: 'schedule'; mode: HbuJwScheduleMode };
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '教务绑定') return { kind: 'bind' };
@@ -329,6 +349,8 @@ function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '教务状态') return { kind: 'status' };
   if (text === '教务解绑') return { kind: 'unbind' };
   if (text.toUpperCase() === 'GPA') return { kind: 'gpa' };
+  if (text === '课表') return { kind: 'schedule', mode: 'current-week' };
+  if (text === '完整课表') return { kind: 'schedule', mode: 'full-semester' };
   return null;
 }
 

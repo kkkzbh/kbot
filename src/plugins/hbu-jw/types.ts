@@ -85,6 +85,38 @@ export interface HbuJwScoreRow {
   [key: string]: unknown;
 }
 
+export interface HbuJwScheduleTimeAndPlace {
+  classDay: number;
+  classSessions: number;
+  continuingSession: number;
+  classWeek: string;
+  weekDescription: string;
+  campusName: string;
+  teachingBuildingName: string;
+  classroomName: string;
+}
+
+export interface HbuJwScheduleCourse {
+  courseNumber: string;
+  sequenceNumber: string;
+  executiveEducationPlanNumber: string;
+  courseName: string;
+  unit: number;
+  coursePropertiesName: string;
+  courseCategoryName: string;
+  examTypeName: string;
+  teacherName: string;
+  selectCourseStatusName: string;
+  timeAndPlaceList: HbuJwScheduleTimeAndPlace[];
+}
+
+export interface HbuJwThisSemesterSchedule {
+  executiveEducationPlanNumber: string;
+  programPlanName: string;
+  totalUnits: number;
+  courses: HbuJwScheduleCourse[];
+}
+
 export interface HbuJwCredentialPayload {
   username: string;
   password: string;

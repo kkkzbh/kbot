@@ -1,4 +1,10 @@
-import type { HbuJwScoreRow, SerializedCookieJar } from './types.js';
+import type {
+  HbuJwScheduleCourse,
+  HbuJwScheduleTimeAndPlace,
+  HbuJwScoreRow,
+  HbuJwThisSemesterSchedule,
+  SerializedCookieJar,
+} from './types.js';
 
 export interface HbuJwLoginResult {
   cookieJar: SerializedCookieJar;
@@ -147,6 +153,40 @@ export class HbuJwHttpClient {
     return flattenAllPassingScores(payload);
   }
 
+  async getThisSemesterSchedule(cookieJar: SerializedCookieJar): Promise<HbuJwThisSemesterSchedule> {
+    const jar = CookieJar.from(cookieJar);
+    const pagePath = '/student/courseSelect/thisSemesterCurriculum/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwQueryError('本学期课表页面访问失败。');
+    }
+
+    const callbackPath = findThisSemesterScheduleCallback(page.text);
+    const callback = await this.request(callbackPath, {
+      jar,
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/javascript, */*; q=0.01',
+        'x-requested-with': 'XMLHttpRequest',
+        referer: new URL(pagePath, this.baseUrl).href,
+      },
+    });
+    if (callback.response.status !== 200) {
+      throw new HbuJwQueryError('本学期课表接口访问失败。');
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(callback.text);
+    } catch {
+      throw new HbuJwQueryError('本学期课表接口返回了非 JSON 内容。');
+    }
+    return parseThisSemesterSchedulePayload(payload);
+  }
+
   private async request(url: string, options: RequestOptions & { jar: CookieJar }): Promise<{ response: Response; text: string }> {
     const { jar, ...requestOptions } = options;
     const target = url.startsWith('http://') || url.startsWith('https://') ? url : new URL(url, this.baseUrl).href;
@@ -292,6 +332,15 @@ function findAllPassingScoresCallback(html: string): string {
   return matches[0]!;
 }
 
+function findThisSemesterScheduleCallback(html: string): string {
+  const matches = [...html.matchAll(/[^"'\s<>]*thisSemesterCurriculum\/[^"'\s<>]*\/ajaxStudentSchedule\/curr\/callback[^"'\s<>]*/g)]
+    .map((match) => match[0].replace(/\\\//g, '/'));
+  if (matches.length !== 1) {
+    throw new HbuJwQueryError('本学期课表页面没有唯一的回调地址。');
+  }
+  return matches[0]!;
+}
+
 function flattenAllPassingScores(payload: unknown): HbuJwScoreRow[] {
   if (!isRecord(payload) || !Array.isArray(payload.lnList)) {
     throw new HbuJwQueryError('全部及格成绩接口结构异常。');
@@ -309,6 +358,111 @@ function flattenAllPassingScores(payload: unknown): HbuJwScoreRow[] {
     }
   }
   return rows;
+}
+
+function parseThisSemesterSchedulePayload(payload: unknown): HbuJwThisSemesterSchedule {
+  if (!isRecord(payload) || !Array.isArray(payload.dateList)) {
+    throw new HbuJwQueryError('本学期课表接口结构异常。');
+  }
+  const totalUnits = parseRequiredNumber(payload.allUnits, '本学期课表总学分异常。');
+  const courses: HbuJwScheduleCourse[] = [];
+  let programPlanName = '';
+  let executiveEducationPlanNumber = '';
+
+  for (const plan of payload.dateList) {
+    if (!isRecord(plan) || !Array.isArray(plan.selectCourseList)) {
+      throw new HbuJwQueryError('本学期课表接口结构异常。');
+    }
+    const planName = String(plan.programPlanName ?? '').trim();
+    if (!programPlanName && planName) {
+      programPlanName = planName;
+    }
+    for (const row of plan.selectCourseList) {
+      const course = parseScheduleCourse(row);
+      if (!executiveEducationPlanNumber) {
+        executiveEducationPlanNumber = course.executiveEducationPlanNumber;
+      }
+      courses.push(course);
+    }
+  }
+
+  if (!programPlanName || !executiveEducationPlanNumber) {
+    throw new HbuJwQueryError('本学期课表接口结构异常。');
+  }
+  return {
+    executiveEducationPlanNumber,
+    programPlanName,
+    totalUnits,
+    courses,
+  };
+}
+
+function parseScheduleCourse(value: unknown): HbuJwScheduleCourse {
+  if (!isRecord(value) || !isRecord(value.id) || !Array.isArray(value.timeAndPlaceList)) {
+    throw new HbuJwQueryError('本学期课表接口结构异常。');
+  }
+  const courseNumber = readRequiredString(value.id.coureNumber, '课程号');
+  const sequenceNumber = readRequiredString(value.id.coureSequenceNumber, '课序号');
+  const executiveEducationPlanNumber = readRequiredString(value.id.executiveEducationPlanNumber, '执行计划号');
+  return {
+    courseNumber,
+    sequenceNumber,
+    executiveEducationPlanNumber,
+    courseName: readRequiredString(value.courseName, '课程名'),
+    unit: parseRequiredNumber(value.unit, '课程学分异常。'),
+    coursePropertiesName: String(value.coursePropertiesName ?? '').trim(),
+    courseCategoryName: String(value.courseCategoryName ?? '').trim(),
+    examTypeName: String(value.examTypeName ?? '').trim(),
+    teacherName: String(value.attendClassTeacher ?? '').replace(/\s+/g, ' ').trim(),
+    selectCourseStatusName: String(value.selectCourseStatusName ?? '').trim(),
+    timeAndPlaceList: value.timeAndPlaceList.map(parseScheduleTimeAndPlace),
+  };
+}
+
+function parseScheduleTimeAndPlace(value: unknown): HbuJwScheduleTimeAndPlace {
+  if (!isRecord(value)) {
+    throw new HbuJwQueryError('本学期课表接口结构异常。');
+  }
+  const classDay = parseRequiredInteger(value.classDay, '上课星期异常。');
+  const classSessions = parseRequiredInteger(value.classSessions, '上课节次异常。');
+  const continuingSession = parseRequiredInteger(value.continuingSession, '连续节次数异常。');
+  if (classDay < 1 || classDay > 7 || classSessions < 1 || classSessions > 11 || continuingSession < 1 || classSessions + continuingSession - 1 > 11) {
+    throw new HbuJwQueryError('本学期课表接口结构异常。');
+  }
+  return {
+    classDay,
+    classSessions,
+    continuingSession,
+    classWeek: readRequiredString(value.classWeek, '上课周次'),
+    weekDescription: readRequiredString(value.weekDescription, '周次说明'),
+    campusName: String(value.campusName ?? '').trim(),
+    teachingBuildingName: String(value.teachingBuildingName ?? '').trim(),
+    classroomName: String(value.classroomName ?? '').trim(),
+  };
+}
+
+function readRequiredString(value: unknown, label: string): string {
+  const text = String(value ?? '').trim();
+  if (!text) {
+    throw new HbuJwQueryError(`本学期课表接口缺少${label}。`);
+  }
+  return text;
+}
+
+function parseRequiredNumber(value: unknown, message: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new HbuJwQueryError(message);
+  }
+  return parsed;
+}
+
+function parseRequiredInteger(value: unknown, message: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    throw new HbuJwQueryError(message);
+  }
+  return parsed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

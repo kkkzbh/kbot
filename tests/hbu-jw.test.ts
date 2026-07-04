@@ -35,6 +35,7 @@ vi.mock('koishi', () => {
     (type: string, attrs?: Record<string, unknown>, children?: unknown[]): Record<string, unknown>;
     text: (content: string) => Record<string, unknown>;
     at: (id: string) => Record<string, unknown>;
+    image: (buffer: Buffer, mime: string) => Record<string, unknown>;
   };
   hFactory.text = (content: string) => ({
     type: 'text',
@@ -47,6 +48,12 @@ vi.mock('koishi', () => {
     attrs: { id },
     children: [],
     toString: () => `<at id="${id}"/>`,
+  });
+  hFactory.image = (buffer: Buffer, mime: string) => ({
+    type: 'image',
+    attrs: { buffer, mime },
+    children: [],
+    toString: () => `<image mime="${mime}"/>`,
   });
 
   return {
@@ -69,9 +76,15 @@ import { apply } from '../src/plugins/hbu-jw/index.js';
 import { loadOrCreateKek } from '../src/plugins/hbu-jw/crypto.js';
 import { HbuJwGpaService, calculateHbuJwGpa, formatGpaReply } from '../src/plugins/hbu-jw/gpa.js';
 import { HbuJwHttpClient, HbuJwLoginError } from '../src/plugins/hbu-jw/jw-client.js';
+import {
+  HbuJwScheduleService,
+  buildHbuJwScheduleView,
+  calculateTeachingWeek,
+  renderHbuJwScheduleImage,
+} from '../src/plugins/hbu-jw/schedule.js';
 import { HbuJwService } from '../src/plugins/hbu-jw/service.js';
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
-import type { DatabaseLike, HbuJwScoreRow, OwnerIdentity, SerializedCookieJar } from '../src/plugins/hbu-jw/types.js';
+import type { DatabaseLike, HbuJwScoreRow, HbuJwThisSemesterSchedule, OwnerIdentity, SerializedCookieJar } from '../src/plugins/hbu-jw/types.js';
 import { renderBindPage } from '../src/plugins/hbu-jw/web/bind-page.js';
 
 const tempDirs: string[] = [];
@@ -194,6 +207,204 @@ function allPassingScoresPayload(rows: HbuJwScoreRow[]) {
     ],
     state: 'ok',
     zxjxjhh: '2023',
+  };
+}
+
+function thisSemesterSchedulePayload() {
+  return {
+    allUnits: 22.3,
+    dateList: [
+      {
+        programPlanName: '2023级计算机科学与技术专业人才培养方案',
+        totalUnits: 22.3,
+        selectCourseList: [
+          {
+            id: {
+              executiveEducationPlanNumber: '2025-2026-2-2',
+              coureNumber: '2023S01003',
+              coureSequenceNumber: '01',
+            },
+            courseName: '软件工程',
+            unit: 2,
+            coursePropertiesName: '必修',
+            courseCategoryName: '学科(专业)基础课',
+            examTypeName: '考试',
+            attendClassTeacher: '罗文劼* ',
+            selectCourseStatusName: '选中',
+            timeAndPlaceList: [
+              {
+                classDay: 1,
+                classSessions: 1,
+                continuingSession: 2,
+                classWeek: '110000000000000000000000',
+                weekDescription: '1-2周',
+                campusName: '七一路校区',
+                teachingBuildingName: 'A5座',
+                classroomName: '312',
+              },
+              {
+                classDay: 2,
+                classSessions: 7,
+                continuingSession: 2,
+                classWeek: '010000000000000000000000',
+                weekDescription: '第2周',
+                campusName: '七一路校区',
+                teachingBuildingName: 'A5座',
+                classroomName: '312',
+              },
+            ],
+          },
+          {
+            id: {
+              executiveEducationPlanNumber: '2025-2026-2-2',
+              coureNumber: '2023S01004',
+              coureSequenceNumber: '01',
+            },
+            courseName: '编译原理',
+            unit: 3,
+            coursePropertiesName: '必修',
+            courseCategoryName: '学科(专业)基础课',
+            examTypeName: '考试',
+            attendClassTeacher: '刘海博* ',
+            selectCourseStatusName: '选中',
+            timeAndPlaceList: [
+              {
+                classDay: 4,
+                classSessions: 1,
+                continuingSession: 2,
+                classWeek: '001000000000000000000000',
+                weekDescription: '第3周',
+                campusName: '七一路校区',
+                teachingBuildingName: 'A2座',
+                classroomName: '104',
+              },
+            ],
+          },
+          {
+            id: {
+              executiveEducationPlanNumber: '2025-2026-2-2',
+              coureNumber: '2023S09999',
+              coureSequenceNumber: '01',
+            },
+            courseName: '未安排课程',
+            unit: 1,
+            coursePropertiesName: '任选',
+            courseCategoryName: '通识课',
+            examTypeName: '',
+            attendClassTeacher: '王老师* ',
+            selectCourseStatusName: '选中',
+            timeAndPlaceList: [],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function thisSemesterSchedule(): HbuJwThisSemesterSchedule {
+  return {
+    executiveEducationPlanNumber: '2025-2026-2-2',
+    programPlanName: '2023级计算机科学与技术专业人才培养方案',
+    totalUnits: 22.3,
+    courses: [
+      {
+        courseNumber: '2023S01003',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '软件工程',
+        unit: 2,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考试',
+        teacherName: '罗文劼*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 1,
+            classSessions: 1,
+            continuingSession: 2,
+            classWeek: '110000000000000000000000',
+            weekDescription: '1-2周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'A5座',
+            classroomName: '312',
+          },
+          {
+            classDay: 2,
+            classSessions: 7,
+            continuingSession: 2,
+            classWeek: '010000000000000000000000',
+            weekDescription: '第2周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'A5座',
+            classroomName: '312',
+          },
+        ],
+      },
+      {
+        courseNumber: '2023S01004',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '编译原理',
+        unit: 3,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考试',
+        teacherName: '刘海博*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 4,
+            classSessions: 1,
+            continuingSession: 2,
+            classWeek: '001000000000000000000000',
+            weekDescription: '第3周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'A2座',
+            classroomName: '104',
+          },
+        ],
+      },
+      {
+        courseNumber: '2023S09999',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '未安排课程',
+        unit: 1,
+        coursePropertiesName: '任选',
+        courseCategoryName: '通识课',
+        examTypeName: '',
+        teacherName: '王老师*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [],
+      },
+    ],
+  };
+}
+
+function createPuppeteerHarness() {
+  let navigatedHtml = '';
+  const element = {
+    boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 1536, height: 1008 })),
+  };
+  const page = {
+    setViewport: vi.fn(async () => undefined),
+    goto: vi.fn(async (url: string) => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      navigatedHtml = readFileSync(fileURLToPath(url), 'utf8');
+    }),
+    waitForSelector: vi.fn(async () => undefined),
+    $: vi.fn(async () => element),
+    screenshot: vi.fn(async () => Buffer.from('png')),
+    close: vi.fn(async () => undefined),
+  };
+  return {
+    page,
+    puppeteer: {
+      page: vi.fn(async () => page),
+    },
+    getNavigatedHtml: () => navigatedHtml,
   };
 }
 
@@ -466,6 +677,77 @@ describe('hbu-jw GPA calculation', () => {
   });
 });
 
+describe('hbu-jw schedule module', () => {
+  it('calculates teaching weeks from fixed HBU term starts', () => {
+    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 1))).toBe(1);
+    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 15))).toBe(3);
+    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 1))).toBe(1);
+    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 15))).toBe(3);
+  });
+
+  it('filters current-week slots while complete schedule keeps every arranged slot', () => {
+    const current = buildHbuJwScheduleView(thisSemesterSchedule(), 'current-week', Date.UTC(2026, 2, 15));
+    const complete = buildHbuJwScheduleView(thisSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15));
+
+    expect(current.currentWeek).toBe(3);
+    expect(current.slots.map((slot) => slot.courseName)).toEqual(['编译原理_01']);
+    expect(current.renderedCourseCount).toBe(1);
+    expect(current.unarrangedCourseCount).toBe(1);
+    expect(complete.slots.map((slot) => slot.courseName)).toEqual(['软件工程_01', '软件工程_01', '编译原理_01']);
+    expect(complete.renderedCourseCount).toBe(2);
+  });
+
+  it('renders the schedule view as a PNG image with course details in the HTML', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const image = await renderHbuJwScheduleImage(
+      puppeteer,
+      buildHbuJwScheduleView(thisSemesterSchedule(), 'current-week', Date.UTC(2026, 2, 15)),
+    );
+
+    expect(String(image)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('河北大学课表 · 第 3 周');
+    expect(getNavigatedHtml()).toContain('编译原理_01');
+    expect(getNavigatedHtml()).toContain('七一路校区A2座104');
+    expect(getNavigatedHtml()).toContain('未安排课程');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('uses the authenticated session to query and render schedules', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getThisSemesterSchedule = vi.fn(async () => thisSemesterSchedule());
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwScheduleService(
+      { ensureAuthenticated },
+      { getThisSemesterSchedule },
+      puppeteer,
+      () => Date.UTC(2026, 2, 15),
+    );
+
+    const reply = await service.querySchedule(identity(), 'full-semester');
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
+    expect(getThisSemesterSchedule).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+  });
+
+  it('surfaces binding requirements before querying schedules', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'needs_binding' as const,
+      reason: '请先发送“教务绑定”。',
+    }));
+    const getThisSemesterSchedule = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwScheduleService({ ensureAuthenticated }, { getThisSemesterSchedule }, puppeteer);
+
+    await expect(service.querySchedule(identity(), 'current-week')).rejects.toThrow('请先发送“教务绑定”。');
+    expect(getThisSemesterSchedule).not.toHaveBeenCalled();
+  });
+});
+
 describe('hbu-jw http client', () => {
   it('rejects cross-origin redirects before sending cookies to the redirected target', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
@@ -543,6 +825,67 @@ describe('hbu-jw http client', () => {
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
     await expect(malformedClient.getAllPassingScores({ cookies: [] })).rejects.toThrow('结构异常');
+  });
+
+  it('loads this semester schedule from the dynamic callback endpoint', async () => {
+    const payload = thisSemesterSchedulePayload();
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === 'https://zhjw.hbu.cn/student/courseSelect/thisSemesterCurriculum/index') {
+        return new Response('<script>const url = "/student/courseSelect/thisSemesterCurriculum/token/ajaxStudentSchedule/curr/callback";</script>', { status: 200 });
+      }
+      if (url === 'https://zhjw.hbu.cn/student/courseSelect/thisSemesterCurriculum/token/ajaxStudentSchedule/curr/callback') {
+        return new Response(JSON.stringify(payload), { status: 200 });
+      }
+      return new Response('', { status: 500 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    const schedule = await client.getThisSemesterSchedule({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+
+    expect(schedule).toMatchObject({
+      executiveEducationPlanNumber: '2025-2026-2-2',
+      programPlanName: '2023级计算机科学与技术专业人才培养方案',
+      totalUnits: 22.3,
+    });
+    expect(schedule.courses).toHaveLength(3);
+    expect(schedule.courses[0]).toMatchObject({
+      courseNumber: '2023S01003',
+      sequenceNumber: '01',
+      courseName: '软件工程',
+      teacherName: '罗文劼*',
+    });
+    expect(schedule.courses[0]?.timeAndPlaceList[0]).toMatchObject({
+      classDay: 1,
+      classSessions: 1,
+      continuingSession: 2,
+      classWeek: '110000000000000000000000',
+      weekDescription: '1-2周',
+      campusName: '七一路校区',
+      teachingBuildingName: 'A5座',
+      classroomName: '312',
+    });
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      'https://zhjw.hbu.cn/student/courseSelect/thisSemesterCurriculum/index',
+      'https://zhjw.hbu.cn/student/courseSelect/thisSemesterCurriculum/token/ajaxStudentSchedule/curr/callback',
+    ]);
+  });
+
+  it('rejects ambiguous schedule callback pages and malformed schedule payloads', async () => {
+    const ambiguousFetch = vi.fn(async () => new Response([
+      '"/student/courseSelect/thisSemesterCurriculum/a/ajaxStudentSchedule/curr/callback"',
+      '"/student/courseSelect/thisSemesterCurriculum/b/ajaxStudentSchedule/curr/callback"',
+    ].join('\n'), { status: 200 }));
+    const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
+    await expect(ambiguousClient.getThisSemesterSchedule({ cookies: [] })).rejects.toThrow('没有唯一的回调地址');
+
+    const malformedFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/thisSemesterCurriculum/index')) {
+        return new Response('"/student/courseSelect/thisSemesterCurriculum/a/ajaxStudentSchedule/curr/callback"', { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    });
+    const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
+    await expect(malformedClient.getThisSemesterSchedule({ cookies: [] })).rejects.toThrow('结构异常');
   });
 });
 
@@ -710,6 +1053,42 @@ describe('hbu-jw plugin integration', () => {
     expect(getAllPassingScores).not.toHaveBeenCalled();
   });
 
+  it('blocks schedule keywords outside allowed groups before any schedule query', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisSemesterSchedule = vi.spyOn(HbuJwHttpClient.prototype, 'getThisSemesterSchedule');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '完整课表',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启教务系统功能。');
+    expect(getThisSemesterSchedule).not.toHaveBeenCalled();
+  });
+
   it('allows hbu-jw binding in private chats regardless of the group allowlist', async () => {
     const dir = createTempDir();
     const database = createDatabase();
@@ -747,6 +1126,42 @@ describe('hbu-jw plugin integration', () => {
       channelId: 'private:1405359129',
       status: 'created',
     });
+  });
+
+  it('allows schedule keywords in private chats and asks for binding when no session exists', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisSemesterSchedule = vi.spyOn(HbuJwHttpClient.prototype, 'getThisSemesterSchedule');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '课表',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
+    expect(getThisSemesterSchedule).not.toHaveBeenCalled();
   });
 
   it('rejects public http bind URLs and allows localhost http for development', () => {
