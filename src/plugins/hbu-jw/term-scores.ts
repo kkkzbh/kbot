@@ -11,7 +11,7 @@ import {
   type HbuJwGpaCourseEvaluation,
   type HbuJwIncludedGpaCourse,
 } from './gpa.js';
-import type { HbuJwHttpClient } from './jw-client.js';
+import { HbuJwQueryError, type HbuJwHttpClient } from './jw-client.js';
 import {
   type HbuJwScoreRow,
   HbuJwUserError,
@@ -50,13 +50,13 @@ interface HbuJwTermScoresElementLike {
   boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null>;
 }
 
-export type HbuJwTermScoreStatusKind = 'confirmed' | 'temporary' | 'pending' | 'unknown';
+export type HbuJwTermScoreStatusKind = 'confirmed' | 'staged' | 'temporary' | 'pending' | 'unknown';
 export type HbuJwTermScoreGpaDeltaKind = 'positive' | 'negative' | 'zero' | 'not-counted' | 'pending' | 'missing' | 'anonymous';
 export type HbuJwTermScoresMode = 'full' | 'anonymous';
 
 export type HbuJwTermScoresBuildInput =
-  | { mode: 'full'; rows: HbuJwThisTermScoreRow[]; allPassingRows: HbuJwScoreRow[] }
-  | { mode: 'anonymous'; rows: HbuJwThisTermScoreRow[] };
+  | { mode: 'full'; rows: HbuJwThisTermScoreRow[]; allPassingRows: HbuJwScoreRow[]; statusOverrides?: Map<string, HbuJwTermScoreStatusKind> }
+  | { mode: 'anonymous'; rows: HbuJwThisTermScoreRow[]; statusOverrides?: Map<string, HbuJwTermScoreStatusKind> };
 
 export interface HbuJwTermScoreRowView {
   courseNumber: string;
@@ -81,6 +81,7 @@ export interface HbuJwTermScoresView {
   totalCourseCount: number;
   totalCredits: number;
   confirmedCount: number;
+  stagedCount: number;
   temporaryCount: number;
   pendingCount: number;
   unknownCount: number;
@@ -90,7 +91,7 @@ export interface HbuJwTermScoresView {
 export class HbuJwTermScoresService {
   constructor(
     private readonly authService: HbuJwTermScoresAuthServiceLike,
-    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores'>,
+    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreStudentNumbers'>,
     private readonly puppeteer: HbuJwTermScoresPuppeteerLike,
   ) {}
 
@@ -116,27 +117,34 @@ export class HbuJwTermScoresService {
       this.jwClient.getThisTermScores(cookieJar),
       this.jwClient.getAllPassingScores(cookieJar),
     ]);
-    return buildHbuJwTermScoresView({ mode: 'full', rows: scores, allPassingRows: allPassingScores });
+    const statusOverrides = await resolveTemporaryStatusOverrides(this.jwClient, cookieJar, scores);
+    return buildHbuJwTermScoresView({ mode: 'full', rows: scores, allPassingRows: allPassingScores, statusOverrides });
   }
 
   private async buildAnonymousView(cookieJar: SerializedCookieJar): Promise<HbuJwTermScoresView> {
     const scores = await this.jwClient.getThisTermScores(cookieJar);
-    return buildHbuJwTermScoresView({ mode: 'anonymous', rows: scores });
+    const statusOverrides = await resolveTemporaryStatusOverrides(this.jwClient, cookieJar, scores);
+    return buildHbuJwTermScoresView({ mode: 'anonymous', rows: scores, statusOverrides });
   }
 }
 
 export function buildHbuJwTermScoresView(input: HbuJwTermScoresBuildInput): HbuJwTermScoresView {
   const { rows } = input;
-  const sortedRows = [...rows].sort(compareTermScoreRows);
-  const gpaDeltas = input.mode === 'full' ? calculateTermScoreGpaDeltas(sortedRows, input.allPassingRows) : new Map<string, HbuJwTermScoreGpaDelta>();
+  const statusOverrides = input.statusOverrides ?? new Map<string, HbuJwTermScoreStatusKind>();
+  const sortedRows = [...rows].sort((left, right) => compareTermScoreRows(left, right, statusOverrides));
+  const gpaDeltas = input.mode === 'full'
+    ? calculateTermScoreGpaDeltas(sortedRows, input.allPassingRows, statusOverrides)
+    : new Map<string, HbuJwTermScoreGpaDelta>();
   const rowViews = sortedRows.map((row) => toRowView(
     row,
     input.mode === 'anonymous' ? anonymizedGpaDelta() : gpaDeltas.get(termScoreKey(row)) ?? missingGpaDelta(),
     input.mode,
+    statusOverrides,
   ));
   const termLabel = formatTermLabel(rows);
   const totalCredits = rows.reduce((sum, row) => sum + parseCredit(row.credit), 0);
   const confirmedCount = rowViews.filter((row) => row.statusKind === 'confirmed').length;
+  const stagedCount = rowViews.filter((row) => row.statusKind === 'staged').length;
   const temporaryCount = rowViews.filter((row) => row.statusKind === 'temporary').length;
   const pendingCount = rowViews.filter((row) => row.statusKind === 'pending').length;
   const unknownCount = rowViews.filter((row) => row.statusKind === 'unknown').length;
@@ -147,6 +155,7 @@ export function buildHbuJwTermScoresView(input: HbuJwTermScoresBuildInput): HbuJ
     totalCourseCount: rows.length,
     totalCredits,
     confirmedCount,
+    stagedCount,
     temporaryCount,
     pendingCount,
     unknownCount,
@@ -304,7 +313,7 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
     .course-col { width: 260px; }
     .credit-col { width: 64px; }
     .property-col { width: 86px; }
-    .status-col { width: 94px; }
+    .status-col { width: 124px; }
     .time-col { width: 110px; }
     .score-col { width: 76px; }
     .point-col { width: 76px; }
@@ -366,8 +375,9 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
       font-weight: 850;
     }
     .status-confirmed { color: #176b45; background: #dff4e8; }
-    .status-temporary { color: #8a5c08; background: #fff1cf; }
-    .status-pending { color: #55708a; background: #e7f0f7; }
+    .status-staged { color: #8a5c08; background: #fff1cf; }
+    .status-temporary { color: #55708a; background: #e7f0f7; }
+    .status-pending { color: #6a6f78; background: #edf1ef; }
     .status-unknown { color: #66716c; background: #edf1ef; }
     .empty {
       height: 210px;
@@ -391,7 +401,8 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
         </div>
         <div class="summary">
           <span>已确定<strong>${view.confirmedCount}</strong></span>
-          <span>暂存<strong>${view.temporaryCount}</strong></span>
+          <span>已暂存录入<strong>${view.stagedCount}</strong></span>
+          <span>未暂存录入<strong>${view.temporaryCount}</strong></span>
           <span>未录入<strong>${view.pendingCount}</strong></span>
         </div>
       </header>
@@ -422,8 +433,13 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
 </html>`;
 }
 
-function toRowView(row: HbuJwThisTermScoreRow, gpaDelta: HbuJwTermScoreGpaDelta, mode: HbuJwTermScoresMode): HbuJwTermScoreRowView {
-  const statusKind = classifyTermScoreStatus(row);
+function toRowView(
+  row: HbuJwThisTermScoreRow,
+  gpaDelta: HbuJwTermScoreGpaDelta,
+  mode: HbuJwTermScoresMode,
+  statusOverrides: Map<string, HbuJwTermScoreStatusKind>,
+): HbuJwTermScoreRowView {
+  const statusKind = classifyTermScoreStatus(row, statusOverrides);
   const anonymous = mode === 'anonymous';
   return {
     courseNumber: readOptionalText(row.id?.courseNumber),
@@ -443,7 +459,12 @@ function toRowView(row: HbuJwThisTermScoreRow, gpaDelta: HbuJwTermScoreGpaDelta,
   };
 }
 
-export function classifyTermScoreStatus(row: HbuJwThisTermScoreRow): HbuJwTermScoreStatusKind {
+function classifyTermScoreStatusWithOverrides(
+  row: HbuJwThisTermScoreRow,
+  statusOverrides: Map<string, HbuJwTermScoreStatusKind>,
+): HbuJwTermScoreStatusKind {
+  const override = statusOverrides.get(termScoreKey(row));
+  if (override) return override;
   const code = readOptionalText(row.inputStatusCode);
   const text = readOptionalText(row.inputStatusExplain);
   if (code === CONFIRMED_STATUS_CODE || text === '确定') return 'confirmed';
@@ -452,17 +473,28 @@ export function classifyTermScoreStatus(row: HbuJwThisTermScoreRow): HbuJwTermSc
   return 'unknown';
 }
 
+export function classifyTermScoreStatus(row: HbuJwThisTermScoreRow): HbuJwTermScoreStatusKind;
+export function classifyTermScoreStatus(
+  row: HbuJwThisTermScoreRow,
+  statusOverrides: Map<string, HbuJwTermScoreStatusKind>,
+): HbuJwTermScoreStatusKind;
+export function classifyTermScoreStatus(
+  row: HbuJwThisTermScoreRow,
+  statusOverrides?: Map<string, HbuJwTermScoreStatusKind>,
+): HbuJwTermScoreStatusKind {
+  return classifyTermScoreStatusWithOverrides(row, statusOverrides ?? new Map<string, HbuJwTermScoreStatusKind>());
+}
+
 function formatStatusText(row: HbuJwThisTermScoreRow, statusKind: HbuJwTermScoreStatusKind): string {
-  const text = readOptionalText(row.inputStatusExplain);
-  if (text) return text;
   if (statusKind === 'confirmed') return '确定';
-  if (statusKind === 'temporary') return '暂存';
-  if (statusKind === 'pending') return '尚未录入';
-  return '未知';
+  if (statusKind === 'staged') return '已暂存录入';
+  if (statusKind === 'temporary') return '未暂存录入';
+  if (statusKind === 'pending') return readOptionalText(row.inputStatusExplain) || '未录入';
+  return readOptionalText(row.inputStatusExplain) || '未知';
 }
 
 function formatScoreText(row: HbuJwThisTermScoreRow, statusKind: HbuJwTermScoreStatusKind): string {
-  if (statusKind !== 'confirmed') return '—';
+  if (statusKind !== 'confirmed' && statusKind !== 'staged') return '—';
   const score = readOptionalText(row.courseScore);
   if (score) return score;
   const level = readOptionalText(row.levelName);
@@ -492,7 +524,11 @@ interface HbuJwTermScoreGpaDelta {
   kind: HbuJwTermScoreGpaDeltaKind;
 }
 
-function calculateTermScoreGpaDeltas(rows: HbuJwThisTermScoreRow[], allPassingRows: HbuJwScoreRow[]): Map<string, HbuJwTermScoreGpaDelta> {
+function calculateTermScoreGpaDeltas(
+  rows: HbuJwThisTermScoreRow[],
+  allPassingRows: HbuJwScoreRow[],
+  statusOverrides: Map<string, HbuJwTermScoreStatusKind>,
+): Map<string, HbuJwTermScoreGpaDelta> {
   const evaluationsByCourseNumber = new Map<string, HbuJwGpaCourseEvaluation>();
   const includedByCourseNumber = new Map<string, HbuJwIncludedGpaCourse>();
   const includedCourses: HbuJwIncludedGpaCourse[] = [];
@@ -508,7 +544,7 @@ function calculateTermScoreGpaDeltas(rows: HbuJwThisTermScoreRow[], allPassingRo
 
   const currentIncludedCourseNumbers = new Set<string>();
   for (const row of rows) {
-    if (classifyTermScoreStatus(row) !== 'confirmed') continue;
+    if (classifyTermScoreStatus(row, statusOverrides) !== 'confirmed') continue;
     const courseNumber = readOptionalText(row.id?.courseNumber);
     if (includedByCourseNumber.has(courseNumber)) {
       currentIncludedCourseNumbers.add(courseNumber);
@@ -525,8 +561,8 @@ function calculateTermScoreGpaDeltas(rows: HbuJwThisTermScoreRow[], allPassingRo
 
   for (const row of rows) {
     const key = termScoreKey(row);
-    const statusKind = classifyTermScoreStatus(row);
-    if (statusKind === 'temporary') {
+    const statusKind = classifyTermScoreStatus(row, statusOverrides);
+    if (statusKind === 'staged' || statusKind === 'temporary') {
       result.set(key, { text: '待确定', kind: 'pending' });
       continue;
     }
@@ -568,8 +604,12 @@ function calculateTermScoreGpaDeltas(rows: HbuJwThisTermScoreRow[], allPassingRo
   return result;
 }
 
-function compareTermScoreRows(left: HbuJwThisTermScoreRow, right: HbuJwThisTermScoreRow): number {
-  const statusDiff = statusSortWeight(classifyTermScoreStatus(left)) - statusSortWeight(classifyTermScoreStatus(right));
+function compareTermScoreRows(
+  left: HbuJwThisTermScoreRow,
+  right: HbuJwThisTermScoreRow,
+  statusOverrides: Map<string, HbuJwTermScoreStatusKind>,
+): number {
+  const statusDiff = statusSortWeight(classifyTermScoreStatus(left, statusOverrides)) - statusSortWeight(classifyTermScoreStatus(right, statusOverrides));
   if (statusDiff !== 0) return statusDiff;
 
   const timeDiff = sortOperationTime(left.operatetime).localeCompare(sortOperationTime(right.operatetime));
@@ -583,9 +623,33 @@ function compareTermScoreRows(left: HbuJwThisTermScoreRow, right: HbuJwThisTermS
 
 function statusSortWeight(statusKind: HbuJwTermScoreStatusKind): number {
   if (statusKind === 'confirmed') return 0;
-  if (statusKind === 'temporary') return 1;
-  if (statusKind === 'pending') return 2;
-  return 3;
+  if (statusKind === 'staged') return 1;
+  if (statusKind === 'temporary') return 2;
+  if (statusKind === 'pending') return 3;
+  return 4;
+}
+
+async function resolveTemporaryStatusOverrides(
+  jwClient: Pick<HbuJwHttpClient, 'getSubitemScoreStudentNumbers'>,
+  cookieJar: SerializedCookieJar,
+  rows: HbuJwThisTermScoreRow[],
+): Promise<Map<string, HbuJwTermScoreStatusKind>> {
+  const temporaryRows = rows.filter((row) => classifyTermScoreStatus(row) === 'temporary');
+  if (temporaryRows.length === 0) return new Map<string, HbuJwTermScoreStatusKind>();
+
+  const overrides = new Map<string, HbuJwTermScoreStatusKind>();
+  await Promise.all(temporaryRows.map(async (row) => {
+    const studentNumber = readOptionalText(row.id?.studentNumber);
+    if (!studentNumber) return;
+    try {
+      const studentNumbers = await jwClient.getSubitemScoreStudentNumbers(cookieJar, row);
+      overrides.set(termScoreKey(row), studentNumbers.includes(studentNumber) ? 'staged' : 'temporary');
+    } catch (error) {
+      if (error instanceof HbuJwQueryError) return;
+      throw error;
+    }
+  }));
+  return overrides;
 }
 
 function sortOperationTime(value: unknown): string {

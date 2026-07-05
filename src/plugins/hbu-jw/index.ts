@@ -2,6 +2,7 @@ import { createReadStream, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
+import { HbuJwCourseQueryService } from './course-query.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwExamScheduleService } from './exams.js';
 import { HbuJwGpaService } from './gpa.js';
@@ -96,11 +97,12 @@ export function apply(ctx: Context, config: Config): void {
   const gpaService = new HbuJwGpaService(service, jwClient);
   const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer);
   const termScoresService = new HbuJwTermScoresService(service, jwClient, hbuCtx.puppeteer);
+  const courseQueryService = new HbuJwCourseQueryService(service, jwClient, hbuCtx.puppeteer);
   const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer);
   const menuService = new HbuJwMenuService(hbuCtx.puppeteer);
 
   registerWebRoutes(hbuCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, examScheduleService, menuService, runtime);
+  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, courseQueryService, examScheduleService, menuService, runtime);
   registerKeepAlive(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -199,6 +201,7 @@ function registerKeywordMiddleware(
   gpaService: HbuJwGpaService,
   scheduleService: HbuJwScheduleService,
   termScoresService: HbuJwTermScoresService,
+  courseQueryService: HbuJwCourseQueryService,
   examScheduleService: HbuJwExamScheduleService,
   menuService: HbuJwMenuService,
   runtime: RuntimeConfig,
@@ -301,6 +304,29 @@ function registerKeywordMiddleware(
       return;
     }
 
+    if (command.kind === 'course_query_help') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await session.send(await courseQueryService.queryHelp(identity.qqUserId));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'course_query') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await session.send(await courseQueryService.queryCourse(identity, {
+          courseQuery: command.courseQuery,
+          termInput: command.termInput,
+        }));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
     if (command.kind === 'exam_schedule') {
       try {
         const identity = resolveOwnerIdentity(session);
@@ -381,6 +407,8 @@ type HbuJwCommand =
   | { kind: 'gpa' }
   | { kind: 'schedule'; mode: HbuJwScheduleMode }
   | { kind: 'term_scores'; mode: HbuJwTermScoresMode }
+  | { kind: 'course_query_help' }
+  | { kind: 'course_query'; courseQuery: string; termInput?: string }
   | { kind: 'exam_schedule' };
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
@@ -396,8 +424,25 @@ function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '完整课表') return { kind: 'schedule', mode: 'full-semester' };
   if (text === '成绩') return { kind: 'term_scores', mode: 'full' };
   if (text === '匿名成绩') return { kind: 'term_scores', mode: 'anonymous' };
+  if (text === '课程查询') return { kind: 'course_query_help' };
+  const courseQuery = parseCourseQueryCommand(text);
+  if (courseQuery) return courseQuery;
   if (text === '考试安排') return { kind: 'exam_schedule' };
   return null;
+}
+
+function parseCourseQueryCommand(text: string): HbuJwCommand | null {
+  const matched = text.match(/^课程查询\s+(.+)$/);
+  if (!matched?.[1]) return null;
+  const raw = matched[1].trim();
+  if (!raw) return { kind: 'course_query_help' };
+  const parts = raw.split(/\s+/);
+  const last = parts.at(-1);
+  const hasTermInput = Boolean(last && (/^-?\d+$/.test(last) || /^\d{4}-\d{4}-[123]-\d+$/.test(last)));
+  const termInput = hasTermInput ? last : undefined;
+  const courseQuery = (hasTermInput ? parts.slice(0, -1) : parts).join(' ').trim();
+  if (!courseQuery) return { kind: 'course_query_help' };
+  return { kind: 'course_query', courseQuery, termInput };
 }
 
 function canUseHbuJwInSession(session: Session, allowedGroups: Set<string>): boolean {

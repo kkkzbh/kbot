@@ -3,6 +3,10 @@ import type {
   HbuJwScheduleCourse,
   HbuJwScheduleTimeAndPlace,
   HbuJwScoreRow,
+  HbuJwSubitemScoreDetailRow,
+  HbuJwSubitemScoreLookParams,
+  HbuJwSubitemScoreLookResult,
+  HbuJwSubitemScoreTerm,
   HbuJwThisSemesterSchedule,
   HbuJwThisTermScoreRow,
   SerializedCookieJar,
@@ -186,6 +190,61 @@ export class HbuJwHttpClient {
       throw new HbuJwQueryError('本学期成绩接口返回了非 JSON 内容。');
     }
     return flattenThisTermScores(payload);
+  }
+
+  async getSubitemScoreStudentNumbers(cookieJar: SerializedCookieJar, row: HbuJwThisTermScoreRow): Promise<string[]> {
+    const result = await this.getSubitemScoreDetails(cookieJar, buildSubitemScoreLookParamsFromThisTermRow(row));
+    return extractSubitemScoreStudentNumbers({ scoreDetailList: result.rows });
+  }
+
+  async getSubitemScoreTerms(cookieJar: SerializedCookieJar): Promise<HbuJwSubitemScoreTerm[]> {
+    const jar = CookieJar.from(cookieJar);
+    const pagePath = '/student/integratedQuery/scoreQuery/subitemScore/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwQueryError('分项成绩页面访问失败。');
+    }
+
+    return parseSubitemScoreTerms(page.text);
+  }
+
+  async getSubitemScoreDetails(cookieJar: SerializedCookieJar, params: HbuJwSubitemScoreLookParams): Promise<HbuJwSubitemScoreLookResult> {
+    const jar = CookieJar.from(cookieJar);
+    const pagePath = '/student/integratedQuery/scoreQuery/subitemScore/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwQueryError('分项成绩页面访问失败。');
+    }
+
+    const lookPath = findSubitemScoreLookPath(page.text);
+    const look = await this.request(lookPath, {
+      jar,
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/javascript, */*; q=0.01',
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'x-requested-with': 'XMLHttpRequest',
+        referer: new URL(pagePath, this.baseUrl).href,
+      },
+      body: buildSubitemScoreLookBody(params),
+    });
+    if (look.response.status !== 200) {
+      throw new HbuJwQueryError('分项成绩查询接口访问失败。');
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(look.text);
+    } catch {
+      throw new HbuJwQueryError('分项成绩查询接口返回了非 JSON 内容。');
+    }
+    return parseSubitemScoreLookResult(params, payload);
   }
 
   async getExamSchedule(cookieJar: SerializedCookieJar): Promise<HbuJwExamPlanEvent[]> {
@@ -409,6 +468,36 @@ function findThisTermScoresDataPath(html: string): string {
   return matches[0]!;
 }
 
+function findSubitemScoreLookPath(html: string): string {
+  const matches = [...html.matchAll(/[^"'\s<>]*subitemScore\/(?:[^"'\s<>]*\/)?look[^"'\s<>]*/g)]
+    .map((match) => match[0].replace(/\\\//g, '/'));
+  if (matches.length !== 1) {
+    throw new HbuJwQueryError('分项成绩页面没有唯一的查看地址。');
+  }
+  return matches[0]!;
+}
+
+function parseSubitemScoreTerms(html: string): HbuJwSubitemScoreTerm[] {
+  const select = html.match(/<select\b[^>]*id=["']zxjxjhh["'][\s\S]*?<\/select>/i)?.[0];
+  if (!select) {
+    throw new HbuJwQueryError('分项成绩页面没有学期列表。');
+  }
+  const terms = [...select.matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/gi)].map((match) => {
+    const attrs = match[1] ?? '';
+    const value = attrs.match(/\bvalue=["']([^"']*)["']/i)?.[1]?.trim() ?? '';
+    const label = decodeBasicHtmlEntities((match[2] ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+    return {
+      code: value,
+      label,
+      selected: /\bselected\b/i.test(attrs),
+    };
+  }).filter((term) => term.code && term.label);
+  if (terms.length === 0) {
+    throw new HbuJwQueryError('分项成绩页面学期列表为空。');
+  }
+  return terms;
+}
+
 function findExamPlanDetailPath(html: string): string {
   const matches = [...html.matchAll(/[^"'\s<>]*examinationManagement\/examPlan\/detail[^"'\s<>]*/g)]
     .map((match) => match[0].replace(/\\\//g, '/'));
@@ -463,6 +552,103 @@ function flattenThisTermScores(payload: unknown): HbuJwThisTermScoreRow[] {
     }
   }
   return rows;
+}
+
+export function buildSubitemScoreLookParamsFromThisTermRow(row: HbuJwThisTermScoreRow): HbuJwSubitemScoreLookParams {
+  return requireSubitemScoreLookParams({
+    zxjxjhh: row.id?.executiveEducationPlanNumber,
+    kch: row.id?.courseNumber,
+    kxh: row.coureSequenceNumber,
+    kssj: row.id?.examtime,
+    kcsxdm: row.coursePropertyCode,
+  }, row.courseName);
+}
+
+export function buildSubitemScoreLookParamsFromScoreRow(row: HbuJwScoreRow): HbuJwSubitemScoreLookParams {
+  const id = isRecord(row.id) ? row.id : {};
+  return requireSubitemScoreLookParams({
+    zxjxjhh: id.executiveEducationPlanNumber,
+    kch: id.courseNumber,
+    kxh: id.coureSequenceNumber,
+    kssj: id.startTime ?? row.examTime,
+    kcsxdm: row.xkcsxdm ?? row.courseAttributeCode,
+  }, row.courseName);
+}
+
+function requireSubitemScoreLookParams(input: Record<keyof HbuJwSubitemScoreLookParams, unknown>, courseName: unknown): HbuJwSubitemScoreLookParams {
+  const params = {
+    zxjxjhh: readRequiredParam(input.zxjxjhh, 'zxjxjhh', courseName),
+    kch: readRequiredParam(input.kch, 'kch', courseName),
+    kxh: readRequiredParam(input.kxh, 'kxh', courseName),
+    kssj: readRequiredParam(input.kssj, 'kssj', courseName),
+    kcsxdm: readRequiredParam(input.kcsxdm, 'kcsxdm', courseName),
+  };
+  return params;
+}
+
+function readRequiredParam(value: unknown, key: string, courseName: unknown): string {
+  const text = String(value ?? '').trim();
+  if (!text) {
+    const name = String(courseName ?? '').trim() || '未知课程';
+    throw new HbuJwQueryError(`课程 ${name} 缺少分项成绩参数 ${key}。`);
+  }
+  return text;
+}
+
+function buildSubitemScoreLookBody(params: HbuJwSubitemScoreLookParams): string {
+  return new URLSearchParams({
+    zxjxjhh: params.zxjxjhh,
+    kch: params.kch,
+    kxh: params.kxh,
+    kssj: params.kssj,
+    kcsxdm: params.kcsxdm,
+  }).toString();
+}
+
+function parseSubitemScoreLookResult(params: HbuJwSubitemScoreLookParams, payload: unknown): HbuJwSubitemScoreLookResult {
+  if (!isRecord(payload) || !Array.isArray(payload.scoreDetailList)) {
+    throw new HbuJwQueryError('分项成绩查询接口结构异常。');
+  }
+  for (const row of payload.scoreDetailList) {
+    if (!isRecord(row)) {
+      throw new HbuJwQueryError('分项成绩查询接口结构异常。');
+    }
+  }
+  return {
+    params,
+    rows: payload.scoreDetailList as HbuJwSubitemScoreDetailRow[],
+    message: typeof payload.msg === 'string' ? payload.msg : '',
+  };
+}
+
+function extractSubitemScoreStudentNumbers(payload: unknown): string[] {
+  const collected = new Set<string>();
+  visitStudentNumberCandidates(payload, '', collected);
+  return [...collected];
+}
+
+function visitStudentNumberCandidates(value: unknown, key: string, collected: Set<string>): void {
+  if (typeof value === 'string' || typeof value === 'number') {
+    const text = String(value).trim();
+    if (looksLikeStudentNumberKey(key) && /^\d{8,20}$/.test(text)) {
+      collected.add(text);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      visitStudentNumberCandidates(item, key, collected);
+    }
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [childKey, childValue] of Object.entries(value)) {
+    visitStudentNumberCandidates(childValue, childKey, collected);
+  }
+}
+
+function looksLikeStudentNumberKey(key: string): boolean {
+  return /^(xh|xh_id|studentNumber|studentNo|xuehao)$/i.test(key);
 }
 
 function parseExamPlanEvents(payload: unknown): HbuJwExamPlanEvent[] {

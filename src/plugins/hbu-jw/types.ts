@@ -117,6 +117,44 @@ export interface HbuJwThisTermScoreRow {
   [key: string]: unknown;
 }
 
+export interface HbuJwSubitemScoreTerm {
+  code: string;
+  label: string;
+  selected: boolean;
+}
+
+export interface HbuJwSubitemScoreLookParams {
+  zxjxjhh: string;
+  kch: string;
+  kxh: string;
+  kssj: string;
+  kcsxdm: string;
+}
+
+export interface HbuJwSubitemScoreDetailRow {
+  id?: {
+    executiveEducationPlanNumber?: string | null;
+    courseNumber?: string | null;
+    studentNumber?: string | null;
+    examtime?: string | null;
+    scoreTypeCode?: string | null;
+    [key: string]: unknown;
+  } | null;
+  coureSequenceNumber?: string | null;
+  zcj?: string | number | null;
+  pscj?: string | number | null;
+  qzcj?: string | number | null;
+  qmcj?: string | number | null;
+  remark?: string | null;
+  [key: string]: unknown;
+}
+
+export interface HbuJwSubitemScoreLookResult {
+  params: HbuJwSubitemScoreLookParams;
+  rows: HbuJwSubitemScoreDetailRow[];
+  message: string;
+}
+
 export interface HbuJwExamPlanEvent {
   title?: string | null;
   start?: string | null;
