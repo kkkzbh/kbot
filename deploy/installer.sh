@@ -13,6 +13,7 @@ STAGING_DIR="${BASE_DIR}/.staging"
 WORK_DIR="${STAGING_DIR}/work"
 ENV_SERVER="${SHARED_DIR}/.env.server"
 ENV_RUNTIME="${SHARED_DIR}/.env.runtime"
+CLOUDFLARED_HBU_JW_TOKEN_FILE="${QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE:-/etc/cloudflared/qqbot-hbu-jw.token}"
 SYSTEMD_DIR="/etc/systemd/system"
 
 case "${VERIFY_SCOPE}" in
@@ -32,9 +33,16 @@ require_cmd() {
   fi
 }
 
-for cmd in bash tar node pnpm systemctl journalctl curl podman podman-compose; do
+for cmd in bash tar node pnpm systemctl journalctl curl podman podman-compose cloudflared; do
   require_cmd "${cmd}"
 done
+
+if [[ ! -s "${CLOUDFLARED_HBU_JW_TOKEN_FILE}" ]]; then
+  echo "[installer] missing Cloudflare tunnel token file: ${CLOUDFLARED_HBU_JW_TOKEN_FILE}" >&2
+  echo "[installer] install the qqbot-hbu-jw token before deploying" >&2
+  exit 2
+fi
+chmod 600 "${CLOUDFLARED_HBU_JW_TOKEN_FILE}"
 
 if ! command -v corepack >/dev/null 2>&1 && ! command -v npm >/dev/null 2>&1; then
   echo "[installer] missing command: corepack or npm" >&2
@@ -148,6 +156,7 @@ QQBOT_APP_ROOT="${APP_ROOT}" \
 QQBOT_DATA_DIR="${DATA_DIR}" \
 QQBOT_SHARED_DIR="${SHARED_DIR}" \
 QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
+QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE="${CLOUDFLARED_HBU_JW_TOKEN_FILE}" \
   node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
 systemctl daemon-reload
 

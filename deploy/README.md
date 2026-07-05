@@ -27,6 +27,12 @@ cp .env.server.example .env.server
 
 Fill the real server values in `.env.server`. `deploy/deploy.sh` creates the remote `/opt/qqbot` directories and installs `.env.server` to `/opt/qqbot/shared/.env.server` when the remote file does not exist. Existing remote server env is preserved.
 
+Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
+
+```bash
+cloudflared tunnel token qqbot-hbu-jw | ssh km6 'install -d -m 700 /etc/cloudflared && umask 177 && cat > /etc/cloudflared/qqbot-hbu-jw.token'
+```
+
 ## Deploy
 
 From the local checkout:
@@ -49,15 +55,17 @@ qqbot.target
   qqbot-pmhq.service
   qqbot-llbot.service
   qqbot-koishi.service
+  cloudflared-qqbot-hbu-jw.service
 ```
 
-PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot and console.
+PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot and console. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
 
 ## Operations
 
 ```bash
-ssh km6 'systemctl status qqbot.target qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service --no-pager'
+ssh km6 'systemctl status qqbot.target qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service --no-pager'
 ssh km6 'journalctl -u qqbot-koishi.service -f'
+ssh km6 'journalctl -u cloudflared-qqbot-hbu-jw.service -f'
 ssh km6 'systemctl restart qqbot.target'
 ssh km6 'systemctl stop qqbot.target'
 ssh km6 'bash /opt/qqbot/app/qqbot/deploy/verify.sh full'

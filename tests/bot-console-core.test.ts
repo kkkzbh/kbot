@@ -668,8 +668,9 @@ describe('bot-console systemd helpers', () => {
     expect(status.canEnable).toBe(false);
   });
 
-  it('keeps TTS service units only for local env files', () => {
+  it('keeps server service units scoped to production services', () => {
     expect(resolveManagedServiceUnits('/tmp/qqbot/.env.local')).toContain('qqbot-voice-tts.service');
+    expect(resolveManagedServiceUnits('/tmp/qqbot/.env.server')).toContain('cloudflared-qqbot-hbu-jw.service');
     expect(resolveManagedServiceUnits('/tmp/qqbot/.env.server')).not.toContain('qqbot-voice-tts.service');
   });
 });
@@ -1877,8 +1878,9 @@ describe('bot-console manager', () => {
       'qqbot-pmhq.service',
       'qqbot-llbot.service',
       'qqbot-koishi.service',
+      'cloudflared-qqbot-hbu-jw.service',
     ]);
-    expect(execFile).toHaveBeenCalledTimes(4);
+    expect(execFile).toHaveBeenCalledTimes(5);
   });
 
   it('rejects local-only TTS service actions in server mode', async () => {

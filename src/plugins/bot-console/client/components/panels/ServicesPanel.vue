@@ -110,10 +110,10 @@ async function handleAction(unit: string, action: string) {
 
             <p class="bc-service-summary">{{ getServiceHint(service.unit) }}</p>
 
-            <!-- Inline pmhq / llbot / koishi status only for qqbot.target -->
+            <!-- Inline core service status only for qqbot.target -->
             <template v-if="service.unit === 'qqbot.target'">
               <p
-                v-if="getSubService('qqbot-pmhq.service') || getSubService('qqbot-llbot.service') || getSubService('qqbot-koishi.service')"
+                v-if="getSubService('qqbot-pmhq.service') || getSubService('qqbot-llbot.service') || getSubService('qqbot-koishi.service') || getSubService('cloudflared-qqbot-hbu-jw.service')"
                 class="bc-service-stack"
               >
                 已包含：
@@ -148,6 +148,17 @@ async function handleAction(unit: string, action: string) {
                     ]"
                   >
                     {{ getActiveStateLabel(getSubService('qqbot-koishi.service')!.activeState) }}
+                  </span>
+                </template>
+                <template v-if="getSubService('cloudflared-qqbot-hbu-jw.service')">
+                  &nbsp;/ 教务隧道&nbsp;
+                  <span
+                    :class="[
+                      'bc-status-badge',
+                      `is-${getActiveStateTone(getSubService('cloudflared-qqbot-hbu-jw.service')!.activeState)}`,
+                    ]"
+                  >
+                    {{ getActiveStateLabel(getSubService('cloudflared-qqbot-hbu-jw.service')!.activeState) }}
                   </span>
                 </template>
               </p>

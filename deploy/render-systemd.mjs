@@ -28,10 +28,12 @@ const sharedDir = resolve(requireEnv('QQBOT_SHARED_DIR'));
 const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', '/etc/systemd/system'));
 const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
+const cloudflaredHbuJwTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE', '/etc/cloudflared/qqbot-hbu-jw.token'));
 const app = quote(appDir);
 const data = quote(dataDir);
 const server = quote(envServer);
 const runtime = quote(envRuntime);
+const hbuJwToken = quote(cloudflaredHbuJwTokenFile);
 
 mkdirSync(systemdDir, { recursive: true });
 
@@ -103,10 +105,27 @@ RestartSec=5
 WantedBy=qqbot.target
 `);
 
+writeUnit(systemdDir, 'cloudflared-qqbot-hbu-jw.service', `
+[Unit]
+Description=Cloudflare Tunnel qqbot-hbu-jw
+After=network-online.target
+Wants=network-online.target
+PartOf=qqbot.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file ${hbuJwToken}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=qqbot.target
+`);
+
 writeUnit(systemdDir, 'qqbot.target', `
 [Unit]
 Description=QQBot Full Stack Target
-Wants=qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service
+Wants=qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service
 After=qqbot-pmhq.service qqbot-llbot.service
 
 [Install]

@@ -18,6 +18,7 @@ LLBOT_WEBUI_PORT="${LLONEBOT_WEBUI_PORT:-3080}"
 LLONEBOT_WS_PORT="${LLONEBOT_WS_PORT:-3001}"
 LLBOT_UNIT="${QQBOT_LLBOT_UNIT:-qqbot-llbot.service}"
 KOISHI_UNIT="${QQBOT_KOISHI_UNIT:-qqbot-koishi.service}"
+CLOUDFLARED_HBU_JW_UNIT="${QQBOT_CLOUDFLARED_HBU_JW_UNIT:-cloudflared-qqbot-hbu-jw.service}"
 KOISHI_PORT="${KOISHI_PORT:-5140}"
 
 require_cmd() {
@@ -153,6 +154,10 @@ print_full_diagnostics() {
   podman logs "${PMHQ_CONTAINER}" 2>&1 || true
   echo "== ${LLBOT_UNIT} logs ==" >&2
   journalctl -u "${LLBOT_UNIT}" --no-pager -n 200 2>/dev/null || true
+  echo "== ${CLOUDFLARED_HBU_JW_UNIT} status ==" >&2
+  systemctl status "${CLOUDFLARED_HBU_JW_UNIT}" --no-pager >&2 || true
+  echo "== ${CLOUDFLARED_HBU_JW_UNIT} logs ==" >&2
+  journalctl -u "${CLOUDFLARED_HBU_JW_UNIT}" --no-pager -n 200 2>/dev/null || true
   print_koishi_diagnostics
 }
 
@@ -166,6 +171,7 @@ if [[ "${SCOPE}" == "koishi" ]]; then
   exit 0
 fi
 
+wait_until "${CLOUDFLARED_HBU_JW_UNIT} is active" systemd_unit_active "${CLOUDFLARED_HBU_JW_UNIT}"
 wait_until "${PMHQ_CONTAINER} is running" container_is_running
 wait_until "${PMHQ_CONTAINER} has a default route" container_has_default_route
 wait_until "${PMHQ_CONTAINER} can reach QQ login network" container_can_reach_login_network
