@@ -216,7 +216,13 @@ describe('qq voice config wiring', () => {
     expect(workflow).toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
     expect(workflow).toContain('webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555');
     expect(workflow).toContain('SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}');
-    expect(workflow).toContain('bash "${QQBOT_REMOTE_INSTALL_TMP}/qqbot/scripts/deploy/install-release.sh"');
+    expect(workflow).toContain('prepare-production:');
+    expect(workflow).toContain('activate-production:');
+    expect(workflow).toContain('verify-production:');
+    expect(workflow).toContain('bash "${QQBOT_REMOTE_INSTALL_TMP}/qqbot/scripts/deploy/install-release.sh" prepare');
+    expect(workflow).toContain('QQBOT_DEPLOY_SCOPE=$(printf');
+    expect(workflow).toContain('restart_scope:');
+    expect(workflow).toContain('verify_scope:');
     expect(workflow).not.toContain('ssh-keyscan');
     expect(workflow).not.toContain('apt-get install');
     expect(workflow).not.toContain('cat > "${USER_SYSTEMD_DIR}/qqbot-pmhq.service"');
@@ -235,16 +241,24 @@ describe('qq voice config wiring', () => {
     expect(renderer).toContain('./scripts/run-llbot-host.sh');
     expect(renderer).toContain('Wants=qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service');
 
-    expect(installer).toContain('bash "${APP_DIR}/scripts/deploy/verify-host-prereqs.sh"');
-    expect(installer).toContain('bash "${APP_DIR}/scripts/prepare-server-runtime-layer.sh"');
-    expect(installer).toContain('ln -sfn "${APP_DIR}" "${CURRENT_LINK}"');
-    expect(installer).toContain('bash "${CURRENT_LINK}/scripts/verify-qqbot-host-runtime.sh"');
-    expect(installer).toContain('QQBOT_DEPLOY_DRY_RUN');
+    expect(installer).toContain('install-release.sh prepare <qqbot-release.tar.gz>');
+    expect(installer).toContain('install-release.sh activate <release-id>');
+    expect(installer).toContain('install-release.sh verify <koishi|full> [release-id]');
+    expect(installer).toContain('bash "${app_dir}/scripts/deploy/verify-host-prereqs.sh" "${DEPLOY_SCOPE}"');
+    expect(installer).toContain('bash "${app_dir}/scripts/prepare-server-runtime-layer.sh"');
+    expect(installer).toContain('CHATLUNA_ROOT_DIR="${chatluna_dir}" bash "${app_dir}/scripts/ensure-chatluna-build.sh" --check');
+    expect(installer).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
+    expect(installer).toContain('ln -sfn "${app_dir}" "${CURRENT_LINK}"');
+    expect(installer).toContain('bash "${CURRENT_LINK}/scripts/verify-qqbot-host-runtime.sh" "${verify_scope}"');
+    expect(installer).toContain('.qqbot-release-prepared.json');
     expect(installer).toContain('QQBOT_SERVER_ENV_FILE="${SHARED_DIR}/.env.server"');
+    expect(installer).not.toContain('pnpm build');
+    expect(installer).not.toContain('QQBOT_DEPLOY_DRY_RUN');
 
     expect(prereqs).toContain('corepack or npm');
     expect(prereqs).toContain('chromium-headless/google-chrome');
     expect(prereqs).toContain('/usr/lib64/chromium-browser/headless_shell');
+    expect(prereqs).toContain('if [[ "${SCOPE}" == "full" ]]; then');
     expect(prereqs).toContain('require_cmd podman');
     expect(prereqs).toContain('require_cmd podman-compose');
     expect(prereqs).not.toContain('podman compose version');
