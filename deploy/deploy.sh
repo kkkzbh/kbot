@@ -14,6 +14,7 @@ ARTIFACT_DIR="${TMP_PARENT}/${RUN_ID}/artifacts"
 STAGING_DIR="${TMP_PARENT}/${RUN_ID}/stage"
 BUNDLE_PATH="${ARTIFACT_DIR}/qqbot.tar.gz"
 MANIFEST_PATH="${TMP_PARENT}/${RUN_ID}/build-manifest.json"
+BUNDLE_ENTRIES="${TMP_PARENT}/${RUN_ID}/bundle.entries"
 REMOTE_INCOMING="${BASE_DIR}/incoming"
 REMOTE_BUNDLE="${REMOTE_INCOMING}/qqbot.tar.gz"
 REMOTE_STAGING="${BASE_DIR}/.staging"
@@ -42,6 +43,29 @@ if [[ ! -f "${CHATLUNA_SOURCE_DIR}/packages/core/package.json" ]]; then
   echo "[deploy] missing ChatLuna checkout: ${CHATLUNA_SOURCE_DIR}" >&2
   exit 2
 fi
+
+require_bundle_entry() {
+  local entry="$1"
+  local candidate
+  while IFS= read -r candidate; do
+    if [[ "${candidate}" == "${entry}" || "${candidate}" == "${entry}/"* ]]; then
+      return 0
+    fi
+  done < "${BUNDLE_ENTRIES}"
+  echo "[deploy] missing bundle entry: ${entry}" >&2
+  exit 2
+}
+
+verify_bundle() {
+  tar -tzf "${BUNDLE_PATH}" > "${BUNDLE_ENTRIES}"
+  require_bundle_entry "build-manifest.json"
+  require_bundle_entry "qqbot/package.json"
+  require_bundle_entry "qqbot/koishi.yml"
+  require_bundle_entry "qqbot/dist"
+  require_bundle_entry "qqbot/deploy/installer.sh"
+  require_bundle_entry "qqbot/deploy/render-systemd.mjs"
+  require_bundle_entry "chatluna/packages/core/package.json"
+}
 
 ensure_server_env() {
   ssh "${HOST}" "mkdir -p $(printf '%q' "${REMOTE_INCOMING}") $(printf '%q' "${REMOTE_STAGING}") $(printf '%q' "${REMOTE_SHARED}") $(printf '%q' "${REMOTE_DATA}") && chmod 700 $(printf '%q' "${REMOTE_SHARED}") $(printf '%q' "${REMOTE_DATA}")"
@@ -113,6 +137,7 @@ tar \
 cp "${MANIFEST_PATH}" "${STAGING_DIR}/build-manifest.json"
 cp "${MANIFEST_PATH}" "${STAGING_DIR}/qqbot/build-manifest.json"
 tar -czf "${BUNDLE_PATH}" -C "${STAGING_DIR}" build-manifest.json qqbot chatluna
+verify_bundle
 
 ensure_server_env
 

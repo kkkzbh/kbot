@@ -62,14 +62,19 @@ if [[ ! -f "${ENV_SERVER}" ]]; then
 fi
 chmod 600 "${ENV_SERVER}"
 
+BUNDLE_ENTRIES="${STAGING_DIR}/bundle.entries"
+tar -tzf "${BUNDLE_PATH}" > "${BUNDLE_ENTRIES}"
+
 require_bundle_entry() {
   local entry="$1"
-  if ! tar -tzf "${BUNDLE_PATH}" | grep -qx "${entry}"; then
-    if ! tar -tzf "${BUNDLE_PATH}" | grep -q "^${entry}/"; then
-      echo "[installer] missing bundle entry: ${entry}" >&2
-      exit 2
+  local candidate
+  while IFS= read -r candidate; do
+    if [[ "${candidate}" == "${entry}" || "${candidate}" == "${entry}/"* ]]; then
+      return 0
     fi
-  fi
+  done < "${BUNDLE_ENTRIES}"
+  echo "[installer] missing bundle entry: ${entry}" >&2
+  exit 2
 }
 
 require_bundle_entry "build-manifest.json"
@@ -144,7 +149,9 @@ QQBOT_SHARED_DIR="${SHARED_DIR}" \
 QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
   node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
 
-systemctl stop qqbot.target >/dev/null 2>&1 || true
+if systemctl cat qqbot.target >/dev/null 2>&1; then
+  systemctl stop qqbot.target
+fi
 clear_managed_dir "${APP_ROOT}"
 rmdir "${APP_ROOT}"
 mv "${WORK_DIR}" "${APP_ROOT}"
