@@ -238,7 +238,8 @@ describe('qq voice config wiring', () => {
     expect(installer).toContain('QQBOT_SERVER_ENV_FILE="${SHARED_DIR}/.env.server"');
 
     expect(prereqs).toContain('corepack or npm');
-    expect(prereqs).toContain('require_cmd google-chrome');
+    expect(prereqs).toContain('chromium-headless/google-chrome');
+    expect(prereqs).toContain('/usr/lib64/chromium-browser/headless_shell');
     expect(prereqs).toContain('require_cmd podman');
     expect(prereqs).toContain('podman compose version');
     expect(prereqs).not.toContain('apt-get');
@@ -267,7 +268,8 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('wait_until "llbot webui is reachable"');
     expect(content).toContain('wait_until "${LLBOT_UNIT} completes PMHQ WebSocket handshake"');
     expect(content).toContain('wait_until "koishi can reach llbot websocket"');
-    expect(content).toContain('journalctl --user -u "${LLBOT_UNIT}"');
+    expect(content).toContain('journalctl -u "${LLBOT_UNIT}"');
+    expect(content).toContain('systemctl is-active --quiet "${unit}"');
     expect(content).toContain('new WebSocket(process.argv[1])');
   });
 
@@ -276,12 +278,12 @@ describe('qq voice config wiring', () => {
 
     expect(content).toContain('Usage: $0 prepare|restore');
     expect(content).toContain('AUTO_LOGIN_QQ_ORIG=');
-    expect(content).toContain('systemctl --user stop qqbot.target');
-    expect(content).toContain('systemctl --user start qqbot-pmhq.service');
-    expect(content).toContain('systemctl --user start qqbot-llbot.service');
+    expect(content).toContain('systemctl stop qqbot.target');
+    expect(content).toContain('systemctl start qqbot-pmhq.service');
+    expect(content).toContain('systemctl start qqbot-llbot.service');
     expect(content).toContain('${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh');
     expect(content).toContain('AUTO_LOGIN_QQ is temporarily cleared in ${ENV_FILE}.');
-    expect(content).toContain('systemctl --user restart qqbot.target');
+    expect(content).toContain('systemctl restart qqbot.target');
     expect(content).toContain('set_auto_login_value');
   });
 
