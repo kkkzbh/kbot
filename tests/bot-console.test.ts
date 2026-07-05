@@ -36,6 +36,8 @@ vi.mock('koishi', () => {
       string: () => createSchemaNode(),
       natural: () => createSchemaNode(),
       number: () => createSchemaNode(),
+      array: () => createSchemaNode(),
+      union: () => createSchemaNode(),
     },
   };
 });
