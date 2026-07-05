@@ -84,7 +84,19 @@ import {
 } from '../src/plugins/hbu-jw/schedule.js';
 import { HbuJwService } from '../src/plugins/hbu-jw/service.js';
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
-import type { DatabaseLike, HbuJwScoreRow, HbuJwThisSemesterSchedule, OwnerIdentity, SerializedCookieJar } from '../src/plugins/hbu-jw/types.js';
+import {
+  HbuJwTermScoresService,
+  buildHbuJwTermScoresView,
+  renderHbuJwTermScoresImage,
+} from '../src/plugins/hbu-jw/term-scores.js';
+import type {
+  DatabaseLike,
+  HbuJwScoreRow,
+  HbuJwThisSemesterSchedule,
+  HbuJwThisTermScoreRow,
+  OwnerIdentity,
+  SerializedCookieJar,
+} from '../src/plugins/hbu-jw/types.js';
 import { renderBindPage } from '../src/plugins/hbu-jw/web/bind-page.js';
 
 const tempDirs: string[] = [];
@@ -208,6 +220,44 @@ function allPassingScoresPayload(rows: HbuJwScoreRow[]) {
     state: 'ok',
     zxjxjhh: '2023',
   };
+}
+
+function thisTermScoreRow(overrides: Partial<HbuJwThisTermScoreRow> = {}): HbuJwThisTermScoreRow {
+  return {
+    id: {
+      courseNumber: '2023S01003',
+      executiveEducationPlanNumber: '2025-2026-2-2',
+      examtime: '1',
+      studentNumber: '20231202051',
+    },
+    coureSequenceNumber: '01',
+    courseName: '软件工程',
+    credit: 3,
+    coursePropertyCode: '001',
+    coursePropertyName: '必修',
+    courseScore: '97',
+    gradePoint: 4.5,
+    examTypeName: '考试',
+    inputStatusCode: '05',
+    inputStatusExplain: '确定',
+    avgcj: '88.2',
+    rank: '3/78',
+    maxcj: '99',
+    mincj: '61',
+    unpassedReasonExplain: '',
+    englishCourseName: 'Software Engineering',
+    termName: '春',
+    ...overrides,
+  };
+}
+
+function thisTermScoresPayload(rows: HbuJwThisTermScoreRow[]) {
+  return [
+    {
+      state: '0',
+      list: rows,
+    },
+  ];
 }
 
 function thisSemesterSchedulePayload() {
@@ -677,6 +727,95 @@ describe('hbu-jw GPA calculation', () => {
   });
 });
 
+describe('hbu-jw term scores module', () => {
+  it('builds a concise term score table view with status counts', () => {
+    const view = buildHbuJwTermScoresView([
+      thisTermScoreRow(),
+      thisTermScoreRow({
+        id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '编译原理',
+        credit: 3,
+        courseScore: '',
+        gradePoint: 4.2,
+        inputStatusCode: '04',
+        inputStatusExplain: '暂存',
+      }),
+      thisTermScoreRow({
+        id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '网络安全基础实验',
+        credit: 1,
+        courseScore: '',
+        gradePoint: 4.8,
+        inputStatusCode: '01',
+        inputStatusExplain: '尚未录入',
+      }),
+    ]);
+
+    expect(view.subtitle).toBe('2025-2026 春 · 3 门课程 · 7 学分');
+    expect(view.confirmedCount).toBe(1);
+    expect(view.temporaryCount).toBe(1);
+    expect(view.pendingCount).toBe(1);
+    expect(view.rows.map((row) => [row.courseName, row.statusText, row.scoreText, row.gradePointText])).toEqual([
+      ['软件工程', '确定', '97', '4.5'],
+      ['编译原理', '暂存', '—', '—'],
+      ['网络安全基础实验', '尚未录入', '—', '—'],
+    ]);
+  });
+
+  it('renders the term score view as a PNG image with the core table in the HTML', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const image = await renderHbuJwTermScoresImage(
+      puppeteer,
+      buildHbuJwTermScoresView([
+        thisTermScoreRow(),
+        thisTermScoreRow({
+          id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '编译原理',
+          courseScore: '',
+          inputStatusExplain: '暂存',
+        }),
+      ]),
+    );
+
+    expect(String(image)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('河北大学本学期成绩');
+    expect(getNavigatedHtml()).toContain('软件工程');
+    expect(getNavigatedHtml()).toContain('编译原理');
+    expect(getNavigatedHtml()).toContain('<table>');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('uses the authenticated session to query and render term scores', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getThisTermScores = vi.fn(async () => [thisTermScoreRow()]);
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores }, puppeteer);
+
+    const reply = await service.queryTermScores(identity());
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
+    expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+  });
+
+  it('surfaces binding requirements before querying term scores', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'needs_binding' as const,
+      reason: '请先发送“教务绑定”。',
+    }));
+    const getThisTermScores = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores }, puppeteer);
+
+    await expect(service.queryTermScores(identity())).rejects.toThrow('请先发送“教务绑定”。');
+    expect(getThisTermScores).not.toHaveBeenCalled();
+  });
+});
+
 describe('hbu-jw schedule module', () => {
   it('calculates teaching weeks from fixed HBU term starts', () => {
     expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 1))).toBe(1);
@@ -825,6 +964,48 @@ describe('hbu-jw http client', () => {
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
     await expect(malformedClient.getAllPassingScores({ cookies: [] })).rejects.toThrow('结构异常');
+  });
+
+  it('loads this term scores from the dynamic data endpoint', async () => {
+    const rows = [thisTermScoreRow({ id: { courseNumber: '2023S01003', executiveEducationPlanNumber: '2025-2026-2-2' } })];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === 'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/thisTermScores/index') {
+        return new Response('<script>var url = "/student/integratedQuery/scoreQuery/token/thisTermScores/data";</script>', { status: 200 });
+      }
+      if (url === 'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/token/thisTermScores/data') {
+        expect(init?.method ?? 'GET').toBe('GET');
+        return new Response(JSON.stringify(thisTermScoresPayload(rows)), {
+          status: 200,
+          headers: { 'content-type': 'application/json;charset=UTF-8' },
+        });
+      }
+      return new Response('', { status: 500 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.getThisTermScores({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] })).resolves.toEqual(rows);
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/thisTermScores/index',
+      'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/token/thisTermScores/data',
+    ]);
+  });
+
+  it('rejects ambiguous term score data pages and malformed term score payloads', async () => {
+    const ambiguousFetch = vi.fn(async () => new Response([
+      '"/student/integratedQuery/scoreQuery/a/thisTermScores/data"',
+      '"/student/integratedQuery/scoreQuery/b/thisTermScores/data"',
+    ].join('\n'), { status: 200 }));
+    const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
+    await expect(ambiguousClient.getThisTermScores({ cookies: [] })).rejects.toThrow('没有唯一的数据地址');
+
+    const malformedFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/thisTermScores/index')) {
+        return new Response('"/student/integratedQuery/scoreQuery/a/thisTermScores/data"', { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    });
+    const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
+    await expect(malformedClient.getThisTermScores({ cookies: [] })).rejects.toThrow('结构异常');
   });
 
   it('loads this semester schedule from the dynamic callback endpoint', async () => {
@@ -1089,6 +1270,42 @@ describe('hbu-jw plugin integration', () => {
     expect(getThisSemesterSchedule).not.toHaveBeenCalled();
   });
 
+  it('blocks term score keywords outside allowed groups before any term score query', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '成绩',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启教务系统功能。');
+    expect(getThisTermScores).not.toHaveBeenCalled();
+  });
+
   it('allows hbu-jw binding in private chats regardless of the group allowlist', async () => {
     const dir = createTempDir();
     const database = createDatabase();
@@ -1162,6 +1379,42 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
     expect(getThisSemesterSchedule).not.toHaveBeenCalled();
+  });
+
+  it('allows term score keywords in private chats and asks for binding when no session exists', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '成绩',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
+    expect(getThisTermScores).not.toHaveBeenCalled();
   });
 
   it('rejects public http bind URLs and allows localhost http for development', () => {

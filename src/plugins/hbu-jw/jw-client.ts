@@ -3,6 +3,7 @@ import type {
   HbuJwScheduleTimeAndPlace,
   HbuJwScoreRow,
   HbuJwThisSemesterSchedule,
+  HbuJwThisTermScoreRow,
   SerializedCookieJar,
 } from './types.js';
 
@@ -151,6 +152,39 @@ export class HbuJwHttpClient {
       throw new HbuJwQueryError('全部及格成绩接口返回了非 JSON 内容。');
     }
     return flattenAllPassingScores(payload);
+  }
+
+  async getThisTermScores(cookieJar: SerializedCookieJar): Promise<HbuJwThisTermScoreRow[]> {
+    const jar = CookieJar.from(cookieJar);
+    const pagePath = '/student/integratedQuery/scoreQuery/thisTermScores/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwQueryError('本学期成绩页面访问失败。');
+    }
+
+    const dataPath = findThisTermScoresDataPath(page.text);
+    const data = await this.request(dataPath, {
+      jar,
+      headers: {
+        accept: 'application/json, text/javascript, */*; q=0.01',
+        'x-requested-with': 'XMLHttpRequest',
+        referer: new URL(pagePath, this.baseUrl).href,
+      },
+    });
+    if (data.response.status !== 200) {
+      throw new HbuJwQueryError('本学期成绩接口访问失败。');
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(data.text);
+    } catch {
+      throw new HbuJwQueryError('本学期成绩接口返回了非 JSON 内容。');
+    }
+    return flattenThisTermScores(payload);
   }
 
   async getThisSemesterSchedule(cookieJar: SerializedCookieJar): Promise<HbuJwThisSemesterSchedule> {
@@ -332,6 +366,15 @@ function findAllPassingScoresCallback(html: string): string {
   return matches[0]!;
 }
 
+function findThisTermScoresDataPath(html: string): string {
+  const matches = [...html.matchAll(/[^"'\s<>]*thisTermScores\/data[^"'\s<>]*/g)]
+    .map((match) => match[0].replace(/\\\//g, '/'));
+  if (matches.length !== 1) {
+    throw new HbuJwQueryError('本学期成绩页面没有唯一的数据地址。');
+  }
+  return matches[0]!;
+}
+
 function findThisSemesterScheduleCallback(html: string): string {
   const matches = [...html.matchAll(/[^"'\s<>]*thisSemesterCurriculum\/[^"'\s<>]*\/ajaxStudentSchedule\/curr\/callback[^"'\s<>]*/g)]
     .map((match) => match[0].replace(/\\\//g, '/'));
@@ -355,6 +398,25 @@ function flattenAllPassingScores(payload: unknown): HbuJwScoreRow[] {
         throw new HbuJwQueryError('全部及格成绩接口结构异常。');
       }
       rows.push(row as HbuJwScoreRow);
+    }
+  }
+  return rows;
+}
+
+function flattenThisTermScores(payload: unknown): HbuJwThisTermScoreRow[] {
+  if (!Array.isArray(payload)) {
+    throw new HbuJwQueryError('本学期成绩接口结构异常。');
+  }
+  const rows: HbuJwThisTermScoreRow[] = [];
+  for (const block of payload) {
+    if (!isRecord(block) || !Array.isArray(block.list)) {
+      throw new HbuJwQueryError('本学期成绩接口结构异常。');
+    }
+    for (const row of block.list) {
+      if (!isRecord(row)) {
+        throw new HbuJwQueryError('本学期成绩接口结构异常。');
+      }
+      rows.push(row as HbuJwThisTermScoreRow);
     }
   }
   return rows;

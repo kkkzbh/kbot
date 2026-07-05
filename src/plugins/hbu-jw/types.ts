@@ -85,6 +85,38 @@ export interface HbuJwScoreRow {
   [key: string]: unknown;
 }
 
+export interface HbuJwThisTermScoreRow {
+  id?: {
+    courseNumber?: string | null;
+    executiveEducationPlanNumber?: string | null;
+    examtime?: string | null;
+    studentNumber?: string | null;
+    [key: string]: unknown;
+  } | null;
+  coureSequenceNumber?: string | null;
+  courseName?: string | null;
+  credit?: string | number | null;
+  coursePropertyCode?: string | null;
+  coursePropertyName?: string | null;
+  courseScore?: string | number | null;
+  gradePoint?: string | number | null;
+  levelName?: string | null;
+  examTypeName?: string | null;
+  inputMethodCode?: string | null;
+  inputStatusCode?: string | null;
+  inputStatusExplain?: string | null;
+  maxcj?: string | number | null;
+  mincj?: string | number | null;
+  avgcj?: string | number | null;
+  rank?: string | number | null;
+  unpassedReasonExplain?: string | null;
+  englishCourseName?: string | null;
+  termName?: string | null;
+  operatetime?: string | null;
+  remark?: string | null;
+  [key: string]: unknown;
+}
+
 export interface HbuJwScheduleTimeAndPlace {
   classDay: number;
   classSessions: number;
