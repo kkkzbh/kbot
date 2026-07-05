@@ -170,8 +170,11 @@ describe('llbot host runtime helpers', () => {
     )).toThrow(/PMHQ QQ config mount source is required/);
   });
 
-  it('downloads and extracts the requested llbot version on first prepare', async () => {
-    const runtimeDir = join(createTempDir(), 'llbot-runtime');
+  it('extracts the bundled llbot release zip on first prepare', async () => {
+    const dir = createTempDir();
+    const runtimeDir = join(dir, 'llbot-runtime');
+    const releaseZipPath = join(dir, 'LLBot-7.12.15.zip');
+    writeFileSync(releaseZipPath, 'zip-bytes', 'utf8');
     const extractZip = vi.fn(async (_zipPath: string, targetDir: string) => {
       mkdirSync(targetDir, { recursive: true });
       writeFileSync(join(targetDir, 'llbot.js'), 'console.log("llbot")\n', 'utf8');
@@ -181,13 +184,24 @@ describe('llbot host runtime helpers', () => {
     const changed = await prepareRuntimeVersion({
       runtimeDir,
       version: '7.12.15',
-      fetchImpl: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+      releaseZipPath,
       extractZip,
     });
 
     expect(changed).toBe(true);
     expect(extractZip).toHaveBeenCalledTimes(1);
+    expect(extractZip).toHaveBeenCalledWith(releaseZipPath, runtimeDir);
     expect(readFileSync(join(runtimeDir, VERSION_MARKER), 'utf8').trim()).toBe('7.12.15');
+  });
+
+  it('fails when the bundled llbot release zip is missing', async () => {
+    const dir = createTempDir();
+    await expect(prepareRuntimeVersion({
+      runtimeDir: join(dir, 'llbot-runtime'),
+      version: '7.12.15',
+      releaseZipPath: join(dir, 'missing.zip'),
+      extractZip: vi.fn(),
+    })).rejects.toThrow(/LLBot release zip is required before runtime start/);
   });
 
   it('skips re-download when the runtime version already matches', async () => {
@@ -200,15 +214,17 @@ describe('llbot host runtime helpers', () => {
     const changed = await prepareRuntimeVersion({
       runtimeDir,
       version: '7.12.15',
-      fetchImpl: vi.fn(),
       extractZip: vi.fn(),
     });
 
     expect(changed).toBe(false);
   });
 
-  it('re-downloads when the matching runtime entrypoint is empty', async () => {
-    const runtimeDir = join(createTempDir(), 'llbot-runtime');
+  it('re-extracts the bundled runtime when the matching runtime entrypoint is empty', async () => {
+    const dir = createTempDir();
+    const runtimeDir = join(dir, 'llbot-runtime');
+    const releaseZipPath = join(dir, 'LLBot-7.12.15.zip');
+    writeFileSync(releaseZipPath, 'zip-bytes', 'utf8');
     mkdirSync(runtimeDir, { recursive: true });
     writeFileSync(join(runtimeDir, VERSION_MARKER), '7.12.15\n', 'utf8');
     writeFileSync(join(runtimeDir, 'llbot.js'), '', 'utf8');
@@ -222,7 +238,7 @@ describe('llbot host runtime helpers', () => {
     const changed = await prepareRuntimeVersion({
       runtimeDir,
       version: '7.12.15',
-      fetchImpl: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+      releaseZipPath,
       extractZip,
     });
 

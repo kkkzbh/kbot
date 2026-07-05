@@ -3,9 +3,7 @@
 
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
-const { pipeline } = require('node:stream/promises');
 const { spawnSync } = require('node:child_process');
 
 const VERSION_MARKER = '.qqbot-llbot-version';
@@ -15,10 +13,6 @@ const PMHQ_QQ_CONFIG_DESTINATION = '/root/.config/QQ';
 
 function normalizeTruthy(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? '').trim());
-}
-
-function buildLlbotReleaseUrl(version) {
-  return `https://github.com/LLOneBot/LuckyLilliaBot/releases/download/v${version}/LLBot.zip`;
 }
 
 function buildRemotePathMappings(qqConfigMountSource) {
@@ -241,30 +235,12 @@ async function ensureQqConfigBridge({
   return { bridgeHomeDir, qqConfigMountSource: sourceDir, linked: true };
 }
 
-async function fetchReleaseZip(url, destinationPath, fetchImpl = fetch) {
-  if (fetchImpl === fetch) {
-    const curl = spawnSync('curl', [
-      '-fL',
-      '--retry',
-      '3',
-      '--connect-timeout',
-      '20',
-      '-o',
-      destinationPath,
-      url,
-    ], {
-      stdio: 'inherit',
-    });
-    if (curl.status === 0) {
-      return;
-    }
+function resolveReleaseZipPath(version, releaseZipPath = '') {
+  const explicitPath = String(releaseZipPath || process.env.LLBOT_RELEASE_ZIP_PATH || '').trim();
+  if (explicitPath) {
+    return path.resolve(explicitPath);
   }
-
-  const response = await fetchImpl(url);
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to download LLBot release: ${response.status} ${response.statusText}`);
-  }
-  await pipeline(response.body, fs.createWriteStream(destinationPath));
+  return path.resolve(__dirname, '..', '..', 'vendor', 'llbot', `LLBot-${version}.zip`);
 }
 
 function findPythonBinary() {
@@ -299,7 +275,7 @@ async function prepareRuntimeVersion(options) {
   const {
     runtimeDir,
     version,
-    fetchImpl = fetch,
+    releaseZipPath = '',
     extractZip = extractReleaseZip,
   } = options;
 
@@ -319,16 +295,13 @@ async function prepareRuntimeVersion(options) {
   await fsp.rm(runtimeDir, { recursive: true, force: true });
   await fsp.mkdir(runtimeDir, { recursive: true });
 
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'qqbot-llbot-'));
-  const zipPath = path.join(tempDir, 'LLBot.zip');
-
-  try {
-    await fetchReleaseZip(buildLlbotReleaseUrl(version), zipPath, fetchImpl);
-    await extractZip(zipPath, runtimeDir);
-    await fsp.writeFile(markerPath, `${version}\n`, 'utf8');
-  } finally {
-    await fsp.rm(tempDir, { recursive: true, force: true });
+  const zipPath = resolveReleaseZipPath(version, releaseZipPath);
+  if (!hasNonEmptyFile(zipPath)) {
+    throw new Error(`LLBot release zip is required before runtime start: ${zipPath}`);
   }
+
+  await extractZip(zipPath, runtimeDir);
+  await fsp.writeFile(markerPath, `${version}\n`, 'utf8');
 
   return true;
 }
@@ -398,12 +371,11 @@ module.exports = {
   VERSION_MARKER,
   applyManagedConfig,
   buildRemotePathMappings,
-  buildLlbotReleaseUrl,
   disableWebUIAuthMiddleware,
   ensureQqConfigBridge,
   ensureRuntimeDataLink,
   extractReleaseZip,
-  fetchReleaseZip,
+  resolveReleaseZipPath,
   resolvePmhqQqConfigMountSource,
   resolveRequiredPmhqQqConfigMountSource,
   normalizeTruthy,
