@@ -6,9 +6,9 @@ services:
     container_name: pmhq
     network_mode: "pasta:-t,${PMHQ_BIND_HOST:-127.0.0.1}/${PMHQ_PORT:-13000}:13000"
     environment:
-      ENABLE_HEADLESS: ${ENABLE_HEADLESS:-false}
-      AUTO_LOGIN_QQ: ${AUTO_LOGIN_QQ:-}
-      TZ: ${TZ:-Asia/Shanghai}
+      ENABLE_HEADLESS: "${ENABLE_HEADLESS:-false}"
+      AUTO_LOGIN_QQ: "${AUTO_LOGIN_QQ:-}"
+      TZ: "${TZ:-Asia/Shanghai}"
     volumes:
       - qq_volume:/root/.config/QQ
     restart: unless-stopped
@@ -25,14 +25,14 @@ services:
     image: qqbot-voice-asr:local
     container_name: qqbot-voice-asr
     environment:
-      VOICE_ASR_HOST: 0.0.0.0
-      VOICE_ASR_PORT: 8080
-      VOICE_ASR_MODEL: ${VOICE_ASR_MODEL:-small}
-      VOICE_ASR_COMPUTE_TYPE: ${VOICE_ASR_COMPUTE_TYPE:-int8}
-      VOICE_ASR_API_KEY: ${QQ_VOICE_ASR_API_KEY:-}
-      VOICE_ASR_CACHE_DIR: /data/voice/asr/cache
-      VOICE_ASR_MAX_SECONDS: ${QQ_VOICE_INPUT_MAX_SECONDS:-60}
-      TZ: ${TZ:-Asia/Shanghai}
+      VOICE_ASR_HOST: "0.0.0.0"
+      VOICE_ASR_PORT: "8080"
+      VOICE_ASR_MODEL: "${VOICE_ASR_MODEL:-small}"
+      VOICE_ASR_COMPUTE_TYPE: "${VOICE_ASR_COMPUTE_TYPE:-int8}"
+      VOICE_ASR_API_KEY: "${QQ_VOICE_ASR_API_KEY:-}"
+      VOICE_ASR_CACHE_DIR: "/data/voice/asr/cache"
+      VOICE_ASR_MAX_SECONDS: "${QQ_VOICE_INPUT_MAX_SECONDS:-60}"
+      TZ: "${TZ:-Asia/Shanghai}"
     ports:
       - "127.0.0.1:${VOICE_ASR_PORT:-5161}:8080"
     volumes:

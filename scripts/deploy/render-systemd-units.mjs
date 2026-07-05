@@ -28,7 +28,6 @@ const appDir = resolve(requireEnv('QQBOT_DEPLOY_APP_DIR'));
 const sharedDir = resolve(requireEnv('QQBOT_SHARED_DIR'));
 const target = envValue('QQBOT_SYSTEMD_TARGET', 'qqbot.target');
 const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', '/etc/systemd/system'));
-const podmanComposeBin = envValue('QQBOT_PODMAN_COMPOSE_BIN');
 
 if (target !== 'qqbot.target') {
   console.log(`[systemd] custom target ${target}; leaving existing unit files unchanged`);
@@ -41,8 +40,6 @@ const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
 const app = systemdQuote(appDir);
 const shared = systemdQuote(sharedDir);
-const compose = systemdQuote(podmanComposeBin);
-const podmanComposeEnvironment = compose ? `Environment=QQBOT_PODMAN_COMPOSE_BIN=${compose}` : '';
 
 writeUnit(
   systemdDir,
@@ -63,7 +60,6 @@ EnvironmentFile=-${envRuntime}
 Environment=CONTAINERS_CONF=${app}/config/podman/containers.conf
 Environment=QQBOT_ENV_BASE_FILE=${envServer}
 Environment=QQBOT_ENV_OVERRIDE_FILE=${envRuntime}
-${podmanComposeEnvironment}
 ExecStartPre=/usr/bin/env bash -lc "podman rm -f qqbot-voice-asr >/dev/null 2>&1 || true"
 ExecStart=/usr/bin/env bash -lc 'cd "${app}" && ./scripts/podman-pmhq-service.sh up'
 ExecStop=/usr/bin/env bash -lc 'cd "${app}" && ./scripts/podman-pmhq-service.sh stop'

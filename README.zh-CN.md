@@ -48,7 +48,7 @@ ssh km6
 - Node.js `>= 22`。
 - pnpm `9.15.4`。
 - 通过 Corepack 或 npm 提供的 Yarn，用于 linked ChatLuna checkout。
-- Podman，带 `podman compose` 或 `podman-compose`。
+- Podman 和 `podman-compose`。
 - Git、Python 3、curl、unzip、ffmpeg、tar、systemd system services，以及 headless browser 可执行文件。Fedora Server 推荐使用 `chromium-headless`，它提供 `/usr/lib64/chromium-browser/headless_shell`。
 
 部署脚本通过下面的脚本检查宿主机前置条件：

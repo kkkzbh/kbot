@@ -24,16 +24,7 @@ PMHQ_NETWORK_READY_TIMEOUT_SEC="${QQBOT_PMHQ_NETWORK_READY_TIMEOUT_SEC:-120}"
 PMHQ_START_TIMEOUT_SEC="${QQBOT_PMHQ_START_TIMEOUT_SEC:-60}"
 HOST_ROUTE_PROBE_IP="${QQBOT_PMHQ_HOST_ROUTE_PROBE_IP:-1.1.1.1}"
 
-if [ -n "${QQBOT_PODMAN_COMPOSE_BIN:-}" ]; then
-  COMPOSE_CMD=("${QQBOT_PODMAN_COMPOSE_BIN}")
-elif command -v podman-compose >/dev/null 2>&1; then
-  COMPOSE_CMD=("$(command -v podman-compose)")
-elif command -v podman >/dev/null 2>&1; then
-  COMPOSE_CMD=("$(command -v podman)" "compose")
-else
-  echo "podman compose command is not available" >&2
-  exit 1
-fi
+COMPOSE_CMD="podman-compose"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -43,9 +34,10 @@ require_cmd() {
 }
 
 require_cmd podman
+require_cmd "${COMPOSE_CMD}"
 
 compose() {
-  "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" "$@"
+  "${COMPOSE_CMD}" -f "${COMPOSE_FILE}" "$@"
 }
 
 wait_for() {

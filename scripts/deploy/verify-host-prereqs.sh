@@ -34,9 +34,6 @@ if [[ -z "${PUPPETEER_EXECUTABLE_PATH:-}" ]] \
   exit 2
 fi
 
-if ! command -v podman-compose >/dev/null 2>&1 && ! podman compose version >/dev/null 2>&1; then
-  echo "[prereq] missing podman compose support" >&2
-  exit 2
-fi
+require_cmd podman-compose
 
 echo "[prereq] host prerequisites are available"

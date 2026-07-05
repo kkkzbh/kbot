@@ -47,6 +47,11 @@ describe('qq voice config wiring', () => {
     );
     expect(content).toContain('voice-asr:');
     expect(content).toContain('"127.0.0.1:${VOICE_ASR_PORT:-5161}:8080"');
+    expect(content).toContain('ENABLE_HEADLESS: "${ENABLE_HEADLESS:-false}"');
+    expect(content).toContain('VOICE_ASR_PORT: "8080"');
+    expect(content).toContain('VOICE_ASR_MAX_SECONDS: "${QQ_VOICE_INPUT_MAX_SECONDS:-60}"');
+    expect(content).not.toContain('ENABLE_HEADLESS: ${ENABLE_HEADLESS:-false}');
+    expect(content).not.toContain('VOICE_ASR_PORT: 8080');
     expect(content).toContain('./data/voice/asr:/data/voice/asr:Z');
     expect(content).not.toContain('"${PMHQ_BIND_HOST:-127.0.0.1}:${PMHQ_PORT:-13000}:13000"');
     expect(content).not.toContain('\n  llbot:\n');
@@ -241,7 +246,8 @@ describe('qq voice config wiring', () => {
     expect(prereqs).toContain('chromium-headless/google-chrome');
     expect(prereqs).toContain('/usr/lib64/chromium-browser/headless_shell');
     expect(prereqs).toContain('require_cmd podman');
-    expect(prereqs).toContain('podman compose version');
+    expect(prereqs).toContain('require_cmd podman-compose');
+    expect(prereqs).not.toContain('podman compose version');
     expect(prereqs).not.toContain('apt-get');
   });
 
@@ -249,8 +255,12 @@ describe('qq voice config wiring', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/podman-pmhq-service.sh'), 'utf8');
 
     expect(content).toContain('Usage: $0 up|stop|restart');
+    expect(content).toContain('COMPOSE_CMD="podman-compose"');
+    expect(content).toContain('"${COMPOSE_CMD}" -f "${COMPOSE_FILE}" "$@"');
     expect(content).toContain('compose up -d pmhq');
     expect(content).toContain('compose stop pmhq');
+    expect(content).not.toContain('QQBOT_PODMAN_COMPOSE_BIN');
+    expect(content).not.toContain('podman)" "compose');
     expect(content).toContain('remove_legacy_llbot_container');
     expect(content).toContain('QQBOT_PMHQ_LOGIN_NETWORK_PROBE_URL');
     expect(content).toContain('wait_for "host login network is reachable"');

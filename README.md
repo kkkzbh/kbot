@@ -50,7 +50,7 @@ Runtime processes:
 - Node.js `>= 22`.
 - pnpm `9.15.4`.
 - Yarn through Corepack or npm for the linked ChatLuna checkout.
-- Podman with `podman compose` or `podman-compose`.
+- Podman and `podman-compose`.
 - Git, Python 3, curl, unzip, ffmpeg, tar, systemd system services, and a
   headless browser executable. Fedora Server should use `chromium-headless`,
   which provides `/usr/lib64/chromium-browser/headless_shell`.
