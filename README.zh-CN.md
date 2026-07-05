@@ -4,6 +4,23 @@
 
 一个基于 Koishi、OneBot、LLBot、PMHQ 和 ChatLuna 构建的 QQ 聊天机器人。
 
+## 生产部署
+
+生产环境运行在 `km6` 上，只维护一份 PMHQ、LLBot、Koishi 完整栈实例。部署说明维护在 [`deploy/README.md`](deploy/README.md)。
+
+```text
+/opt/qqbot/app       当前应用实例
+/opt/qqbot/data      运行数据和缓存
+/opt/qqbot/shared    env 文件和服务器维护配置
+```
+
+从本地 checkout 部署：
+
+```bash
+cd ~/code/qqbot
+deploy/deploy.sh km6
+```
+
 ## 运行边界
 
 这个仓库只作为源码、构建和运行工作区使用。

@@ -4,6 +4,23 @@ English | [简体中文](README.zh-CN.md)
 
 A QQ chat bot built with Koishi, OneBot, LLBot, PMHQ, and ChatLuna.
 
+## Production Deploy
+
+Production runs on `km6` as one active server instance for the full PMHQ, LLBot, and Koishi stack. Deployment is maintained in [`deploy/README.md`](deploy/README.md).
+
+```text
+/opt/qqbot/app       active application instance
+/opt/qqbot/data      runtime data and caches
+/opt/qqbot/shared    env files and server-maintained configuration
+```
+
+Deploy from the local checkout:
+
+```bash
+cd ~/code/qqbot
+deploy/deploy.sh km6
+```
+
 ## Runtime Boundary
 
 The repository is a source, build, and runtime workspace.

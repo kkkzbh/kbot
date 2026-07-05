@@ -103,8 +103,8 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('PMHQ_BIND_HOST=127.0.0.1');
     expect(content).toContain('PMHQ_PORT=13000');
     expect(content).toContain('LLBOT_VERSION=7.12.15');
-    expect(content).toContain('LLBOT_RUNTIME_DIR=/opt/qqbot/shared/llbot-runtime');
-    expect(content).toContain('LLONEBOT_DATA_DIR=/opt/qqbot/shared/llonebot');
+    expect(content).toContain('LLBOT_RUNTIME_DIR=/opt/qqbot/data/llbot-runtime');
+    expect(content).toContain('LLONEBOT_DATA_DIR=/opt/qqbot/data/llonebot');
     expect(content).toContain('Set AUTO_LOGIN_QQ only if this server should use QQ quick-login by default.');
     expect(content).not.toContain('LLBOT_IMAGE=');
     expect(content).not.toContain('LLBOT_TAG=');
