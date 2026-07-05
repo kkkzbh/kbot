@@ -58,7 +58,7 @@ release_id_from_manifest_json() {
     const stamp = createdAt.replace(/[^0-9T]/g, '').slice(0, 15);
     let shortSha = qqbotSha.slice(0, 12);
     if (!/^[0-9a-fA-F]{7,12}$/.test(shortSha)) shortSha = 'unknown';
-    process.stdout.write(`${stamp}-${shortSha}`);
+    process.stdout.write(stamp + '-' + shortSha);
   " "$1"
 }
 
