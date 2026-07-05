@@ -15,6 +15,11 @@ if [[ ! -f "${BUILD_MANIFEST_PATH}" ]]; then
   exit 2
 fi
 
+if [[ ! -d "${ROOT_DIR}/dist" ]]; then
+  echo "[bundle] missing qqbot dist; run pnpm build before bundling" >&2
+  exit 2
+fi
+
 if [[ ! -f "${CHATLUNA_SOURCE_DIR}/packages/core/package.json" ]]; then
   echo "[bundle] missing linked ChatLuna checkout: ${CHATLUNA_SOURCE_DIR}" >&2
   exit 2
@@ -62,6 +67,8 @@ git ls-files -z --cached --others --exclude-standard \
   | grep -zv -E '^(chatluna-src|artifacts)/' \
   | tar --null -T - -cf - \
   | tar -xf - -C "${STAGING_DIR}/qqbot"
+
+cp -a "${ROOT_DIR}/dist" "${STAGING_DIR}/qqbot/dist"
 
 tar \
   --exclude='.git' \

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCOPE="${1:-full}"
+case "${SCOPE}" in
+  koishi|full) ;;
+  *)
+    echo "[prereq] invalid scope: ${SCOPE}" >&2
+    exit 2
+    ;;
+esac
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "[prereq] missing command: $1" >&2
@@ -18,7 +27,6 @@ fi
 require_cmd pnpm
 require_cmd systemctl
 require_cmd journalctl
-require_cmd podman
 
 if [[ -n "${PUPPETEER_EXECUTABLE_PATH:-}" && ! -x "${PUPPETEER_EXECUTABLE_PATH}" ]]; then
   echo "[prereq] PUPPETEER_EXECUTABLE_PATH is not executable: ${PUPPETEER_EXECUTABLE_PATH}" >&2
@@ -34,6 +42,9 @@ if [[ -z "${PUPPETEER_EXECUTABLE_PATH:-}" ]] \
   exit 2
 fi
 
-require_cmd podman-compose
+if [[ "${SCOPE}" == "full" ]]; then
+  require_cmd podman
+  require_cmd podman-compose
+fi
 
-echo "[prereq] host prerequisites are available"
+echo "[prereq] host prerequisites are available for ${SCOPE} scope"

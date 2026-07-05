@@ -14,6 +14,30 @@ on:
         description: 'ChatLuna branch/ref (default: qqbot-conversation-runtime)'
         required: false
         type: string
+      mode:
+        description: 'Deployment mode'
+        required: true
+        type: choice
+        default: prepare-and-activate
+        options:
+          - prepare
+          - prepare-and-activate
+      restart_scope:
+        description: 'Service restart scope used during activation'
+        required: true
+        type: choice
+        default: koishi
+        options:
+          - koishi
+          - full
+      verify_scope:
+        description: 'Runtime verification scope after activation'
+        required: true
+        type: choice
+        default: koishi
+        options:
+          - koishi
+          - full
 
 permissions:
   contents: read
@@ -26,6 +50,9 @@ env:
   DEPLOY_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_ref || github.ref }}
   DEPLOY_CHATLUNA_REPO: kkkzbh/chatluna
   DEPLOY_CHATLUNA_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.chatluna_ref || 'qqbot-conversation-runtime' }}
+  DEPLOY_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode || 'prepare-and-activate' }}
+  DEPLOY_RESTART_SCOPE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.restart_scope || 'koishi' }}
+  DEPLOY_VERIFY_SCOPE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.verify_scope || 'koishi' }}
   DEPLOY_PORT: ${{ vars.QQBOT_SERVER_PORT || '22' }}
   DEPLOY_APP_DIR: ${{ vars.QQBOT_SERVER_APP_DIR || '/opt/qqbot/current' }}
   DEPLOY_SHARED_DIR: ${{ vars.QQBOT_SERVER_SHARED_DIR || '/opt/qqbot/shared' }}
@@ -71,10 +98,13 @@ jobs:
             echo "### Resolved revisions"
             echo "- QQBot ref: \`${DEPLOY_REF}\`"
             echo "- ChatLuna: \`${DEPLOY_CHATLUNA_REPO}@${ref}\` -> \`${sha}\`"
+            echo "- Mode: \`${DEPLOY_MODE}\`"
+            echo "- Restart scope: \`${DEPLOY_RESTART_SCOPE}\`"
+            echo "- Verify scope: \`${DEPLOY_VERIFY_SCOPE}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   build-release:
-    name: Build release bundle
+    name: Build release artifact
     runs-on: ubuntu-latest
     needs:
       - resolve-revisions
@@ -138,13 +168,15 @@ jobs:
             ${{ steps.bundle.outputs.bundle-path }}
             artifacts/build-manifest.json
 
-  deploy-production:
-    name: Deploy production
+  prepare-production:
+    name: Prepare production release
     runs-on: ubuntu-latest
     needs:
       - build-release
     environment:
       name: production
+    outputs:
+      release-id: ${{ steps.prepare.outputs.release-id }}
     steps:
       - name: Validate required secrets
         env:
@@ -223,7 +255,8 @@ jobs:
             echo "REMOTE_BUNDLE=${remote_bundle}"
           } >> "${GITHUB_ENV}"
 
-      - name: Install release on server
+      - name: Prepare release on server
+        id: prepare
         env:
           DEPLOY_HOST: ${{ secrets.QQBOT_SERVER_HOST }}
           DEPLOY_USER: ${{ secrets.QQBOT_SERVER_USER }}
@@ -231,10 +264,10 @@ jobs:
           set -euo pipefail
           ssh_opts=(-p "${DEPLOY_PORT}" -o ConnectTimeout=30 -o ConnectionAttempts=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes)
           remote_base="$(dirname "${DEPLOY_APP_DIR}")"
-          remote_tmp="${remote_base}/incoming/install-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_tmp="${remote_base}/incoming/prepare-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "QQBOT_RELEASE_BUNDLE=$(printf '%q' "${REMOTE_BUNDLE}") DEPLOY_APP_DIR=$(printf '%q' "${DEPLOY_APP_DIR}") QQBOT_SHARED_DIR=$(printf '%q' "${DEPLOY_SHARED_DIR}") DEPLOY_SYSTEMD_TARGET=$(printf '%q' "${DEPLOY_SYSTEMD_TARGET}") QQBOT_REMOTE_INSTALL_TMP=$(printf '%q' "${remote_tmp}") bash -s" <<'REMOTE'
+          prepare_output="$(ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "QQBOT_RELEASE_BUNDLE=$(printf '%q' "${REMOTE_BUNDLE}") DEPLOY_APP_DIR=$(printf '%q' "${DEPLOY_APP_DIR}") QQBOT_SHARED_DIR=$(printf '%q' "${DEPLOY_SHARED_DIR}") DEPLOY_SYSTEMD_TARGET=$(printf '%q' "${DEPLOY_SYSTEMD_TARGET}") QQBOT_REMOTE_INSTALL_TMP=$(printf '%q' "${remote_tmp}") QQBOT_DEPLOY_SCOPE=$(printf '%q' "${DEPLOY_RESTART_SCOPE}") bash -s" <<'REMOTE'
           set -euo pipefail
           rm -rf "${QQBOT_REMOTE_INSTALL_TMP}"
           mkdir -p "${QQBOT_REMOTE_INSTALL_TMP}"
@@ -243,5 +276,166 @@ jobs:
           }
           trap cleanup EXIT
           tar -xzf "${QQBOT_RELEASE_BUNDLE}" -C "${QQBOT_REMOTE_INSTALL_TMP}"
-          bash "${QQBOT_REMOTE_INSTALL_TMP}/qqbot/scripts/deploy/install-release.sh" "${QQBOT_RELEASE_BUNDLE}"
+          bash "${QQBOT_REMOTE_INSTALL_TMP}/qqbot/scripts/deploy/install-release.sh" prepare "${QQBOT_RELEASE_BUNDLE}"
           REMOTE
+          )"
+
+          printf '%s\n' "${prepare_output}"
+          release_id="$(printf '%s\n' "${prepare_output}" | awk -F= '/^QQBOT_RELEASE_ID=/{print $2; exit}')"
+          if [[ -z "${release_id}" ]]; then
+            echo "Prepare did not return QQBOT_RELEASE_ID" >&2
+            exit 1
+          fi
+          echo "release-id=${release_id}" >> "${GITHUB_OUTPUT}"
+          echo "QQBOT_RELEASE_ID=${release_id}" >> "${GITHUB_ENV}"
+
+          {
+            echo "### Prepared production release"
+            echo "- Release: \`${release_id}\`"
+            echo "- Mode: \`${DEPLOY_MODE}\`"
+            echo "- Restart scope: \`${DEPLOY_RESTART_SCOPE}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  activate-production:
+    name: Activate production release
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-production
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.mode == 'prepare-and-activate' }}
+    environment:
+      name: production
+    steps:
+      - name: Validate required secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.QQBOT_SERVER_HOST }}
+          DEPLOY_USER: ${{ secrets.QQBOT_SERVER_USER }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.QQBOT_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_PRIVATE_KEY SSH_KNOWN_HOSTS TS_OAUTH_CLIENT_ID TS_OAUTH_SECRET; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ secrets.QQBOT_SERVER_HOST }}
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.QQBOT_SSH_PRIVATE_KEY }}
+
+      - name: Setup known_hosts
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+          printf "%s\n" "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Activate release on server
+        env:
+          DEPLOY_HOST: ${{ secrets.QQBOT_SERVER_HOST }}
+          DEPLOY_USER: ${{ secrets.QQBOT_SERVER_USER }}
+          QQBOT_RELEASE_ID: ${{ needs.prepare-production.outputs.release-id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${QQBOT_RELEASE_ID}" ]]; then
+            echo "Missing prepared release id" >&2
+            exit 1
+          fi
+
+          ssh_opts=(-p "${DEPLOY_PORT}" -o ConnectTimeout=30 -o ConnectionAttempts=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes)
+          remote_base="$(dirname "${DEPLOY_APP_DIR}")"
+          remote_script="${remote_base}/releases/${QQBOT_RELEASE_ID}/qqbot/scripts/deploy/install-release.sh"
+
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "DEPLOY_APP_DIR=$(printf '%q' "${DEPLOY_APP_DIR}") QQBOT_SHARED_DIR=$(printf '%q' "${DEPLOY_SHARED_DIR}") DEPLOY_SYSTEMD_TARGET=$(printf '%q' "${DEPLOY_SYSTEMD_TARGET}") QQBOT_DEPLOY_SCOPE=$(printf '%q' "${DEPLOY_RESTART_SCOPE}") bash $(printf '%q' "${remote_script}") activate $(printf '%q' "${QQBOT_RELEASE_ID}")"
+
+          {
+            echo "### Activated production release"
+            echo "- Release: \`${QQBOT_RELEASE_ID}\`"
+            echo "- Restart scope: \`${DEPLOY_RESTART_SCOPE}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  verify-production:
+    name: Verify production release
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-production
+      - activate-production
+    if: ${{ always() && needs.activate-production.result == 'success' }}
+    steps:
+      - name: Validate required secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.QQBOT_SERVER_HOST }}
+          DEPLOY_USER: ${{ secrets.QQBOT_SERVER_USER }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.QQBOT_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_PRIVATE_KEY SSH_KNOWN_HOSTS TS_OAUTH_CLIENT_ID TS_OAUTH_SECRET; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ secrets.QQBOT_SERVER_HOST }}
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.QQBOT_SSH_PRIVATE_KEY }}
+
+      - name: Setup known_hosts
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+          printf "%s\n" "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Verify release on server
+        env:
+          DEPLOY_HOST: ${{ secrets.QQBOT_SERVER_HOST }}
+          DEPLOY_USER: ${{ secrets.QQBOT_SERVER_USER }}
+          QQBOT_RELEASE_ID: ${{ needs.prepare-production.outputs.release-id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${QQBOT_RELEASE_ID}" ]]; then
+            echo "Missing prepared release id" >&2
+            exit 1
+          fi
+
+          ssh_opts=(-p "${DEPLOY_PORT}" -o ConnectTimeout=30 -o ConnectionAttempts=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes)
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "DEPLOY_APP_DIR=$(printf '%q' "${DEPLOY_APP_DIR}") QQBOT_SHARED_DIR=$(printf '%q' "${DEPLOY_SHARED_DIR}") DEPLOY_SYSTEMD_TARGET=$(printf '%q' "${DEPLOY_SYSTEMD_TARGET}") bash $(printf '%q' "${DEPLOY_APP_DIR}/scripts/deploy/install-release.sh") verify $(printf '%q' "${DEPLOY_VERIFY_SCOPE}") $(printf '%q' "${QQBOT_RELEASE_ID}")"
+
+          {
+            echo "### Verified production release"
+            echo "- Release: \`${QQBOT_RELEASE_ID}\`"
+            echo "- Verify scope: \`${DEPLOY_VERIFY_SCOPE}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

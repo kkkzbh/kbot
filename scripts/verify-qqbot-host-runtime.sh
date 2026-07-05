@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCOPE="${1:-full}"
+case "${SCOPE}" in
+  koishi|full) ;;
+  *)
+    echo "[verify] invalid scope: ${SCOPE}" >&2
+    exit 2
+    ;;
+esac
+
 PMHQ_CONTAINER="${QQBOT_PMHQ_CONTAINER_NAME:-pmhq}"
 PMHQ_HEALTH_HOST="${QQBOT_PMHQ_HEALTH_HOST:-127.0.0.1}"
 PMHQ_PORT="${PMHQ_PORT:-13000}"
@@ -9,6 +18,7 @@ LLBOT_WEBUI_PORT="${LLONEBOT_WEBUI_PORT:-3080}"
 LLONEBOT_WS_PORT="${LLONEBOT_WS_PORT:-3001}"
 LLBOT_UNIT="${QQBOT_LLBOT_UNIT:-qqbot-llbot.service}"
 KOISHI_UNIT="${QQBOT_KOISHI_UNIT:-qqbot-koishi.service}"
+KOISHI_PORT="${KOISHI_PORT:-5140}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -17,9 +27,12 @@ require_cmd() {
   fi
 }
 
-require_cmd podman
 require_cmd node
 require_cmd journalctl
+require_cmd systemctl
+if [[ "${SCOPE}" == "full" ]]; then
+  require_cmd podman
+fi
 
 node_http_probe() {
   local url="$1"
@@ -118,7 +131,14 @@ wait_until() {
   return 1
 }
 
-print_diagnostics() {
+print_koishi_diagnostics() {
+  echo "== ${KOISHI_UNIT} status ==" >&2
+  systemctl status "${KOISHI_UNIT}" --no-pager >&2 || true
+  echo "== ${KOISHI_UNIT} logs ==" >&2
+  journalctl -u "${KOISHI_UNIT}" --no-pager -n 200 2>/dev/null || true
+}
+
+print_full_diagnostics() {
   echo "== pmhq inspect ==" >&2
   podman inspect "${PMHQ_CONTAINER}" 2>/dev/null || true
   echo "== pmhq routes ==" >&2
@@ -133,11 +153,18 @@ print_diagnostics() {
   podman logs "${PMHQ_CONTAINER}" 2>&1 || true
   echo "== ${LLBOT_UNIT} logs ==" >&2
   journalctl -u "${LLBOT_UNIT}" --no-pager -n 200 2>/dev/null || true
-  echo "== ${KOISHI_UNIT} logs ==" >&2
-  journalctl -u "${KOISHI_UNIT}" --no-pager -n 200 2>/dev/null || true
+  print_koishi_diagnostics
 }
 
-trap 'code=$?; if [ "$code" -ne 0 ]; then print_diagnostics; fi; exit "$code"' EXIT
+trap 'code=$?; if [ "$code" -ne 0 ]; then if [ "${SCOPE}" = full ]; then print_full_diagnostics; else print_koishi_diagnostics; fi; fi; exit "$code"' EXIT
+
+wait_until "${KOISHI_UNIT} is active" systemd_unit_active "${KOISHI_UNIT}"
+wait_until "koishi http endpoint is reachable" \
+  node_http_probe "http://127.0.0.1:${KOISHI_PORT}/" "koishi http"
+
+if [[ "${SCOPE}" == "koishi" ]]; then
+  exit 0
+fi
 
 wait_until "${PMHQ_CONTAINER} is running" container_is_running
 wait_until "${PMHQ_CONTAINER} has a default route" container_has_default_route
@@ -146,7 +173,6 @@ wait_until "${PMHQ_CONTAINER} is healthy" container_is_healthy
 wait_until "pmhq health endpoint is reachable" \
   node_http_probe "http://${PMHQ_HEALTH_HOST}:${PMHQ_PORT}/health" "pmhq health"
 wait_until "${LLBOT_UNIT} is active" systemd_unit_active "${LLBOT_UNIT}"
-wait_until "${KOISHI_UNIT} is active" systemd_unit_active "${KOISHI_UNIT}"
 wait_until "llbot webui is reachable" \
   node_http_probe "http://127.0.0.1:${LLBOT_WEBUI_PORT}/" "llbot webui"
 wait_until "${LLBOT_UNIT} completes PMHQ WebSocket handshake" \
