@@ -6,6 +6,7 @@ import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwExamScheduleService } from './exams.js';
 import { HbuJwGpaService } from './gpa.js';
 import { HbuJwHttpClient } from './jw-client.js';
+import { HbuJwMenuService } from './menu.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
 import { HbuJwService } from './service.js';
 import { ensureHbuJwTables, HbuJwStore } from './store.js';
@@ -96,9 +97,10 @@ export function apply(ctx: Context, config: Config): void {
   const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer);
   const termScoresService = new HbuJwTermScoresService(service, jwClient, hbuCtx.puppeteer);
   const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer);
+  const menuService = new HbuJwMenuService(hbuCtx.puppeteer);
 
   registerWebRoutes(hbuCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, examScheduleService, runtime);
+  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, examScheduleService, menuService, runtime);
   registerKeepAlive(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -198,6 +200,7 @@ function registerKeywordMiddleware(
   scheduleService: HbuJwScheduleService,
   termScoresService: HbuJwTermScoresService,
   examScheduleService: HbuJwExamScheduleService,
+  menuService: HbuJwMenuService,
   runtime: RuntimeConfig,
 ): void {
   ctx.middleware(async (session, next) => {
@@ -207,6 +210,16 @@ function registerKeywordMiddleware(
 
     if (!canUseHbuJwInSession(session, runtime.allowedGroups)) {
       await session.send('当前群未开启教务系统功能。');
+      return;
+    }
+
+    if (command.kind === 'menu') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await session.send(await menuService.queryMenu(identity.qqUserId));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
       return;
     }
 
@@ -359,6 +372,7 @@ function normalizeCommandText(session: Session): string {
 }
 
 type HbuJwCommand =
+  | { kind: 'menu' }
   | { kind: 'bind' }
   | { kind: 'confirm_help' }
   | { kind: 'confirm'; confirmCode: string }
@@ -370,6 +384,7 @@ type HbuJwCommand =
   | { kind: 'exam_schedule' };
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
+  if (text === '教务') return { kind: 'menu' };
   if (text === '教务绑定') return { kind: 'bind' };
   if (/^教务(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };
   const confirm = text.match(/^教务(?:确认|确定)\s+(\d{6})$/);

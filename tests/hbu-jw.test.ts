@@ -82,6 +82,11 @@ import {
 import { HbuJwGpaService, calculateHbuJwGpa, formatGpaReply } from '../src/plugins/hbu-jw/gpa.js';
 import { HbuJwHttpClient, HbuJwLoginError } from '../src/plugins/hbu-jw/jw-client.js';
 import {
+  HbuJwMenuService,
+  buildHbuJwMenuView,
+  renderHbuJwMenuImage,
+} from '../src/plugins/hbu-jw/menu.js';
+import {
   HbuJwScheduleService,
   buildHbuJwScheduleView,
   calculateTeachingWeek,
@@ -667,6 +672,70 @@ describe('hbu-jw binding service', () => {
       revokedAt: null,
       version: 2,
     });
+  });
+});
+
+describe('hbu-jw menu module', () => {
+  it('builds the academic affairs menu with all exposed keywords', () => {
+    const view = buildHbuJwMenuView();
+
+    expect(view.title).toBe('教务功能菜单');
+    expect(view.subtitle).toBe('发送 教务 查看本菜单');
+    expect(view.sections.map((section) => [section.title, section.items.map((item) => [item.keyword, item.description])])).toEqual([
+      [
+        '账号',
+        [
+          ['教务绑定', '绑定教务账号'],
+          ['教务确认 <确认码>', '网页登录成功后确认绑定'],
+          ['教务状态', '检查当前绑定状态'],
+          ['教务解绑', '解除教务账号与QQ的绑定，相关加密数据也会清除'],
+        ],
+      ],
+      [
+        '查询',
+        [
+          ['GPA', '计算推免相关GPA，排除艺术类等必修课程'],
+          ['成绩', '查看本学期成绩'],
+          ['课表', '查看这周的课表'],
+          ['完整课表', '查看本学期的课表'],
+          ['考试安排', '查看本学期的考试安排'],
+        ],
+      ],
+    ]);
+  });
+
+  it('renders the menu view as a PNG image with two visual panels', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const image = await renderHbuJwMenuImage(puppeteer, buildHbuJwMenuView());
+    const html = getNavigatedHtml();
+
+    expect(String(image)).toContain('image/png');
+    expect(html).toContain('教务功能菜单');
+    expect(html).toContain('发送 <strong>教务</strong> 查看本菜单');
+    expect(html).toContain('class="campus campus-left"');
+    expect(html).toContain('class="campus campus-right"');
+    expect(html).toContain('class="panel-title">账号');
+    expect(html).toContain('class="panel-title">查询');
+    expect(html).toContain('教务绑定');
+    expect(html).toContain('教务确认 <span class="param">&lt;确认码&gt;</span>');
+    expect(html).toContain('网页登录成功后确认绑定');
+    expect(html).toContain('解除教务账号与QQ的绑定，相关加密数据也会清除');
+    expect(html).toContain('计算推免相关GPA，排除艺术类等必修课程');
+    expect(html).toContain('查看本学期成绩');
+    expect(html).toContain('考试安排');
+    expect(html).not.toContain('<table>');
+    expect(html).not.toContain('提示：');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('returns a mentioned menu image without requiring authentication', async () => {
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwMenuService(puppeteer);
+
+    const reply = await service.queryMenu('1405359129');
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
   });
 });
 
@@ -1353,6 +1422,47 @@ describe('hbu-jw bind page rendering', () => {
 });
 
 describe('hbu-jw plugin integration', () => {
+  it('returns the academic affairs menu in allowed groups without creating a binding challenge', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '教务',
+      send,
+    }, vi.fn());
+
+    const reply = send.mock.calls[0]?.[0];
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('教务功能菜单');
+    expect(getNavigatedHtml()).toContain('考试安排');
+    expect(database.tables.get('hbu_jw_bind_challenge') ?? []).toHaveLength(0);
+  });
+
   it('registers tables, routes, and the exact binding keyword middleware', async () => {
     const dir = createTempDir();
     const database = createDatabase();
@@ -1438,6 +1548,43 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('请发送完整确认命令：教务确认 <6位确认码>。确认码会在网页登录成功后的页面上显示。');
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('blocks the menu keyword outside allowed groups before rendering the image', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '教务',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启教务系统功能。');
+    expect(puppeteer.page).not.toHaveBeenCalled();
   });
 
   it('blocks hbu-jw keywords outside allowed groups before any GPA query', async () => {
@@ -1623,6 +1770,45 @@ describe('hbu-jw plugin integration', () => {
       channelId: 'private:1405359129',
       status: 'created',
     });
+  });
+
+  it('allows the menu keyword in private chats regardless of the group allowlist', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '教务',
+      send,
+    }, vi.fn());
+
+    const reply = send.mock.calls[0]?.[0];
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('发送 <strong>教务</strong> 查看本菜单');
   });
 
   it('allows schedule keywords in private chats and asks for binding when no session exists', async () => {
