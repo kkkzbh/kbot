@@ -149,6 +149,7 @@ QQBOT_DATA_DIR="${DATA_DIR}" \
 QQBOT_SHARED_DIR="${SHARED_DIR}" \
 QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
   node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
+systemctl daemon-reload
 
 if systemctl cat qqbot.target >/dev/null 2>&1; then
   systemctl stop qqbot.target
@@ -157,7 +158,6 @@ clear_managed_dir "${APP_ROOT}"
 rmdir "${APP_ROOT}"
 mv "${WORK_DIR}" "${APP_ROOT}"
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
-systemctl daemon-reload
 systemctl enable qqbot.target >/dev/null
 systemctl restart qqbot.target
 QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}"

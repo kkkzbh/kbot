@@ -23,6 +23,7 @@ PMHQ_LOGIN_NETWORK_PROBE_URL="${QQBOT_PMHQ_LOGIN_NETWORK_PROBE_URL:-https://im.q
 PMHQ_NETWORK_READY_TIMEOUT_SEC="${QQBOT_PMHQ_NETWORK_READY_TIMEOUT_SEC:-120}"
 PMHQ_START_TIMEOUT_SEC="${QQBOT_PMHQ_START_TIMEOUT_SEC:-60}"
 HOST_ROUTE_PROBE_IP="${QQBOT_PMHQ_HOST_ROUTE_PROBE_IP:-1.1.1.1}"
+PMHQ_SIGNATURE_LABEL="com.qqbot.pmhq.config-signature"
 
 COMPOSE_CMD="podman-compose"
 
@@ -35,6 +36,7 @@ require_cmd() {
 
 require_cmd podman
 require_cmd "${COMPOSE_CMD}"
+require_cmd sha256sum
 
 compose() {
   "${COMPOSE_CMD}" -f "${COMPOSE_FILE}" "$@"
@@ -79,10 +81,61 @@ host_login_network_ready() {
   host_has_default_route && host_can_reach_login_network
 }
 
+container_exists() {
+  podman container exists "${PMHQ_CONTAINER}"
+}
+
 container_is_running() {
   local running
   running="$(podman inspect --format '{{.State.Running}}' "${PMHQ_CONTAINER}" 2>/dev/null || echo false)"
   [ "${running}" = "true" ]
+}
+
+file_sha256() {
+  local file="$1"
+  if [ -f "${file}" ]; then
+    sha256sum "${file}" | awk '{print $1}'
+  else
+    printf 'missing'
+  fi
+}
+
+pmhq_desired_signature() {
+  {
+    printf 'compose=%s\n' "$(file_sha256 "${COMPOSE_FILE}")"
+    printf 'containers_conf=%s\n' "$(file_sha256 "${CONTAINERS_CONF:-}")"
+    printf 'image=%s:%s\n' "${PMHQ_IMAGE:-docker.io/linyuchen/pmhq}" "${PMHQ_TAG:-latest}"
+    printf 'bind=%s\n' "${PMHQ_BIND_HOST:-127.0.0.1}"
+    printf 'port=%s\n' "${PMHQ_PORT:-13000}"
+    printf 'qq_config=%s\n' "${PMHQ_QQ_CONFIG_DIR:-./data/pmhq/QQ}"
+    printf 'auto_login=%s\n' "${AUTO_LOGIN_QQ:-}"
+    printf 'headless=%s\n' "${ENABLE_HEADLESS:-false}"
+    printf 'tz=%s\n' "${TZ:-Asia/Shanghai}"
+  } | sha256sum | awk '{print $1}'
+}
+
+pmhq_current_signature() {
+  podman inspect --format "{{ index .Config.Labels \"${PMHQ_SIGNATURE_LABEL}\" }}" "${PMHQ_CONTAINER}" 2>/dev/null || true
+}
+
+remove_stale_pmhq_container() {
+  local desired
+  local current
+  desired="$(pmhq_desired_signature)"
+  export QQBOT_PMHQ_CONFIG_SIGNATURE="${desired}"
+
+  if ! container_exists; then
+    return 0
+  fi
+
+  current="$(pmhq_current_signature)"
+  if [ "${current}" = "${desired}" ]; then
+    return 0
+  fi
+
+  echo "${PMHQ_CONTAINER} config changed; recreating container" >&2
+  compose stop pmhq >/dev/null 2>&1 || true
+  podman rm -f "${PMHQ_CONTAINER}" >/dev/null
 }
 
 pmhq_container_has_default_route() {
@@ -142,6 +195,7 @@ start_pmhq() {
     exit 1
   fi
 
+  remove_stale_pmhq_container
   remove_unusable_pmhq_container
   compose up -d pmhq
   wait_for "${PMHQ_CONTAINER} is running" "${PMHQ_START_TIMEOUT_SEC}" container_is_running
@@ -157,7 +211,7 @@ recreate_pmhq_container() {
 }
 
 if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 up|stop|restart" >&2
+  echo "Usage: $0 up|stop|restart|recreate" >&2
   exit 1
 fi
 
@@ -171,6 +225,12 @@ case "$1" in
     compose stop pmhq
     ;;
   restart)
+    remove_legacy_llbot_container
+    remove_legacy_cni_artifacts
+    compose stop pmhq >/dev/null 2>&1 || true
+    start_pmhq
+    ;;
+  recreate)
     remove_legacy_llbot_container
     remove_legacy_cni_artifacts
     recreate_pmhq_container

@@ -169,11 +169,14 @@ describe('qq voice config wiring', () => {
   it('ships a dedicated pmhq compose helper for the host topology', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/podman-pmhq-service.sh'), 'utf8');
 
-    expect(content).toContain('Usage: $0 up|stop|restart');
+    expect(content).toContain('Usage: $0 up|stop|restart|recreate');
     expect(content).toContain('COMPOSE_CMD="podman-compose"');
     expect(content).toContain('"${COMPOSE_CMD}" -f "${COMPOSE_FILE}" "$@"');
     expect(content).toContain('compose up -d pmhq');
     expect(content).toContain('compose stop pmhq');
+    expect(content).toContain('pmhq_desired_signature');
+    expect(content).toContain('remove_stale_pmhq_container');
+    expect(content).toContain('QQBOT_PMHQ_CONFIG_SIGNATURE');
     expect(content).not.toContain('QQBOT_PODMAN_COMPOSE_BIN');
     expect(content).not.toContain('podman)" "compose');
     expect(content).toContain('remove_legacy_llbot_container');
