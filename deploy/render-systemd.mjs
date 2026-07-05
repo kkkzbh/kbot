@@ -42,7 +42,6 @@ writeUnit(systemdDir, 'qqbot-pmhq.service', `
 Description=QQBot PMHQ Service
 After=network-online.target
 Wants=network-online.target
-PartOf=qqbot.target
 
 [Service]
 Type=oneshot
@@ -124,9 +123,9 @@ WantedBy=qqbot.target
 
 writeUnit(systemdDir, 'qqbot.target', `
 [Unit]
-Description=QQBot Full Stack Target
-Wants=qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service
-After=qqbot-pmhq.service qqbot-llbot.service
+Description=QQBot Application Stack Target
+Wants=qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service
+After=qqbot-llbot.service
 
 [Install]
 WantedBy=multi-user.target

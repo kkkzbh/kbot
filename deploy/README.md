@@ -48,11 +48,13 @@ When a full deploy is required, the script runs typecheck, tests, build, package
 
 ## Services
 
-Systemd owns the full stack:
+Systemd owns the application stack, while PMHQ is an independent stateful QQ login service:
 
 ```text
+qqbot-pmhq.service
+  owns the long-lived QQ desktop container and login profile
+
 qqbot.target
-  qqbot-pmhq.service
   qqbot-llbot.service
   qqbot-koishi.service
   cloudflared-qqbot-hbu-jw.service
@@ -60,13 +62,18 @@ qqbot.target
 
 PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot and console. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
 
+Do not restart or recreate PMHQ during ordinary deploys, code updates, or bot restarts. PMHQ contains the QQ desktop device profile; touching it can make QQ treat the server as a new device. Restart LLBot and Koishi for normal runtime recovery.
+
 ## Operations
 
 ```bash
 ssh km6 'systemctl status qqbot.target qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service --no-pager'
 ssh km6 'journalctl -u qqbot-koishi.service -f'
 ssh km6 'journalctl -u cloudflared-qqbot-hbu-jw.service -f'
+ssh km6 'systemctl restart qqbot-llbot.service qqbot-koishi.service'
 ssh km6 'systemctl restart qqbot.target'
 ssh km6 'systemctl stop qqbot.target'
 ssh km6 'bash /opt/qqbot/app/qqbot/deploy/verify.sh full'
 ```
+
+Use `systemctl restart qqbot-pmhq.service` only for explicit QQ login recovery. Use `scripts/podman-pmhq-service.sh recreate` only when you intentionally accept a new QQ device/profile risk.
