@@ -3,8 +3,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { h, type Fragment } from 'koishi';
+import {
+  addHbuJwGpaCourseToTotals,
+  calculateHbuJwGpaFromTotals,
+  createHbuJwGpaTotals,
+  evaluateHbuJwGpaCourse,
+  type HbuJwGpaCourseEvaluation,
+  type HbuJwIncludedGpaCourse,
+} from './gpa.js';
 import type { HbuJwHttpClient } from './jw-client.js';
 import {
+  type HbuJwScoreRow,
   HbuJwUserError,
   type HbuJwThisTermScoreRow,
   type OwnerIdentity,
@@ -13,6 +22,7 @@ import {
 
 const TERM_SCORES_WIDTH = 1280;
 const CONFIRMED_STATUS_CODE = '05';
+const EMPTY_DELTA_TEXT = '—';
 
 export interface HbuJwTermScoresAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
@@ -40,6 +50,7 @@ interface HbuJwTermScoresElementLike {
 }
 
 export type HbuJwTermScoreStatusKind = 'confirmed' | 'temporary' | 'pending' | 'unknown';
+export type HbuJwTermScoreGpaDeltaKind = 'positive' | 'negative' | 'zero' | 'not-counted' | 'pending' | 'missing';
 
 export interface HbuJwTermScoreRowView {
   courseNumber: string;
@@ -49,10 +60,13 @@ export interface HbuJwTermScoreRowView {
   propertyName: string;
   statusText: string;
   statusKind: HbuJwTermScoreStatusKind;
+  timeText: string;
   scoreText: string;
   gradePointText: string;
   averageText: string;
   rankText: string;
+  gpaDeltaText: string;
+  gpaDeltaKind: HbuJwTermScoreGpaDeltaKind;
 }
 
 export interface HbuJwTermScoresView {
@@ -70,7 +84,7 @@ export interface HbuJwTermScoresView {
 export class HbuJwTermScoresService {
   constructor(
     private readonly authService: HbuJwTermScoresAuthServiceLike,
-    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores'>,
+    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores'>,
     private readonly puppeteer: HbuJwTermScoresPuppeteerLike,
   ) {}
 
@@ -81,8 +95,11 @@ export class HbuJwTermScoresService {
     }
 
     try {
-      const scores = await this.jwClient.getThisTermScores(auth.cookieJar);
-      const view = buildHbuJwTermScoresView(scores);
+      const [scores, allPassingScores] = await Promise.all([
+        this.jwClient.getThisTermScores(auth.cookieJar),
+        this.jwClient.getAllPassingScores(auth.cookieJar),
+      ]);
+      const view = buildHbuJwTermScoresView(scores, allPassingScores);
       return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
@@ -91,8 +108,10 @@ export class HbuJwTermScoresService {
   }
 }
 
-export function buildHbuJwTermScoresView(rows: HbuJwThisTermScoreRow[]): HbuJwTermScoresView {
-  const rowViews = rows.map(toRowView);
+export function buildHbuJwTermScoresView(rows: HbuJwThisTermScoreRow[], allPassingRows: HbuJwScoreRow[]): HbuJwTermScoresView {
+  const sortedRows = [...rows].sort(compareTermScoreRows);
+  const gpaDeltas = calculateTermScoreGpaDeltas(sortedRows, allPassingRows);
+  const rowViews = sortedRows.map((row) => toRowView(row, gpaDeltas.get(termScoreKey(row)) ?? missingGpaDelta()));
   const termLabel = formatTermLabel(rows);
   const totalCredits = rows.reduce((sum, row) => sum + parseCredit(row.credit), 0);
   const confirmedCount = rowViews.filter((row) => row.statusKind === 'confirmed').length;
@@ -260,14 +279,16 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
       vertical-align: middle;
     }
     tbody tr:last-child td { border-bottom: 0; }
-    .course-col { width: 348px; }
-    .credit-col { width: 84px; }
-    .property-col { width: 112px; }
-    .status-col { width: 120px; }
-    .score-col { width: 100px; }
-    .point-col { width: 96px; }
-    .avg-col { width: 96px; }
-    .rank-col { width: 120px; }
+    .course-col { width: 260px; }
+    .credit-col { width: 64px; }
+    .property-col { width: 86px; }
+    .status-col { width: 94px; }
+    .time-col { width: 110px; }
+    .score-col { width: 76px; }
+    .point-col { width: 76px; }
+    .avg-col { width: 76px; }
+    .rank-col { width: 86px; }
+    .delta-col { width: 110px; }
     .course-name {
       color: #23313a;
       font-size: 17px;
@@ -298,6 +319,17 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
       color: #8a9690;
       font-weight: 700;
     }
+    .gpa-delta {
+      font-variant-numeric: tabular-nums;
+      font-size: 17px;
+      font-weight: 850;
+    }
+    .gpa-positive { color: #16824d; }
+    .gpa-negative { color: #c43d3d; }
+    .gpa-zero { color: #56635d; }
+    .gpa-not-counted,
+    .gpa-pending,
+    .gpa-missing { color: #8a9690; }
     .status {
       display: inline-flex;
       align-items: center;
@@ -348,14 +380,16 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
               <th class="credit-col">学分</th>
               <th class="property-col">属性</th>
               <th class="status-col">状态</th>
+              <th class="time-col">时间</th>
               <th class="score-col">成绩</th>
               <th class="point-col">绩点</th>
               <th class="avg-col">均分</th>
               <th class="rank-col">名次</th>
+              <th class="delta-col">GPA增量</th>
             </tr>
           </thead>
           <tbody>
-            ${view.rows.length === 0 ? '<tr><td class="empty" colspan="8">暂无本学期成绩</td></tr>' : view.rows.map(renderScoreRow).join('')}
+            ${view.rows.length === 0 ? '<tr><td class="empty" colspan="10">暂无本学期成绩</td></tr>' : view.rows.map(renderScoreRow).join('')}
           </tbody>
         </table>
       </section>
@@ -365,7 +399,7 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
 </html>`;
 }
 
-function toRowView(row: HbuJwThisTermScoreRow): HbuJwTermScoreRowView {
+function toRowView(row: HbuJwThisTermScoreRow, gpaDelta: HbuJwTermScoreGpaDelta): HbuJwTermScoreRowView {
   const statusKind = classifyTermScoreStatus(row);
   return {
     courseNumber: readOptionalText(row.id?.courseNumber),
@@ -375,10 +409,13 @@ function toRowView(row: HbuJwThisTermScoreRow): HbuJwTermScoreRowView {
     propertyName: readOptionalText(row.coursePropertyName) || '未标注',
     statusText: formatStatusText(row, statusKind),
     statusKind,
+    timeText: formatOperationTime(row.operatetime),
     scoreText: formatScoreText(row, statusKind),
     gradePointText: formatConfirmedNumber(row.gradePoint, statusKind),
     averageText: formatConfirmedValue(row.avgcj, statusKind),
     rankText: formatConfirmedValue(row.rank, statusKind),
+    gpaDeltaText: gpaDelta.text,
+    gpaDeltaKind: gpaDelta.kind,
   };
 }
 
@@ -426,6 +463,141 @@ function parseCredit(value: unknown): number {
   return parsed;
 }
 
+interface HbuJwTermScoreGpaDelta {
+  text: string;
+  kind: HbuJwTermScoreGpaDeltaKind;
+}
+
+function calculateTermScoreGpaDeltas(rows: HbuJwThisTermScoreRow[], allPassingRows: HbuJwScoreRow[]): Map<string, HbuJwTermScoreGpaDelta> {
+  const evaluationsByCourseNumber = new Map<string, HbuJwGpaCourseEvaluation>();
+  const includedByCourseNumber = new Map<string, HbuJwIncludedGpaCourse>();
+  const includedCourses: HbuJwIncludedGpaCourse[] = [];
+  for (const row of allPassingRows) {
+    const evaluation = evaluateHbuJwGpaCourse(row);
+    const courseNumber = evaluation.course.courseNumber;
+    evaluationsByCourseNumber.set(courseNumber, evaluation);
+    if (evaluation.kind === 'included') {
+      includedCourses.push(evaluation.course);
+      includedByCourseNumber.set(courseNumber, evaluation.course);
+    }
+  }
+
+  const currentIncludedCourseNumbers = new Set<string>();
+  for (const row of rows) {
+    if (classifyTermScoreStatus(row) !== 'confirmed') continue;
+    const courseNumber = readOptionalText(row.id?.courseNumber);
+    if (includedByCourseNumber.has(courseNumber)) {
+      currentIncludedCourseNumbers.add(courseNumber);
+    }
+  }
+
+  let totals = createHbuJwGpaTotals(
+    includedCourses.filter((course) => !currentIncludedCourseNumbers.has(course.courseNumber)),
+  );
+  const remainingCurrentCourses = new Map(
+    [...currentIncludedCourseNumbers].map((courseNumber) => [courseNumber, includedByCourseNumber.get(courseNumber)!]),
+  );
+  const result = new Map<string, HbuJwTermScoreGpaDelta>();
+
+  for (const row of rows) {
+    const key = termScoreKey(row);
+    const statusKind = classifyTermScoreStatus(row);
+    if (statusKind === 'temporary') {
+      result.set(key, { text: '待确定', kind: 'pending' });
+      continue;
+    }
+    if (statusKind !== 'confirmed') {
+      result.set(key, missingGpaDelta());
+      continue;
+    }
+
+    const courseNumber = readOptionalText(row.id?.courseNumber);
+    const evaluation = evaluationsByCourseNumber.get(courseNumber);
+    if (!evaluation) {
+      result.set(key, missingGpaDelta());
+      continue;
+    }
+    if (evaluation.kind === 'excluded') {
+      result.set(key, { text: '不计', kind: 'not-counted' });
+      continue;
+    }
+
+    const course = remainingCurrentCourses.get(courseNumber);
+    if (!course) {
+      result.set(key, missingGpaDelta());
+      continue;
+    }
+
+    const before = calculateHbuJwGpaFromTotals(totals);
+    const nextTotals = addHbuJwGpaCourseToTotals(totals, course);
+    const after = calculateHbuJwGpaFromTotals(nextTotals);
+    totals = nextTotals;
+    remainingCurrentCourses.delete(courseNumber);
+
+    if (before == null || after == null) {
+      result.set(key, missingGpaDelta());
+      continue;
+    }
+    result.set(key, formatGpaDelta(after - before));
+  }
+
+  return result;
+}
+
+function compareTermScoreRows(left: HbuJwThisTermScoreRow, right: HbuJwThisTermScoreRow): number {
+  const statusDiff = statusSortWeight(classifyTermScoreStatus(left)) - statusSortWeight(classifyTermScoreStatus(right));
+  if (statusDiff !== 0) return statusDiff;
+
+  const timeDiff = sortOperationTime(left.operatetime).localeCompare(sortOperationTime(right.operatetime));
+  if (timeDiff !== 0) return timeDiff;
+
+  const nameDiff = readOptionalText(left.courseName).localeCompare(readOptionalText(right.courseName), 'zh-CN');
+  if (nameDiff !== 0) return nameDiff;
+
+  return readOptionalText(left.id?.courseNumber).localeCompare(readOptionalText(right.id?.courseNumber));
+}
+
+function statusSortWeight(statusKind: HbuJwTermScoreStatusKind): number {
+  if (statusKind === 'confirmed') return 0;
+  if (statusKind === 'temporary') return 1;
+  if (statusKind === 'pending') return 2;
+  return 3;
+}
+
+function sortOperationTime(value: unknown): string {
+  const text = readOptionalText(value);
+  return /^\d{14}$/.test(text) ? text : '99999999999999';
+}
+
+function formatOperationTime(value: unknown): string {
+  const text = readOptionalText(value);
+  if (!text) return '—';
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}`;
+  }
+  return text;
+}
+
+function formatGpaDelta(value: number): HbuJwTermScoreGpaDelta {
+  const rounded = Number(value.toFixed(3));
+  if (rounded > 0) return { text: `+${rounded.toFixed(3)}`, kind: 'positive' };
+  if (rounded < 0) return { text: rounded.toFixed(3), kind: 'negative' };
+  return { text: '0.000', kind: 'zero' };
+}
+
+function missingGpaDelta(): HbuJwTermScoreGpaDelta {
+  return { text: EMPTY_DELTA_TEXT, kind: 'missing' };
+}
+
+function termScoreKey(row: HbuJwThisTermScoreRow): string {
+  return [
+    readOptionalText(row.id?.courseNumber),
+    normalizeSequenceNumber(row.coureSequenceNumber),
+    readOptionalText(row.id?.examtime),
+    readOptionalText(row.courseName),
+  ].join('\u0000');
+}
+
 function formatTermLabel(rows: HbuJwThisTermScoreRow[]): string {
   const planNumber = rows.map((row) => readOptionalText(row.id?.executiveEducationPlanNumber)).find(Boolean);
   const parsed = planNumber ? planNumber.match(/^(\d{4})-(\d{4})-([12])-\d+$/) : null;
@@ -456,10 +628,12 @@ function renderScoreRow(row: HbuJwTermScoreRowView): string {
     <td class="credit-col num">${escapeHtml(row.creditText)}</td>
     <td class="property-col">${escapeHtml(row.propertyName)}</td>
     <td class="status-col"><span class="status ${statusClass}">${escapeHtml(row.statusText)}</span></td>
+    <td class="time-col ${row.timeText === '—' ? 'muted' : 'num'}">${escapeHtml(row.timeText)}</td>
     <td class="score-col ${row.scoreText === '—' ? 'muted' : 'score'}">${escapeHtml(row.scoreText)}</td>
     <td class="point-col ${row.gradePointText === '—' ? 'muted' : 'num'}">${escapeHtml(row.gradePointText)}</td>
     <td class="avg-col ${row.averageText === '—' ? 'muted' : 'num'}">${escapeHtml(row.averageText)}</td>
     <td class="rank-col ${row.rankText === '—' ? 'muted' : 'num'}">${escapeHtml(row.rankText)}</td>
+    <td class="delta-col gpa-delta gpa-${row.gpaDeltaKind}">${escapeHtml(row.gpaDeltaText)}</td>
   </tr>`;
 }
 

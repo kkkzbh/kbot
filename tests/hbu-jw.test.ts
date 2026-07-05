@@ -764,16 +764,99 @@ describe('hbu-jw term scores module', () => {
         inputStatusCode: '01',
         inputStatusExplain: '尚未录入',
       }),
+    ], [
+      scoreRow({
+        id: { courseNumber: '2023S01003' },
+        courseName: '软件工程',
+        credit: 3,
+        gradePointScore: 4.5,
+      }),
     ]);
 
     expect(view.subtitle).toBe('2025-2026 春 · 3 门课程 · 7 学分');
     expect(view.confirmedCount).toBe(1);
     expect(view.temporaryCount).toBe(1);
     expect(view.pendingCount).toBe(1);
-    expect(view.rows.map((row) => [row.courseName, row.statusText, row.scoreText, row.gradePointText])).toEqual([
-      ['软件工程', '确定', '97', '4.5'],
-      ['编译原理', '暂存', '—', '—'],
-      ['网络安全基础实验', '尚未录入', '—', '—'],
+    expect(view.rows.map((row) => [row.courseName, row.statusText, row.timeText, row.scoreText, row.gradePointText, row.gpaDeltaText])).toEqual([
+      ['软件工程', '确定', '—', '97', '4.5', '—'],
+      ['编译原理', '暂存', '—', '—', '—', '待确定'],
+      ['网络安全基础实验', '尚未录入', '—', '—', '—', '—'],
+    ]);
+  });
+
+  it('sorts term scores by status and time while calculating cumulative GPA deltas', () => {
+    const view = buildHbuJwTermScoresView([
+      thisTermScoreRow({
+        id: { courseNumber: 'TEMP001', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '暂存课程',
+        courseScore: '',
+        gradePoint: 4.7,
+        inputStatusCode: '04',
+        inputStatusExplain: '暂存',
+        operatetime: '20260701090000',
+      }),
+      thisTermScoreRow({
+        id: { courseNumber: 'CURR_LOW', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '后确定低绩点',
+        credit: 3,
+        gradePoint: 2,
+        courseScore: '70',
+        operatetime: '20260701110000',
+      }),
+      thisTermScoreRow({
+        id: { courseNumber: 'PENDING001', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '未录入课程',
+        courseScore: '',
+        gradePoint: '',
+        inputStatusCode: '01',
+        inputStatusExplain: '尚未录入',
+        operatetime: '20260630120000',
+      }),
+      thisTermScoreRow({
+        id: { courseNumber: 'ELECTIVE001', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '选修课程',
+        credit: 2,
+        gradePoint: 4.9,
+        courseScore: '99',
+        coursePropertyCode: '003',
+        coursePropertyName: '任选',
+        operatetime: '20260701103000',
+      }),
+      thisTermScoreRow({
+        id: { courseNumber: 'CURR_HIGH', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '先确定高绩点',
+        credit: 3,
+        gradePoint: 5,
+        courseScore: '99',
+        operatetime: '20260701080000',
+      }),
+    ], [
+      scoreRow({ id: { courseNumber: 'BASE001' }, courseName: '历史课程', credit: 3, gradePointScore: 4 }),
+      scoreRow({ id: { courseNumber: 'CURR_HIGH' }, courseName: '先确定高绩点', credit: 3, gradePointScore: 5 }),
+      scoreRow({ id: { courseNumber: 'CURR_LOW' }, courseName: '后确定低绩点', credit: 3, gradePointScore: 2 }),
+      scoreRow({
+        id: { courseNumber: 'ELECTIVE001' },
+        courseName: '选修课程',
+        credit: 2,
+        gradePointScore: 4.9,
+        courseAttributeCode: '003',
+        courseAttributeName: '任选',
+      }),
+    ]);
+
+    expect(view.rows.map((row) => row.courseName)).toEqual([
+      '先确定高绩点',
+      '选修课程',
+      '后确定低绩点',
+      '暂存课程',
+      '未录入课程',
+    ]);
+    expect(view.rows.map((row) => [row.timeText, row.gpaDeltaText, row.gpaDeltaKind])).toEqual([
+      ['07-01 08:00', '+0.500', 'positive'],
+      ['07-01 10:30', '不计', 'not-counted'],
+      ['07-01 11:00', '-0.833', 'negative'],
+      ['07-01 09:00', '待确定', 'pending'],
+      ['06-30 12:00', '—', 'missing'],
     ]);
   });
 
@@ -789,6 +872,8 @@ describe('hbu-jw term scores module', () => {
           courseScore: '',
           inputStatusExplain: '暂存',
         }),
+      ], [
+        scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '软件工程', credit: 3, gradePointScore: 4.5 }),
       ]),
     );
 
@@ -796,6 +881,12 @@ describe('hbu-jw term scores module', () => {
     expect(getNavigatedHtml()).toContain('河北大学本学期成绩');
     expect(getNavigatedHtml()).toContain('软件工程');
     expect(getNavigatedHtml()).toContain('编译原理');
+    expect(getNavigatedHtml()).toContain('时间');
+    expect(getNavigatedHtml()).toContain('GPA增量');
+    expect(getNavigatedHtml()).toContain('gpa-positive');
+    expect(getNavigatedHtml()).toContain('gpa-negative');
+    expect(getNavigatedHtml()).toContain('gpa-missing');
+    expect(getNavigatedHtml()).toContain('gpa-pending');
     expect(getNavigatedHtml()).toContain('<table>');
     expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
   });
@@ -806,8 +897,11 @@ describe('hbu-jw term scores module', () => {
       cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
     }));
     const getThisTermScores = vi.fn(async () => [thisTermScoreRow()]);
+    const getAllPassingScores = vi.fn(async () => [
+      scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '软件工程', credit: 3, gradePointScore: 4.5 }),
+    ]);
     const { puppeteer } = createPuppeteerHarness();
-    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores }, puppeteer);
+    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores, getAllPassingScores }, puppeteer);
 
     const reply = await service.queryTermScores(identity());
 
@@ -815,6 +909,7 @@ describe('hbu-jw term scores module', () => {
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
     expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
   });
 
   it('surfaces binding requirements before querying term scores', async () => {
@@ -823,11 +918,13 @@ describe('hbu-jw term scores module', () => {
       reason: '请先发送“教务绑定”。',
     }));
     const getThisTermScores = vi.fn();
+    const getAllPassingScores = vi.fn();
     const { puppeteer } = createPuppeteerHarness();
-    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores }, puppeteer);
+    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores, getAllPassingScores }, puppeteer);
 
     await expect(service.queryTermScores(identity())).rejects.toThrow('请先发送“教务绑定”。');
     expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getAllPassingScores).not.toHaveBeenCalled();
   });
 });
 
@@ -1420,6 +1517,7 @@ describe('hbu-jw plugin integration', () => {
     const database = createDatabase();
     const middleware = vi.fn();
     const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const getAllPassingScores = vi.spyOn(HbuJwHttpClient.prototype, 'getAllPassingScores');
     const ctx = {
       baseDir: dir,
       database,
@@ -1449,6 +1547,7 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('当前群未开启教务系统功能。');
     expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getAllPassingScores).not.toHaveBeenCalled();
   });
 
   it('blocks exam schedule keywords outside allowed groups before any exam query', async () => {
@@ -1567,6 +1666,7 @@ describe('hbu-jw plugin integration', () => {
     const database = createDatabase();
     const middleware = vi.fn();
     const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const getAllPassingScores = vi.spyOn(HbuJwHttpClient.prototype, 'getAllPassingScores');
     const ctx = {
       baseDir: dir,
       database,
@@ -1596,6 +1696,7 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
     expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getAllPassingScores).not.toHaveBeenCalled();
   });
 
   it('allows exam schedule keywords in private chats and asks for binding when no session exists', async () => {

@@ -41,6 +41,25 @@ export interface HbuJwGpaCourseSummary {
   gradePointScore: number | null;
 }
 
+export interface HbuJwIncludedGpaCourse {
+  courseNumber: string;
+  courseName: string;
+  credit: number;
+  gradePointScore: number;
+}
+
+export type HbuJwGpaExclusionReason = 'non_required' | 'fixed' | 'art' | 'no_grade_point';
+
+export type HbuJwGpaCourseEvaluation =
+  | { kind: 'included'; course: HbuJwIncludedGpaCourse }
+  | { kind: 'excluded'; reason: HbuJwGpaExclusionReason; course: HbuJwGpaCourseSummary };
+
+export interface HbuJwGpaTotals {
+  includedCredits: number;
+  weightedGradePoints: number;
+  includedCourseCount: number;
+}
+
 export interface HbuJwGpaResult {
   gpa: number;
   gpaRounded: string;
@@ -84,67 +103,110 @@ export class HbuJwGpaService {
 }
 
 export function calculateHbuJwGpa(rows: HbuJwScoreRow[]): HbuJwGpaResult {
-  let includedCredits = 0;
-  let weightedGradePoints = 0;
-  let includedCourseCount = 0;
   let excludedNonRequiredCount = 0;
   const excludedFixedCourses: HbuJwGpaCourseSummary[] = [];
   const excludedArtCourses: HbuJwGpaCourseSummary[] = [];
   const skippedNoGradePointCourses: HbuJwGpaCourseSummary[] = [];
+  const includedCourses: HbuJwIncludedGpaCourse[] = [];
   const coveredTerms: string[] = [];
   const coveredTermSet = new Set<string>();
 
   for (const row of rows) {
-    const courseNumber = readCourseNumber(row);
-    const courseName = normalizeCourseName(row.courseName);
     const term = formatTerm(row);
     if (term && !coveredTermSet.has(term)) {
       coveredTermSet.add(term);
       coveredTerms.push(term);
     }
 
-    if (!isRequiredCourse(row)) {
+    const evaluation = evaluateHbuJwGpaCourse(row);
+    if (evaluation.kind === 'included') {
+      includedCourses.push(evaluation.course);
+      continue;
+    }
+
+    if (evaluation.reason === 'non_required') {
       excludedNonRequiredCount += 1;
       continue;
     }
 
-    const summary = summarizeCourse(row, courseNumber, courseName);
-    if (isFixedExcludedCourse(courseName)) {
-      excludedFixedCourses.push(summary);
+    if (evaluation.reason === 'fixed') {
+      excludedFixedCourses.push(evaluation.course);
       continue;
     }
-    if (ART_EXCLUDED_COURSES.has(courseNumber)) {
-      excludedArtCourses.push(summary);
+    if (evaluation.reason === 'art') {
+      excludedArtCourses.push(evaluation.course);
       continue;
     }
-    if (row.gradePointScore == null || row.gradePointScore === '') {
-      skippedNoGradePointCourses.push(summary);
-      continue;
-    }
-
-    const credit = parseFiniteNumber(row.credit, `课程 ${courseName} 的学分无效。`);
-    const gradePoint = parseFiniteNumber(row.gradePointScore, `课程 ${courseName} 的绩点无效。`);
-    includedCredits += credit;
-    weightedGradePoints += credit * gradePoint;
-    includedCourseCount += 1;
+    skippedNoGradePointCourses.push(evaluation.course);
   }
 
-  if (includedCredits <= 0) {
+  const totals = createHbuJwGpaTotals(includedCourses);
+  const gpa = calculateHbuJwGpaFromTotals(totals);
+  if (gpa == null) {
     throw new HbuJwUserError('没有可用于计算 GPA 的成绩。');
   }
 
-  const gpa = weightedGradePoints / includedCredits;
   return {
     gpa,
     gpaRounded: gpa.toFixed(2),
-    includedCredits,
-    includedCourseCount,
+    includedCredits: totals.includedCredits,
+    includedCourseCount: totals.includedCourseCount,
     excludedNonRequiredCount,
     excludedFixedCourses,
     excludedArtCourses,
     skippedNoGradePointCourses,
     coveredTerms,
   };
+}
+
+export function evaluateHbuJwGpaCourse(row: HbuJwScoreRow): HbuJwGpaCourseEvaluation {
+  const courseNumber = readCourseNumber(row);
+  const courseName = normalizeCourseName(row.courseName);
+  const summary = summarizeCourse(row, courseNumber, courseName);
+
+  if (!isRequiredCourse(row)) {
+    return { kind: 'excluded', reason: 'non_required', course: summary };
+  }
+  if (isFixedExcludedCourse(courseName)) {
+    return { kind: 'excluded', reason: 'fixed', course: summary };
+  }
+  if (ART_EXCLUDED_COURSES.has(courseNumber)) {
+    return { kind: 'excluded', reason: 'art', course: summary };
+  }
+  if (row.gradePointScore == null || row.gradePointScore === '') {
+    return { kind: 'excluded', reason: 'no_grade_point', course: summary };
+  }
+
+  return {
+    kind: 'included',
+    course: {
+      courseNumber,
+      courseName,
+      credit: parseFiniteNumber(row.credit, `课程 ${courseName} 的学分无效。`),
+      gradePointScore: parseFiniteNumber(row.gradePointScore, `课程 ${courseName} 的绩点无效。`),
+    },
+  };
+}
+
+export function createHbuJwGpaTotals(courses: HbuJwIncludedGpaCourse[]): HbuJwGpaTotals {
+  return courses.reduce<HbuJwGpaTotals>((totals, course) => addHbuJwGpaCourseToTotals(totals, course), {
+    includedCredits: 0,
+    weightedGradePoints: 0,
+    includedCourseCount: 0,
+  });
+}
+
+export function addHbuJwGpaCourseToTotals(totals: HbuJwGpaTotals, course: HbuJwIncludedGpaCourse): HbuJwGpaTotals {
+  return {
+    includedCredits: totals.includedCredits + course.credit,
+    weightedGradePoints: totals.weightedGradePoints + course.credit * course.gradePointScore,
+    includedCourseCount: totals.includedCourseCount + 1,
+  };
+}
+
+export function calculateHbuJwGpaFromTotals(totals: HbuJwGpaTotals): number | null {
+  if (totals.includedCredits <= 0) return null;
+  return totals.weightedGradePoints / totals.includedCredits;
 }
 
 export function formatGpaReply(qqUserId: string, result: HbuJwGpaResult): Fragment {
