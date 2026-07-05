@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SYSTEMD_TARGET="${DEPLOY_SYSTEMD_TARGET:-${QQBOT_SYSTEMD_TARGET:-qqbot.target}}"
-
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "[prereq] missing command: $1" >&2
@@ -20,20 +18,25 @@ fi
 require_cmd pnpm
 require_cmd systemctl
 require_cmd journalctl
-require_cmd google-chrome
 require_cmd podman
+
+if [[ -n "${PUPPETEER_EXECUTABLE_PATH:-}" && ! -x "${PUPPETEER_EXECUTABLE_PATH}" ]]; then
+  echo "[prereq] PUPPETEER_EXECUTABLE_PATH is not executable: ${PUPPETEER_EXECUTABLE_PATH}" >&2
+  exit 2
+fi
+
+if [[ -z "${PUPPETEER_EXECUTABLE_PATH:-}" ]] \
+  && ! command -v chromium-browser >/dev/null 2>&1 \
+  && [[ ! -x /usr/lib64/chromium-browser/headless_shell ]] \
+  && ! command -v google-chrome >/dev/null 2>&1 \
+  && ! command -v google-chrome-stable >/dev/null 2>&1; then
+  echo "[prereq] missing headless browser command: set PUPPETEER_EXECUTABLE_PATH or install chromium-headless/google-chrome" >&2
+  exit 2
+fi
 
 if ! command -v podman-compose >/dev/null 2>&1 && ! podman compose version >/dev/null 2>&1; then
   echo "[prereq] missing podman compose support" >&2
   exit 2
-fi
-
-if [[ "${SYSTEMD_TARGET}" == "qqbot.target" ]]; then
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  if [[ ! -S "${XDG_RUNTIME_DIR}/bus" ]]; then
-    echo "[prereq] user systemd bus is not available at ${XDG_RUNTIME_DIR}/bus" >&2
-    exit 2
-  fi
 fi
 
 echo "[prereq] host prerequisites are available"

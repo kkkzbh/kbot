@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 function envValue(name, fallback = '') {
@@ -28,7 +27,7 @@ function writeUnit(dir, name, content) {
 const appDir = resolve(requireEnv('QQBOT_DEPLOY_APP_DIR'));
 const sharedDir = resolve(requireEnv('QQBOT_SHARED_DIR'));
 const target = envValue('QQBOT_SYSTEMD_TARGET', 'qqbot.target');
-const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', join(homedir(), '.config/systemd/user')));
+const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', '/etc/systemd/system'));
 const podmanComposeBin = envValue('QQBOT_PODMAN_COMPOSE_BIN');
 
 if (target !== 'qqbot.target') {
@@ -136,6 +135,6 @@ Wants=qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service
 After=qqbot-pmhq.service qqbot-llbot.service
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 `,
 );

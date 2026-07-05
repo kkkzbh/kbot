@@ -4,234 +4,209 @@ English | [简体中文](README.zh-CN.md)
 
 A QQ chat bot built with Koishi, OneBot, LLBot, PMHQ, and ChatLuna.
 
-This README is for users who want to install and run a bot. It keeps the setup
-path small: install the packages, configure one QQ account and one chat model
-provider, start the three runtime processes, then test a message.
+## Production Host
 
-## Runtime Layout
+The production bot runs on the Fedora Server host reachable from the laptop as:
+
+```bash
+ssh km6
+```
+
+The laptop checkout is for editing, building, testing, and pushing code. Do not
+run the production QQ/OneBot stack on the laptop after the server migration.
+
+## Production Runtime Layout
+
+On `km6`, deployment uses this layout:
+
+```text
+/opt/qqbot/current        active release symlink
+/opt/qqbot/releases/      immutable release directories
+/opt/qqbot/shared/        persistent runtime data and secrets
+/opt/qqbot/shared/.env.server
+```
+
+The system-level systemd stack is:
+
+```text
+/etc/systemd/system/qqbot.target
+/etc/systemd/system/qqbot-pmhq.service
+/etc/systemd/system/qqbot-llbot.service
+/etc/systemd/system/qqbot-koishi.service
+```
+
+Runtime processes:
 
 - PMHQ runs the QQ client inside Podman.
 - LLBot runs on the host, connects to PMHQ, and exposes OneBot WebSocket on
   `127.0.0.1:3001`.
 - Koishi runs the bot logic and console on `127.0.0.1:5140`.
 
-The default local runtime uses `.env.local`.
+## Server Requirements
 
-## Requirements
+`km6` must provide:
 
-- Linux host. This project is maintained for Fedora with rootless Podman.
+- Fedora Linux with Tailscale/SSH access from the laptop.
 - Node.js `>= 22`.
 - pnpm `9.15.4`.
+- Yarn through Corepack or npm for the linked ChatLuna checkout.
 - Podman with `podman compose` or `podman-compose`.
-- Git, Python 3, curl, unzip support, and ffmpeg.
-- One QQ account for the bot.
-- One API key for an OpenAI-compatible chat model provider.
+- Git, Python 3, curl, unzip, ffmpeg, tar, systemd system services, and a
+  headless browser executable. Fedora Server should use `chromium-headless`,
+  which provides `/usr/lib64/chromium-browser/headless_shell`.
 
-On Fedora, install the system tools first:
-
-```bash
-sudo dnf install -y git nodejs podman podman-compose python3 curl unzip ffmpeg
-corepack enable
-corepack prepare pnpm@9.15.4 --activate
-```
-
-Check the versions:
+The deploy script checks these prerequisites with:
 
 ```bash
-node --version
-pnpm --version
-podman --version
-podman compose version
+ssh km6 'bash /opt/qqbot/current/scripts/deploy/verify-host-prereqs.sh'
 ```
 
-## Install
+Run the check only after the first release exists at `/opt/qqbot/current`.
 
-`qqbot` depends on a sibling ChatLuna checkout. Keep the two repositories side
-by side:
+## Repositories
+
+`qqbot` depends on a sibling ChatLuna checkout during build. The production
+release bundle contains both repositories.
+
+Current repository names and branches:
+
+```text
+qqbot:   kkkzbh/bot.git, main
+chatluna: kkkzbh/chatluna.git, qqbot-conversation-runtime
+```
+
+For manual source inspection on `km6`, keep checkouts under `/root/code`:
 
 ```bash
-mkdir -p ~/code
-cd ~/code
-
-git clone https://github.com/kkkzbh/kbot.git qqbot
-git clone --branch v1-dev https://github.com/kkkzbh/chatluna.git chatluna
+ssh km6 'mkdir -p /root/code'
+ssh km6 'cd /root/code && git clone https://github.com/kkkzbh/bot.git qqbot'
+ssh km6 'cd /root/code && git clone --branch qqbot-conversation-runtime https://github.com/kkkzbh/chatluna.git chatluna'
 ```
 
-Install ChatLuna dependencies:
+The service runtime still uses `/opt/qqbot/current`, not `/root/code/qqbot`.
 
-```bash
-cd ~/code/chatluna
-corepack yarn install --no-immutable
-```
+## Build And Test Locally
 
-Install and build the bot:
+Before deploying, run the checks from the laptop checkout:
 
 ```bash
 cd ~/code/qqbot
-pnpm install --frozen-lockfile
-cp .env.example .env.local
+pnpm typecheck
+pnpm test -- --reporter=dot
 pnpm build
 ```
 
-If `pnpm build` reports that linked ChatLuna packages need a build, rerun the
-same command from `~/code/qqbot`. The build script compiles the linked ChatLuna
-packages and this bot's runtime plugins.
+If the change only touches console frontend code, `pnpm console:build` is enough
+for that frontend-only check. Runtime backend, shared runtime types, console
+IPC, or managed env key changes require `pnpm build`.
 
-## Configure
+## Server Runtime Environment
 
-Edit `.env.local`.
+Server secrets live in:
 
-Set your QQ identity:
+```text
+/opt/qqbot/shared/.env.server
+```
+
+Use `.env.server.example` as the template. The production deploy path uses
+`.env.server`; `.env.local` is reserved for developer-local tests.
+
+Important server values:
 
 ```dotenv
-BOT_OWNER_QQ=123456789
-ONEBOT_SELF_ID=987654321
 ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001
+KOISHI_HOST=0.0.0.0
+KOISHI_PORT=5140
+SQLITE_PATH=./data/koishi.db
+PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell
+LLBOT_RUNTIME_DIR=/opt/qqbot/shared/llbot-runtime
+LLONEBOT_DATA_DIR=/opt/qqbot/shared/llonebot
 ```
 
-- `BOT_OWNER_QQ` is your own QQ number.
-- `ONEBOT_SELF_ID` is the QQ account that will run the bot.
-- Keep `ONEBOT_WS_ENDPOINT` unchanged unless you also change
-  `LLONEBOT_WS_PORT`.
+Server voice input is intentionally disabled by default. If voice output is
+enabled, `QQ_VOICE_TTS_BASE_URL` must point to a Tailnet-reachable TTS service,
+not `127.0.0.1` on `km6`.
 
-Set one chat model provider. The smallest path is the default SiliconFlow tab:
+## Stop The Old Laptop Runtime
 
-```dotenv
-CHATLUNA_ACTIVE_TAB=siliconflow
-CHATLUNA_PLATFORM=siliconflow
-CHATLUNA_BASE_URL=https://api.siliconflow.cn/v1
-CHATLUNA_API_KEY=sk-your-siliconflow-key
-CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
-
-CHATLUNA_SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
-CHATLUNA_SILICONFLOW_API_KEY=sk-your-siliconflow-key
-CHATLUNA_SILICONFLOW_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
-```
-
-For a first run, disable optional services that need extra API keys or local
-voice models:
-
-```dotenv
-MEMORY_ENABLED=false
-MEMORY_READ_ENABLED=false
-MEMORY_WRITE_ENABLED=false
-CHATLUNA_SEARCH_SERVICE_ENABLED=false
-QQ_VOICE_INPUT_ENABLED=false
-QQ_VOICE_OUTPUT_ENABLED=false
-```
-
-Group natural trigger is disabled by default. With the default configuration,
-the bot replies in private chats and in group chats when it is mentioned or
-called by one of the names configured in `CHAT_NATURAL_TRIGGER_ALIASES`.
-
-To enable passive group replies later, set both fields:
-
-```dotenv
-CHAT_NATURAL_TRIGGER_ENABLED=true
-CHAT_NATURAL_TRIGGER_GROUPS=123456789,987654321
-```
-
-## Start
-
-Use three terminals for the first run.
-
-Terminal 1: start PMHQ and watch QQ login logs.
+Before starting or restarting the production stack on `km6`, stop and disable
+laptop-side user services on `knix`:
 
 ```bash
-cd ~/code/qqbot
-QQBOT_ENV_FILE=.env.local bash ./scripts/podman-pmhq-service.sh up
-podman logs -f pmhq
+systemctl --user disable --now qqbot.target
+systemctl --user disable --now qqbot-pmhq.service
+systemctl --user disable --now qqbot-llbot.service
+systemctl --user disable --now qqbot-koishi.service
+systemctl --user disable --now qqbot-hbu-jw-tunnel.service
 ```
 
-Terminal 2: start LLBot.
+Verify that no laptop-side QQBot process remains:
 
 ```bash
-cd ~/code/qqbot
-QQBOT_ENV_FILE=.env.local bash ./scripts/run-llbot-host.sh
+systemctl --user list-units --type=service --all | grep -E 'qqbot|koishi|pmhq|llbot' || true
+pgrep -af 'koishi|pmhq|llbot|llonebot' || true
 ```
 
-Open the LLBot WebUI after LLBot starts:
+## Operate Production On km6
 
-```text
-http://127.0.0.1:3080
-```
-
-Log in to QQ from the PMHQ or LLBot login prompt. LLBot exposes the OneBot
-WebSocket server on port `3001` after QQ login completes.
-
-Terminal 3: start Koishi.
+Start or restart the full production stack:
 
 ```bash
-cd ~/code/qqbot
-pnpm start:local
+ssh km6 'systemctl restart qqbot.target'
 ```
 
-Open the Koishi console:
-
-```text
-http://127.0.0.1:5140/console
-```
-
-## Test The Bot
-
-After all three processes are running:
-
-- Send a private message to the bot QQ account.
-- Or invite the bot to a group and mention it.
-- Or send a group message that starts with one of the configured names.
-
-For a local text-reply smoke test:
+Check status:
 
 ```bash
-cd ~/code/qqbot
-pnpm smoke:chat
+ssh km6 'systemctl status qqbot.target qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service --no-pager'
 ```
 
-## Stop
-
-Stop Koishi and LLBot with `Ctrl-C` in their terminals.
-
-Stop PMHQ:
+Follow logs:
 
 ```bash
-cd ~/code/qqbot
-QQBOT_ENV_FILE=.env.local bash ./scripts/podman-pmhq-service.sh stop
+ssh km6 'journalctl -u qqbot-koishi.service -f'
+```
+
+Stop the server stack:
+
+```bash
+ssh km6 'systemctl stop qqbot.target'
+```
+
+Check runtime health:
+
+```bash
+ssh km6 'bash /opt/qqbot/current/scripts/verify-qqbot-host-runtime.sh'
 ```
 
 ## Common Checks
 
-PMHQ is not running:
+PMHQ is not running on `km6`:
 
 ```bash
-podman ps --filter name=pmhq
-QQBOT_ENV_FILE=.env.local bash ./scripts/podman-pmhq-service.sh up
+ssh km6 'podman ps --filter name=pmhq'
+ssh km6 'journalctl -u qqbot-pmhq.service --no-pager -n 200'
 ```
 
-LLBot WebUI does not open:
+LLBot WebUI from the server:
 
 ```bash
-podman logs --tail 200 pmhq
+ssh km6 'curl -I http://127.0.0.1:3080/'
 ```
 
-Koishi says linked ChatLuna packages need a build:
+Koishi console from the server:
 
 ```bash
-cd ~/code/qqbot
-pnpm build
+ssh km6 'curl -I http://127.0.0.1:5140/console'
 ```
 
 OneBot WebSocket cannot connect:
 
 ```bash
-curl http://127.0.0.1:3080/
+ssh km6 'curl -I http://127.0.0.1:3080/'
+ssh km6 'journalctl -u qqbot-llbot.service --no-pager -n 200'
 ```
 
-Make sure LLBot is running, QQ login has completed, and `ONEBOT_WS_ENDPOINT` is
-`ws://127.0.0.1:3001`.
-
-The bot does not reply in a group:
-
-- Mention the bot or use one of the configured names.
-- If you enabled passive group replies, make sure the group number is listed in
-  `CHAT_NATURAL_TRIGGER_GROUPS`.
-- Check the Koishi terminal for model provider errors.
+Make sure LLBot is running, QQ login has completed, and
+`ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001` is set in
+`/opt/qqbot/shared/.env.server`.

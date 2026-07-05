@@ -50,9 +50,8 @@ NODE
 }
 
 restart_server_target() {
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  systemctl --user daemon-reload
-  systemctl --user restart qqbot.target
+  systemctl daemon-reload
+  systemctl restart qqbot.target
 }
 
 prepare_manual_login() {
@@ -65,13 +64,12 @@ EOF
   set_auto_login_value ""
 
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user stop qqbot.target >/dev/null 2>&1 || true
+    systemctl stop qqbot.target >/dev/null 2>&1 || true
   fi
 
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  systemctl --user daemon-reload
-  systemctl --user start qqbot-pmhq.service
-  systemctl --user start qqbot-llbot.service
+  systemctl daemon-reload
+  systemctl start qqbot-pmhq.service
+  systemctl start qqbot-llbot.service
   "${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh"
 
   cat <<EOF

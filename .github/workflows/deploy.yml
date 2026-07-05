@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       chatluna_ref:
-        description: 'ChatLuna branch/ref (default: v1-dev)'
+        description: 'ChatLuna branch/ref (default: qqbot-conversation-runtime)'
         required: false
         type: string
 
@@ -153,9 +153,11 @@ jobs:
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.QQBOT_SSH_PRIVATE_KEY }}
           DEPLOY_DOTENV: ${{ secrets.QQBOT_DOTENV }}
           SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           set -euo pipefail
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_PRIVATE_KEY DEPLOY_DOTENV SSH_KNOWN_HOSTS; do
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_PRIVATE_KEY DEPLOY_DOTENV SSH_KNOWN_HOSTS TS_OAUTH_CLIENT_ID TS_OAUTH_SECRET; do
             if [[ -z "${!name}" ]]; then
               echo "Missing required secret: ${name}" >&2
               exit 1
@@ -167,6 +169,14 @@ jobs:
         with:
           name: qqbot-release
           path: artifacts
+
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ secrets.QQBOT_SERVER_HOST }}
 
       - name: Setup SSH key
         uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0

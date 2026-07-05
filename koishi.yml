@@ -130,7 +130,8 @@ plugins:
         'mimo-v2-pro', modelType: 'LLM 大语言模型', modelCapabilities: ['tool_call'],
         contextSize: 128000 }, { model: 'mimo-v2-omni', modelType: 'LLM 大语言模型',
         modelCapabilities: ['tool_call'], contextSize: 128000 } ] : [] }}
-    puppeteer:0vx5c7: {}
+    puppeteer:0vx5c7:
+      executablePath: ${{ env.PUPPETEER_EXECUTABLE_PATH || '' }}
     chatluna-search-service:search:
       enabled: ${{ env.CHATLUNA_SEARCH_SERVICE_ENABLED !== 'false' }}
       searchEngine:

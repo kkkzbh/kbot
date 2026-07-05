@@ -9,7 +9,7 @@ Usage:
 Environment:
   DEPLOY_APP_DIR           Current symlink path (default: /opt/qqbot/current)
   QQBOT_SHARED_DIR         Persistent shared state dir (default: /opt/qqbot/shared)
-  DEPLOY_SYSTEMD_TARGET    User systemd target to restart (default: qqbot.target)
+  DEPLOY_SYSTEMD_TARGET    Systemd target to restart (default: qqbot.target)
   QQBOT_DEPLOY_DRY_RUN     Set to 1 to extract, validate, render units, and skip service switch/restart
 EOF
 }
@@ -119,7 +119,7 @@ CHATLUNA_ROOT_DIR="${CHATLUNA_DIR}" bash "${APP_DIR}/scripts/ensure-chatluna-bui
   pnpm build
 )
 
-SYSTEMD_RENDER_DIR="${HOME}/.config/systemd/user"
+SYSTEMD_RENDER_DIR="/etc/systemd/system"
 if [[ "${DRY_RUN}" == "1" ]]; then
   SYSTEMD_RENDER_DIR="${RELEASE_ROOT}/.systemd-dry-run"
 fi
@@ -146,7 +146,7 @@ rollback_current() {
   if [[ "${code}" -ne 0 && -n "${PREVIOUS_CURRENT}" && -d "${PREVIOUS_CURRENT}" ]]; then
     echo "[deploy] rolling current symlink back to ${PREVIOUS_CURRENT}" >&2
     ln -sfn "${PREVIOUS_CURRENT}" "${CURRENT_LINK}" || true
-    systemctl --user restart "${SYSTEMD_TARGET}" >/dev/null 2>&1 || true
+    systemctl restart "${SYSTEMD_TARGET}" >/dev/null 2>&1 || true
   fi
   exit "${code}"
 }
@@ -154,11 +154,10 @@ trap rollback_current EXIT
 
 ln -sfn "${APP_DIR}" "${CURRENT_LINK}"
 
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-systemctl --user daemon-reload
-systemctl --user enable "${SYSTEMD_TARGET}" >/dev/null 2>&1 || true
-systemctl --user restart "${SYSTEMD_TARGET}"
-systemctl --user is-active --quiet "${SYSTEMD_TARGET}"
+systemctl daemon-reload
+systemctl enable "${SYSTEMD_TARGET}" >/dev/null 2>&1 || true
+systemctl restart "${SYSTEMD_TARGET}"
+systemctl is-active --quiet "${SYSTEMD_TARGET}"
 
 if [[ "${SYSTEMD_TARGET}" == "qqbot.target" ]]; then
   bash "${CURRENT_LINK}/scripts/verify-qqbot-host-runtime.sh"

@@ -93,12 +93,12 @@ container_can_reach_login_network() {
 
 llbot_logs_contain() {
   local pattern="$1"
-  journalctl --user -u "${LLBOT_UNIT}" --no-pager -n 500 2>/dev/null | grep -F "${pattern}" >/dev/null
+  journalctl -u "${LLBOT_UNIT}" --no-pager -n 500 2>/dev/null | grep -F "${pattern}" >/dev/null
 }
 
 systemd_unit_active() {
   local unit="$1"
-  systemctl --user is-active --quiet "${unit}"
+  systemctl is-active --quiet "${unit}"
 }
 
 wait_until() {
@@ -132,9 +132,9 @@ print_diagnostics() {
   echo "== pmhq logs ==" >&2
   podman logs "${PMHQ_CONTAINER}" 2>&1 || true
   echo "== ${LLBOT_UNIT} logs ==" >&2
-  journalctl --user -u "${LLBOT_UNIT}" --no-pager -n 200 2>/dev/null || true
+  journalctl -u "${LLBOT_UNIT}" --no-pager -n 200 2>/dev/null || true
   echo "== ${KOISHI_UNIT} logs ==" >&2
-  journalctl --user -u "${KOISHI_UNIT}" --no-pager -n 200 2>/dev/null || true
+  journalctl -u "${KOISHI_UNIT}" --no-pager -n 200 2>/dev/null || true
 }
 
 trap 'code=$?; if [ "$code" -ne 0 ]; then print_diagnostics; fi; exit "$code"' EXIT
