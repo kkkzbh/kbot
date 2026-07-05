@@ -4,7 +4,8 @@ services:
   pmhq:
     image: ${PMHQ_IMAGE:-docker.io/linyuchen/pmhq}:${PMHQ_TAG:-latest}
     container_name: pmhq
-    network_mode: "pasta:-t,${PMHQ_BIND_HOST:-127.0.0.1}/${PMHQ_PORT:-13000}:13000"
+    ports:
+      - "${PMHQ_BIND_HOST:-127.0.0.1}:${PMHQ_PORT:-13000}:13000"
     environment:
       ENABLE_HEADLESS: "${ENABLE_HEADLESS:-false}"
       AUTO_LOGIN_QQ: "${AUTO_LOGIN_QQ:-}"

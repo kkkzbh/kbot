@@ -42,9 +42,8 @@ describe('qq voice config wiring', () => {
   it('keeps compose focused on pmhq and voice-asr only', () => {
     const content = readFileSync(resolve(process.cwd(), 'compose.yaml'), 'utf8');
 
-    expect(content).toContain(
-      'network_mode: "pasta:-t,${PMHQ_BIND_HOST:-127.0.0.1}/${PMHQ_PORT:-13000}:13000"',
-    );
+    expect(content).toContain('"${PMHQ_BIND_HOST:-127.0.0.1}:${PMHQ_PORT:-13000}:13000"');
+    expect(content).not.toContain('network_mode: "pasta:');
     expect(content).toContain('voice-asr:');
     expect(content).toContain('"127.0.0.1:${VOICE_ASR_PORT:-5161}:8080"');
     expect(content).toContain('ENABLE_HEADLESS: "${ENABLE_HEADLESS:-false}"');
@@ -53,7 +52,6 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('ENABLE_HEADLESS: ${ENABLE_HEADLESS:-false}');
     expect(content).not.toContain('VOICE_ASR_PORT: 8080');
     expect(content).toContain('./data/voice/asr:/data/voice/asr:Z');
-    expect(content).not.toContain('"${PMHQ_BIND_HOST:-127.0.0.1}:${PMHQ_PORT:-13000}:13000"');
     expect(content).not.toContain('\n  llbot:\n');
     expect(content).not.toContain('qqbot-stack_app_network');
     expect(content).not.toContain('pmhq_host:');

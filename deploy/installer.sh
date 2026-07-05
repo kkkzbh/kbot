@@ -109,6 +109,7 @@ write_runtime_env() {
   : > "${ENV_RUNTIME}"
   printf '%s\n' "SQLITE_PATH=${DATA_DIR}/koishi.db" >> "${ENV_RUNTIME}"
   printf '%s\n' "PMHQ_QQ_CONFIG_DIR=${DATA_DIR}/pmhq/QQ" >> "${ENV_RUNTIME}"
+  printf '%s\n' "QQBOT_QQ_CONFIG_MOUNT_SOURCE=${DATA_DIR}/pmhq/QQ" >> "${ENV_RUNTIME}"
   printf '%s\n' "PMHQ_BIND_HOST=127.0.0.1" >> "${ENV_RUNTIME}"
   printf '%s\n' "PMHQ_PORT=13000" >> "${ENV_RUNTIME}"
   printf '%s\n' "LLBOT_RUNTIME_DIR=${DATA_DIR}/llbot-runtime" >> "${ENV_RUNTIME}"
