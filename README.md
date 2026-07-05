@@ -4,213 +4,102 @@ English | [简体中文](README.zh-CN.md)
 
 A QQ chat bot built with Koishi, OneBot, LLBot, PMHQ, and ChatLuna.
 
-## Production Host
+## Runtime Boundary
 
-The production bot runs on the Fedora Server host reachable from the laptop as:
+The repository is a source, build, and runtime workspace.
 
-```bash
-ssh km6
-```
-
-The laptop checkout is for editing, building, testing, and pushing code. Do not
-run the production QQ/OneBot stack on the laptop after the server migration.
-
-## Production Runtime Layout
-
-On `km6`, deployment uses this layout:
+Keep generated outputs and local runtime state out of Git:
 
 ```text
-/opt/qqbot/current        active release symlink
-/opt/qqbot/releases/      immutable release directories
-/opt/qqbot/shared/        persistent runtime data and secrets
-/opt/qqbot/shared/.env.server
+build/
+dist/
+.tmp/
+.runtime/
+data/koishi.db
+data/logs/
+node_modules/
 ```
 
-The system-level systemd stack is:
+If a file is generated every time by build, test, dev, or runtime commands and is safe to regenerate, ignore it instead of repeatedly cleaning it by hand.
+
+## Local Development
+
+The checkout expects a sibling ChatLuna checkout:
 
 ```text
-/etc/systemd/system/qqbot.target
-/etc/systemd/system/qqbot-pmhq.service
-/etc/systemd/system/qqbot-llbot.service
-/etc/systemd/system/qqbot-koishi.service
+~/code/qqbot
+~/code/chatluna
 ```
 
-Runtime processes:
-
-- PMHQ runs the QQ client inside Podman.
-- LLBot runs on the host, connects to PMHQ, and exposes OneBot WebSocket on
-  `127.0.0.1:3001`.
-- Koishi runs the bot logic and console on `127.0.0.1:5140`.
-
-## Server Requirements
-
-`km6` must provide:
-
-- Fedora Linux with Tailscale/SSH access from the laptop.
-- Node.js `>= 22`.
-- pnpm `9.15.4`.
-- Yarn through Corepack or npm for the linked ChatLuna checkout.
-- Podman and `podman-compose`.
-- Git, Python 3, curl, unzip, ffmpeg, tar, systemd system services, and a
-  headless browser executable. Fedora Server should use `chromium-headless`,
-  which provides `/usr/lib64/chromium-browser/headless_shell`.
-
-The deploy script checks these prerequisites with:
+Install dependencies and verify the workspace from `~/code/qqbot`:
 
 ```bash
-ssh km6 'bash /opt/qqbot/current/scripts/deploy/verify-host-prereqs.sh full'
-```
-
-Run the check only after the first release exists at `/opt/qqbot/current`.
-
-## Repositories
-
-`qqbot` depends on a sibling ChatLuna checkout during build. The production
-release bundle contains both repositories.
-
-Current repository names and branches:
-
-```text
-qqbot:   kkkzbh/bot.git, main
-chatluna: kkkzbh/chatluna.git, qqbot-conversation-runtime
-```
-
-For manual source inspection on `km6`, keep checkouts under `/root/code`:
-
-```bash
-ssh km6 'mkdir -p /root/code'
-ssh km6 'cd /root/code && git clone https://github.com/kkkzbh/bot.git qqbot'
-ssh km6 'cd /root/code && git clone --branch qqbot-conversation-runtime https://github.com/kkkzbh/chatluna.git chatluna'
-```
-
-The service runtime still uses `/opt/qqbot/current`, not `/root/code/qqbot`.
-
-## Build And Test Locally
-
-Before deploying, run the checks from the laptop checkout:
-
-```bash
-cd ~/code/qqbot
+pnpm install
 pnpm typecheck
-pnpm test -- --reporter=dot
+pnpm test
 pnpm build
 ```
 
-If the change only touches console frontend code, `pnpm console:build` is enough
-for that frontend-only check. Runtime backend, shared runtime types, console
-IPC, or managed env key changes require `pnpm build`.
+`pnpm build` writes runtime artifacts to `dist/`. `dist/` is ignored and should not be committed.
 
-Test maintenance follows [`docs/testing-policy.md`](docs/testing-policy.md). CI tests
-are release gates; keep them focused on stable behavior and deployment/runtime
-contracts instead of incidental implementation text.
+If a change only touches the console frontend, `pnpm console:build` is enough for that frontend-only check. Runtime backend, shared runtime types, console IPC, or managed env key changes used by `koishi.yml` require `pnpm build`.
 
-## Server Runtime Environment
+## Runtime Commands
 
-Server secrets live in:
+Developer-local runtime:
 
-```text
-/opt/qqbot/shared/.env.server
+```bash
+pnpm start:local
 ```
 
-Use `.env.server.example` as the template. The production deploy path uses
-`.env.server`; `.env.local` is reserved for developer-local tests.
+Server-style runtime from this checkout:
 
-Important server values:
+```bash
+pnpm start:server
+```
+
+Startup performs a preflight check for linked ChatLuna packages and built runtime artifacts. It does not run a build implicitly.
+
+## Environment Files
+
+Use the templates as ownership boundaries:
+
+```text
+.env.example          developer-local template; copy to .env.local
+.env.server.example   server runtime template; copy to the server .env.server
+```
+
+Keep secrets in local env files. Do not commit `.env.local`, `.env.server`, `.runtime/`, or runtime databases.
+
+Important runtime values:
 
 ```dotenv
 ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001
 KOISHI_HOST=0.0.0.0
 KOISHI_PORT=5140
 SQLITE_PATH=./data/koishi.db
-PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell
-LLBOT_RUNTIME_DIR=/opt/qqbot/shared/llbot-runtime
-LLONEBOT_DATA_DIR=/opt/qqbot/shared/llonebot
+LLBOT_RUNTIME_DIR=./.runtime/llbot
+LLONEBOT_DATA_DIR=./.runtime/llonebot
 ```
 
-Server voice input is intentionally disabled by default. If voice output is
-enabled, `QQ_VOICE_TTS_BASE_URL` must point to a Tailnet-reachable TTS service,
-not `127.0.0.1` on `km6`.
+Server voice input is intentionally disabled by default. If voice output is enabled on the server, `QQ_VOICE_TTS_BASE_URL` must point to a Tailnet-reachable TTS service, not `127.0.0.1` on the server.
 
-## Stop The Old Laptop Runtime
+## Runtime Helpers
 
-Before starting or restarting the production stack on `km6`, stop and disable
-laptop-side user services on `knix`:
+Current runtime helpers are direct workspace scripts:
 
-```bash
-systemctl --user disable --now qqbot.target
-systemctl --user disable --now qqbot-pmhq.service
-systemctl --user disable --now qqbot-llbot.service
-systemctl --user disable --now qqbot-koishi.service
-systemctl --user disable --now qqbot-hbu-jw-tunnel.service
+```text
+scripts/run-koishi-with-env.sh
+scripts/podman-pmhq-service.sh
+scripts/run-llbot-host.sh
+scripts/verify-qqbot-host-runtime.sh
+scripts/server-recover-qq-login.sh
+scripts/run-voice-tts-local.sh
+scripts/publish-voice-tts-tailnet.sh
 ```
 
-Verify that no laptop-side QQBot process remains:
+These scripts are direct runtime helpers for this workspace.
 
-```bash
-systemctl --user list-units --type=service --all | grep -E 'qqbot|koishi|pmhq|llbot' || true
-pgrep -af 'koishi|pmhq|llbot|llonebot' || true
-```
+## Testing Policy
 
-## Operate Production On km6
-
-Start or restart the full production stack:
-
-```bash
-ssh km6 'systemctl restart qqbot.target'
-```
-
-Check status:
-
-```bash
-ssh km6 'systemctl status qqbot.target qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service --no-pager'
-```
-
-Follow logs:
-
-```bash
-ssh km6 'journalctl -u qqbot-koishi.service -f'
-```
-
-Stop the server stack:
-
-```bash
-ssh km6 'systemctl stop qqbot.target'
-```
-
-Check runtime health:
-
-```bash
-ssh km6 'bash /opt/qqbot/current/scripts/verify-qqbot-host-runtime.sh full'
-```
-
-## Common Checks
-
-PMHQ is not running on `km6`:
-
-```bash
-ssh km6 'podman ps --filter name=pmhq'
-ssh km6 'journalctl -u qqbot-pmhq.service --no-pager -n 200'
-```
-
-LLBot WebUI from the server:
-
-```bash
-ssh km6 'curl -I http://127.0.0.1:3080/'
-```
-
-Koishi console from the server:
-
-```bash
-ssh km6 'curl -I http://127.0.0.1:5140/console'
-```
-
-OneBot WebSocket cannot connect:
-
-```bash
-ssh km6 'curl -I http://127.0.0.1:3080/'
-ssh km6 'journalctl -u qqbot-llbot.service --no-pager -n 200'
-```
-
-Make sure LLBot is running, QQ login has completed, and
-`ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001` is set in
-`/opt/qqbot/shared/.env.server`.
+Test maintenance follows [`docs/testing-policy.md`](docs/testing-policy.md). Keep tests focused on stable user behavior, runtime contracts, artifact shape, and ownership boundaries.

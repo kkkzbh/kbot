@@ -66,15 +66,6 @@ describe('runtime startup contract', () => {
     expect(botConsolePlugin).not.toContain('node_modules/.cache/qqbot-bot-console');
   });
 
-  it('renders server systemd units through the same no-build startup entrypoint', () => {
-    const renderer = readRepoFile('scripts/deploy/render-systemd-units.mjs');
-    const localExample = readRepoFile('config/systemd/qqbot-koishi.service.example');
-
-    expect(renderer).toContain("exec pnpm start:server");
-    expect(renderer).not.toContain('exec pnpm exec koishi start koishi.yml');
-    expect(localExample).toContain('ExecStart=/home/kkkzbh/.local/bin/pnpm start:local');
-  });
-
   it('verifies local dist plugin artifacts and bot-console client assets', () => {
     const dir = createTempDir();
     const configPath = join(dir, 'koishi.yml');

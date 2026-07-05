@@ -43,12 +43,4 @@ describe('chatluna build script dependency closure', () => {
     expect(buildScript).toContain('chatluna_yarn_fast_build "$CHATLUNA_ROOT_DIR" "$target"');
     expect(buildScript).not.toContain('yarn@1.22.22');
   });
-
-  it('requires deploy bundles to carry the generated Yarn 4 ChatLuna lockfile', () => {
-    const content = readFileSync(resolve(process.cwd(), 'scripts/ci/create-deploy-bundle.sh'), 'utf8');
-
-    expect(content).toContain('missing ChatLuna yarn.lock');
-    expect(content).toContain("^__metadata:");
-    expect(content).toContain('ChatLuna yarn.lock is not a Yarn 4 lockfile');
-  });
 });

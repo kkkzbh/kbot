@@ -112,29 +112,6 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('pmhq:13000');
   });
 
-  it('ships local systemd templates for pmhq, llbot and koishi', () => {
-    const pmhqService = readFileSync(
-      resolve(process.cwd(), 'config/systemd/qqbot-pmhq.service.example'),
-      'utf8',
-    );
-    const llbotService = readFileSync(
-      resolve(process.cwd(), 'config/systemd/qqbot-llbot.service.example'),
-      'utf8',
-    );
-    const koishiService = readFileSync(
-      resolve(process.cwd(), 'config/systemd/qqbot-koishi.service.example'),
-      'utf8',
-    );
-
-    expect(pmhqService).toContain('ExecStart=/home/kkkzbh/code/qqbot/scripts/podman-pmhq-service.sh up');
-    expect(pmhqService).toContain('ExecStop=/home/kkkzbh/code/qqbot/scripts/podman-pmhq-service.sh stop');
-    expect(llbotService).toContain('ExecStart=/home/kkkzbh/code/qqbot/scripts/run-llbot-host.sh');
-    expect(llbotService).toContain('After=network-online.target qqbot-pmhq.service');
-    expect(koishiService).toContain('After=network-online.target qqbot-llbot.service');
-    expect(koishiService).toContain('Wants=network-online.target qqbot-llbot.service');
-    expect(koishiService).toContain('PartOf=qqbot.target qqbot-llbot.service');
-  });
-
   it('bridges llbot home to the pmhq qq mount and removes legacy cni artifacts before pmhq startup', () => {
     const llbotScript = readFileSync(resolve(process.cwd(), 'scripts/run-llbot-host.sh'), 'utf8');
     const pmhqScript = readFileSync(resolve(process.cwd(), 'scripts/podman-pmhq-service.sh'), 'utf8');
@@ -150,12 +127,8 @@ describe('qq voice config wiring', () => {
     expect(pmhqScript).toContain('remove_unusable_pmhq_container');
   });
 
-  it('ships a laptop-local TTS env template and user service example', () => {
+  it('ships a laptop-local TTS env template', () => {
     const envTemplate = readFileSync(resolve(process.cwd(), 'config/voice-tts.local.example'), 'utf8');
-    const serviceTemplate = readFileSync(
-      resolve(process.cwd(), 'config/systemd/qqbot-voice-tts.service.example'),
-      'utf8',
-    );
 
     expect(envTemplate).toContain('VOICE_TTS_HOST=127.0.0.1');
     expect(envTemplate).toContain('VOICE_TTS_DEVICE=cuda');
@@ -169,26 +142,17 @@ describe('qq voice config wiring', () => {
     expect(envTemplate).toContain('VOICE_TTS_MAX_TEXT_CHARS=200');
     expect(envTemplate).toContain('VOICE_TTS_PROMPT_LANG=all_ja');
     expect(envTemplate).toContain('VOICE_TTS_TEXT_LANG=all_zh');
-    expect(serviceTemplate).toContain(
-      'Environment=QQBOT_VOICE_TTS_ENV_FILE=/home/kkkzbh/code/qqbot/config/voice-tts.local.env',
-    );
-    expect(serviceTemplate).toContain('ExecStart=/home/kkkzbh/code/qqbot/scripts/run-voice-tts-local.sh');
-    expect(serviceTemplate).not.toContain('tailscaled.service');
   });
 
-  it('ships a dedicated tailnet publisher template instead of rebinding the model process', () => {
+  it('ships a dedicated tailnet publisher config instead of rebinding the model process', () => {
     const envTemplate = readFileSync(resolve(process.cwd(), 'config/voice-tts.tailnet.example'), 'utf8');
-    const serviceTemplate = readFileSync(
-      resolve(process.cwd(), 'config/systemd/qqbot-voice-tts-tailnet.service.example'),
-      'utf8',
-    );
+    const publisher = readFileSync(resolve(process.cwd(), 'scripts/publish-voice-tts-tailnet.sh'), 'utf8');
 
     expect(envTemplate).toContain('VOICE_TTS_TAILNET_PORT=5162');
     expect(envTemplate).toContain('VOICE_TTS_LOCAL_UPSTREAM_HOST=127.0.0.1');
-    expect(serviceTemplate).toContain('qqbot-voice-tts.service');
-    expect(serviceTemplate).toContain('QQBOT_VOICE_TTS_TAILNET_ENV_FILE=/home/kkkzbh/code/qqbot/config/voice-tts.tailnet.env');
-    expect(serviceTemplate).toContain('ExecStart=/home/kkkzbh/code/qqbot/scripts/publish-voice-tts-tailnet.sh apply');
-    expect(serviceTemplate).toContain('ExecStop=/home/kkkzbh/code/qqbot/scripts/publish-voice-tts-tailnet.sh clear');
+    expect(publisher).toContain('publish-voice-tts-tailnet.sh apply');
+    expect(publisher).toContain('publish-voice-tts-tailnet.sh clear');
+    expect(publisher).toContain('tailscale serve');
   });
 
   it('keeps the sakiko preset free of runtime transport protocol text and deprecated tag contracts', () => {
@@ -235,30 +199,13 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('set_auto_login_value');
   });
 
-  it('ships a runtime layer migration script that seeds env, presets and llbot dirs into the shared dir', () => {
-    const content = readFileSync(resolve(process.cwd(), 'scripts/prepare-server-runtime-layer.sh'), 'utf8');
-
-    expect(content).toContain('RUNTIME_ENV_FILE="${SHARED_DIR}/.env.runtime"');
-    expect(content).toContain('RUNTIME_PRESET_DIR="${SHARED_DIR}/presets"');
-    expect(content).toContain('RUNTIME_LLBOT_DIR="${SHARED_DIR}/llonebot"');
-    expect(content).toContain('RUNTIME_LLBOT_RUNTIME_DIR="${SHARED_DIR}/llbot-runtime"');
-    expect(content).toContain('LEGACY_LLBOT_DIR="${APP_DIR}/data/llonebot"');
-    expect(content).toContain('SEED_MARKER_FILE="${SHARED_DIR}/.runtime-layer.seeded"');
-    expect(content).toContain('cp -a "${LEGACY_LLBOT_DIR}/." "${RUNTIME_LLBOT_DIR}/"');
-    expect(content).toContain("keyMatches = [...sourceText.matchAll(/key:\\s*'([^']+)'/g)]");
-    expect(content).toContain("find \"${BUNDLED_PRESET_DIR}\" -maxdepth 1 -type f");
-    expect(content).toContain('mkdir -p "${SHARED_DIR}" "${RUNTIME_PRESET_DIR}" "${RUNTIME_LLBOT_DIR}" "${RUNTIME_LLBOT_RUNTIME_DIR}"');
-    expect(content).toContain('upsert_env_value "LLONEBOT_DATA_DIR" "${RUNTIME_LLBOT_DIR}"');
-    expect(content).toContain('upsert_env_value "LLBOT_RUNTIME_DIR" "${RUNTIME_LLBOT_RUNTIME_DIR}"');
-  });
-
   it('ships a server voice env validator that rejects empty or loopback TTS settings', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/validate-server-voice-env.mjs'), 'utf8');
 
     expect(content).toContain("QQ_VOICE_OUTPUT_ENABLED=true but QQ_VOICE_TTS_BASE_URL is empty.");
     expect(content).toContain("QQ_VOICE_OUTPUT_ENABLED=true but QQ_VOICE_TTS_API_KEY is empty.");
     expect(content).toContain('server QQ_VOICE_TTS_BASE_URL must point to laptop Tailnet TTS, not 127.0.0.1/localhost.');
-    expect(content).toContain('server deploy does not support QQ_VOICE_INPUT_ENABLED=true.');
+    expect(content).toContain('server runtime does not support QQ_VOICE_INPUT_ENABLED=true.');
   });
 
   it('lets stickers sync resolve local env first and server env second', () => {

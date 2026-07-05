@@ -46,7 +46,7 @@ const ttsBaseUrl = String(env.QQ_VOICE_TTS_BASE_URL ?? '').trim();
 const ttsApiKey = String(env.QQ_VOICE_TTS_API_KEY ?? '').trim();
 
 if (inputEnabled) {
-  fail('server deploy does not support QQ_VOICE_INPUT_ENABLED=true. Keep voice input disabled on the server.');
+  fail('server runtime does not support QQ_VOICE_INPUT_ENABLED=true. Keep voice input disabled on the server.');
 }
 
 if (!outputEnabled) {

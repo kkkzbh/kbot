@@ -1,4 +1,0 @@
-interface:
-  display_name: "QQBot Mainline Ship"
-  short_description: "Quickly ship qqbot with related checks, deploy, and log review"
-  default_prompt: "Use $qqbot-mainline-ship to quickly complete the qqbot submit and release workflow with atomic commits, related low-cost validation, minimal probe, main push, GitHub CI/Deploy tracking, and server Koishi log review."

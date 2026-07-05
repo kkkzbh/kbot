@@ -1,13 +1,12 @@
 # Testing Policy
 
-CI tests are a release gate. Keep each test tied to a stable product or deployment contract.
+CI tests are a quality gate. Keep each test tied to stable product behavior or a runtime contract.
 
 ## Keep tests for core contracts
 
 Add or keep tests when they protect one of these contracts:
 
 - User-visible behavior, protocol shape, data persistence, migration, permissions, privacy, or security boundaries.
-- Deployment phase boundaries that prevent long or unsafe production failures.
 - Runtime artifact contracts required to start the bot.
 - Parser, normalization, scheduler, queue, memory, and provider routing behavior where regressions are hard to detect manually.
 
@@ -22,15 +21,8 @@ Do not add tests that only pin incidental implementation details. Examples:
 
 ## Prefer stable contract tests
 
-For deployment and scripts, prefer a small number of boundary checks:
-
-- Which phase owns the work: build, prepare, activate, or verify.
-- Whether server activation can run only after a prepared release marker exists.
-- Whether ordinary deploy uses `koishi` scope and full PMHQ/LLBot checks are explicit.
-- Whether server prepare consumes CI-built artifacts and does not generate build artifacts.
-
-Use script syntax checks such as `bash -n`, workflow validation such as `actionlint`, and full unit tests as verification commands. Do not replace these tools with brittle string snapshots.
+For runtime scripts, prefer boundary checks over incidental string snapshots. Verify the user-visible contract, required artifact shape, or startup preflight behavior. Use script syntax checks and full unit tests as verification commands when they add coverage.
 
 ## Placement
 
-Put tests in the narrowest relevant file. Do not place deploy, systemd, or runtime-script assertions in voice, memory, reply, or UI tests. Cross-file contract tests belong in a dedicated `*-contract.test.ts` file.
+Put tests in the narrowest relevant file. Do not place runtime-script assertions in voice, memory, reply, or UI tests unless the script is the direct owner of that feature.
