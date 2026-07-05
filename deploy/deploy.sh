@@ -83,7 +83,10 @@ pnpm test -- --reporter=dot
 echo "[deploy] build"
 pnpm build
 
-CHATLUNA_SOURCE_DIR="${CHATLUNA_SOURCE_DIR}" node ./scripts/ci/write-build-manifest.mjs --output "${MANIFEST_PATH}"
+node ./deploy/write-build-manifest.mjs \
+  --output "${MANIFEST_PATH}" \
+  --qqbot-root "${ROOT_DIR}" \
+  --chatluna-root "${CHATLUNA_SOURCE_DIR}"
 
 
 git ls-files -z --cached --others --exclude-standard \
