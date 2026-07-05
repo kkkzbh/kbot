@@ -12,11 +12,14 @@ TMP_PARENT="${ROOT_DIR}/.tmp/deploy"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 ARTIFACT_DIR="${TMP_PARENT}/${RUN_ID}/artifacts"
 STAGING_DIR="${TMP_PARENT}/${RUN_ID}/stage"
+CACHE_DIR="${QQBOT_DEPLOY_CACHE_DIR:-${ROOT_DIR}/.tmp/deploy-cache}"
 BUNDLE_PATH="${ARTIFACT_DIR}/qqbot.tar.gz"
 MANIFEST_PATH="${TMP_PARENT}/${RUN_ID}/build-manifest.json"
 BUNDLE_ENTRIES="${TMP_PARENT}/${RUN_ID}/bundle.entries"
+LLBOT_CACHE_PATH="${CACHE_DIR}/LLBot-${LLBOT_VERSION}.zip"
 REMOTE_INCOMING="${BASE_DIR}/incoming"
 REMOTE_BUNDLE="${REMOTE_INCOMING}/qqbot.tar.gz"
+REMOTE_MANIFEST="${BASE_DIR}/app/build-manifest.json"
 REMOTE_STAGING="${BASE_DIR}/.staging"
 REMOTE_SHARED="${BASE_DIR}/shared"
 REMOTE_DATA="${BASE_DIR}/data"
@@ -43,6 +46,40 @@ if [[ ! -f "${CHATLUNA_SOURCE_DIR}/packages/core/package.json" ]]; then
   echo "[deploy] missing ChatLuna checkout: ${CHATLUNA_SOURCE_DIR}" >&2
   exit 2
 fi
+
+remote_quote() {
+  printf '%q' "$1"
+}
+
+clean_remote_upload() {
+  ssh "${HOST}" "if test -d $(remote_quote "${REMOTE_INCOMING}"); then rm -f $(remote_quote "${REMOTE_BUNDLE}.upload"); fi"
+}
+
+remote_already_deployed() {
+  local qqbot_sha="$1"
+  local chatluna_sha="$2"
+
+  if [[ "${QQBOT_FORCE_DEPLOY:-}" == "1" ]]; then
+    return 1
+  fi
+
+  ssh "${HOST}" "test -f $(remote_quote "${REMOTE_MANIFEST}") && node -e 'const fs = require(\"node:fs\"); const manifest = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\")); process.exit(manifest.qqbot?.sha === process.argv[2] && manifest.chatluna?.sha === process.argv[3] ? 0 : 1);' $(remote_quote "${REMOTE_MANIFEST}") $(remote_quote "${qqbot_sha}") $(remote_quote "${chatluna_sha}")"
+}
+
+ensure_llbot_release_zip() {
+  mkdir -p "${CACHE_DIR}"
+  if [[ -s "${LLBOT_CACHE_PATH}" ]]; then
+    echo "[deploy] use cached LLBot ${LLBOT_VERSION}: ${LLBOT_CACHE_PATH}"
+    return 0
+  fi
+
+  echo "[deploy] download LLBot ${LLBOT_VERSION}"
+  rm -f "${LLBOT_CACHE_PATH}.upload"
+  curl -fL --connect-timeout 30 --max-time 180 \
+    -o "${LLBOT_CACHE_PATH}.upload" \
+    "${LLBOT_RELEASE_URL}"
+  mv "${LLBOT_CACHE_PATH}.upload" "${LLBOT_CACHE_PATH}"
+}
 
 require_bundle_entry() {
   local entry="$1"
@@ -86,6 +123,8 @@ ensure_server_env() {
 mkdir -p "${ARTIFACT_DIR}" "${STAGING_DIR}/qqbot" "${STAGING_DIR}/chatluna"
 cd "${ROOT_DIR}"
 
+clean_remote_upload
+
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "[deploy] local qqbot worktree is not clean" >&2
   git status --short >&2
@@ -96,6 +135,14 @@ if [[ -n "$(git -C "${CHATLUNA_SOURCE_DIR}" status --porcelain)" ]]; then
   echo "[deploy] local ChatLuna worktree is not clean" >&2
   git -C "${CHATLUNA_SOURCE_DIR}" status --short >&2
   exit 2
+fi
+
+QQBOT_SHA="$(git rev-parse HEAD)"
+CHATLUNA_SHA="$(git -C "${CHATLUNA_SOURCE_DIR}" rev-parse HEAD)"
+if remote_already_deployed "${QQBOT_SHA}" "${CHATLUNA_SHA}"; then
+  echo "[deploy] remote already has qqbot ${QQBOT_SHA} and ChatLuna ${CHATLUNA_SHA}"
+  echo "[deploy] nothing to deploy; set QQBOT_FORCE_DEPLOY=1 to force"
+  exit 0
 fi
 
 echo "[deploy] typecheck"
@@ -120,9 +167,8 @@ git ls-files -z --cached --others --exclude-standard \
 
 cp -a "${ROOT_DIR}/dist" "${STAGING_DIR}/qqbot/dist"
 mkdir -p "${STAGING_DIR}/qqbot/vendor/llbot"
-curl -fL --connect-timeout 30 --max-time 180 \
-  -o "${STAGING_DIR}/qqbot/vendor/llbot/LLBot-${LLBOT_VERSION}.zip" \
-  "${LLBOT_RELEASE_URL}"
+ensure_llbot_release_zip
+cp "${LLBOT_CACHE_PATH}" "${STAGING_DIR}/qqbot/vendor/llbot/LLBot-${LLBOT_VERSION}.zip"
 
 tar \
   --exclude='.git' \
@@ -140,6 +186,7 @@ tar -czf "${BUNDLE_PATH}" -C "${STAGING_DIR}" build-manifest.json qqbot chatluna
 verify_bundle
 
 ensure_server_env
+clean_remote_upload
 
 echo "[deploy] upload ${BUNDLE_PATH} -> ${HOST}:${REMOTE_BUNDLE}"
 scp "${BUNDLE_PATH}" "${HOST}:${REMOTE_BUNDLE}.upload"
