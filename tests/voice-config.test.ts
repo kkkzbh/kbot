@@ -36,6 +36,7 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('QQBOT_ATTACHMENT_MAX_REQUEST_BODY_BYTES');
     expect(content).toContain("platform: ${{ env.CHATLUNA_PLATFORM || 'siliconflow' }}");
     expect(content).toContain("maxContextRatio: ${{ +env.CHATLUNA_MAX_CONTEXT_RATIO || 0.35 }}");
+    expect(content).toContain("pullModels: ${{ env.CHATLUNA_PULL_MODELS === 'true' }}");
     expect(content).toContain('chatluna-agent:computer-agent: {}');
   });
 
