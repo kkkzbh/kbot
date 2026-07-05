@@ -74,6 +74,11 @@ vi.mock('koishi', () => {
 
 import { apply } from '../src/plugins/hbu-jw/index.js';
 import { loadOrCreateKek } from '../src/plugins/hbu-jw/crypto.js';
+import {
+  HbuJwExamScheduleService,
+  buildHbuJwExamScheduleView,
+  renderHbuJwExamScheduleImage,
+} from '../src/plugins/hbu-jw/exams.js';
 import { HbuJwGpaService, calculateHbuJwGpa, formatGpaReply } from '../src/plugins/hbu-jw/gpa.js';
 import { HbuJwHttpClient, HbuJwLoginError } from '../src/plugins/hbu-jw/jw-client.js';
 import {
@@ -91,6 +96,7 @@ import {
 } from '../src/plugins/hbu-jw/term-scores.js';
 import type {
   DatabaseLike,
+  HbuJwExamPlanEvent,
   HbuJwScoreRow,
   HbuJwThisSemesterSchedule,
   HbuJwThisTermScoreRow,
@@ -258,6 +264,15 @@ function thisTermScoresPayload(rows: HbuJwThisTermScoreRow[]) {
       list: rows,
     },
   ];
+}
+
+function examPlanEvent(overrides: Partial<HbuJwExamPlanEvent> = {}): HbuJwExamPlanEvent {
+  return {
+    title: '软件工程\n09:30-11:00\n七一路校区\n七一路校区A5座\n101\n',
+    start: '2026-06-29',
+    color: '#ABBAC3',
+    ...overrides,
+  };
 }
 
 function thisSemesterSchedulePayload() {
@@ -816,6 +831,89 @@ describe('hbu-jw term scores module', () => {
   });
 });
 
+describe('hbu-jw exam schedule module', () => {
+  it('builds a compact exam table view from fullcalendar events', () => {
+    const view = buildHbuJwExamScheduleView([
+      examPlanEvent({
+        title: '数字图像处理\n09:30-11:00\n七一路校区\n七一路校区A6座\n201\n',
+        start: '2026-07-07',
+        color: '#6fb3e0',
+      }),
+      examPlanEvent(),
+      examPlanEvent({
+        title: '编译原理\n09:30-11:00\n七一路校区\n七一路校区A5座\n101\n',
+        start: '2026-07-02',
+      }),
+    ], new Date('2026-07-01T12:00:00+08:00'));
+
+    expect(view.subtitle).toBe('2025-2026 春 · 共 3 场考试');
+    expect(view.nearestExamDateText).toBe('07-02');
+    expect(view.totalCount).toBe(3);
+    expect(view.upcomingCount).toBe(2);
+    expect(view.rows.map((row) => [row.courseName, row.dateText, row.locationText, row.countdownText])).toEqual([
+      ['软件工程', '06-29 周一', '七一路校区 A5座 101', '已结束'],
+      ['编译原理', '07-02 周四', '七一路校区 A5座 101', '明天'],
+      ['数字图像处理', '07-07 周二', '七一路校区 A6座 201', '6 天'],
+    ]);
+  });
+
+  it('renders the exam schedule view as a PNG image with the core table in the HTML', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const image = await renderHbuJwExamScheduleImage(
+      puppeteer,
+      buildHbuJwExamScheduleView([
+        examPlanEvent(),
+        examPlanEvent({
+          title: '网络安全基础\n09:30-11:00\n七一路校区\n七一路校区A5座\n201\n',
+          start: '2026-07-03',
+        }),
+      ], new Date('2026-07-01T12:00:00+08:00')),
+    );
+
+    expect(String(image)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('河北大学考试安排');
+    expect(getNavigatedHtml()).toContain('软件工程');
+    expect(getNavigatedHtml()).toContain('网络安全基础');
+    expect(getNavigatedHtml()).toContain('<table>');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('uses the authenticated session to query and render exam schedule', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getExamSchedule = vi.fn(async () => [examPlanEvent()]);
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwExamScheduleService(
+      { ensureAuthenticated },
+      { getExamSchedule },
+      puppeteer,
+      () => new Date('2026-07-01T12:00:00+08:00'),
+    );
+
+    const reply = await service.queryExamSchedule(identity());
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
+    expect(getExamSchedule).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+  });
+
+  it('surfaces binding requirements before querying exam schedule', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'needs_binding' as const,
+      reason: '请先发送“教务绑定”。',
+    }));
+    const getExamSchedule = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwExamScheduleService({ ensureAuthenticated }, { getExamSchedule }, puppeteer);
+
+    await expect(service.queryExamSchedule(identity())).rejects.toThrow('请先发送“教务绑定”。');
+    expect(getExamSchedule).not.toHaveBeenCalled();
+  });
+});
+
 describe('hbu-jw schedule module', () => {
   it('calculates teaching weeks from fixed HBU term starts', () => {
     expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 1))).toBe(1);
@@ -1006,6 +1104,53 @@ describe('hbu-jw http client', () => {
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
     await expect(malformedClient.getThisTermScores({ cookies: [] })).rejects.toThrow('结构异常');
+  });
+
+  it('loads exam schedule from the fullcalendar detail endpoint', async () => {
+    const rows = [
+      examPlanEvent({
+        title: '软件工程\n09:30-11:00\n七一路校区\n七一路校区A5座\n101\n',
+        start: '2026-06-29',
+      }),
+    ];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === 'https://zhjw.hbu.cn/student/examinationManagement/examPlan/index') {
+        return new Response('<script>events: "/student/examinationManagement/examPlan/detail"</script>', { status: 200 });
+      }
+      if (url === 'https://zhjw.hbu.cn/student/examinationManagement/examPlan/detail') {
+        expect(init?.method ?? 'GET').toBe('GET');
+        return new Response(JSON.stringify(rows), {
+          status: 200,
+          headers: { 'content-type': 'application/json;charset=UTF-8' },
+        });
+      }
+      return new Response('', { status: 500 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.getExamSchedule({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] })).resolves.toEqual(rows);
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      'https://zhjw.hbu.cn/student/examinationManagement/examPlan/index',
+      'https://zhjw.hbu.cn/student/examinationManagement/examPlan/detail',
+    ]);
+  });
+
+  it('rejects ambiguous exam schedule pages and malformed exam payloads', async () => {
+    const ambiguousFetch = vi.fn(async () => new Response([
+      '"/student/examinationManagement/examPlan/detail"',
+      '"/student/examinationManagement/examPlan/detail"',
+    ].join('\n'), { status: 200 }));
+    const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
+    await expect(ambiguousClient.getExamSchedule({ cookies: [] })).rejects.toThrow('没有唯一的数据地址');
+
+    const malformedFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/examPlan/index')) {
+        return new Response('"/student/examinationManagement/examPlan/detail"', { status: 200 });
+      }
+      return new Response(JSON.stringify([{ title: '软件工程' }]), { status: 200 });
+    });
+    const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
+    await expect(malformedClient.getExamSchedule({ cookies: [] })).rejects.toThrow('结构异常');
   });
 
   it('loads this semester schedule from the dynamic callback endpoint', async () => {
@@ -1306,6 +1451,42 @@ describe('hbu-jw plugin integration', () => {
     expect(getThisTermScores).not.toHaveBeenCalled();
   });
 
+  it('blocks exam schedule keywords outside allowed groups before any exam query', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getExamSchedule = vi.spyOn(HbuJwHttpClient.prototype, 'getExamSchedule');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '考试安排',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启教务系统功能。');
+    expect(getExamSchedule).not.toHaveBeenCalled();
+  });
+
   it('allows hbu-jw binding in private chats regardless of the group allowlist', async () => {
     const dir = createTempDir();
     const database = createDatabase();
@@ -1415,6 +1596,42 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
     expect(getThisTermScores).not.toHaveBeenCalled();
+  });
+
+  it('allows exam schedule keywords in private chats and asks for binding when no session exists', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getExamSchedule = vi.spyOn(HbuJwHttpClient.prototype, 'getExamSchedule');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '考试安排',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
+    expect(getExamSchedule).not.toHaveBeenCalled();
   });
 
   it('rejects public http bind URLs and allows localhost http for development', () => {

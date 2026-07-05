@@ -117,6 +117,13 @@ export interface HbuJwThisTermScoreRow {
   [key: string]: unknown;
 }
 
+export interface HbuJwExamPlanEvent {
+  title?: string | null;
+  start?: string | null;
+  color?: string | null;
+  [key: string]: unknown;
+}
+
 export interface HbuJwScheduleTimeAndPlace {
   classDay: number;
   classSessions: number;

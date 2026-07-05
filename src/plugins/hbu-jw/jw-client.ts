@@ -1,4 +1,5 @@
 import type {
+  HbuJwExamPlanEvent,
   HbuJwScheduleCourse,
   HbuJwScheduleTimeAndPlace,
   HbuJwScoreRow,
@@ -185,6 +186,39 @@ export class HbuJwHttpClient {
       throw new HbuJwQueryError('本学期成绩接口返回了非 JSON 内容。');
     }
     return flattenThisTermScores(payload);
+  }
+
+  async getExamSchedule(cookieJar: SerializedCookieJar): Promise<HbuJwExamPlanEvent[]> {
+    const jar = CookieJar.from(cookieJar);
+    const pagePath = '/student/examinationManagement/examPlan/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwQueryError('考试安排页面访问失败。');
+    }
+
+    const detailPath = findExamPlanDetailPath(page.text);
+    const detail = await this.request(detailPath, {
+      jar,
+      headers: {
+        accept: 'application/json, text/javascript, */*; q=0.01',
+        'x-requested-with': 'XMLHttpRequest',
+        referer: new URL(pagePath, this.baseUrl).href,
+      },
+    });
+    if (detail.response.status !== 200) {
+      throw new HbuJwQueryError('考试安排接口访问失败。');
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(detail.text);
+    } catch {
+      throw new HbuJwQueryError('考试安排接口返回了非 JSON 内容。');
+    }
+    return parseExamPlanEvents(payload);
   }
 
   async getThisSemesterSchedule(cookieJar: SerializedCookieJar): Promise<HbuJwThisSemesterSchedule> {
@@ -375,6 +409,15 @@ function findThisTermScoresDataPath(html: string): string {
   return matches[0]!;
 }
 
+function findExamPlanDetailPath(html: string): string {
+  const matches = [...html.matchAll(/[^"'\s<>]*examinationManagement\/examPlan\/detail[^"'\s<>]*/g)]
+    .map((match) => match[0].replace(/\\\//g, '/'));
+  if (matches.length !== 1) {
+    throw new HbuJwQueryError('考试安排页面没有唯一的数据地址。');
+  }
+  return matches[0]!;
+}
+
 function findThisSemesterScheduleCallback(html: string): string {
   const matches = [...html.matchAll(/[^"'\s<>]*thisSemesterCurriculum\/[^"'\s<>]*\/ajaxStudentSchedule\/curr\/callback[^"'\s<>]*/g)]
     .map((match) => match[0].replace(/\\\//g, '/'));
@@ -420,6 +463,18 @@ function flattenThisTermScores(payload: unknown): HbuJwThisTermScoreRow[] {
     }
   }
   return rows;
+}
+
+function parseExamPlanEvents(payload: unknown): HbuJwExamPlanEvent[] {
+  if (!Array.isArray(payload)) {
+    throw new HbuJwQueryError('考试安排接口结构异常。');
+  }
+  return payload.map((row) => {
+    if (!isRecord(row) || typeof row.title !== 'string' || typeof row.start !== 'string') {
+      throw new HbuJwQueryError('考试安排接口结构异常。');
+    }
+    return row as HbuJwExamPlanEvent;
+  });
 }
 
 function parseThisSemesterSchedulePayload(payload: unknown): HbuJwThisSemesterSchedule {

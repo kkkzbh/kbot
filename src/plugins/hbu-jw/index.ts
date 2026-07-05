@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
+import { HbuJwExamScheduleService } from './exams.js';
 import { HbuJwGpaService } from './gpa.js';
 import { HbuJwHttpClient } from './jw-client.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
@@ -94,9 +95,10 @@ export function apply(ctx: Context, config: Config): void {
   const gpaService = new HbuJwGpaService(service, jwClient);
   const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer);
   const termScoresService = new HbuJwTermScoresService(service, jwClient, hbuCtx.puppeteer);
+  const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer);
 
   registerWebRoutes(hbuCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, runtime);
+  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, examScheduleService, runtime);
   registerKeepAlive(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -195,6 +197,7 @@ function registerKeywordMiddleware(
   gpaService: HbuJwGpaService,
   scheduleService: HbuJwScheduleService,
   termScoresService: HbuJwTermScoresService,
+  examScheduleService: HbuJwExamScheduleService,
   runtime: RuntimeConfig,
 ): void {
   ctx.middleware(async (session, next) => {
@@ -282,6 +285,16 @@ function registerKeywordMiddleware(
       } catch (error) {
         await session.send(toUserMessage(error));
       }
+      return;
+    }
+
+    if (command.kind === 'exam_schedule') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await session.send(await examScheduleService.queryExamSchedule(identity));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
     }
   });
 }
@@ -353,7 +366,8 @@ type HbuJwCommand =
   | { kind: 'unbind' }
   | { kind: 'gpa' }
   | { kind: 'schedule'; mode: HbuJwScheduleMode }
-  | { kind: 'term_scores' };
+  | { kind: 'term_scores' }
+  | { kind: 'exam_schedule' };
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '教务绑定') return { kind: 'bind' };
@@ -366,6 +380,7 @@ function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '课表') return { kind: 'schedule', mode: 'current-week' };
   if (text === '完整课表') return { kind: 'schedule', mode: 'full-semester' };
   if (text === '成绩') return { kind: 'term_scores' };
+  if (text === '考试安排') return { kind: 'exam_schedule' };
   return null;
 }
 
