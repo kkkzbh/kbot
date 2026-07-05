@@ -66,6 +66,7 @@ import {
   isSupportedMainChatModelForTab,
   type MainChatReplyOutputContract,
 } from '../../shared/llm/index.js';
+import { normalizeGroupId, parseGroupSet } from '../../shared/group-id.js';
 import { mainChatRuntimeState } from '../../shared/llm/main-chat-runtime.js';
 import {
   type ReplyRoute,
@@ -124,6 +125,8 @@ export interface Config {
   synthTimeoutMs?: number;
   replyInterruptCollectWindowMs?: number;
   replyInterruptMaxPendingInputs?: number;
+  naturalTriggerEnabled?: boolean;
+  naturalTriggerGroups?: string[] | string;
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -141,6 +144,11 @@ export const Config: Schema<Config> = Schema.object({
   synthTimeoutMs: Schema.natural().role('time').description('TTS 请求超时（毫秒）。'),
   replyInterruptCollectWindowMs: Schema.natural().role('time').description('回复中断聚合窗口（毫秒）。'),
   replyInterruptMaxPendingInputs: Schema.natural().description('回复中断最多暂存的新消息条数。'),
+  naturalTriggerEnabled: Schema.boolean().description('群聊自然触发总开关，用于约束普通群语音输入。'),
+  naturalTriggerGroups: Schema.union([
+    Schema.array(Schema.string()).role('table').description('允许普通群语音输入进入自然触发链路的群号列表。'),
+    Schema.string().description('允许普通群语音输入进入自然触发链路的群号（逗号分隔）。'),
+  ]),
 });
 
 export interface RuntimeConfig {
@@ -158,6 +166,8 @@ export interface RuntimeConfig {
   synthTimeoutMs: number;
   replyInterruptCollectWindowMs: number;
   replyInterruptMaxPendingInputs: number;
+  naturalTriggerEnabled: boolean;
+  naturalTriggerGroups: Set<string>;
 }
 
 interface QqVoiceState {
@@ -417,6 +427,8 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     synthTimeoutMs: requireNaturalConfig(config, 'synthTimeoutMs'),
     replyInterruptCollectWindowMs: requireNaturalConfig(config, 'replyInterruptCollectWindowMs'),
     replyInterruptMaxPendingInputs: requireNaturalConfig(config, 'replyInterruptMaxPendingInputs'),
+    naturalTriggerEnabled: requireBooleanConfig(config, 'naturalTriggerEnabled'),
+    naturalTriggerGroups: parseGroupSet(requireConfigValue<string[] | string>(config, 'naturalTriggerGroups')),
   };
 }
 
@@ -440,6 +452,8 @@ export function createVoiceRuntimeConfigFromEnv(env: NodeJS.ProcessEnv = process
     synthTimeoutMs: Number(requireEnvValue(env, 'QQ_VOICE_SYNTH_TIMEOUT_MS')),
     replyInterruptCollectWindowMs: Number(requireEnvValue(env, 'QQBOT_REPLY_COLLECT_WINDOW_MS')),
     replyInterruptMaxPendingInputs: Number(requireEnvValue(env, 'QQBOT_REPLY_MAX_PENDING_INPUTS')),
+    naturalTriggerEnabled: requireBooleanEnv(env, 'CHAT_NATURAL_TRIGGER_ENABLED'),
+    naturalTriggerGroups: requireEnvValue(env, 'CHAT_NATURAL_TRIGGER_GROUPS'),
   });
 }
 
@@ -567,6 +581,56 @@ function getTextInputContent(session: SessionWithVoiceState): string {
   const stripped = session.stripped?.content?.trim();
   if (stripped) return stripped;
   return extractTextContentWithoutVoice(session.content ?? '');
+}
+
+type IncomingElementLike = {
+  type?: string;
+  attrs?: Record<string, unknown>;
+};
+
+function getIncomingElements(session: SessionWithVoiceState): IncomingElementLike[] {
+  if (Array.isArray(session.elements)) {
+    return session.elements as IncomingElementLike[];
+  }
+  return h.parse(session.content ?? '') as IncomingElementLike[];
+}
+
+function resolveIncomingGroupId(session: SessionWithVoiceState): string | null {
+  return normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
+}
+
+function isIncomingGroupVoiceExplicitlyAddressed(session: SessionWithVoiceState): boolean {
+  const botSelfId = session.bot?.selfId?.trim();
+  if (!botSelfId) return false;
+
+  const stripped = session.stripped as { atSelf?: unknown } | undefined;
+  if (stripped?.atSelf === true) return true;
+
+  const quote = session.quote as { user?: { id?: unknown } } | undefined;
+  if (String(quote?.user?.id ?? '').trim() === botSelfId) return true;
+
+  return getIncomingElements(session).some((element) => {
+    const type = typeof element?.type === 'string' ? element.type.toLowerCase() : '';
+    if (type !== 'at') return false;
+    return String(element.attrs?.id ?? '').trim() === botSelfId;
+  });
+}
+
+async function shouldHandleIncomingVoiceInput(args: {
+  runtime: RuntimeConfig;
+  featurePolicy: FeaturePolicyServiceLike;
+  session: SessionWithVoiceState;
+  voiceFeatureState: { inputEnabled: boolean };
+}): Promise<boolean> {
+  const { runtime, featurePolicy, session, voiceFeatureState } = args;
+  if (!voiceFeatureState.inputEnabled || !isVoiceInputRuntimeAvailable(runtime)) return false;
+  if (session.isDirect) return true;
+  if (isIncomingGroupVoiceExplicitlyAddressed(session)) return true;
+
+  if (!runtime.naturalTriggerEnabled || !runtime.naturalTriggerGroups.size) return false;
+  const groupId = resolveIncomingGroupId(session);
+  if (!groupId || !runtime.naturalTriggerGroups.has(groupId)) return false;
+  return featurePolicy.resolveFeatureEnabled(session, 'CHAT_NATURAL_TRIGGER_ENABLED');
 }
 
 function updateVoiceState(session: SessionWithVoiceState, state: QqVoiceState): void {
@@ -1747,13 +1811,17 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.middleware(
     async (rawSession, next) => {
       const session = rawSession as SessionWithVoiceState;
-      const voiceFeatureState = await resolveVoiceFeatureState(session);
-      if (!voiceFeatureState.inputEnabled || !isVoiceInputRuntimeAvailable(runtime)) {
-        return next();
-      }
       if (session.platform !== 'onebot') return next();
       if (!session.userId || session.userId === session.bot?.selfId) return next();
       if (!session.content || !extractFirstIncomingVoice(session.content)) return next();
+      const voiceFeatureState = await resolveVoiceFeatureState(session);
+      const admitted = await shouldHandleIncomingVoiceInput({
+        runtime,
+        featurePolicy,
+        session,
+        voiceFeatureState,
+      });
+      if (!admitted) return next();
 
       const bot = session.bot as OneBotBotLike;
       try {

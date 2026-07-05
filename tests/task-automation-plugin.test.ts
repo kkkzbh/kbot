@@ -323,6 +323,8 @@ describe('task automation tools and execution', () => {
     vi.stubEnv('QQBOT_REPLY_COLLECT_WINDOW_MS', '400');
     vi.stubEnv('QQBOT_REPLY_MAX_PENDING_INPUTS', '8');
     vi.stubEnv('QQBOT_REPLY_INTERRUPT_ENABLED', 'false');
+    vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'true');
+    vi.stubEnv('CHAT_NATURAL_TRIGGER_GROUPS', 'group-100');
     process.env.CHATLUNA_ACTIVE_TAB = 'openai';
     mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv(process.env));
   });

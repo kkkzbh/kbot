@@ -22,6 +22,8 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('voiceOutputLanguage: ${{ env.QQ_VOICE_OUTPUT_LANGUAGE }}');
     expect(content).toContain('replyInterruptCollectWindowMs: ${{ +env.QQBOT_REPLY_COLLECT_WINDOW_MS || 400 }}');
     expect(content).toContain('replyInterruptMaxPendingInputs: ${{ +env.QQBOT_REPLY_MAX_PENDING_INPUTS || 8 }}');
+    expect(content).toContain("naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}");
+    expect(content).toContain("naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}");
     expect(content).toContain("enabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}");
     expect(content).toContain('aliases:');
     expect(content).toContain("env.CHAT_NATURAL_TRIGGER_ALIASES || '祥子,祥,丰川,丰川祥子,saki,saki酱,sakiko'");

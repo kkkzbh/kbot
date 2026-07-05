@@ -274,6 +274,7 @@ function createHarness(overrides: {
   databaseSetImpl?: (table: string, query: Record<string, unknown>, data: Record<string, unknown>) => Promise<unknown>;
   databaseUpsertImpl?: (table: string, rows: Record<string, unknown>[]) => Promise<unknown>;
   databaseRemoveImpl?: (table: string, query: Record<string, unknown>) => Promise<unknown>;
+  featureResolverImpl?: (session: Record<string, any>, featureKey: string) => Promise<boolean> | boolean;
   normalizeResearchReplyHistory?: boolean;
   normalizeResearchReplyHistoryImpl?: (room: Record<string, unknown>, finalVisibleText: string) => Promise<unknown>;
   chatChainInitially?: boolean;
@@ -403,7 +404,10 @@ function createHarness(overrides: {
     bots: [bot],
     chatluna,
     featurePolicy: {
-      resolveFeatureEnabled: vi.fn(async (_session: Record<string, any>, featureKey: string) => {
+      resolveFeatureEnabled: vi.fn(async (session: Record<string, any>, featureKey: string) => {
+        if (overrides.featureResolverImpl) {
+          return overrides.featureResolverImpl(session, featureKey);
+        }
         if (featureKey === 'QQBOT_REPLY_INTERRUPT_ENABLED') {
           return overrides.replyInterruptEnabled ?? false;
         }
@@ -440,6 +444,8 @@ function createHarness(overrides: {
     synthTimeoutMs: 300_000,
     replyInterruptCollectWindowMs: 400,
     replyInterruptMaxPendingInputs: 8,
+    naturalTriggerEnabled: true,
+    naturalTriggerGroups: 'group-100',
     ...overrides.pluginConfig,
   });
 
@@ -698,6 +704,8 @@ describe('qq voice plugin', () => {
     vi.stubEnv('QQBOT_REPLY_COLLECT_WINDOW_MS', '400');
     vi.stubEnv('QQBOT_REPLY_MAX_PENDING_INPUTS', '8');
     vi.stubEnv('QQBOT_REPLY_INTERRUPT_ENABLED', 'false');
+    vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'true');
+    vi.stubEnv('CHAT_NATURAL_TRIGGER_GROUPS', 'group-100');
     mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
   });
 
@@ -744,6 +752,8 @@ describe('qq voice plugin', () => {
         synthTimeoutMs: 300_000,
         replyInterruptCollectWindowMs: 400,
         replyInterruptMaxPendingInputs: 8,
+        naturalTriggerEnabled: true,
+        naturalTriggerGroups: 'group-100',
       }),
     ).toThrow('qq-voice requires featurePolicy service.');
   });
@@ -1178,6 +1188,97 @@ describe('qq voice plugin', () => {
     const result = await inbound(session, async () => session.content);
     expect(result).toBe('补充说明\n转写内容');
     expect(session.content).toBe('补充说明\n转写内容');
+    expect(session.state.qqVoice).toEqual({
+      transcript: '转写内容',
+      durationMs: 1_500,
+      source: 'src',
+    });
+  });
+
+  it('skips ordinary group voice input outside the natural trigger whitelist before ASR', async () => {
+    const { inbound, bot } = createHarness({
+      pluginConfig: {
+        naturalTriggerGroups: 'group-100',
+      },
+    });
+    const fetchMock = vi.fn(async () => {
+      throw new Error('ASR should not run');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const session = createSession(bot, {
+      channelId: 'group-999',
+      guildId: 'group-999',
+      content: '<audio src="https://example.com/input.amr"/>',
+      strippedContent: '',
+    });
+    const next = vi.fn(async () => 'next-chain');
+
+    await expect(inbound(session, next)).resolves.toBe('next-chain');
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(session.content).toBe('<audio src="https://example.com/input.amr"/>');
+    expect(session.state.qqVoice).toBeUndefined();
+  });
+
+  it('skips whitelisted group voice input when natural trigger is disabled for that group', async () => {
+    const { inbound, bot } = createHarness({
+      featureResolverImpl: async (_session, featureKey) => {
+        if (featureKey === 'CHAT_NATURAL_TRIGGER_ENABLED') return false;
+        return true;
+      },
+      pluginConfig: {
+        naturalTriggerGroups: 'group-100',
+      },
+    });
+    const fetchMock = vi.fn(async () => {
+      throw new Error('ASR should not run');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const session = createSession(bot, {
+      content: '<audio src="https://example.com/input.amr"/>',
+      strippedContent: '',
+    });
+
+    await expect(inbound(session, async () => 'next-chain')).resolves.toBe('next-chain');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(session.state.qqVoice).toBeUndefined();
+  });
+
+  it('handles explicitly addressed group voice input outside the natural trigger whitelist', async () => {
+    const { inbound, bot } = createHarness({
+      pluginConfig: {
+        naturalTriggerGroups: 'group-100',
+      },
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://example.com/input.amr') {
+        return new Response(Uint8Array.from([1, 2, 3]), { status: 200 });
+      }
+      if (url === 'http://127.0.0.1:8081/transcribe' && init?.method === 'POST') {
+        return Response.json({ text: '转写内容', language: 'zh', durationMs: 1_500 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const session = createSession(bot, {
+      channelId: 'group-999',
+      guildId: 'group-999',
+      content: '<at id="bot-1" name="小祥"/><audio src="https://example.com/input.amr"/>',
+      strippedContent: '',
+      elements: [
+        { type: 'at', attrs: { id: 'bot-1', name: '小祥' }, children: [] },
+        { type: 'audio', attrs: { src: 'https://example.com/input.amr' }, children: [] },
+      ],
+    });
+
+    await expect(inbound(session, async () => session.content)).resolves.toBe('@小祥\n转写内容');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(session.state.qqVoice).toEqual({
       transcript: '转写内容',
       durationMs: 1_500,
