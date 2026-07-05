@@ -72,6 +72,7 @@ const MENU_SECTIONS: HbuJwMenuSectionView[] = [
     items: [
       { keyword: 'GPA', description: '计算推免相关GPA，排除艺术类等必修课程', icon: 'chart' },
       { keyword: '成绩', description: '查看本学期成绩', icon: 'list' },
+      { keyword: '匿名成绩', description: '查看本学期成绩，但不显示敏感数据，可查是否出分', icon: 'list' },
       { keyword: '课表', description: '查看这周的课表', icon: 'calendar' },
       { keyword: '完整课表', description: '查看本学期的课表', icon: 'grid' },
       { keyword: '考试安排', description: '查看本学期的考试安排', icon: 'clipboard' },

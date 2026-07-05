@@ -696,6 +696,7 @@ describe('hbu-jw menu module', () => {
         [
           ['GPA', '计算推免相关GPA，排除艺术类等必修课程'],
           ['成绩', '查看本学期成绩'],
+          ['匿名成绩', '查看本学期成绩，但不显示敏感数据，可查是否出分'],
           ['课表', '查看这周的课表'],
           ['完整课表', '查看本学期的课表'],
           ['考试安排', '查看本学期的考试安排'],
@@ -722,6 +723,8 @@ describe('hbu-jw menu module', () => {
     expect(html).toContain('解除教务账号与QQ的绑定，相关加密数据也会清除');
     expect(html).toContain('计算推免相关GPA，排除艺术类等必修课程');
     expect(html).toContain('查看本学期成绩');
+    expect(html).toContain('匿名成绩');
+    expect(html).toContain('查看本学期成绩，但不显示敏感数据，可查是否出分');
     expect(html).toContain('考试安排');
     expect(html).not.toContain('<table>');
     expect(html).not.toContain('提示：');
@@ -813,34 +816,38 @@ describe('hbu-jw GPA calculation', () => {
 
 describe('hbu-jw term scores module', () => {
   it('builds a concise term score table view with status counts', () => {
-    const view = buildHbuJwTermScoresView([
-      thisTermScoreRow(),
-      thisTermScoreRow({
-        id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '编译原理',
-        credit: 3,
-        courseScore: '',
-        gradePoint: 4.2,
-        inputStatusCode: '04',
-        inputStatusExplain: '暂存',
-      }),
-      thisTermScoreRow({
-        id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '网络安全基础实验',
-        credit: 1,
-        courseScore: '',
-        gradePoint: 4.8,
-        inputStatusCode: '01',
-        inputStatusExplain: '尚未录入',
-      }),
-    ], [
-      scoreRow({
-        id: { courseNumber: '2023S01003' },
-        courseName: '软件工程',
-        credit: 3,
-        gradePointScore: 4.5,
-      }),
-    ]);
+    const view = buildHbuJwTermScoresView({
+      mode: 'full',
+      rows: [
+        thisTermScoreRow(),
+        thisTermScoreRow({
+          id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '编译原理',
+          credit: 3,
+          courseScore: '',
+          gradePoint: 4.2,
+          inputStatusCode: '04',
+          inputStatusExplain: '暂存',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '网络安全基础实验',
+          credit: 1,
+          courseScore: '',
+          gradePoint: 4.8,
+          inputStatusCode: '01',
+          inputStatusExplain: '尚未录入',
+        }),
+      ],
+      allPassingRows: [
+        scoreRow({
+          id: { courseNumber: '2023S01003' },
+          courseName: '软件工程',
+          credit: 3,
+          gradePointScore: 4.5,
+        }),
+      ],
+    });
 
     expect(view.subtitle).toBe('2025-2026 春 · 3 门课程 · 7 学分');
     expect(view.confirmedCount).toBe(1);
@@ -853,65 +860,115 @@ describe('hbu-jw term scores module', () => {
     ]);
   });
 
-  it('sorts term scores by status and time while calculating cumulative GPA deltas', () => {
-    const view = buildHbuJwTermScoresView([
-      thisTermScoreRow({
-        id: { courseNumber: 'TEMP001', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '暂存课程',
-        courseScore: '',
-        gradePoint: 4.7,
-        inputStatusCode: '04',
-        inputStatusExplain: '暂存',
-        operatetime: '20260701090000',
-      }),
-      thisTermScoreRow({
-        id: { courseNumber: 'CURR_LOW', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '后确定低绩点',
-        credit: 3,
-        gradePoint: 2,
-        courseScore: '70',
-        operatetime: '20260701110000',
-      }),
-      thisTermScoreRow({
-        id: { courseNumber: 'PENDING001', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '未录入课程',
-        courseScore: '',
-        gradePoint: '',
-        inputStatusCode: '01',
-        inputStatusExplain: '尚未录入',
-        operatetime: '20260630120000',
-      }),
-      thisTermScoreRow({
-        id: { courseNumber: 'ELECTIVE001', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '选修课程',
-        credit: 2,
-        gradePoint: 4.9,
-        courseScore: '99',
-        coursePropertyCode: '003',
-        coursePropertyName: '任选',
-        operatetime: '20260701103000',
-      }),
-      thisTermScoreRow({
-        id: { courseNumber: 'CURR_HIGH', executiveEducationPlanNumber: '2025-2026-2-2' },
-        courseName: '先确定高绩点',
-        credit: 3,
-        gradePoint: 5,
-        courseScore: '99',
-        operatetime: '20260701080000',
-      }),
-    ], [
-      scoreRow({ id: { courseNumber: 'BASE001' }, courseName: '历史课程', credit: 3, gradePointScore: 4 }),
-      scoreRow({ id: { courseNumber: 'CURR_HIGH' }, courseName: '先确定高绩点', credit: 3, gradePointScore: 5 }),
-      scoreRow({ id: { courseNumber: 'CURR_LOW' }, courseName: '后确定低绩点', credit: 3, gradePointScore: 2 }),
-      scoreRow({
-        id: { courseNumber: 'ELECTIVE001' },
-        courseName: '选修课程',
-        credit: 2,
-        gradePointScore: 4.9,
-        courseAttributeCode: '003',
-        courseAttributeName: '任选',
-      }),
+  it('builds anonymous term score rows without exposing sensitive score fields', () => {
+    const view = buildHbuJwTermScoresView({
+      mode: 'anonymous',
+      rows: [
+        thisTermScoreRow({
+          avgcj: '88.2',
+          rank: '3/78',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '暂存课程',
+          courseScore: '',
+          gradePoint: 4.2,
+          inputStatusCode: '04',
+          inputStatusExplain: '暂存',
+          avgcj: '82.5',
+          rank: '10/78',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '未录入课程',
+          courseScore: '',
+          gradePoint: '',
+          inputStatusCode: '01',
+          inputStatusExplain: '尚未录入',
+          avgcj: '',
+          rank: '',
+        }),
+      ],
+    });
+
+    expect(view.rows.map((row) => [
+      row.courseName,
+      row.scoreText,
+      row.gradePointText,
+      row.averageText,
+      row.rankText,
+      row.gpaDeltaText,
+      row.gpaDeltaKind,
+    ])).toEqual([
+      ['软件工程', '*', '*', '88.2', '*', '*', 'anonymous'],
+      ['暂存课程', '*', '*', '—', '*', '*', 'anonymous'],
+      ['未录入课程', '*', '*', '—', '*', '*', 'anonymous'],
     ]);
+  });
+
+  it('sorts term scores by status and time while calculating cumulative GPA deltas', () => {
+    const view = buildHbuJwTermScoresView({
+      mode: 'full',
+      rows: [
+        thisTermScoreRow({
+          id: { courseNumber: 'TEMP001', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '暂存课程',
+          courseScore: '',
+          gradePoint: 4.7,
+          inputStatusCode: '04',
+          inputStatusExplain: '暂存',
+          operatetime: '20260701090000',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: 'CURR_LOW', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '后确定低绩点',
+          credit: 3,
+          gradePoint: 2,
+          courseScore: '70',
+          operatetime: '20260701110000',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: 'PENDING001', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '未录入课程',
+          courseScore: '',
+          gradePoint: '',
+          inputStatusCode: '01',
+          inputStatusExplain: '尚未录入',
+          operatetime: '20260630120000',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: 'ELECTIVE001', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '选修课程',
+          credit: 2,
+          gradePoint: 4.9,
+          courseScore: '99',
+          coursePropertyCode: '003',
+          coursePropertyName: '任选',
+          operatetime: '20260701103000',
+        }),
+        thisTermScoreRow({
+          id: { courseNumber: 'CURR_HIGH', executiveEducationPlanNumber: '2025-2026-2-2' },
+          courseName: '先确定高绩点',
+          credit: 3,
+          gradePoint: 5,
+          courseScore: '99',
+          operatetime: '20260701080000',
+        }),
+      ],
+      allPassingRows: [
+        scoreRow({ id: { courseNumber: 'BASE001' }, courseName: '历史课程', credit: 3, gradePointScore: 4 }),
+        scoreRow({ id: { courseNumber: 'CURR_HIGH' }, courseName: '先确定高绩点', credit: 3, gradePointScore: 5 }),
+        scoreRow({ id: { courseNumber: 'CURR_LOW' }, courseName: '后确定低绩点', credit: 3, gradePointScore: 2 }),
+        scoreRow({
+          id: { courseNumber: 'ELECTIVE001' },
+          courseName: '选修课程',
+          credit: 2,
+          gradePointScore: 4.9,
+          courseAttributeCode: '003',
+          courseAttributeName: '任选',
+        }),
+      ],
+    });
 
     expect(view.rows.map((row) => row.courseName)).toEqual([
       '先确定高绩点',
@@ -933,17 +990,21 @@ describe('hbu-jw term scores module', () => {
     const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const image = await renderHbuJwTermScoresImage(
       puppeteer,
-      buildHbuJwTermScoresView([
-        thisTermScoreRow(),
-        thisTermScoreRow({
-          id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
-          courseName: '编译原理',
-          courseScore: '',
-          inputStatusExplain: '暂存',
-        }),
-      ], [
-        scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '软件工程', credit: 3, gradePointScore: 4.5 }),
-      ]),
+      buildHbuJwTermScoresView({
+        mode: 'full',
+        rows: [
+          thisTermScoreRow(),
+          thisTermScoreRow({
+            id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+            courseName: '编译原理',
+            courseScore: '',
+            inputStatusExplain: '暂存',
+          }),
+        ],
+        allPassingRows: [
+          scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '软件工程', credit: 3, gradePointScore: 4.5 }),
+        ],
+      }),
     );
 
     expect(String(image)).toContain('image/png');
@@ -952,8 +1013,6 @@ describe('hbu-jw term scores module', () => {
     expect(getNavigatedHtml()).toContain('编译原理');
     expect(getNavigatedHtml()).toContain('时间');
     expect(getNavigatedHtml()).toContain('GPA增量');
-    expect(getNavigatedHtml()).toContain('gpa-positive');
-    expect(getNavigatedHtml()).toContain('gpa-negative');
     expect(getNavigatedHtml()).toContain('gpa-missing');
     expect(getNavigatedHtml()).toContain('gpa-pending');
     expect(getNavigatedHtml()).toContain('<table>');
@@ -979,6 +1038,34 @@ describe('hbu-jw term scores module', () => {
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
     expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
     expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+  });
+
+  it('queries anonymous term scores without loading all passing scores', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getThisTermScores = vi.fn(async () => [
+      thisTermScoreRow({
+        avgcj: '88.2',
+        rank: '3/78',
+      }),
+    ]);
+    const getAllPassingScores = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService({ ensureAuthenticated }, { getThisTermScores, getAllPassingScores }, puppeteer);
+
+    const reply = await service.queryTermScores(identity(), 'anonymous');
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getAllPassingScores).not.toHaveBeenCalled();
+    expect(getNavigatedHtml()).toContain('<td class="score-col muted">*</td>');
+    expect(getNavigatedHtml()).toContain('<td class="point-col muted">*</td>');
+    expect(getNavigatedHtml()).toContain('<td class="avg-col num">88.2</td>');
+    expect(getNavigatedHtml()).toContain('<td class="rank-col muted">*</td>');
+    expect(getNavigatedHtml()).toContain('<td class="delta-col gpa-delta gpa-anonymous">*</td>');
   });
 
   it('surfaces binding requirements before querying term scores', async () => {
@@ -1459,6 +1546,7 @@ describe('hbu-jw plugin integration', () => {
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(getNavigatedHtml()).toContain('教务功能菜单');
+    expect(getNavigatedHtml()).toContain('匿名成绩');
     expect(getNavigatedHtml()).toContain('考试安排');
     expect(database.tables.get('hbu_jw_bind_challenge') ?? []).toHaveLength(0);
   });
@@ -1697,6 +1785,44 @@ describe('hbu-jw plugin integration', () => {
     expect(getAllPassingScores).not.toHaveBeenCalled();
   });
 
+  it('blocks anonymous term score keywords outside allowed groups before any score query', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const getAllPassingScores = vi.spyOn(HbuJwHttpClient.prototype, 'getAllPassingScores');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '匿名成绩',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启教务系统功能。');
+    expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getAllPassingScores).not.toHaveBeenCalled();
+  });
+
   it('blocks exam schedule keywords outside allowed groups before any exam query', async () => {
     const dir = createTempDir();
     const database = createDatabase();
@@ -1877,6 +2003,82 @@ describe('hbu-jw plugin integration', () => {
       channelId: 'private:1405359129',
       isDirect: true,
       content: '成绩',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
+    expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getAllPassingScores).not.toHaveBeenCalled();
+  });
+
+  it('allows anonymous term score keywords in allowed groups and asks for binding when no session exists', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const getAllPassingScores = vi.spyOn(HbuJwHttpClient.prototype, 'getAllPassingScores');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '匿名成绩',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
+    expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getAllPassingScores).not.toHaveBeenCalled();
+  });
+
+  it('allows anonymous term score keywords in private chats and asks for binding when no session exists', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getThisTermScores = vi.spyOn(HbuJwHttpClient.prototype, 'getThisTermScores');
+    const getAllPassingScores = vi.spyOn(HbuJwHttpClient.prototype, 'getAllPassingScores');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '匿名成绩',
       send,
     }, vi.fn());
 

@@ -23,6 +23,7 @@ import {
 const TERM_SCORES_WIDTH = 1280;
 const CONFIRMED_STATUS_CODE = '05';
 const EMPTY_DELTA_TEXT = '—';
+const ANONYMIZED_TEXT = '*';
 
 export interface HbuJwTermScoresAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
@@ -50,7 +51,12 @@ interface HbuJwTermScoresElementLike {
 }
 
 export type HbuJwTermScoreStatusKind = 'confirmed' | 'temporary' | 'pending' | 'unknown';
-export type HbuJwTermScoreGpaDeltaKind = 'positive' | 'negative' | 'zero' | 'not-counted' | 'pending' | 'missing';
+export type HbuJwTermScoreGpaDeltaKind = 'positive' | 'negative' | 'zero' | 'not-counted' | 'pending' | 'missing' | 'anonymous';
+export type HbuJwTermScoresMode = 'full' | 'anonymous';
+
+export type HbuJwTermScoresBuildInput =
+  | { mode: 'full'; rows: HbuJwThisTermScoreRow[]; allPassingRows: HbuJwScoreRow[] }
+  | { mode: 'anonymous'; rows: HbuJwThisTermScoreRow[] };
 
 export interface HbuJwTermScoreRowView {
   courseNumber: string;
@@ -88,30 +94,46 @@ export class HbuJwTermScoresService {
     private readonly puppeteer: HbuJwTermScoresPuppeteerLike,
   ) {}
 
-  async queryTermScores(identity: OwnerIdentity): Promise<Fragment> {
+  async queryTermScores(identity: OwnerIdentity, mode: HbuJwTermScoresMode = 'full'): Promise<Fragment> {
     const auth = await this.authService.ensureAuthenticated(identity);
     if (auth.kind !== 'authenticated') {
       throw new HbuJwUserError(auth.reason);
     }
 
     try {
-      const [scores, allPassingScores] = await Promise.all([
-        this.jwClient.getThisTermScores(auth.cookieJar),
-        this.jwClient.getAllPassingScores(auth.cookieJar),
-      ]);
-      const view = buildHbuJwTermScoresView(scores, allPassingScores);
+      const view = mode === 'full'
+        ? await this.buildFullView(auth.cookieJar)
+        : await this.buildAnonymousView(auth.cookieJar);
       return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
       throw new HbuJwUserError('教务成绩查询失败，请稍后重试。');
     }
   }
+
+  private async buildFullView(cookieJar: SerializedCookieJar): Promise<HbuJwTermScoresView> {
+    const [scores, allPassingScores] = await Promise.all([
+      this.jwClient.getThisTermScores(cookieJar),
+      this.jwClient.getAllPassingScores(cookieJar),
+    ]);
+    return buildHbuJwTermScoresView({ mode: 'full', rows: scores, allPassingRows: allPassingScores });
+  }
+
+  private async buildAnonymousView(cookieJar: SerializedCookieJar): Promise<HbuJwTermScoresView> {
+    const scores = await this.jwClient.getThisTermScores(cookieJar);
+    return buildHbuJwTermScoresView({ mode: 'anonymous', rows: scores });
+  }
 }
 
-export function buildHbuJwTermScoresView(rows: HbuJwThisTermScoreRow[], allPassingRows: HbuJwScoreRow[]): HbuJwTermScoresView {
+export function buildHbuJwTermScoresView(input: HbuJwTermScoresBuildInput): HbuJwTermScoresView {
+  const { rows } = input;
   const sortedRows = [...rows].sort(compareTermScoreRows);
-  const gpaDeltas = calculateTermScoreGpaDeltas(sortedRows, allPassingRows);
-  const rowViews = sortedRows.map((row) => toRowView(row, gpaDeltas.get(termScoreKey(row)) ?? missingGpaDelta()));
+  const gpaDeltas = input.mode === 'full' ? calculateTermScoreGpaDeltas(sortedRows, input.allPassingRows) : new Map<string, HbuJwTermScoreGpaDelta>();
+  const rowViews = sortedRows.map((row) => toRowView(
+    row,
+    input.mode === 'anonymous' ? anonymizedGpaDelta() : gpaDeltas.get(termScoreKey(row)) ?? missingGpaDelta(),
+    input.mode,
+  ));
   const termLabel = formatTermLabel(rows);
   const totalCredits = rows.reduce((sum, row) => sum + parseCredit(row.credit), 0);
   const confirmedCount = rowViews.filter((row) => row.statusKind === 'confirmed').length;
@@ -329,7 +351,8 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
     .gpa-zero { color: #56635d; }
     .gpa-not-counted,
     .gpa-pending,
-    .gpa-missing { color: #8a9690; }
+    .gpa-missing,
+    .gpa-anonymous { color: #8a9690; }
     .status {
       display: inline-flex;
       align-items: center;
@@ -399,8 +422,9 @@ export function renderHbuJwTermScoresHtml(view: HbuJwTermScoresView): string {
 </html>`;
 }
 
-function toRowView(row: HbuJwThisTermScoreRow, gpaDelta: HbuJwTermScoreGpaDelta): HbuJwTermScoreRowView {
+function toRowView(row: HbuJwThisTermScoreRow, gpaDelta: HbuJwTermScoreGpaDelta, mode: HbuJwTermScoresMode): HbuJwTermScoreRowView {
   const statusKind = classifyTermScoreStatus(row);
+  const anonymous = mode === 'anonymous';
   return {
     courseNumber: readOptionalText(row.id?.courseNumber),
     sequenceNumber: normalizeSequenceNumber(row.coureSequenceNumber),
@@ -410,10 +434,10 @@ function toRowView(row: HbuJwThisTermScoreRow, gpaDelta: HbuJwTermScoreGpaDelta)
     statusText: formatStatusText(row, statusKind),
     statusKind,
     timeText: formatOperationTime(row.operatetime),
-    scoreText: formatScoreText(row, statusKind),
-    gradePointText: formatConfirmedNumber(row.gradePoint, statusKind),
+    scoreText: anonymous ? ANONYMIZED_TEXT : formatScoreText(row, statusKind),
+    gradePointText: anonymous ? ANONYMIZED_TEXT : formatConfirmedNumber(row.gradePoint, statusKind),
     averageText: formatConfirmedValue(row.avgcj, statusKind),
-    rankText: formatConfirmedValue(row.rank, statusKind),
+    rankText: anonymous ? ANONYMIZED_TEXT : formatConfirmedValue(row.rank, statusKind),
     gpaDeltaText: gpaDelta.text,
     gpaDeltaKind: gpaDelta.kind,
   };
@@ -589,6 +613,10 @@ function missingGpaDelta(): HbuJwTermScoreGpaDelta {
   return { text: EMPTY_DELTA_TEXT, kind: 'missing' };
 }
 
+function anonymizedGpaDelta(): HbuJwTermScoreGpaDelta {
+  return { text: ANONYMIZED_TEXT, kind: 'anonymous' };
+}
+
 function termScoreKey(row: HbuJwThisTermScoreRow): string {
   return [
     readOptionalText(row.id?.courseNumber),
@@ -620,6 +648,10 @@ function readOptionalText(value: unknown): string {
 function renderScoreRow(row: HbuJwTermScoreRowView): string {
   const statusClass = `status-${row.statusKind}`;
   const courseMeta = [row.courseNumber, row.sequenceNumber ? `课序 ${row.sequenceNumber}` : ''].filter(Boolean).join(' · ');
+  const scoreMuted = row.scoreText === EMPTY_DELTA_TEXT || row.scoreText === ANONYMIZED_TEXT;
+  const pointMuted = row.gradePointText === EMPTY_DELTA_TEXT || row.gradePointText === ANONYMIZED_TEXT;
+  const averageMuted = row.averageText === EMPTY_DELTA_TEXT;
+  const rankMuted = row.rankText === EMPTY_DELTA_TEXT || row.rankText === ANONYMIZED_TEXT;
   return `<tr>
     <td class="course-col">
       <div class="course-name">${escapeHtml(row.courseName)}</div>
@@ -629,10 +661,10 @@ function renderScoreRow(row: HbuJwTermScoreRowView): string {
     <td class="property-col">${escapeHtml(row.propertyName)}</td>
     <td class="status-col"><span class="status ${statusClass}">${escapeHtml(row.statusText)}</span></td>
     <td class="time-col ${row.timeText === '—' ? 'muted' : 'num'}">${escapeHtml(row.timeText)}</td>
-    <td class="score-col ${row.scoreText === '—' ? 'muted' : 'score'}">${escapeHtml(row.scoreText)}</td>
-    <td class="point-col ${row.gradePointText === '—' ? 'muted' : 'num'}">${escapeHtml(row.gradePointText)}</td>
-    <td class="avg-col ${row.averageText === '—' ? 'muted' : 'num'}">${escapeHtml(row.averageText)}</td>
-    <td class="rank-col ${row.rankText === '—' ? 'muted' : 'num'}">${escapeHtml(row.rankText)}</td>
+    <td class="score-col ${scoreMuted ? 'muted' : 'score'}">${escapeHtml(row.scoreText)}</td>
+    <td class="point-col ${pointMuted ? 'muted' : 'num'}">${escapeHtml(row.gradePointText)}</td>
+    <td class="avg-col ${averageMuted ? 'muted' : 'num'}">${escapeHtml(row.averageText)}</td>
+    <td class="rank-col ${rankMuted ? 'muted' : 'num'}">${escapeHtml(row.rankText)}</td>
     <td class="delta-col gpa-delta gpa-${row.gpaDeltaKind}">${escapeHtml(row.gpaDeltaText)}</td>
   </tr>`;
 }

@@ -10,7 +10,7 @@ import { HbuJwMenuService } from './menu.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
 import { HbuJwService } from './service.js';
 import { ensureHbuJwTables, HbuJwStore } from './store.js';
-import { HbuJwTermScoresService } from './term-scores.js';
+import { HbuJwTermScoresService, type HbuJwTermScoresMode } from './term-scores.js';
 import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.js';
 import { renderBindPage } from './web/bind-page.js';
 
@@ -294,7 +294,7 @@ function registerKeywordMiddleware(
     if (command.kind === 'term_scores') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await termScoresService.queryTermScores(identity));
+        await session.send(await termScoresService.queryTermScores(identity, command.mode));
       } catch (error) {
         await session.send(toUserMessage(error));
       }
@@ -380,7 +380,7 @@ type HbuJwCommand =
   | { kind: 'unbind' }
   | { kind: 'gpa' }
   | { kind: 'schedule'; mode: HbuJwScheduleMode }
-  | { kind: 'term_scores' }
+  | { kind: 'term_scores'; mode: HbuJwTermScoresMode }
   | { kind: 'exam_schedule' };
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
@@ -394,7 +394,8 @@ function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text.toUpperCase() === 'GPA') return { kind: 'gpa' };
   if (text === '课表') return { kind: 'schedule', mode: 'current-week' };
   if (text === '完整课表') return { kind: 'schedule', mode: 'full-semester' };
-  if (text === '成绩') return { kind: 'term_scores' };
+  if (text === '成绩') return { kind: 'term_scores', mode: 'full' };
+  if (text === '匿名成绩') return { kind: 'term_scores', mode: 'anonymous' };
   if (text === '考试安排') return { kind: 'exam_schedule' };
   return null;
 }
