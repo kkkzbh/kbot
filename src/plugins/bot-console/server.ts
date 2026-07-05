@@ -10,7 +10,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
@@ -1169,17 +1169,42 @@ async function readFileIfExists(fsLike: FsLike, filePath: string | null): Promis
   }
 }
 
+type WriteFileAtomicWithBackupOptions = {
+  backupDir: string;
+  fs?: FsLike;
+  timestamp?: Date;
+};
+
+export function resolveBackupDirectory(rootDir: string, filePath: string): string {
+  const absoluteRootDir = resolve(rootDir);
+  const absoluteFilePath = resolve(filePath);
+  const relativeFilePath = relative(absoluteRootDir, absoluteFilePath);
+  const isInsideRoot = relativeFilePath && !relativeFilePath.startsWith('..') && !relativeFilePath.startsWith('/');
+
+  if (!isInsideRoot) {
+    return join(dirname(absoluteFilePath), 'backup');
+  }
+
+  const [topLevelDir] = relativeFilePath.split('/');
+  if (topLevelDir === 'data') return join(absoluteRootDir, 'data', 'backup');
+  if (topLevelDir === 'config') return join(absoluteRootDir, 'config', 'backup');
+  if (topLevelDir === '.runtime') return join(absoluteRootDir, '.runtime', 'backup');
+  return join(absoluteRootDir, 'backup');
+}
+
 export async function writeFileAtomicWithBackup(
   filePath: string,
   content: string,
-  fsLike: FsLike = defaultFs(),
-  timestamp = new Date(),
+  options: WriteFileAtomicWithBackupOptions,
 ): Promise<{ backupPath: string; tempPath: string }> {
+  const fsLike = options.fs ?? defaultFs();
+  const timestamp = options.timestamp ?? new Date();
   const stamp = timestamp.toISOString().replace(/[:.]/g, '-');
-  const backupPath = `${filePath}.bak.${stamp}`;
+  const backupPath = join(options.backupDir, `${basename(filePath)}.bak.${stamp}`);
   const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
 
   await fsLike.mkdir(dirname(filePath), { recursive: true });
+  await fsLike.mkdir(options.backupDir, { recursive: true });
   try {
     await fsLike.copyFile(filePath, backupPath);
   } catch (error) {
@@ -1502,7 +1527,10 @@ export class BotConsoleManager {
       readFileIfExists(this.fs, this.envFiles.editTarget),
     ]);
     const nextTargetContent = applyEnvPatchToContent(currentTargetContent, normalizedPatch);
-    await writeFileAtomicWithBackup(this.envFiles.editTarget, nextTargetContent, this.fs);
+    await writeFileAtomicWithBackup(this.envFiles.editTarget, nextTargetContent, {
+      backupDir: resolveBackupDirectory(this.rootDir, this.envFiles.editTarget),
+      fs: this.fs,
+    });
     const env = mergeManagedEnvRecords(
       readManagedEnvPatchFromContent(baseContent),
       readManagedEnvPatchFromContent(nextTargetContent),
@@ -1537,7 +1565,10 @@ export class BotConsoleManager {
       }
       const local = await this.readTtsLocalEnvState();
       const nextContent = applyTtsLocalEnvPatchToContent(local.content, localEnvPatch);
-      await writeFileAtomicWithBackup(this.ttsEnvFilePath, nextContent, this.fs);
+      await writeFileAtomicWithBackup(this.ttsEnvFilePath, nextContent, {
+        backupDir: resolveBackupDirectory(this.rootDir, this.ttsEnvFilePath),
+        fs: this.fs,
+      });
       this.ttsHealth = null;
     }
 

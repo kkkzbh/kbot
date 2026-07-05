@@ -13,6 +13,7 @@ import {
   mergeManagedEnvRecords,
   parsePresetDocument,
   parseSystemdShowOutput,
+  resolveBackupDirectory,
   resolveBotEnvFilePath,
   resolveBotEnvFiles,
   resolveManagedServiceUnits,
@@ -36,6 +37,17 @@ function createTempDir(): string {
   tempDirs.push(dir);
   return dir;
 }
+
+describe('resolveBackupDirectory', () => {
+  it('keeps generated backups under the owner backup directory', () => {
+    const rootDir = createTempDir();
+
+    expect(resolveBackupDirectory(rootDir, join(rootDir, 'data/koishi.db'))).toBe(join(rootDir, 'data/backup'));
+    expect(resolveBackupDirectory(rootDir, join(rootDir, 'config/voice-tts.local.env'))).toBe(join(rootDir, 'config/backup'));
+    expect(resolveBackupDirectory(rootDir, join(rootDir, '.runtime/.env.runtime'))).toBe(join(rootDir, '.runtime/backup'));
+    expect(resolveBackupDirectory(rootDir, join(rootDir, '.env.local'))).toBe(join(rootDir, 'backup'));
+  });
+});
 
 function createCopilotBridgeWithModels(models: unknown[]) {
   return {
@@ -172,10 +184,9 @@ describe('bot-console env helpers', () => {
     writeFileSync(filePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
 
     await expect(
-      writeFileAtomicWithBackup(
-        filePath,
-        'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5-preview\n',
-        {
+      writeFileAtomicWithBackup(filePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5-preview\n', {
+        backupDir: join(dir, 'backup'),
+        fs: {
           access: async () => undefined,
           copyFile: async (...args) => writeFile(args[1] as string, readFileSync(args[0] as string, 'utf8'), 'utf8'),
           mkdir: async () => undefined,
@@ -189,7 +200,7 @@ describe('bot-console env helpers', () => {
             throw new Error('disk full');
           },
         },
-      ),
+      }),
     ).rejects.toThrow('disk full');
 
     expect(readFileSync(filePath, 'utf8')).toBe('CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n');
