@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const {
   VERSION_MARKER,
   applyManagedConfig,
-  buildRemotePathMappings,
   disableWebUIAuthMiddleware,
   ensureQqConfigBridge,
   prepareManagedRuntime,
@@ -64,6 +63,15 @@ function prepareLauncherRuntime(script: string): {
       'function authMiddleware(req, res, next) {',
       '\tnext();',
       '}',
+      'class Runtime {',
+      '\tasync uploadFile(filePath, elementType = ElementType.Pic, elementSubType = 0) {',
+      '\t\tconst fileMd5 = await getMd5HexFromFile(filePath);',
+      '\t\tlet fileName = path.basename(filePath);',
+      '\t\tconst mediaPath = await this.getRichMediaFilePath(fileMd5, fileName, elementType, elementSubType);',
+      '\t\tawait copyFile(filePath, mediaPath);',
+      '\t\treturn { md5: fileMd5, fileName, path: mediaPath };',
+      '\t}',
+      '}',
       script,
     ].join('\n'),
     'utf8',
@@ -112,20 +120,6 @@ async function runLlbotHostLauncher(env: NodeJS.ProcessEnv): Promise<{
 }
 
 describe('llbot host runtime helpers', () => {
-  it('builds the LLBot remote path mapping for the PMHQ QQ volume', () => {
-    expect(
-      buildRemotePathMappings('/var/lib/containers/storage/volumes/qqbot-stack_qq_volume/_data'),
-    ).toEqual([
-      {
-        name: 'qqbot-pmhq-qq-config',
-        remotePrefix: '/root/.config/QQ',
-        localPrefix: '/var/lib/containers/storage/volumes/qqbot-stack_qq_volume/_data',
-        remoteStyle: 'posix',
-        localStyle: 'posix',
-      },
-    ]);
-  });
-
   it('inspects pmhq through the real host home when llbot home is isolated', () => {
     const spawnImpl = vi.fn((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
       expect(options.env.HOME).toBe('/home/qqbot');
@@ -278,15 +272,7 @@ describe('llbot host runtime helpers', () => {
     expect(config.ob11.connect[1]).toMatchObject({ enable: false, url: '', token: '' });
     expect(config.ob11.connect[2]).toMatchObject({ enable: false, host: '127.0.0.1', token: '' });
     expect(config.ob11.connect[3]).toMatchObject({ enable: false, url: '', token: '' });
-    expect(config.remotePathMappings).toEqual([
-      {
-        name: 'qqbot-pmhq-qq-config',
-        remotePrefix: '/root/.config/QQ',
-        localPrefix: '/var/lib/containers/storage/volumes/qqbot-stack_qq_volume/_data',
-        remoteStyle: 'posix',
-        localStyle: 'posix',
-      },
-    ]);
+    expect(config).not.toHaveProperty('remotePathMappings');
   });
 
   it('disables the webui auth middleware and clears stale tokens when requested', () => {
@@ -365,7 +351,7 @@ describe('llbot host runtime helpers', () => {
     expect(existsSync(join(qqMountSource, 'nt_qq_test', 'nt_data', 'Pic', '2026-04', 'Thumb'))).toBe(true);
   });
 
-  it('prepareManagedRuntime applies LLBot remote path mappings and the qq config bridge', async () => {
+  it('prepareManagedRuntime rewrites LLBot media destinations and applies the qq config bridge', async () => {
     const dir = createTempDir();
     const runtimeDir = join(dir, 'runtime');
     const dataDir = join(dir, 'data');
@@ -379,6 +365,15 @@ describe('llbot host runtime helpers', () => {
       [
         'function authMiddleware(req, res, next) {',
         '\treturn res.status(401).end()',
+        '}',
+        'class Runtime {',
+        '\tasync uploadFile(filePath, elementType = ElementType.Pic, elementSubType = 0) {',
+        '\t\tconst fileMd5 = await getMd5HexFromFile(filePath);',
+        '\t\tlet fileName = path.basename(filePath);',
+        '\t\tconst mediaPath = await this.getRichMediaFilePath(fileMd5, fileName, elementType, elementSubType);',
+        '\t\tawait copyFile(filePath, mediaPath);',
+        '\t\treturn { md5: fileMd5, fileName, path: mediaPath };',
+        '\t}',
         '}',
       ].join('\n'),
       'utf8',
@@ -407,16 +402,10 @@ describe('llbot host runtime helpers', () => {
 
     const entrypoint = readFileSync(join(runtimeDir, 'llbot.js'), 'utf8');
     const rewrittenConfig = JSON.parse(readFileSync(join(runtimeDir, 'default_config.json'), 'utf8'));
-    expect(entrypoint).not.toContain('qqbot-managed-pmhq-media-path-rewrite');
-    expect(rewrittenConfig.remotePathMappings).toEqual([
-      {
-        name: 'qqbot-pmhq-qq-config',
-        remotePrefix: '/root/.config/QQ',
-        localPrefix: qqMountSource,
-        remoteStyle: 'posix',
-        localStyle: 'posix',
-      },
-    ]);
+    expect(entrypoint).toContain('qqbot-managed-pmhq-media-path-rewrite');
+    expect(entrypoint).toContain(`const qqbotManagedPmhqMediaRoot = ${JSON.stringify(qqMountSource)};`);
+    expect(entrypoint).toContain('mediaPath.startsWith(qqbotManagedPmhqMediaPath)');
+    expect(rewrittenConfig).not.toHaveProperty('remotePathMappings');
     expect(lstatSync(join(homeDir, '.config', 'QQ')).isSymbolicLink()).toBe(true);
     expect(existsSync(join(qqMountSource, 'nt_qq_test', 'nt_data', 'Pic'))).toBe(true);
   });

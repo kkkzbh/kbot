@@ -10,28 +10,13 @@ const VERSION_MARKER = '.qqbot-llbot-version';
 const ENTRYPOINT_FILE = 'llbot.js';
 const DEFAULT_CONFIG_FILE = 'default_config.json';
 const PMHQ_QQ_CONFIG_DESTINATION = '/root/.config/QQ';
+const PMHQ_MEDIA_PATH_PATCH_MARKER = 'qqbot-managed-pmhq-media-path-rewrite';
 
 function normalizeTruthy(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? '').trim());
 }
 
-function buildRemotePathMappings(qqConfigMountSource) {
-  const sourceDir = String(qqConfigMountSource || '').trim();
-  if (!sourceDir) {
-    throw requiredPmhqMountSourceError();
-  }
-  return [
-    {
-      name: 'qqbot-pmhq-qq-config',
-      remotePrefix: PMHQ_QQ_CONFIG_DESTINATION,
-      localPrefix: path.resolve(sourceDir),
-      remoteStyle: 'posix',
-      localStyle: 'posix',
-    },
-  ];
-}
-
-function applyManagedConfig(config, env = process.env, options = {}) {
+function applyManagedConfig(config, env = process.env) {
   const next = structuredClone(config);
   const ws = next.ob11?.connect?.find((item) => item.type === 'ws');
   if (!ws) {
@@ -73,16 +58,50 @@ function applyManagedConfig(config, env = process.env, options = {}) {
     }
   }
 
-  next.remotePathMappings = buildRemotePathMappings(
-    options.qqConfigMountSource || env.QQBOT_QQ_CONFIG_MOUNT_SOURCE,
-  );
   next.ffmpeg = '/usr/bin/ffmpeg';
   return next;
 }
 
-function rewriteJsonConfig(filePath, env = process.env, options = {}) {
+function rewriteJsonConfig(filePath, env = process.env) {
   const config = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  fs.writeFileSync(filePath, `${JSON.stringify(applyManagedConfig(config, env, options), null, 2)}\n`, 'utf8');
+  fs.writeFileSync(filePath, `${JSON.stringify(applyManagedConfig(config, env), null, 2)}\n`, 'utf8');
+}
+
+function patchLlbotMediaPathResolution({ runtimeDir, qqConfigMountSource }) {
+  const sourceDir = String(qqConfigMountSource || '').trim();
+  if (!sourceDir) {
+    throw requiredPmhqMountSourceError();
+  }
+
+  const entrypointPath = path.join(runtimeDir, ENTRYPOINT_FILE);
+  const source = fs.readFileSync(entrypointPath, 'utf8');
+  const original = [
+    '\t\tconst mediaPath = await this.getRichMediaFilePath(fileMd5, fileName, elementType, elementSubType);',
+    '\t\tawait copyFile(filePath, mediaPath);',
+  ].join('\n');
+  const replacement = [
+    '\t\tlet mediaPath = await this.getRichMediaFilePath(fileMd5, fileName, elementType, elementSubType);',
+    `\t\tconst qqbotManagedPmhqMediaRoot = ${JSON.stringify(path.resolve(sourceDir).replace(/[/\\]+$/, ''))};`,
+    `\t\tconst qqbotManagedPmhqMediaPath = ${JSON.stringify(PMHQ_QQ_CONFIG_DESTINATION)};`,
+    '\t\tif (typeof mediaPath === "string" && mediaPath.startsWith(qqbotManagedPmhqMediaPath)) {',
+    '\t\t\tconst qqbotManagedRelativeMediaPath = mediaPath.slice(qqbotManagedPmhqMediaPath.length).replace(/^[/\\\\]+/, "");',
+    '\t\t\tmediaPath = qqbotManagedRelativeMediaPath',
+    '\t\t\t\t? `${qqbotManagedPmhqMediaRoot}/${qqbotManagedRelativeMediaPath}`',
+    '\t\t\t\t: qqbotManagedPmhqMediaRoot;',
+    '\t\t}',
+    `\t\t/* ${PMHQ_MEDIA_PATH_PATCH_MARKER} */`,
+    '\t\tawait copyFile(filePath, mediaPath);',
+  ].join('\n');
+
+  if (source.includes(replacement)) {
+    return false;
+  }
+  if (!source.includes(original)) {
+    throw new Error('Failed to locate llbot uploadFile media destination for managed media path rewrite');
+  }
+
+  fs.writeFileSync(entrypointPath, source.replace(original, replacement), 'utf8');
+  return true;
 }
 
 function requiredPmhqMountSourceError() {
@@ -329,13 +348,14 @@ async function prepareManagedRuntime(env = process.env) {
     homeDir: env.HOME || path.join(runtimeDir, '.host-home'),
     qqConfigMountSource,
   });
+  patchLlbotMediaPathResolution({ runtimeDir, qqConfigMountSource });
 
-  rewriteJsonConfig(path.join(runtimeDir, DEFAULT_CONFIG_FILE), env, { qqConfigMountSource });
+  rewriteJsonConfig(path.join(runtimeDir, DEFAULT_CONFIG_FILE), env);
 
   if (fs.existsSync(dataDir)) {
     for (const name of fs.readdirSync(dataDir)) {
       if (/^config_\d+\.json$/.test(name)) {
-        rewriteJsonConfig(path.join(dataDir, name), env, { qqConfigMountSource });
+        rewriteJsonConfig(path.join(dataDir, name), env);
       }
     }
   }
@@ -370,7 +390,6 @@ if (require.main === module) {
 module.exports = {
   VERSION_MARKER,
   applyManagedConfig,
-  buildRemotePathMappings,
   disableWebUIAuthMiddleware,
   ensureQqConfigBridge,
   ensureRuntimeDataLink,
@@ -379,6 +398,7 @@ module.exports = {
   resolvePmhqQqConfigMountSource,
   resolveRequiredPmhqQqConfigMountSource,
   normalizeTruthy,
+  patchLlbotMediaPathResolution,
   prepareManagedRuntime,
   prepareRuntimeVersion,
   rewriteJsonConfig,
