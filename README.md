@@ -58,7 +58,7 @@ Runtime processes:
 The deploy script checks these prerequisites with:
 
 ```bash
-ssh km6 'bash /opt/qqbot/current/scripts/deploy/verify-host-prereqs.sh'
+ssh km6 'bash /opt/qqbot/current/scripts/deploy/verify-host-prereqs.sh full'
 ```
 
 Run the check only after the first release exists at `/opt/qqbot/current`.
@@ -99,6 +99,10 @@ pnpm build
 If the change only touches console frontend code, `pnpm console:build` is enough
 for that frontend-only check. Runtime backend, shared runtime types, console
 IPC, or managed env key changes require `pnpm build`.
+
+Test maintenance follows [`docs/testing-policy.md`](docs/testing-policy.md). CI tests
+are release gates; keep them focused on stable behavior and deployment/runtime
+contracts instead of incidental implementation text.
 
 ## Server Runtime Environment
 
@@ -176,7 +180,7 @@ ssh km6 'systemctl stop qqbot.target'
 Check runtime health:
 
 ```bash
-ssh km6 'bash /opt/qqbot/current/scripts/verify-qqbot-host-runtime.sh'
+ssh km6 'bash /opt/qqbot/current/scripts/verify-qqbot-host-runtime.sh full'
 ```
 
 ## Common Checks

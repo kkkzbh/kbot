@@ -54,7 +54,7 @@ ssh km6
 部署脚本通过下面的脚本检查宿主机前置条件：
 
 ```bash
-ssh km6 'bash /opt/qqbot/current/scripts/deploy/verify-host-prereqs.sh'
+ssh km6 'bash /opt/qqbot/current/scripts/deploy/verify-host-prereqs.sh full'
 ```
 
 该检查需要首个 release 已经存在于 `/opt/qqbot/current` 后再执行。
@@ -92,6 +92,8 @@ pnpm build
 ```
 
 如果只改 console 前端，`pnpm console:build` 足够覆盖该前端检查。涉及 runtime backend、shared runtime types、console IPC，或 `koishi.yml` 使用的 managed env key 时，需要运行 `pnpm build`。
+
+测试维护遵循 [`docs/testing-policy.md`](docs/testing-policy.md)。CI 测试是 release gate，应聚焦稳定行为、部署边界和运行时契约，不用零散实现文本做大范围断言。
 
 ## 服务器运行时环境
 
@@ -165,7 +167,7 @@ ssh km6 'systemctl stop qqbot.target'
 检查运行时健康状态：
 
 ```bash
-ssh km6 'bash /opt/qqbot/current/scripts/verify-qqbot-host-runtime.sh'
+ssh km6 'bash /opt/qqbot/current/scripts/verify-qqbot-host-runtime.sh full'
 ```
 
 ## 常见检查

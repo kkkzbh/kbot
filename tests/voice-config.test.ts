@@ -202,68 +202,6 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('<qqbot-voice>');
   });
 
-  it('deploys through a release bundle and renders server units from tracked scripts', () => {
-    const workflow = readFileSync(resolve(process.cwd(), '.github/workflows/deploy.yml'), 'utf8');
-    const renderer = readFileSync(resolve(process.cwd(), 'scripts/deploy/render-systemd-units.mjs'), 'utf8');
-    const installer = readFileSync(resolve(process.cwd(), 'scripts/deploy/install-release.sh'), 'utf8');
-    const prereqs = readFileSync(resolve(process.cwd(), 'scripts/deploy/verify-host-prereqs.sh'), 'utf8');
-
-    expect(workflow).toContain('environment:');
-    expect(workflow).toContain('name: production');
-    expect(workflow).toContain('node ./scripts/ci/write-build-manifest.mjs --output artifacts/build-manifest.json');
-    expect(workflow).toContain('bash ./scripts/ci/create-deploy-bundle.sh');
-    expect(workflow).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
-    expect(workflow).toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
-    expect(workflow).toContain('webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555');
-    expect(workflow).toContain('SSH_KNOWN_HOSTS: ${{ secrets.QQBOT_SSH_KNOWN_HOSTS }}');
-    expect(workflow).toContain('prepare-production:');
-    expect(workflow).toContain('activate-production:');
-    expect(workflow).toContain('verify-production:');
-    expect(workflow).toContain('bash "${QQBOT_REMOTE_INSTALL_TMP}/qqbot/scripts/deploy/install-release.sh" prepare');
-    expect(workflow).toContain('QQBOT_DEPLOY_SCOPE=$(printf');
-    expect(workflow).toContain('restart_scope:');
-    expect(workflow).toContain('verify_scope:');
-    expect(workflow).not.toContain('ssh-keyscan');
-    expect(workflow).not.toContain('apt-get install');
-    expect(workflow).not.toContain('cat > "${USER_SYSTEMD_DIR}/qqbot-pmhq.service"');
-
-    expect(renderer).toContain("writeUnit(\n  systemdDir,\n  'qqbot-pmhq.service'");
-    expect(renderer).toContain("writeUnit(\n  systemdDir,\n  'qqbot-llbot.service'");
-    expect(renderer).toContain("writeUnit(\n  systemdDir,\n  'qqbot-koishi.service'");
-    expect(renderer).toContain('EnvironmentFile=${envServer}');
-    expect(renderer).toContain('EnvironmentFile=-${envRuntime}');
-    expect(renderer).toContain('Environment=QQBOT_ENV_BASE_FILE=${envServer}');
-    expect(renderer).toContain('Environment=QQBOT_ENV_OVERRIDE_FILE=${envRuntime}');
-    expect(renderer).toContain('Environment=CHATLUNA_PRESET_DIRS=${shared}/presets:${app}/data/chathub/presets');
-    expect(renderer).toContain('PartOf=qqbot.target qqbot-llbot.service');
-    expect(renderer).toContain('podman rm -f qqbot-voice-asr >/dev/null 2>&1 || true');
-    expect(renderer).toContain('./scripts/podman-pmhq-service.sh up');
-    expect(renderer).toContain('./scripts/run-llbot-host.sh');
-    expect(renderer).toContain('Wants=qqbot-pmhq.service qqbot-llbot.service qqbot-koishi.service');
-
-    expect(installer).toContain('install-release.sh prepare <qqbot-release.tar.gz>');
-    expect(installer).toContain('install-release.sh activate <release-id>');
-    expect(installer).toContain('install-release.sh verify <koishi|full> [release-id]');
-    expect(installer).toContain('bash "${app_dir}/scripts/deploy/verify-host-prereqs.sh" "${DEPLOY_SCOPE}"');
-    expect(installer).toContain('bash "${app_dir}/scripts/prepare-server-runtime-layer.sh"');
-    expect(installer).toContain('CHATLUNA_ROOT_DIR="${chatluna_dir}" bash "${app_dir}/scripts/ensure-chatluna-build.sh" --check');
-    expect(installer).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
-    expect(installer).toContain('ln -sfn "${app_dir}" "${CURRENT_LINK}"');
-    expect(installer).toContain('bash "${CURRENT_LINK}/scripts/verify-qqbot-host-runtime.sh" "${verify_scope}"');
-    expect(installer).toContain('.qqbot-release-prepared.json');
-    expect(installer).toContain('QQBOT_SERVER_ENV_FILE="${SHARED_DIR}/.env.server"');
-    expect(installer).not.toContain('pnpm build');
-    expect(installer).not.toContain('QQBOT_DEPLOY_DRY_RUN');
-
-    expect(prereqs).toContain('corepack or npm');
-    expect(prereqs).toContain('chromium-headless/google-chrome');
-    expect(prereqs).toContain('/usr/lib64/chromium-browser/headless_shell');
-    expect(prereqs).toContain('if [[ "${SCOPE}" == "full" ]]; then');
-    expect(prereqs).toContain('require_cmd podman');
-    expect(prereqs).toContain('require_cmd podman-compose');
-    expect(prereqs).not.toContain('podman compose version');
-    expect(prereqs).not.toContain('apt-get');
-  });
 
   it('ships a dedicated pmhq compose helper for the host topology', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/podman-pmhq-service.sh'), 'utf8');
@@ -282,20 +220,6 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('compose up -d llbot');
   });
 
-  it('ships a host runtime verifier for pmhq, llbot and koishi wiring', () => {
-    const content = readFileSync(resolve(process.cwd(), 'scripts/verify-qqbot-host-runtime.sh'), 'utf8');
-
-    expect(content).toContain('wait_until "${PMHQ_CONTAINER} is running"');
-    expect(content).toContain('wait_until "${PMHQ_CONTAINER} has a default route"');
-    expect(content).toContain('wait_until "${PMHQ_CONTAINER} can reach QQ login network"');
-    expect(content).toContain('wait_until "pmhq health endpoint is reachable"');
-    expect(content).toContain('wait_until "llbot webui is reachable"');
-    expect(content).toContain('wait_until "${LLBOT_UNIT} completes PMHQ WebSocket handshake"');
-    expect(content).toContain('wait_until "koishi can reach llbot websocket"');
-    expect(content).toContain('journalctl -u "${LLBOT_UNIT}"');
-    expect(content).toContain('systemctl is-active --quiet "${unit}"');
-    expect(content).toContain('new WebSocket(process.argv[1])');
-  });
 
   it('ships a one-shot server login recovery helper for pmhq and llbot services', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/server-recover-qq-login.sh'), 'utf8');
@@ -305,7 +229,7 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('systemctl stop qqbot.target');
     expect(content).toContain('systemctl start qqbot-pmhq.service');
     expect(content).toContain('systemctl start qqbot-llbot.service');
-    expect(content).toContain('${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh');
+    expect(content).toContain('${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh" full');
     expect(content).toContain('AUTO_LOGIN_QQ is temporarily cleared in ${ENV_FILE}.');
     expect(content).toContain('systemctl restart qqbot.target');
     expect(content).toContain('set_auto_login_value');

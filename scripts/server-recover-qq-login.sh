@@ -70,7 +70,7 @@ EOF
   systemctl daemon-reload
   systemctl start qqbot-pmhq.service
   systemctl start qqbot-llbot.service
-  "${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh"
+  "${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh" full
 
   cat <<EOF
 Manual login recovery mode is ready.
