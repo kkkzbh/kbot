@@ -226,7 +226,7 @@ describe('chatluna model guard runtime shape', () => {
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
     }));
     const harness = createHarness();
     harness.ready?.();
@@ -249,11 +249,11 @@ describe('chatluna model guard runtime shape', () => {
     };
 
     await expect(guard?.({ stripped: { content: 'hi' } }, context)).resolves.not.toBe(1);
-    expect(conversation.model).toBe('openai/gpt-4o');
+    expect(conversation.model).toBe('openai/auto');
     expect(harness.database.set).toHaveBeenCalledWith(
       'chatluna_conversation',
       { id: 'conv-1' },
-      { model: 'openai/gpt-4o' },
+      { model: 'openai/auto' },
     );
   });
 
@@ -262,7 +262,7 @@ describe('chatluna model guard runtime shape', () => {
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
     }));
     const harness = createHarness();
     harness.database.set.mockRejectedValueOnce(new Error('database write failed'));
@@ -295,7 +295,7 @@ describe('chatluna model guard runtime shape', () => {
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
     }));
     const harness = createHarness();
     harness.ready?.();
@@ -341,11 +341,11 @@ describe('chatluna model guard runtime shape', () => {
     expect(harness.chatluna.conversation.createConversation).toHaveBeenCalledWith(session, {
       bindingKey: 'shared:onebot:guild:829573670',
       title: 'New Conversation',
-      model: 'openai/gpt-4o',
+      model: 'openai/auto',
       preset: 'saki',
       chatMode: 'plugin',
     });
-    expect(context.options.conversation.conversation?.model).toBe('openai/gpt-4o');
+    expect(context.options.conversation.conversation?.model).toBe('openai/auto');
     expect(harness.database.set).not.toHaveBeenCalled();
   });
 });

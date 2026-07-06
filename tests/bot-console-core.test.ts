@@ -130,28 +130,16 @@ function createMinimalWav(): Uint8Array {
 
 const COPILOT_ENABLED_MODEL_PAYLOAD = [
   {
-    id: 'gpt-4.1',
-    name: 'GPT-4.1 Auto',
-    policy: { state: 'enabled' },
-    model_picker_enabled: true,
+    id: 'auto',
+    name: 'Auto',
     capabilities: { type: 'chat', supports: { structured_outputs: true } },
     supported_endpoints: ['/chat/completions'],
-  },
-  {
-    id: 'gpt-4o-mini',
-    name: 'GPT-4o mini Auto',
-    policy: { state: 'enabled' },
-    model_picker_enabled: true,
-    capabilities: { type: 'chat', supports: { structured_outputs: true } },
-    supported_endpoints: ['/chat/completions'],
-  },
-  {
-    id: 'gpt-4o',
-    name: 'GPT-4o Auto',
-    policy: { state: 'enabled' },
-    model_picker_enabled: true,
-    capabilities: { type: 'chat', supports: { structured_outputs: true } },
-    supported_endpoints: ['/chat/completions'],
+    qqbot: {
+      rateLabel: '0.1x',
+      requestMode: 'chat_completions',
+      structuredOutputProtocol: 'native_chat_json_schema',
+      availableModels: ['gpt-5-mini', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+    },
   },
 ];
 
@@ -294,7 +282,7 @@ describe('bot-console env helpers', () => {
       CHATLUNA_CODEX_REASONING_EFFORT: 'xhigh',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'github_pat_123',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4.1',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
       CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
       CHATLUNA_DEEPSEEK_API_KEY: 'sk-deepseek',
       CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek-v4-pro',
@@ -338,9 +326,9 @@ describe('bot-console env helpers', () => {
         strategyId: 'copilot-github-oauth-main-chat',
         requestMode: 'chat_completions',
         structuredOutputProtocol: 'native_chat_json_schema',
-        defaultModel: 'openai/gpt-4.1',
-        canonicalModel: 'openai/gpt-4.1',
-        transportModel: 'gpt-4.1',
+        defaultModel: 'openai/auto',
+        canonicalModel: 'openai/auto',
+        transportModel: 'auto',
       }),
       expect.objectContaining({
         id: 'deepseek',
@@ -473,39 +461,22 @@ describe('bot-console env helpers', () => {
     });
   });
 
-  it('returns the static Copilot Auto model list when the OAuth bridge is ready', async () => {
-    const result = await listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels([
-      { id: 'ignored-upstream-model' },
-    ]));
+  it('returns the Copilot Auto entry from the OAuth bridge', async () => {
+    const result = await listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels(COPILOT_ENABLED_MODEL_PAYLOAD));
 
     expect(result).toMatchObject({
-      source: 'static',
+      source: 'dynamic',
       error: null,
       models: [
         {
-          modelId: 'gpt-4.1',
-          label: 'GPT-4.1 Auto',
-          rateLabel: '0x',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-        },
-        {
-          modelId: 'gpt-4o-mini',
-          label: 'GPT-4o mini Auto',
-          rateLabel: '0x',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-        },
-        {
-          modelId: 'gpt-4o',
-          label: 'GPT-4o Auto',
-          rateLabel: '0x',
+          modelId: 'auto',
+          label: 'Auto',
+          rateLabel: '0.1x',
           requestMode: 'chat_completions',
           structuredOutputProtocol: 'native_chat_json_schema',
         },
       ],
     });
-    expect(result.models.some((model) => model.modelId === 'gpt-5-mini')).toBe(false);
   });
 
   it('reports Copilot unavailable when the OAuth bridge status is not ready', async () => {
@@ -523,7 +494,7 @@ describe('bot-console env helpers', () => {
     });
 
     expect(result).toMatchObject({
-      source: 'static',
+      source: 'dynamic',
       models: [],
       error: 'Copilot session token 换取失败：HTTP 401',
     });
@@ -531,7 +502,7 @@ describe('bot-console env helpers', () => {
 
   it('does not expose a Copilot model list when the bridge is unavailable', async () => {
     await expect(listCopilotModelsFromOAuthBridge(undefined)).resolves.toMatchObject({
-      source: 'static',
+      source: 'dynamic',
       models: [],
       error: expect.stringContaining('bridge is unavailable'),
     });
@@ -1206,14 +1177,14 @@ describe('bot-console manager', () => {
           requestMode: 'responses',
           structuredOutputProtocol: 'native_responses_json_schema',
           description: 'copilot',
-          modelHint: 'openai/gpt-4.1',
+          modelHint: 'openai/auto',
           authKind: 'oauth_device',
           authStatus: 'ready',
           accountLabel: null,
           authError: null,
           baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
           apiKey: 'github_pat_123',
-          defaultModel: 'openai/gpt-4.1',
+          defaultModel: 'openai/auto',
         },
         {
           id: 'deepseek',
@@ -1254,7 +1225,7 @@ describe('bot-console manager', () => {
       CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'github_pat_123',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4.1',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
       CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
       CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek/deepseek-v4-flash',
     });
@@ -1289,7 +1260,7 @@ describe('bot-console manager', () => {
           provider: 'openai',
           baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
           apiKey: 'github_pat_123',
-          defaultModel: 'openai/gpt-4.1',
+          defaultModel: 'openai/auto',
         },
         {
           id: 'deepseek',
@@ -1502,14 +1473,14 @@ describe('bot-console manager', () => {
           requestMode: 'responses',
           structuredOutputProtocol: 'native_responses_json_schema',
           description: 'copilot',
-          modelHint: 'openai/gpt-4.1',
+          modelHint: 'openai/auto',
           authKind: 'oauth_device',
           authStatus: 'ready',
           accountLabel: null,
           authError: null,
           baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
           apiKey: 'github_pat_123',
-          defaultModel: 'openai/gpt-4.1',
+          defaultModel: 'openai/auto',
         },
       ],
     }),
@@ -1572,14 +1543,14 @@ describe('bot-console manager', () => {
           requestMode: 'responses',
           structuredOutputProtocol: 'native_responses_json_schema',
           description: 'copilot',
-          modelHint: 'openai/gpt-4o',
+          modelHint: 'openai/auto',
           authKind: 'oauth_device',
           authStatus: 'ready',
           accountLabel: null,
           authError: null,
           baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
           apiKey: 'github_pat_123',
-          defaultModel: 'openai/gpt-4o',
+          defaultModel: 'openai/auto',
         },
         {
           id: 'deepseek',
@@ -1606,14 +1577,14 @@ describe('bot-console manager', () => {
       id: 'copilot',
       requestMode: 'chat_completions',
       structuredOutputProtocol: 'native_chat_json_schema',
-      defaultModel: 'openai/gpt-4o',
-      canonicalModel: 'openai/gpt-4o',
-      transportModel: 'gpt-4o',
+      defaultModel: 'openai/auto',
+      canonicalModel: 'openai/auto',
+      transportModel: 'auto',
     }));
     expect(result.env).toMatchObject({
       CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_DEFAULT_MODEL: 'openai/gpt-4o',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o',
+      CHATLUNA_DEFAULT_MODEL: 'openai/auto',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
     });
   });
 
@@ -1674,7 +1645,7 @@ describe('bot-console manager', () => {
           requestMode: 'responses',
           structuredOutputProtocol: 'native_responses_json_schema',
           description: 'copilot',
-          modelHint: 'openai/gpt-4.1',
+          modelHint: 'openai/auto',
           authKind: 'oauth_device',
           authStatus: 'ready',
           accountLabel: null,
@@ -1685,7 +1656,7 @@ describe('bot-console manager', () => {
         },
       ],
     }),
-    ).rejects.toThrow(/GitHub Copilot Tab：.*不在 Copilot Auto 静态模型列表内/);
+    ).rejects.toThrow(/GitHub Copilot Tab：.*不在 Copilot Auto 入口列表内/);
   });
 
   it('rejects unsupported Codex tab models outside the current visible API catalog', async () => {
@@ -1708,7 +1679,7 @@ describe('bot-console manager', () => {
             provider: 'openai',
             baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
             apiKey: '',
-            defaultModel: 'openai/gpt-4.1',
+            defaultModel: 'openai/auto',
           },
         ] as any,
       }),
@@ -1745,7 +1716,7 @@ describe('bot-console manager', () => {
             provider: 'openai',
             baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
             apiKey: 'github_pat_123',
-            defaultModel: 'openai/gpt-4.1',
+            defaultModel: 'openai/auto',
           },
           {
             id: 'deepseek',
@@ -1803,7 +1774,7 @@ describe('bot-console manager', () => {
           provider: 'openai',
           baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
           apiKey: 'github_pat_123',
-          defaultModel: 'openai/gpt-4.1',
+          defaultModel: 'openai/auto',
         },
         {
           id: 'deepseek',

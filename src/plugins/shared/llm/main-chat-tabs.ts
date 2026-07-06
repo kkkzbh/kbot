@@ -40,7 +40,7 @@ export interface MainChatConsoleDescription {
 export interface CopilotModelOption {
   modelId: string;
   label: string;
-  rateLabel: string;
+  rateLabel?: string;
   requestMode: MainChatRequestMode;
   structuredOutputProtocol: OutputProtocolId;
   deprecated?: boolean;
@@ -135,7 +135,8 @@ export const CODEX_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:5140/api/internal
 export const CODEX_DEFAULT_MODEL = 'openai/gpt-5.5';
 export const CODEX_DEFAULT_REASONING_EFFORT = 'medium' as const satisfies MainChatReasoningEffort;
 export const COPILOT_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:5140/api/internal/copilot/v1';
-export const COPILOT_DEFAULT_MODEL = 'openai/gpt-4.1';
+export const COPILOT_AUTO_MODEL_ID = 'auto';
+export const COPILOT_DEFAULT_MODEL = `openai/${COPILOT_AUTO_MODEL_ID}`;
 export const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com';
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
 export const MIMO_DEFAULT_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1';
@@ -143,23 +144,8 @@ export const MIMO_DEFAULT_MODEL = 'mimo-v2.5-pro';
 export const MAIN_CHAT_BUILTIN_TAB_IDS = ['siliconflow', 'openai', 'codex', 'copilot', 'deepseek', 'mimo'] as const satisfies readonly MainChatBuiltinTabId[];
 export const COPILOT_MODEL_OPTIONS = [
   {
-    modelId: 'gpt-4.1',
-    label: 'GPT-4.1 Auto',
-    rateLabel: '0x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'native_chat_json_schema',
-  },
-  {
-    modelId: 'gpt-4o-mini',
-    label: 'GPT-4o mini Auto',
-    rateLabel: '0x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'native_chat_json_schema',
-  },
-  {
-    modelId: 'gpt-4o',
-    label: 'GPT-4o Auto',
-    rateLabel: '0x',
+    modelId: COPILOT_AUTO_MODEL_ID,
+    label: 'Auto',
     requestMode: 'chat_completions',
     structuredOutputProtocol: 'native_chat_json_schema',
   },
@@ -209,9 +195,10 @@ export const CODEX_REASONING_EFFORT_OPTIONS = [
 ] as const satisfies readonly { id: MainChatReasoningEffort; label: string }[];
 
 export function formatCopilotModelOptionLabel(option: CopilotModelOption): string {
-  return option.deprecated
-    ? `${option.label} (${option.rateLabel}, 可能弃用)`
-    : `${option.label} (${option.rateLabel})`;
+  const rateLabel = option.rateLabel?.trim();
+  if (option.deprecated && rateLabel) return `${option.label} (${rateLabel}, 可能弃用)`;
+  if (option.deprecated) return `${option.label} (可能弃用)`;
+  return rateLabel ? `${option.label} (${rateLabel})` : option.label;
 }
 
 export function getCopilotModelOption(model?: string | null): CopilotModelOption | null {
@@ -510,10 +497,10 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
       const option = getCopilotModelOption(model);
       const mode = this.resolveRequestMode(model) === 'responses' ? 'Responses API' : 'chat/completions';
       return {
-        description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 Auto 静态模型 ${option ? formatCopilotModelOptionLabel(option) : '未配置'}，并走 ${mode} / ${this.resolveStructuredOutputProtocol(model)}。`,
+        description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 ${option ? formatCopilotModelOptionLabel(option) : '未配置'}，由 bridge 开启 Copilot Auto session 后选择具体模型，并走 ${mode} / ${this.resolveStructuredOutputProtocol(model)}。`,
         modelHint: option
-          ? `当前从 Copilot Auto 静态模型列表选择，已选 ${formatCopilotModelOptionLabel(option)}。`
-          : '当前模型不在 Copilot Auto 静态模型列表中。',
+          ? `当前选择 ${formatCopilotModelOptionLabel(option)}。保存为 openai/${option.modelId}，上游请求发送 ${option.modelId}，具体模型由 Copilot Auto session 决定。`
+          : '当前模型不在 Copilot Auto 入口列表中。',
       };
     },
   },
@@ -878,11 +865,14 @@ export function normalizeCopilotModelId(model?: string | null): string | null {
   const value = model?.trim();
   if (!value) return null;
   if (value.startsWith('openai/')) {
-    return value.slice('openai/'.length).trim() || null;
+    const normalized = value.slice('openai/'.length).trim();
+    return normalized.toLowerCase() === COPILOT_AUTO_MODEL_ID ? COPILOT_AUTO_MODEL_ID : normalized || null;
   }
   if (value.startsWith('github-copilot/')) {
-    return value.slice('github-copilot/'.length).trim() || null;
+    const normalized = value.slice('github-copilot/'.length).trim();
+    return normalized.toLowerCase() === COPILOT_AUTO_MODEL_ID ? COPILOT_AUTO_MODEL_ID : normalized || null;
   }
+  if (value.toLowerCase() === COPILOT_AUTO_MODEL_ID) return COPILOT_AUTO_MODEL_ID;
   return value;
 }
 
@@ -982,7 +972,7 @@ function getCopilotStructuredOutputProtocol(model?: string | null): StructuredOu
 function requireCopilotModelOption(model?: string | null): CopilotModelOption {
   const option = getCopilotModelOption(model);
   if (!option) {
-    throw new Error(`GitHub Copilot Auto 静态模型列表不支持：${String(model ?? '').trim() || '<empty>'}`);
+    throw new Error(`GitHub Copilot Auto 入口列表不支持：${String(model ?? '').trim() || '<empty>'}`);
   }
   return option;
 }
@@ -1103,7 +1093,7 @@ const COPILOT_UI_SCHEMA: BuiltinTabUiSchema = {
   modelInputKind: 'select-dynamic',
   modelOptions: [],
   allowedModelExamples: COPILOT_MODEL_OPTIONS.map((option) => option.modelId),
-  allowedModelsDescription: 'GitHub Copilot Tab 只能选择 Copilot Student/Free Auto 静态模型列表中的模型。Bridge 地址 / API key 由本地 OAuth bridge 自动接管。',
+  allowedModelsDescription: 'GitHub Copilot Tab 只暴露 Auto 入口。Bridge 地址 / API key 由本地 OAuth bridge 自动接管，具体模型由 Copilot Auto session 选择。',
   secondaryAction: 'copilot-oauth',
 };
 
@@ -1254,7 +1244,7 @@ export function validateMainChatTabModel(
     if (!transportModel || !supportedIds.has(transportModel)) {
       return {
         ok: false,
-        message: `GitHub Copilot Tab：'${trimmed}' 不在 Copilot Auto 静态模型列表内。可选：${[...supportedIds].slice(0, 6).join(' / ')}${supportedIds.size > 6 ? ' …' : ''}`,
+        message: `GitHub Copilot Tab：'${trimmed}' 不在 Copilot Auto 入口列表内。可选：${[...supportedIds].slice(0, 6).join(' / ')}${supportedIds.size > 6 ? ' …' : ''}`,
         suggestions: [...supportedIds],
       };
     }

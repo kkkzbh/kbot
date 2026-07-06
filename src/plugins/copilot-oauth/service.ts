@@ -8,6 +8,7 @@ import type {
   CopilotAuthState,
 } from '../../types/bot-console.js';
 import {
+  COPILOT_AUTO_MODEL_ID,
   COPILOT_MODEL_OPTIONS,
   type CopilotModelOption,
   type MainChatRequestMode,
@@ -21,6 +22,7 @@ const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
 const GITHUB_USER_URL = 'https://api.github.com/user';
 const DEFAULT_COPILOT_API_BASE_URL = 'https://api.individual.githubcopilot.com';
 const SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1000;
+const AUTO_ROUTER_TIMEOUT_MS = 2500;
 const proxyAgents = new Map<string, ProxyAgent>();
 
 type ResolvedEnvFiles = {
@@ -75,6 +77,33 @@ type CopilotBridgeRuntimeConfig = {
   apiKey: string;
 };
 
+type CopilotAutoSessionResponse = {
+  session_token?: string;
+  available_models?: unknown;
+  discounted_costs?: unknown;
+  expires_at?: number | string;
+};
+
+type CopilotAutoSessionRecord = {
+  token: string;
+  availableModels: string[];
+  discountedCosts: Record<string, number>;
+  expiresAt: number;
+  updatedAt: number;
+  copilotToken: string;
+  baseUrl: string;
+};
+
+type CopilotRouterDecisionResponse = {
+  predicted_label?: string;
+  confidence?: number;
+  latency_ms?: number;
+  candidate_models?: unknown;
+  chosen_model?: unknown;
+  fallback?: boolean;
+  fallback_reason?: string;
+};
+
 type DeviceLoginAttempt = CopilotAuthAttempt & {
   deviceCode: string;
   intervalMs: number;
@@ -92,9 +121,10 @@ export type CopilotConsoleStatus = Pick<
 export interface CopilotBridgeStateProvider {
   getRuntimeConfig(): Promise<CopilotBridgeRuntimeConfig>;
   getConsoleStatus(options?: { probe?: boolean }): Promise<CopilotConsoleStatus>;
+  proxyModels?(): Promise<{ status: number; headers: Record<string, string>; body: string }>;
 }
 
-type StaticCopilotModelPayload = {
+type CopilotModelPayload = {
   object: 'list';
   data: Array<{
     id: string;
@@ -111,9 +141,10 @@ type StaticCopilotModelPayload = {
       };
     };
     qqbot: {
-      rateLabel: string;
+      rateLabel?: string;
       requestMode: MainChatRequestMode;
       structuredOutputProtocol: CopilotModelOption['structuredOutputProtocol'];
+      availableModels?: string[];
     };
   }>;
 };
@@ -322,8 +353,15 @@ export function buildCopilotBridgeBaseUrl(env: NodeJS.ProcessEnv = process.env):
 export function normalizeCopilotModelId(model: string | null | undefined): string | null {
   const value = trimOptionalText(model);
   if (!value) return null;
-  if (value.startsWith('openai/')) return trimOptionalText(value.slice('openai/'.length));
-  if (value.startsWith('github-copilot/')) return trimOptionalText(value.slice('github-copilot/'.length));
+  if (value.startsWith('openai/')) {
+    const normalized = trimOptionalText(value.slice('openai/'.length));
+    return normalized?.toLowerCase() === COPILOT_AUTO_MODEL_ID ? COPILOT_AUTO_MODEL_ID : normalized;
+  }
+  if (value.startsWith('github-copilot/')) {
+    const normalized = trimOptionalText(value.slice('github-copilot/'.length));
+    return normalized?.toLowerCase() === COPILOT_AUTO_MODEL_ID ? COPILOT_AUTO_MODEL_ID : normalized;
+  }
+  if (value.toLowerCase() === COPILOT_AUTO_MODEL_ID) return COPILOT_AUTO_MODEL_ID;
   return value;
 }
 
@@ -336,6 +374,8 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   readonly secretFilePath: string;
   private readonly attempts = new Map<string, DeviceLoginAttempt>();
   private sessionRefreshPromise: Promise<CopilotSessionRecord> | null = null;
+  private autoSession: CopilotAutoSessionRecord | null = null;
+  private autoSessionPromise: Promise<CopilotAutoSessionRecord> | null = null;
 
   constructor(args: { rootDir: string; envFiles: ResolvedEnvFiles }) {
     this.rootDir = args.rootDir;
@@ -557,6 +597,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   async logout(): Promise<CopilotConsoleStatus> {
     this.attempts.clear();
+    this.invalidateAutoSession();
     await Promise.all([
       rm(this.oauthFilePath, { force: true }),
       rm(this.sessionFilePath, { force: true }),
@@ -572,11 +613,12 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   async proxyModels(): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     try {
-      await this.resolveCopilotSession({ forceRefresh: false });
+      const session = await this.resolveCopilotSession({ forceRefresh: false });
+      const autoSession = await this.resolveCopilotAutoSession(session);
       return {
         status: 200,
         headers: { 'content-type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(buildStaticCopilotModelPayload()),
+        body: JSON.stringify(buildCopilotAutoModelPayload(autoSession)),
       };
     } catch (error) {
       return this.buildProxyErrorResponse(error);
@@ -601,14 +643,39 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     const normalizedBody = normalizeCopilotRequestBody(body);
     try {
       await this.assertCopilotModelCallable(normalizedBody, 'chat_completions');
+      return await this.doProxyChatCompletions(normalizedBody, false);
     } catch (error) {
       return this.buildProxyErrorResponse(error);
     }
-    return this.proxyUpstream({
+  }
+
+  private async doProxyChatCompletions(
+    body: unknown,
+    retried: boolean,
+  ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    const session = await this.resolveCopilotSession({ forceRefresh: retried });
+    const prepared = await this.prepareCopilotChatCompletionsRequest(session, body);
+    const response = await fetchExternal(`${session.baseUrl}/chat/completions`, 'Copilot upstream 请求', {
       method: 'POST',
-      path: '/chat/completions',
-      body: normalizedBody,
+      headers: buildCopilotRequestHeaders(session.token, {
+        autoSessionToken: prepared.autoSession.token,
+      }),
+      body: JSON.stringify(prepared.body),
     });
+
+    if (response.status === 401 && !retried) {
+      this.invalidateAutoSession();
+      return this.doProxyChatCompletions(body, true);
+    }
+
+    const responseBody = await response.text();
+    return {
+      status: response.status,
+      headers: {
+        'content-type': response.headers.get('content-type') || 'application/json; charset=utf-8',
+      },
+      body: responseBody,
+    };
   }
 
   private async ensureBridgeSecret(): Promise<string> {
@@ -767,6 +834,131 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     return record;
   }
 
+  private invalidateAutoSession(): void {
+    this.autoSession = null;
+    this.autoSessionPromise = null;
+  }
+
+  private async resolveCopilotAutoSession(session: CopilotSessionRecord): Promise<CopilotAutoSessionRecord> {
+    if (this.autoSession && isAutoSessionUsable(this.autoSession, session)) {
+      return this.autoSession;
+    }
+    if (!this.autoSessionPromise) {
+      this.autoSessionPromise = this.requestCopilotAutoSession(session).finally(() => {
+        this.autoSessionPromise = null;
+      });
+    }
+    this.autoSession = await this.autoSessionPromise;
+    return this.autoSession;
+  }
+
+  private async requestCopilotAutoSession(session: CopilotSessionRecord): Promise<CopilotAutoSessionRecord> {
+    const response = await fetchExternal(`${session.baseUrl}/models/session`, 'Copilot Auto session 开启', {
+      method: 'POST',
+      headers: buildCopilotRequestHeaders(session.token),
+      body: JSON.stringify({
+        auto_mode: {
+          model_hints: [COPILOT_AUTO_MODEL_ID],
+        },
+      }),
+    });
+    if (!response.ok) {
+      throw await buildHttpError('Copilot Auto session 开启失败', response);
+    }
+
+    const payload = (await response.json()) as CopilotAutoSessionResponse;
+    const token = trimOptionalText(payload.session_token);
+    if (!token) {
+      throw new Error('Copilot Auto session 响应缺少 session_token。');
+    }
+    const availableModels = normalizeStringList(payload.available_models);
+    if (availableModels.length === 0) {
+      throw new Error('Copilot Auto session 响应缺少 available_models。');
+    }
+    const chatModels = availableModels.filter(isCopilotAutoChatModelId);
+    if (chatModels.length === 0) {
+      throw new Error(`Copilot Auto session 未返回可走 chat/completions 的模型：${availableModels.join(' / ')}`);
+    }
+
+    return {
+      token,
+      availableModels,
+      discountedCosts: normalizeDiscountedCosts(payload.discounted_costs),
+      expiresAt: normalizeExpiresAt(payload.expires_at, 'Copilot Auto session 响应缺少 expires_at。'),
+      updatedAt: Date.now(),
+      copilotToken: session.token,
+      baseUrl: session.baseUrl,
+    };
+  }
+
+  private async prepareCopilotChatCompletionsRequest(
+    session: CopilotSessionRecord,
+    body: unknown,
+  ): Promise<{ body: unknown; autoSession: CopilotAutoSessionRecord; selectedModel: string }> {
+    await this.assertCopilotModelCallable(body, 'chat_completions');
+    const model = readCopilotRequestModel(body);
+    if (model !== COPILOT_AUTO_MODEL_ID) {
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot bridge 只接受 Auto 入口模型：${model ?? '<empty>'}`);
+    }
+    const autoSession = await this.resolveCopilotAutoSession(session);
+    const selectedModel = await this.resolveCopilotAutoModel(session, autoSession, body);
+    return {
+      body: withCopilotRequestModel(body, selectedModel),
+      autoSession,
+      selectedModel,
+    };
+  }
+
+  private async resolveCopilotAutoModel(
+    session: CopilotSessionRecord,
+    autoSession: CopilotAutoSessionRecord,
+    body: unknown,
+  ): Promise<string> {
+    const prompt = extractCopilotChatPrompt(body);
+    if (!prompt) {
+      throw new CopilotBridgeHttpError(400, 'GitHub Copilot Auto 路由需要 chat/completions messages 中存在 user 文本。');
+    }
+    const availableChatModels = autoSession.availableModels.filter(isCopilotAutoChatModelId);
+    const response = await this.requestCopilotRouterDecision(session, autoSession, prompt, availableChatModels);
+    const candidates = normalizeStringList(response.candidate_models);
+    const chosen = trimOptionalText(response.chosen_model);
+    const selected = pickCopilotAutoCandidate([chosen, ...candidates], availableChatModels);
+    if (selected) return selected;
+    throw new CopilotBridgeHttpError(
+      502,
+      `Copilot Auto router 未返回可走 chat/completions 的候选模型。available=${availableChatModels.join(' / ')} candidates=${candidates.join(' / ') || '<empty>'}`,
+    );
+  }
+
+  private async requestCopilotRouterDecision(
+    session: CopilotSessionRecord,
+    autoSession: CopilotAutoSessionRecord,
+    prompt: string,
+    availableModels: readonly string[],
+  ): Promise<CopilotRouterDecisionResponse> {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), AUTO_ROUTER_TIMEOUT_MS);
+    try {
+      const response = await fetchExternal(`${session.baseUrl}/models/session/intent`, 'Copilot Auto 模型路由', {
+        method: 'POST',
+        headers: buildCopilotRequestHeaders(session.token, {
+          autoSessionToken: autoSession.token,
+        }),
+        body: JSON.stringify({
+          prompt,
+          available_models: [...availableModels],
+        }),
+        signal: abortController.signal,
+      });
+      if (!response.ok) {
+        throw await buildHttpError('Copilot Auto 模型路由失败', response);
+      }
+      return (await response.json()) as CopilotRouterDecisionResponse;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async proxyUpstream(args: {
     method: 'GET' | 'POST';
     path: '/chat/completions' | '/v1/responses';
@@ -824,11 +1016,11 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     }
     const option = getStaticCopilotModelOption(model);
     if (!option) {
-      throw new CopilotBridgeHttpError(400, `GitHub Copilot Auto 静态模型列表不支持：${model}`);
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot Auto 入口列表不支持：${model}`);
     }
     if (option.requestMode !== requestMode) {
       const modeLabel = requestMode === 'responses' ? 'Responses API' : 'chat/completions';
-      throw new CopilotBridgeHttpError(400, `GitHub Copilot Auto 静态模型不支持 ${modeLabel}：${model}`);
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot Auto 入口不支持 ${modeLabel}：${model}`);
     }
   }
 }
@@ -842,8 +1034,8 @@ class CopilotBridgeHttpError extends Error {
   }
 }
 
-function buildCopilotRequestHeaders(token: string): Record<string, string> {
-  return {
+function buildCopilotRequestHeaders(token: string, options: { autoSessionToken?: string } = {}): Record<string, string> {
+  const headers: Record<string, string> = {
     Accept: 'application/json',
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -853,6 +1045,10 @@ function buildCopilotRequestHeaders(token: string): Record<string, string> {
     'User-Agent': 'GitHubCopilotChat/0.48.1',
     'X-GitHub-Api-Version': '2026-06-01',
   };
+  if (options.autoSessionToken) {
+    headers['Copilot-Session-Token'] = options.autoSessionToken;
+  }
+  return headers;
 }
 
 function sanitizeAttempt(attempt: DeviceLoginAttempt): CopilotAuthAttempt {
@@ -891,6 +1087,16 @@ function normalizeCopilotRequestBody(body: unknown): unknown {
   return normalized;
 }
 
+function withCopilotRequestModel(body: unknown, model: string): unknown {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new CopilotBridgeHttpError(400, 'GitHub Copilot 请求体必须是 JSON object。');
+  }
+  return {
+    ...(body as Record<string, unknown>),
+    model,
+  };
+}
+
 function readCopilotRequestModel(body: unknown): string | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
   const model = (body as Record<string, unknown>).model;
@@ -907,7 +1113,7 @@ function copilotModelEndpoint(option: CopilotModelOption): string {
   return option.requestMode === 'responses' ? '/v1/responses' : '/chat/completions';
 }
 
-function buildStaticCopilotModelPayload(): StaticCopilotModelPayload {
+function buildCopilotAutoModelPayload(autoSession: CopilotAutoSessionRecord): CopilotModelPayload {
   return {
     object: 'list',
     data: COPILOT_MODEL_OPTIONS.map((option) => ({
@@ -925,10 +1131,117 @@ function buildStaticCopilotModelPayload(): StaticCopilotModelPayload {
         },
       },
       qqbot: {
-        rateLabel: option.rateLabel,
+        rateLabel: formatDiscountRateLabel(autoSession, option),
         requestMode: option.requestMode,
         structuredOutputProtocol: option.structuredOutputProtocol,
+        availableModels: autoSession.availableModels,
       },
     })),
   };
+}
+
+function isAutoSessionUsable(
+  record: CopilotAutoSessionRecord,
+  session: CopilotSessionRecord,
+  now = Date.now(),
+): boolean {
+  return record.copilotToken === session.token
+    && record.baseUrl === session.baseUrl
+    && record.expiresAt - now > SESSION_EXPIRY_SKEW_MS;
+}
+
+function normalizeExpiresAt(value: unknown, missingMessage: string): number {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseInt(value, 10)
+        : NaN;
+  if (!Number.isFinite(numeric)) {
+    throw new Error(missingMessage);
+  }
+  return numeric > 1e10 ? numeric : numeric * 1000;
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    const normalized = trimOptionalText(typeof item === 'string' ? item : null);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function normalizeDiscountedCosts(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [model, rawCost] of Object.entries(value)) {
+    const normalizedModel = trimOptionalText(model);
+    const cost = typeof rawCost === 'number' ? rawCost : typeof rawCost === 'string' ? Number(rawCost) : NaN;
+    if (!normalizedModel || !Number.isFinite(cost)) continue;
+    result[normalizedModel] = cost;
+  }
+  return result;
+}
+
+function isCopilotAutoChatModelId(model: string): boolean {
+  const normalized = normalizeCopilotModelId(model);
+  return Boolean(normalized && /^gpt-/i.test(normalized));
+}
+
+function pickCopilotAutoCandidate(candidates: readonly (string | null)[], availableModels: readonly string[]): string | null {
+  const available = new Set(availableModels);
+  for (const candidate of candidates) {
+    const normalized = trimOptionalText(candidate);
+    if (normalized && available.has(normalized) && isCopilotAutoChatModelId(normalized)) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function extractCopilotChatPrompt(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const messages = (body as Record<string, unknown>).messages;
+  if (!Array.isArray(messages)) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
+    if ((message as Record<string, unknown>).role !== 'user') continue;
+    const text = extractCopilotContentText((message as Record<string, unknown>).content);
+    if (text) return text;
+  }
+  return null;
+}
+
+function extractCopilotContentText(content: unknown): string | null {
+  if (typeof content === 'string') return trimOptionalText(content);
+  if (!Array.isArray(content)) return null;
+  const parts = content.flatMap((part): string[] => {
+    if (typeof part === 'string') return [part];
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return [];
+    const text = (part as Record<string, unknown>).text;
+    return typeof text === 'string' ? [text] : [];
+  });
+  return trimOptionalText(parts.join('\n'));
+}
+
+function formatDiscountRateLabel(autoSession: CopilotAutoSessionRecord, option: CopilotModelOption): string | undefined {
+  if (option.rateLabel?.trim()) return option.rateLabel.trim();
+  const rates = autoSession.availableModels
+    .map((model) => autoSession.discountedCosts[model])
+    .filter((rate): rate is number => Number.isFinite(rate));
+  if (rates.length === 0) return undefined;
+  const uniqueRates = [...new Set(rates)].sort((left, right) => left - right);
+  if (uniqueRates.length === 1) return `${formatRateNumber(uniqueRates[0])}x`;
+  return `${formatRateNumber(uniqueRates[0])}-${formatRateNumber(uniqueRates[uniqueRates.length - 1])}x`;
+}
+
+function formatRateNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }

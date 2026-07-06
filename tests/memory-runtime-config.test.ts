@@ -18,7 +18,7 @@ describe('memory runtime config', () => {
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'copilot-key',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'gpt-4.1',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
     });
 
     const profile = buildMemoryExtractProviderProfile(mainProfile, configuredExtractDefaults);
@@ -38,7 +38,7 @@ describe('memory runtime config', () => {
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'copilot-key',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'gpt-4.1',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
     });
 
     const profile = buildMemoryExtractProviderProfile(mainProfile, {

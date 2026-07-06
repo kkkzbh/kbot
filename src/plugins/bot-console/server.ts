@@ -47,7 +47,6 @@ import type {
 import {
   buildMainChatRuntimeEnvPatch,
   CODEX_DEFAULT_REASONING_EFFORT,
-  COPILOT_MODEL_OPTIONS,
   DEEPSEEK_DEFAULT_BASE_URL,
   DEEPSEEK_OFFICIAL_MODEL_OPTIONS,
   getBuiltinMainChatTabDefinition,
@@ -550,10 +549,6 @@ function normalizeCopilotModelList(models: readonly BotConsoleModelOption[]): Bo
   return result;
 }
 
-function cloneStaticCopilotModelOptions(): BotConsoleModelOption[] {
-  return normalizeCopilotModelList(COPILOT_MODEL_OPTIONS.map((option) => ({ ...option })));
-}
-
 function normalizeCodexModelList(models: readonly BotConsoleModelOption[]): BotConsoleModelOption[] {
   const result: BotConsoleModelOption[] = [];
   const seen = new Set<string>();
@@ -592,6 +587,33 @@ function parseCodexModelListPayload(payload: unknown): BotConsoleModelOption[] {
   );
 }
 
+function parseCopilotModelListPayload(payload: unknown): BotConsoleModelOption[] {
+  if (!isObjectRecord(payload)) return [];
+  const data = payload.data;
+  if (!Array.isArray(data)) return [];
+  return normalizeCopilotModelList(
+    data.flatMap((item): BotConsoleModelOption[] => {
+      if (!isObjectRecord(item)) return [];
+      const id = readStringField(item, 'id');
+      if (!id) return [];
+      const qqbot = isObjectRecord(item.qqbot) ? item.qqbot : {};
+      const requestMode = readStringField(qqbot, 'requestMode');
+      const structuredOutputProtocol = readStringField(qqbot, 'structuredOutputProtocol');
+      return [{
+        modelId: id,
+        label: readStringField(item, 'name') ?? id,
+        rateLabel: readStringField(qqbot, 'rateLabel') ?? undefined,
+        requestMode: requestMode === 'responses' ? 'responses' : 'chat_completions',
+        structuredOutputProtocol: structuredOutputProtocol === 'native_responses_json_schema'
+          ? 'native_responses_json_schema'
+          : structuredOutputProtocol === 'chat_reply_v1'
+            ? 'chat_reply_v1'
+            : 'native_chat_json_schema',
+      }];
+    }),
+  );
+}
+
 function staticDeepSeekModelList(error: string | null): DeepSeekModelListResponse {
   return {
     source: 'static',
@@ -604,14 +626,6 @@ function staticMimoModelList(error: string | null): MimoModelListResponse {
   return {
     source: 'static',
     models: cloneStaticMimoModelOptions(),
-    error,
-  };
-}
-
-function staticCopilotModelList(error: string | null): CopilotModelListResponse {
-  return {
-    source: 'static',
-    models: error ? [] : cloneStaticCopilotModelOptions(),
     error,
   };
 }
@@ -645,7 +659,11 @@ function parseMimoModelListPayload(payload: unknown): BotConsoleModelOption[] {
 }
 
 function unavailableCopilotModelList(error: string | null): CopilotModelListResponse {
-  return staticCopilotModelList(error);
+  return {
+    source: 'dynamic',
+    models: [],
+    error,
+  };
 }
 
 function unavailableCodexModelList(error: string | null): CodexModelListResponse {
@@ -659,7 +677,7 @@ function unavailableCodexModelList(error: string | null): CodexModelListResponse
 export async function listCopilotModelsFromOAuthBridge(
   bridge: CopilotBridgeStateProvider | undefined,
 ): Promise<CopilotModelListResponse> {
-  if (!bridge) {
+  if (!bridge?.proxyModels) {
     return unavailableCopilotModelList('GitHub Copilot OAuth bridge is unavailable.');
   }
 
@@ -668,7 +686,27 @@ export async function listCopilotModelsFromOAuthBridge(
     if (status.authStatus !== 'ready') {
       throw new Error(status.authError ?? `GitHub Copilot OAuth status is ${status.authStatus}.`);
     }
-    return staticCopilotModelList(null);
+    const response = await bridge.proxyModels();
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`GitHub Copilot /models returned HTTP ${response.status}: ${response.body.slice(0, 240)}`);
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(response.body) as unknown;
+    } catch (error) {
+      throw new Error(`GitHub Copilot /models returned non-JSON response: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const models = parseCopilotModelListPayload(payload);
+    if (models.length === 0) {
+      throw new Error('GitHub Copilot /models returned no Auto entry.');
+    }
+    return {
+      source: 'dynamic',
+      models,
+      error: null,
+    };
   } catch (error) {
     return unavailableCopilotModelList(error instanceof Error ? error.message : String(error));
   }

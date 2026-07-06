@@ -70,7 +70,7 @@ export const FIELD_HINTS: Record<string, string> = {
   CHATLUNA_OPENAI_DEFAULT_MODEL:
     'OpenAI Tab 当前按 OpenAI 兼容 provider 处理，并通过 chat/completions + response_format 输出结构化结果，默认推荐 openai/gpt-5.4-medium-thinking。',
   CHATLUNA_COPILOT_DEFAULT_MODEL:
-    'GitHub Copilot Tab 当前按 OAuth + 本地 bridge 处理，并从 Copilot Auto 静态模型列表选择模型，默认推荐 openai/gpt-4.1。',
+    'GitHub Copilot Tab 当前按 OAuth + 本地 bridge 处理，只暴露 openai/auto，具体模型由 Copilot Auto session 决定。',
   CHAT_NATURAL_TRIGGER_GROUPS:
     '只有填在这里的群号才会命中群聊自然触发。多个群号用英文逗号分隔；留空时不会在任何群自动触发。',
   HBU_JW_ALLOWED_GROUPS:

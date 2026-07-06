@@ -331,10 +331,10 @@ function createEmptyBuiltinModelTab(id: BotConsoleModelTabId): BotConsoleBuiltin
       strategyId: 'copilot-github-oauth-main-chat',
       requestMode: copilotDefaultOption?.requestMode ?? 'responses',
       structuredOutputProtocol: copilotDefaultOption?.structuredOutputProtocol ?? 'native_responses_json_schema',
-      description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 ${copilotDefaultOption ? formatSharedCopilotModelOptionLabel(copilotDefaultOption) : 'Copilot Auto 静态模型'}。`,
+      description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 ${copilotDefaultOption ? formatSharedCopilotModelOptionLabel(copilotDefaultOption) : 'Copilot Auto'}。`,
       modelHint: copilotDefaultOption
-        ? `当前从 Copilot Auto 静态模型列表选择，默认 ${formatSharedCopilotModelOptionLabel(copilotDefaultOption)}。`
-        : '当前从 Copilot Auto 静态模型列表选择。',
+        ? `当前选择 ${formatSharedCopilotModelOptionLabel(copilotDefaultOption)}，具体模型由 Copilot Auto session 决定。`
+        : '当前选择 Copilot Auto，具体模型由 Copilot Auto session 决定。',
       authKind: 'oauth_device',
       authStatus: 'unauthenticated',
       accountLabel: null,

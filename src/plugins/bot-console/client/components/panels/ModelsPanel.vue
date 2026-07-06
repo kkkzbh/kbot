@@ -141,7 +141,7 @@ const currentModelSelectLabel = computed(() => {
 })
 
 const codexSourceLabel = computed(() => codexModelError.value ? (codexModelSource.value === 'static' ? '静态兜底' : '不可用') : (codexModelSource.value === 'dynamic' ? 'Codex 动态' : '静态兜底'))
-const copilotSourceLabel = computed(() => copilotModelError.value ? '不可用' : 'Auto 静态')
+const copilotSourceLabel = computed(() => copilotModelError.value ? '不可用' : 'Auto session')
 const deepseekSourceLabel = computed(() => deepseekModelSource.value === 'dynamic' ? '官方动态' : '官方兜底')
 const mimoSourceLabel = computed(() => mimoModelSource.value === 'dynamic' ? '官方动态' : '静态兜底')
 

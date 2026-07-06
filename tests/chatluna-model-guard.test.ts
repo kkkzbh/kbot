@@ -156,9 +156,9 @@ describe('buildStructuredReplyModelOverride', () => {
         effort: 'medium',
       },
     });
-    expect(buildStructuredReplyModelOverride('openai/gpt-4o')).toEqual({
-      qqbot_canonical_model: 'openai/gpt-4o',
-      qqbot_transport_model: 'gpt-4o',
+    expect(buildStructuredReplyModelOverride('openai/auto')).toEqual({
+      qqbot_canonical_model: 'openai/auto',
+      qqbot_transport_model: 'auto',
       qqbot_tool_profile: 'qqbot_openai_main_chat',
     });
   });
@@ -171,7 +171,7 @@ describe('supportsStructuredReplyJsonSchema', () => {
     expect(supportsStructuredReplyJsonSchema('openai/gpt-5.4')).toBe(true);
     expect(supportsStructuredReplyJsonSchema('openai/gpt-5.4-medium-thinking')).toBe(true);
     expect(supportsStructuredReplyJsonSchema('openai/gpt-5.5')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('openai/gpt-4o')).toBe(true);
+    expect(supportsStructuredReplyJsonSchema('openai/auto')).toBe(true);
     expect(supportsStructuredReplyJsonSchema('openai/gpt-5-mini')).toBe(false);
     expect(supportsStructuredReplyJsonSchema('openai/gemini-3.1-pro-preview')).toBe(false);
   });
@@ -249,7 +249,7 @@ describe('buildReplyOutputContract', () => {
 
     expect(
       buildReplyOutputContract({
-        model: 'gpt-4o',
+        model: 'openai/auto',
       }),
     ).toMatchObject({
       requestMode: 'chat_completions',
@@ -259,25 +259,8 @@ describe('buildReplyOutputContract', () => {
       }),
       instruction: null,
       overrideRequestParams: {
-        qqbot_canonical_model: 'openai/gpt-4o',
-        qqbot_transport_model: 'gpt-4o',
-      },
-    });
-
-    expect(
-      buildReplyOutputContract({
-        model: 'openai/gpt-4o-mini',
-      }),
-    ).toMatchObject({
-      requestMode: 'chat_completions',
-      protocol: 'native_chat_json_schema',
-      schema: expect.objectContaining({
-        title: 'StructuredReply',
-      }),
-      instruction: null,
-      overrideRequestParams: {
-        qqbot_canonical_model: 'openai/gpt-4o-mini',
-        qqbot_transport_model: 'gpt-4o-mini',
+        qqbot_canonical_model: 'openai/auto',
+        qqbot_transport_model: 'auto',
       },
     });
   });
@@ -300,10 +283,10 @@ describe('buildReplyOutputContract', () => {
     });
   });
 
-  it('routes Copilot Auto models through chat completions native structured outputs', () => {
+  it('routes the Copilot Auto entry through chat completions native structured outputs', () => {
     expect(
       buildReplyOutputContract({
-        model: 'openai/gpt-4.1',
+        model: 'openai/auto',
       }),
     ).toMatchObject({
       requestMode: 'chat_completions',
@@ -313,8 +296,8 @@ describe('buildReplyOutputContract', () => {
       }),
       instruction: null,
       overrideRequestParams: {
-        qqbot_canonical_model: 'openai/gpt-4.1',
-        qqbot_transport_model: 'gpt-4.1',
+        qqbot_canonical_model: 'openai/auto',
+        qqbot_transport_model: 'auto',
       },
     });
   });
@@ -433,12 +416,14 @@ describe('isSupportedMainChatModelForTab', () => {
     expect(isSupportedMainChatModelForTab('codex', 'gpt-5.4-mini')).toBe(true);
     expect(isSupportedMainChatModelForTab('codex', 'bad model')).toBe(false);
     expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-5.4')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-4.1')).toBe(true);
+    expect(isSupportedMainChatModelForTab('copilot', 'openai/auto')).toBe(true);
+    expect(isSupportedMainChatModelForTab('copilot', 'Auto')).toBe(true);
+    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-4.1')).toBe(false);
     expect(isSupportedMainChatModelForTab('copilot', 'gpt-5-mini')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4.1')).toBe(true);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4o-mini')).toBe(true);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4o')).toBe(true);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-4o')).toBe(true);
+    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4.1')).toBe(false);
+    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4o-mini')).toBe(false);
+    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4o')).toBe(false);
+    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-4o')).toBe(false);
     expect(isSupportedMainChatModelForTab('copilot', 'github-copilot/claude-haiku-4.5')).toBe(false);
     expect(isSupportedMainChatModelForTab('copilot', 'openai/gemini-3.1-pro-preview')).toBe(false);
     expect(isSupportedMainChatModelForTab('copilot', 'gemini-3-flash-preview')).toBe(false);
@@ -454,18 +439,18 @@ describe('isSupportedMainChatModelForTab', () => {
 });
 
 describe('canHotSwitchMainChatModelOnly', () => {
-  it('requires a restart for Copilot Auto model changes', () => {
+  it('does not hot switch the Copilot Auto entry', () => {
     const current = resolveMainChatRuntimeProfileFromEnv({
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4.1',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
     });
     const next = resolveMainChatRuntimeProfileFromEnv({
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
     });
 
     expect(canHotSwitchMainChatModelOnly(current, next)).toBe(false);
@@ -548,7 +533,7 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
         CHATLUNA_ACTIVE_TAB: 'copilot',
         CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
         CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-        CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4.1',
+        CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
       }),
     ).toMatchObject({
       tabId: 'copilot',
@@ -557,9 +542,9 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
       requestMode: 'chat_completions',
       structuredOutputProtocol: 'native_chat_json_schema',
       baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      defaultModel: 'openai/gpt-4.1',
-      canonicalModel: 'openai/gpt-4.1',
-      transportModel: 'gpt-4.1',
+      defaultModel: 'openai/auto',
+      canonicalModel: 'openai/auto',
+      transportModel: 'auto',
     });
   });
 
@@ -587,13 +572,13 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
     });
   });
 
-  it('resolves another Copilot Auto model through chat completions', () => {
+  it('normalizes raw Copilot Auto into the OAuth runtime profile', () => {
     expect(
       resolveMainChatRuntimeProfileFromEnv({
         CHATLUNA_ACTIVE_TAB: 'copilot',
         CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
         CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-        CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o-mini',
+        CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
       }),
     ).toMatchObject({
       tabId: 'copilot',
@@ -601,9 +586,9 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
       strategyId: 'copilot-github-oauth-main-chat',
       requestMode: 'chat_completions',
       structuredOutputProtocol: 'native_chat_json_schema',
-      defaultModel: 'openai/gpt-4o-mini',
-      canonicalModel: 'openai/gpt-4o-mini',
-      transportModel: 'gpt-4o-mini',
+      defaultModel: 'openai/auto',
+      canonicalModel: 'openai/auto',
+      transportModel: 'auto',
     });
   });
 
@@ -658,13 +643,7 @@ describe('syncRoomModelToMainChatRuntime', () => {
       CHATLUNA_ACTIVE_TAB: 'copilot',
       CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4.1',
-    }));
-    mainChatRuntimeState.hotSwitchModel(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-4o',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
     }));
 
     const room = {
@@ -678,16 +657,16 @@ describe('syncRoomModelToMainChatRuntime', () => {
     await expect(syncRoomModelToMainChatRuntime({ room, clearCache, updateConversationModel })).resolves.toMatchObject({
       changed: true,
       originalModel: 'openai/gpt-4.1',
-      generation: 1,
-      canonicalModel: 'openai/gpt-4o',
-      transportModel: 'gpt-4o',
+      generation: 0,
+      canonicalModel: 'openai/auto',
+      transportModel: 'auto',
       strategyId: 'copilot-github-oauth-main-chat',
       requestMode: 'chat_completions',
       outputProtocol: 'native_chat_json_schema',
     });
-    expect(room.model).toBe('openai/gpt-4o');
+    expect(room.model).toBe('openai/auto');
     expect(clearCache).toHaveBeenCalledWith(room);
-    expect(updateConversationModel).toHaveBeenCalledWith('conv-1', 'openai/gpt-4o');
+    expect(updateConversationModel).toHaveBeenCalledWith('conv-1', 'openai/auto');
   });
 });
 

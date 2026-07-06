@@ -204,7 +204,7 @@ values ('template-conv', null, 1);
 CHATLUNA_ACTIVE_TAB=copilot
 CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
-CHATLUNA_COPILOT_DEFAULT_MODEL=openai/gpt-4.1
+CHATLUNA_COPILOT_DEFAULT_MODEL=openai/auto
       `,
     );
 
@@ -219,16 +219,16 @@ CHATLUNA_COPILOT_DEFAULT_MODEL=openai/gpt-4.1
       },
     });
 
-    expect(output).toContain('model=openai/gpt-4.1');
+    expect(output).toContain('model=openai/auto');
     expect(
       sqlite(
         dbPath,
         "select roomName || '|' || preset || '|' || model || '|' || chatMode from chathub_room where roomMasterId = '91000999';",
       ),
-    ).toBe('codex-debug-91000999|sakiko|openai/gpt-4.1|plugin');
+    ).toBe('codex-debug-91000999|sakiko|openai/auto|plugin');
   });
 
-  it('normalizes non-openai Copilot models into the probe room model when copilot is active', () => {
+  it('normalizes raw Copilot Auto into the probe room model when copilot is active', () => {
     const dir = createTempDir();
     const dbPath = join(dir, 'koishi.db');
     const envPath = join(dir, '.env.local');
@@ -250,7 +250,7 @@ values ('template-conv', null, 1);
 CHATLUNA_ACTIVE_TAB=copilot
 CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
-CHATLUNA_COPILOT_DEFAULT_MODEL=gpt-4o
+CHATLUNA_COPILOT_DEFAULT_MODEL=auto
       `,
     );
 
@@ -265,13 +265,13 @@ CHATLUNA_COPILOT_DEFAULT_MODEL=gpt-4o
       },
     });
 
-    expect(output).toContain('model=openai/gpt-4o');
+    expect(output).toContain('model=openai/auto');
     expect(
       sqlite(
         dbPath,
         "select roomName || '|' || preset || '|' || model || '|' || chatMode from chathub_room where roomMasterId = '91000999';",
       ),
-    ).toBe('codex-debug-91000999|sakiko|openai/gpt-4o|plugin');
+    ).toBe('codex-debug-91000999|sakiko|openai/auto|plugin');
   });
 
   it('prefers layered runtime env overrides when resolving the probe room model', () => {
@@ -285,7 +285,7 @@ CHATLUNA_COPILOT_DEFAULT_MODEL=gpt-4o
       dbPath,
       `
 insert into chathub_room (roomId, roomName, conversationId, roomMasterId, visibility, preset, model, chatMode, password, autoUpdate, updatedTime)
-values (1, 'template-room', 'template-conv', '0', 'private', 'sakiko', 'openai/gpt-4.1', 'plugin', 'pw', 0, 1);
+values (1, 'template-room', 'template-conv', '0', 'private', 'sakiko', 'openai/auto', 'plugin', 'pw', 0, 1);
 insert into chatluna_conversation (id, latestMessageId, updatedAt)
 values ('template-conv', null, 1);
       `,
@@ -296,7 +296,7 @@ values ('template-conv', null, 1);
       `
 CHATLUNA_ACTIVE_TAB=copilot
 CHATLUNA_DEFAULT_PRESET=sakiko
-CHATLUNA_COPILOT_DEFAULT_MODEL=openai/gpt-4.1
+CHATLUNA_COPILOT_DEFAULT_MODEL=openai/auto
 CHATLUNA_OPENAI_DEFAULT_MODEL=openai/gpt-5.4-medium-thinking
       `,
     );
