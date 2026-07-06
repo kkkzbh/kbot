@@ -133,15 +133,16 @@ const COPILOT_ENABLED_MODEL_PAYLOAD = [
     id: 'gpt-5.4-mini',
     name: 'GPT-5.4 mini',
     policy: { state: 'enabled' },
-    model_picker_enabled: true,
+    model_picker_enabled: false,
+    capabilities: { type: 'chat', supports: { structured_outputs: true } },
     supported_endpoints: ['/responses', 'ws:/responses'],
   },
   {
     id: 'gpt-4o',
     name: 'GPT-4o',
     policy: { state: 'enabled' },
-    model_picker_enabled: true,
-    capabilities: { supports: { structured_outputs: true } },
+    model_picker_enabled: false,
+    capabilities: { type: 'chat', supports: { structured_outputs: true } },
     supported_endpoints: ['/chat/completions'],
   },
 ];
@@ -455,7 +456,7 @@ describe('bot-console env helpers', () => {
     });
   });
 
-  it('loads only enabled picker models from the Copilot OAuth bridge models endpoint', async () => {
+  it('loads policy-enabled chat models from the Copilot OAuth bridge models endpoint', async () => {
     await expect(
       listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels([
         {
@@ -463,20 +464,23 @@ describe('bot-console env helpers', () => {
           name: 'GPT-5.4',
           policy: { state: 'disabled' },
           model_picker_enabled: true,
+          capabilities: { type: 'chat', supports: { structured_outputs: true } },
           supported_endpoints: ['/responses'],
         },
         {
           id: 'gpt-5.4-mini',
           name: 'GPT-5.4 mini',
           policy: { state: 'enabled' },
-          model_picker_enabled: true,
+          model_picker_enabled: false,
+          capabilities: { type: 'chat', supports: { structured_outputs: true } },
           supported_endpoints: ['/responses', 'ws:/responses'],
         },
         {
-          id: 'hidden-model',
-          name: 'Hidden',
+          id: 'embedding-model',
+          name: 'Embedding',
           policy: { state: 'enabled' },
           model_picker_enabled: false,
+          capabilities: { type: 'embeddings', supports: {} },
           supported_endpoints: ['/responses'],
         },
         {
@@ -484,6 +488,7 @@ describe('bot-console env helpers', () => {
           name: 'Messages only',
           policy: { state: 'enabled' },
           model_picker_enabled: true,
+          capabilities: { type: 'chat', supports: {} },
           supported_endpoints: ['/v1/messages'],
         },
       ])),

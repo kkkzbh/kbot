@@ -562,6 +562,12 @@ function copilotModelSupportsStructuredOutputs(record: Record<string, unknown>):
   return supports.structured_outputs === true;
 }
 
+function isCopilotChatModel(record: Record<string, unknown>): boolean {
+  const capabilities = record.capabilities;
+  if (!isObjectRecord(capabilities)) return false;
+  return readStringField(capabilities, 'type') === 'chat';
+}
+
 function resolveCopilotOutputRoute(record: Record<string, unknown>): {
   requestMode: MainChatRequestMode;
   structuredOutputProtocol: OutputProtocolId;
@@ -586,10 +592,6 @@ function resolveCopilotOutputRoute(record: Record<string, unknown>): {
     return { requestMode: 'chat_completions', structuredOutputProtocol: 'chat_reply_v1' };
   }
   return null;
-}
-
-function isCopilotModelPickerEnabled(record: Record<string, unknown>): boolean {
-  return record.model_picker_enabled !== false;
 }
 
 function isCopilotModelPolicyEnabled(record: Record<string, unknown>): boolean {
@@ -648,7 +650,7 @@ function parseCopilotModelListPayload(payload: unknown): BotConsoleModelOption[]
       const id = readStringField(item, 'id');
       if (!id) return [];
       if (!isCopilotModelPolicyEnabled(item)) return [];
-      if (!isCopilotModelPickerEnabled(item)) return [];
+      if (!isCopilotChatModel(item)) return [];
       const route = resolveCopilotOutputRoute(item);
       if (!route) return [];
       return [{
