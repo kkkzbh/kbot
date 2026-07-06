@@ -28,17 +28,56 @@ resolve_optional_env_file() {
   printf '%s\n' "$explicit"
 }
 
+read_env_keys() {
+  local env_file="$1"
+  local line assignment
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    assignment="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$assignment" == export[[:space:]]* ]]; then
+      assignment="${assignment#export}"
+      assignment="${assignment#"${assignment%%[![:space:]]*}"}"
+    fi
+    if [[ "$assignment" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
+  done < "$env_file"
+}
+
 load_env_file() {
   local env_file="$1"
+  local inherit_empty="${2:-false}"
   if [[ ! -f "$env_file" ]]; then
     echo "[error] bot env file not found: $env_file" >&2
     exit 2
+  fi
+
+  local -A previous_values=()
+  local -A previous_set=()
+  local key
+  if [[ "$inherit_empty" == "true" ]]; then
+    while IFS= read -r key; do
+      if [[ -v "$key" ]]; then
+        previous_set["$key"]=1
+        previous_values["$key"]="${!key}"
+      else
+        previous_set["$key"]=0
+        previous_values["$key"]=''
+      fi
+    done < <(read_env_keys "$env_file")
   fi
 
   set -a
   # shellcheck disable=SC1090
   source "$env_file"
   set +a
+
+  if [[ "$inherit_empty" == "true" ]]; then
+    for key in "${!previous_set[@]}"; do
+      if [[ "${previous_set[$key]}" == "1" && -n "${previous_values[$key]}" && -z "${!key:-}" ]]; then
+        export "${key}=${previous_values[$key]}"
+      fi
+    done
+  fi
 }
 
 append_no_proxy_host() {
@@ -67,7 +106,7 @@ if [[ -n "$BASE_ENV_FILE" || -n "$OVERRIDE_ENV_FILE" ]]; then
 
   load_env_file "$BASE_ENV_FILE"
   if [[ -n "$OVERRIDE_ENV_FILE" && -f "$OVERRIDE_ENV_FILE" ]]; then
-    load_env_file "$OVERRIDE_ENV_FILE"
+    load_env_file "$OVERRIDE_ENV_FILE" true
   fi
   echo "[info] Loaded bot env base: $BASE_ENV_FILE"
   if [[ -n "$OVERRIDE_ENV_FILE" ]]; then
@@ -77,7 +116,7 @@ else
   ENV_FILE="$(resolve_env_file)"
   if [[ "$ENV_FILE" == "${ROOT_DIR}/.env.local" ]]; then
     load_env_file "$ENV_FILE"
-    [[ -f "$LOCAL_RUNTIME_ENV_FILE" ]] && load_env_file "$LOCAL_RUNTIME_ENV_FILE"
+    [[ -f "$LOCAL_RUNTIME_ENV_FILE" ]] && load_env_file "$LOCAL_RUNTIME_ENV_FILE" true
     echo "[info] Loaded bot env base: $ENV_FILE"
     if [[ -f "$LOCAL_RUNTIME_ENV_FILE" ]]; then
       echo "[info] Loaded bot env override: $LOCAL_RUNTIME_ENV_FILE"

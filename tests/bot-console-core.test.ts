@@ -251,13 +251,22 @@ describe('bot-console env helpers', () => {
 
   it('merges managed env values with runtime override precedence', () => {
     const merged = mergeManagedEnvRecords(
-      readManagedEnvPatchFromContent('CHATLUNA_DEFAULT_MODEL=base-model\nCHATLUNA_DEFAULT_PRESET=sakiko\n'),
-      readManagedEnvPatchFromContent('CHATLUNA_DEFAULT_MODEL=runtime-model\nQQ_VOICE_OUTPUT_ENABLED=false\n'),
+      readManagedEnvPatchFromContent([
+        'CHATLUNA_DEFAULT_MODEL=base-model',
+        'CHATLUNA_DEFAULT_PRESET=sakiko',
+        'HBU_JW_CREDENTIAL_KEK_PATH=/opt/qqbot/data/hbu-jw/credential-kek.key',
+      ].join('\n')),
+      readManagedEnvPatchFromContent([
+        'CHATLUNA_DEFAULT_MODEL=runtime-model',
+        'QQ_VOICE_OUTPUT_ENABLED=false',
+        'HBU_JW_CREDENTIAL_KEK_PATH=',
+      ].join('\n')),
     );
 
     expect(merged).toMatchObject({
       CHATLUNA_DEFAULT_MODEL: 'runtime-model',
       CHATLUNA_DEFAULT_PRESET: 'sakiko',
+      HBU_JW_CREDENTIAL_KEK_PATH: '/opt/qqbot/data/hbu-jw/credential-kek.key',
       QQ_VOICE_OUTPUT_ENABLED: 'false',
     });
   });

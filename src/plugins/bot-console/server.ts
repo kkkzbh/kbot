@@ -1080,7 +1080,9 @@ export function mergeManagedEnvRecords(...records: Array<Partial<Record<string, 
   for (const record of records) {
     for (const [key, value] of Object.entries(record)) {
       if (!BOT_CONSOLE_ENV_KEYS.has(key)) continue;
-      result[key] = value ?? '';
+      const normalized = value ?? '';
+      if (normalized === '' && result[key]) continue;
+      result[key] = normalized;
     }
   }
   return result;

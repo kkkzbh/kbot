@@ -1020,7 +1020,9 @@ export function useBotConsole() {
   async function saveEnvPatch(keys: readonly string[], restartAfter = false): Promise<SaveEnvResponse> {
     const payload: Record<string, string> = {}
     for (const key of keys) {
-      payload[key] = envDraft[key] ?? ''
+      if (changedKeys.value.has(key)) {
+        payload[key] = envDraft[key] ?? ''
+      }
     }
 
     const result = await send<SaveEnvResponse>('bot-console/save-env', payload)
