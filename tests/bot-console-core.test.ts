@@ -466,52 +466,52 @@ describe('bot-console env helpers', () => {
   });
 
   it('loads policy-enabled chat models from the Copilot OAuth bridge models endpoint', async () => {
-    await expect(
-      listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels([
-        {
-          id: 'gpt-5.4',
-          name: 'GPT-5.4',
-          policy: { state: 'disabled' },
-          model_picker_enabled: true,
-          capabilities: { type: 'chat', supports: { structured_outputs: true } },
-          supported_endpoints: ['/responses'],
-        },
-        {
-          id: 'gpt-5.4-mini',
-          name: 'GPT-5.4 mini',
-          policy: { state: 'enabled' },
-          model_picker_enabled: false,
-          capabilities: { type: 'chat', supports: { structured_outputs: true, tool_calls: true, vision: true } },
-          supported_endpoints: ['/responses', 'ws:/responses'],
-        },
-        {
-          id: 'new-usage-model',
-          name: 'New Usage Model',
-          policy: { state: 'enabled' },
-          model_picker_enabled: false,
-          capabilities: { type: 'chat', supports: { structured_outputs: true } },
-          preview: true,
-          supported_endpoints: ['/responses'],
-          warning_message: 'Your billing plan has changed to usage-based billing and model multipliers no longer apply.',
-        },
-        {
-          id: 'embedding-model',
-          name: 'Embedding',
-          policy: { state: 'enabled' },
-          model_picker_enabled: false,
-          capabilities: { type: 'embeddings', supports: {} },
-          supported_endpoints: ['/responses'],
-        },
-        {
-          id: 'messages-only',
-          name: 'Messages only',
-          policy: { state: 'enabled' },
-          model_picker_enabled: true,
-          capabilities: { type: 'chat', supports: {} },
-          supported_endpoints: ['/v1/messages'],
-        },
-      ])),
-    ).resolves.toMatchObject({
+    const result = await listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels([
+      {
+        id: 'gpt-5.4',
+        name: 'GPT-5.4',
+        policy: { state: 'disabled' },
+        model_picker_enabled: true,
+        capabilities: { type: 'chat', supports: { structured_outputs: true } },
+        supported_endpoints: ['/responses'],
+      },
+      {
+        id: 'gpt-5.4-mini',
+        name: 'GPT-5.4 mini',
+        policy: { state: 'enabled' },
+        model_picker_enabled: false,
+        capabilities: { type: 'chat', supports: { structured_outputs: true, tool_calls: true, vision: true } },
+        supported_endpoints: ['/responses', 'ws:/responses'],
+      },
+      {
+        id: 'new-usage-model',
+        name: 'New Usage Model',
+        policy: { state: 'enabled' },
+        model_picker_enabled: false,
+        capabilities: { type: 'chat', supports: { structured_outputs: true } },
+        preview: true,
+        supported_endpoints: ['/responses'],
+        warning_message: 'Your billing plan has changed to usage-based billing and model multipliers no longer apply.',
+      },
+      {
+        id: 'embedding-model',
+        name: 'Embedding',
+        policy: { state: 'enabled' },
+        model_picker_enabled: false,
+        capabilities: { type: 'embeddings', supports: {} },
+        supported_endpoints: ['/responses'],
+      },
+      {
+        id: 'messages-only',
+        name: 'Messages only',
+        policy: { state: 'enabled' },
+        model_picker_enabled: true,
+        capabilities: { type: 'chat', supports: {} },
+        supported_endpoints: ['/v1/messages'],
+      },
+    ]));
+
+    expect(result).toMatchObject({
       source: 'dynamic',
       error: null,
       models: [
@@ -526,13 +526,13 @@ describe('bot-console env helpers', () => {
         {
           modelId: 'new-usage-model',
           label: 'New Usage Model',
-          rateLabel: 'usage',
           requestMode: 'responses',
           structuredOutputProtocol: 'native_responses_json_schema',
           metadataTags: ['preview'],
         },
       ],
     });
+    expect(result.models.find((model) => model.modelId === 'new-usage-model')?.rateLabel).toBeUndefined();
   });
 
   it('does not fall back to a hardcoded Copilot model list when the bridge is unavailable', async () => {

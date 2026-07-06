@@ -53,6 +53,14 @@ const tabTitles: Record<BotConsoleModelTabId, string> = {
   mimo: 'MIMO',
 }
 
+type ModelOptionTag = {
+  id: string
+  label: string
+  title: string
+  kind: 'rate' | 'mode'
+  mode?: 'responses' | 'schema' | 'chat'
+}
+
 const currentSchema = computed(() => BUILTIN_MAIN_CHAT_TAB_UI_SCHEMA[activeModelTab.value])
 const currentTabModelHint = computed(() => currentModelTabDraft.value.modelHint)
 
@@ -193,21 +201,54 @@ function setCodexReasoningEffort(value: string) {
   }
 }
 
-function modelOptionTags(option: BotConsoleModelOption | null): string[] {
-  if (!option) return []
-  const tags: string[] = []
-  if (option.rateLabel?.trim()) tags.push(option.rateLabel.trim())
-  if (option.requestMode === 'responses') tags.push('responses')
-  if (option.requestMode === 'chat_completions') tags.push('chat')
+function modelModeTag(option: BotConsoleModelOption): ModelOptionTag | null {
+  if (option.requestMode === 'responses') {
+    return {
+      id: 'mode-responses',
+      label: 'R',
+      title: 'Responses API',
+      kind: 'mode',
+      mode: 'responses',
+    }
+  }
+
   if (option.structuredOutputProtocol === 'native_responses_json_schema' || option.structuredOutputProtocol === 'native_chat_json_schema') {
-    tags.push('json_schema')
-  } else if (option.structuredOutputProtocol === 'chat_reply_v1') {
-    tags.push('chat_reply')
+    return {
+      id: 'mode-schema',
+      label: '{}',
+      title: 'JSON Schema',
+      kind: 'mode',
+      mode: 'schema',
+    }
   }
-  for (const tag of option.metadataTags ?? []) {
-    const normalized = tag.trim()
-    if (normalized && !tags.includes(normalized)) tags.push(normalized)
+
+  if (option.requestMode === 'chat_completions' || option.structuredOutputProtocol === 'chat_reply_v1') {
+    return {
+      id: 'mode-chat',
+      label: 'C',
+      title: 'Chat',
+      kind: 'mode',
+      mode: 'chat',
+    }
   }
+
+  return null
+}
+
+function modelOptionTags(option: BotConsoleModelOption | null): ModelOptionTag[] {
+  if (!option) return []
+  const tags: ModelOptionTag[] = []
+  const rateLabel = option.rateLabel?.trim()
+  if (rateLabel) {
+    tags.push({
+      id: `rate-${rateLabel}`,
+      label: rateLabel,
+      title: `倍率 ${rateLabel}`,
+      kind: 'rate',
+    })
+  }
+  const modeTag = modelModeTag(option)
+  if (modeTag) tags.push(modeTag)
   return tags
 }
 
@@ -752,9 +793,11 @@ onBeforeUnmount(() => {
                 >
                   <span
                     v-for="tag in modelOptionTags(selectedModelOption)"
-                    :key="tag"
-                    class="bc-model-select-tag"
-                  >{{ tag }}</span>
+                    :key="tag.id"
+                    :class="['bc-model-select-tag', `is-${tag.kind}`, tag.mode && `is-${tag.mode}`]"
+                    :title="tag.title"
+                    :aria-label="tag.title"
+                  >{{ tag.label }}</span>
                 </span>
                 <span class="bc-model-select-chevron" aria-hidden="true" />
               </button>
@@ -786,9 +829,11 @@ onBeforeUnmount(() => {
                   >
                     <span
                       v-for="tag in modelOptionTags(option)"
-                      :key="tag"
-                      class="bc-model-select-tag"
-                    >{{ tag }}</span>
+                      :key="tag.id"
+                      :class="['bc-model-select-tag', `is-${tag.kind}`, tag.mode && `is-${tag.mode}`]"
+                      :title="tag.title"
+                      :aria-label="tag.title"
+                    >{{ tag.label }}</span>
                   </span>
                 </button>
               </div>

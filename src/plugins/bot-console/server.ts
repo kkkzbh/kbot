@@ -615,11 +615,8 @@ function findStaticCopilotModelOption(modelId: string): CopilotModelOption | und
   return COPILOT_MODEL_OPTIONS.find((option) => option.modelId === normalized);
 }
 
-function resolveCopilotRateLabel(record: Record<string, unknown>, modelId: string): string | undefined {
-  const staticRateLabel = findStaticCopilotModelOption(modelId)?.rateLabel;
-  if (staticRateLabel) return staticRateLabel;
-  const warning = readStringField(record, 'warning_message')?.toLowerCase();
-  return warning?.includes('usage-based billing') ? 'usage' : undefined;
+function resolveCopilotRateLabel(modelId: string): string | undefined {
+  return findStaticCopilotModelOption(modelId)?.rateLabel;
 }
 
 function buildCopilotMetadataTags(record: Record<string, unknown>): string[] {
@@ -691,7 +688,7 @@ function parseCopilotModelListPayload(payload: unknown): BotConsoleModelOption[]
       return [{
         modelId: id,
         label: readStringField(item, 'name') ?? id,
-        rateLabel: resolveCopilotRateLabel(item, id),
+        rateLabel: resolveCopilotRateLabel(id),
         requestMode: route.requestMode,
         structuredOutputProtocol: route.structuredOutputProtocol,
         metadataTags: buildCopilotMetadataTags(item),
