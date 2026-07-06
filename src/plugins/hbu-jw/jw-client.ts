@@ -192,11 +192,6 @@ export class HbuJwHttpClient {
     return flattenThisTermScores(payload);
   }
 
-  async getSubitemScoreStudentNumbers(cookieJar: SerializedCookieJar, row: HbuJwThisTermScoreRow): Promise<string[]> {
-    const result = await this.getSubitemScoreDetails(cookieJar, buildSubitemScoreLookParamsFromThisTermRow(row));
-    return extractSubitemScoreStudentNumbers({ scoreDetailList: result.rows });
-  }
-
   async getSubitemScoreTerms(cookieJar: SerializedCookieJar): Promise<HbuJwSubitemScoreTerm[]> {
     const jar = CookieJar.from(cookieJar);
     const pagePath = '/student/integratedQuery/scoreQuery/subitemScore/index';
@@ -619,36 +614,6 @@ function parseSubitemScoreLookResult(params: HbuJwSubitemScoreLookParams, payloa
     rows: payload.scoreDetailList as HbuJwSubitemScoreDetailRow[],
     message: typeof payload.msg === 'string' ? payload.msg : '',
   };
-}
-
-function extractSubitemScoreStudentNumbers(payload: unknown): string[] {
-  const collected = new Set<string>();
-  visitStudentNumberCandidates(payload, '', collected);
-  return [...collected];
-}
-
-function visitStudentNumberCandidates(value: unknown, key: string, collected: Set<string>): void {
-  if (typeof value === 'string' || typeof value === 'number') {
-    const text = String(value).trim();
-    if (looksLikeStudentNumberKey(key) && /^\d{8,20}$/.test(text)) {
-      collected.add(text);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      visitStudentNumberCandidates(item, key, collected);
-    }
-    return;
-  }
-  if (!isRecord(value)) return;
-  for (const [childKey, childValue] of Object.entries(value)) {
-    visitStudentNumberCandidates(childValue, childKey, collected);
-  }
-}
-
-function looksLikeStudentNumberKey(key: string): boolean {
-  return /^(xh|xh_id|studentNumber|studentNo|xuehao)$/i.test(key);
 }
 
 function parseExamPlanEvents(payload: unknown): HbuJwExamPlanEvent[] {

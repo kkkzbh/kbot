@@ -831,29 +831,28 @@ describe('hbu-jw GPA calculation', () => {
 
 describe('hbu-jw term scores module', () => {
   it('builds a concise term score table view with status counts', () => {
+    const confirmedRow = thisTermScoreRow();
+    const recordedRow = thisTermScoreRow({
+      id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+      courseName: '编译原理',
+      credit: 3,
+      courseScore: '84',
+      gradePoint: 4.2,
+      inputStatusCode: '04',
+      inputStatusExplain: '暂存',
+    });
+    const pendingRow = thisTermScoreRow({
+      id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
+      courseName: '网络安全基础实验',
+      credit: 1,
+      courseScore: '',
+      gradePoint: 4.8,
+      inputStatusCode: '01',
+      inputStatusExplain: '尚未录入',
+    });
     const view = buildHbuJwTermScoresView({
       mode: 'full',
-      rows: [
-        thisTermScoreRow(),
-        thisTermScoreRow({
-          id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
-          courseName: '编译原理',
-          credit: 3,
-          courseScore: '84',
-          gradePoint: 4.2,
-          inputStatusCode: '04',
-          inputStatusExplain: '暂存',
-        }),
-        thisTermScoreRow({
-          id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
-          courseName: '网络安全基础实验',
-          credit: 1,
-          courseScore: '',
-          gradePoint: 4.8,
-          inputStatusCode: '01',
-          inputStatusExplain: '尚未录入',
-        }),
-      ],
+      rows: [confirmedRow, recordedRow, pendingRow],
       allPassingRows: [
         scoreRow({
           id: { courseNumber: '2023S01003' },
@@ -862,53 +861,54 @@ describe('hbu-jw term scores module', () => {
           gradePointScore: 4.5,
         }),
       ],
+      statusOverrides: new Map([[recordedRow, { kind: 'recorded', recordedCount: 2 }]]),
     });
 
     expect(view.subtitle).toBe('2025-2026 春 · 3 门课程 · 7 学分');
     expect(view.confirmedCount).toBe(1);
-    expect(view.stagedCount).toBe(0);
-    expect(view.temporaryCount).toBe(1);
+    expect(view.recordedCount).toBe(1);
     expect(view.pendingCount).toBe(1);
     expect(view.rows.map((row) => [row.courseName, row.statusText, row.timeText, row.scoreText, row.gradePointText, row.gpaDeltaText])).toEqual([
       ['软件工程', '确定', '—', '97', '4.5', '—'],
-      ['编译原理', '未暂存录入', '—', '—', '—', '待确定'],
+      ['编译原理', '已录入2', '—', '84', '—', '待确定'],
       ['网络安全基础实验', '尚未录入', '—', '—', '—', '—'],
     ]);
   });
 
   it('builds anonymous term score rows without exposing sensitive score fields', () => {
+    const confirmedRow = thisTermScoreRow({
+      avgcj: '88.2',
+      rank: '3/78',
+    });
+    const recordedRow = thisTermScoreRow({
+      id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+      courseName: '暂存课程',
+      courseScore: '84',
+      gradePoint: 4.2,
+      inputStatusCode: '04',
+      inputStatusExplain: '暂存',
+      avgcj: '82.5',
+      rank: '10/78',
+    });
+    const pendingRow = thisTermScoreRow({
+      id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
+      courseName: '未录入课程',
+      courseScore: '',
+      gradePoint: '',
+      inputStatusCode: '01',
+      inputStatusExplain: '尚未录入',
+      avgcj: '',
+      rank: '',
+    });
     const view = buildHbuJwTermScoresView({
       mode: 'anonymous',
-      rows: [
-        thisTermScoreRow({
-          avgcj: '88.2',
-          rank: '3/78',
-        }),
-        thisTermScoreRow({
-          id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
-          courseName: '暂存课程',
-          courseScore: '84',
-          gradePoint: 4.2,
-          inputStatusCode: '04',
-          inputStatusExplain: '暂存',
-          avgcj: '82.5',
-          rank: '10/78',
-        }),
-        thisTermScoreRow({
-          id: { courseNumber: '2023S01005', executiveEducationPlanNumber: '2025-2026-2-2' },
-          courseName: '未录入课程',
-          courseScore: '',
-          gradePoint: '',
-          inputStatusCode: '01',
-          inputStatusExplain: '尚未录入',
-          avgcj: '',
-          rank: '',
-        }),
-      ],
+      rows: [confirmedRow, recordedRow, pendingRow],
+      statusOverrides: new Map([[recordedRow, { kind: 'recorded', recordedCount: 12 }]]),
     });
 
     expect(view.rows.map((row) => [
       row.courseName,
+      row.statusText,
       row.scoreText,
       row.gradePointText,
       row.averageText,
@@ -916,25 +916,26 @@ describe('hbu-jw term scores module', () => {
       row.gpaDeltaText,
       row.gpaDeltaKind,
     ])).toEqual([
-      ['软件工程', '*', '*', '88.2', '*', '*', 'anonymous'],
-      ['暂存课程', '*', '*', '—', '*', '*', 'anonymous'],
-      ['未录入课程', '*', '*', '—', '*', '*', 'anonymous'],
+      ['软件工程', '确定', '*', '*', '88.2', '*', '*', 'anonymous'],
+      ['暂存课程', '已录入12', '*', '*', '—', '*', '*', 'anonymous'],
+      ['未录入课程', '尚未录入', '*', '*', '—', '*', '*', 'anonymous'],
     ]);
   });
 
   it('sorts term scores by status and time while calculating cumulative GPA deltas', () => {
+    const recordedRow = thisTermScoreRow({
+      id: { courseNumber: 'TEMP001', executiveEducationPlanNumber: '2025-2026-2-2' },
+      courseName: '暂存课程',
+      courseScore: '91',
+      gradePoint: 4.7,
+      inputStatusCode: '04',
+      inputStatusExplain: '暂存',
+      operatetime: '20260701090000',
+    });
     const view = buildHbuJwTermScoresView({
       mode: 'full',
       rows: [
-        thisTermScoreRow({
-          id: { courseNumber: 'TEMP001', executiveEducationPlanNumber: '2025-2026-2-2' },
-          courseName: '暂存课程',
-          courseScore: '91',
-          gradePoint: 4.7,
-          inputStatusCode: '04',
-          inputStatusExplain: '暂存',
-          operatetime: '20260701090000',
-        }),
+        recordedRow,
         thisTermScoreRow({
           id: { courseNumber: 'CURR_LOW', executiveEducationPlanNumber: '2025-2026-2-2' },
           courseName: '后确定低绩点',
@@ -984,6 +985,7 @@ describe('hbu-jw term scores module', () => {
           courseAttributeName: '任选',
         }),
       ],
+      statusOverrides: new Map([[recordedRow, { kind: 'recorded', recordedCount: 3 }]]),
     });
 
     expect(view.rows.map((row) => row.courseName)).toEqual([
@@ -1004,22 +1006,22 @@ describe('hbu-jw term scores module', () => {
 
   it('renders the term score view as a PNG image with the core table in the HTML', async () => {
     const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const recordedRow = thisTermScoreRow({
+      id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
+      courseName: '编译原理',
+      courseScore: '84',
+      inputStatusCode: '04',
+      inputStatusExplain: '暂存',
+    });
     const image = await renderHbuJwTermScoresImage(
       puppeteer,
       buildHbuJwTermScoresView({
         mode: 'full',
-        rows: [
-          thisTermScoreRow(),
-          thisTermScoreRow({
-            id: { courseNumber: '2023S01004', executiveEducationPlanNumber: '2025-2026-2-2' },
-            courseName: '编译原理',
-            courseScore: '84',
-            inputStatusExplain: '暂存',
-          }),
-        ],
+        rows: [thisTermScoreRow(), recordedRow],
         allPassingRows: [
           scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '软件工程', credit: 3, gradePointScore: 4.5 }),
         ],
+        statusOverrides: new Map([[recordedRow, { kind: 'recorded', recordedCount: 1 }]]),
       }),
     );
 
@@ -1029,8 +1031,8 @@ describe('hbu-jw term scores module', () => {
     expect(getNavigatedHtml()).toContain('编译原理');
     expect(getNavigatedHtml()).toContain('时间');
     expect(getNavigatedHtml()).toContain('GPA增量');
-    expect(getNavigatedHtml()).toContain('未暂存录入');
-    expect(getNavigatedHtml()).toContain('未录入');
+    expect(getNavigatedHtml()).toContain('已录入1');
+    expect(getNavigatedHtml()).toContain('status-recorded');
     expect(getNavigatedHtml()).toContain('gpa-missing');
     expect(getNavigatedHtml()).toContain('gpa-pending');
     expect(getNavigatedHtml()).toContain('<table>');
@@ -1046,11 +1048,11 @@ describe('hbu-jw term scores module', () => {
     const getAllPassingScores = vi.fn(async () => [
       scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '软件工程', credit: 3, gradePointScore: 4.5 }),
     ]);
-    const getSubitemScoreStudentNumbers = vi.fn(async () => []);
+    const getSubitemScoreDetails = vi.fn();
     const { puppeteer } = createPuppeteerHarness();
     const service = new HbuJwTermScoresService(
       { ensureAuthenticated },
-      { getThisTermScores, getAllPassingScores, getSubitemScoreStudentNumbers },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -1061,10 +1063,10 @@ describe('hbu-jw term scores module', () => {
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
     expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
     expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
-    expect(getSubitemScoreStudentNumbers).not.toHaveBeenCalled();
+    expect(getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 
-  it('uses look results to upgrade temporary rows to staged when the student id is present', async () => {
+  it('uses look result row counts for recorded term score status', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
       cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
@@ -1074,6 +1076,7 @@ describe('hbu-jw term scores module', () => {
         id: {
           courseNumber: '2023S01004',
           executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
           studentNumber: '20231202051',
         },
         courseName: '编译原理',
@@ -1083,19 +1086,67 @@ describe('hbu-jw term scores module', () => {
       }),
     ]);
     const getAllPassingScores = vi.fn(async () => []);
-    const getSubitemScoreStudentNumbers = vi.fn(async () => ['20231202051', '20231202052']);
+    const getSubitemScoreDetails = vi.fn(async () => ({
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      message: '',
+      rows: [
+        { id: { studentNumber: '20231202051', scoreTypeCode: '001' }, zcj: 84 },
+        { id: { studentNumber: '20231202052', scoreTypeCode: '001' }, zcj: 81 },
+      ],
+    }));
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwTermScoresService(
       { ensureAuthenticated },
-      { getThisTermScores, getAllPassingScores, getSubitemScoreStudentNumbers },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
       puppeteer,
     );
 
     await service.queryTermScores(identity());
 
-    expect(getSubitemScoreStudentNumbers).toHaveBeenCalledTimes(1);
-    expect(getNavigatedHtml()).toContain('已暂存录入');
+    expect(getSubitemScoreDetails).toHaveBeenCalledWith(
+      { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+    );
+    expect(getNavigatedHtml()).toContain('已录入2');
     expect(getNavigatedHtml()).toContain('<td class="score-col score">84</td>');
+  });
+
+  it('uses empty look results as pending term score status', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getThisTermScores = vi.fn(async () => [
+      thisTermScoreRow({
+        id: {
+          courseNumber: '2023S01004',
+          executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
+          studentNumber: '20231202051',
+        },
+        courseName: '编译原理',
+        courseScore: '',
+        inputStatusCode: '04',
+        inputStatusExplain: '暂存',
+      }),
+    ]);
+    const getAllPassingScores = vi.fn(async () => []);
+    const getSubitemScoreDetails = vi.fn(async () => ({
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      message: '',
+      rows: [],
+    }));
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService(
+      { ensureAuthenticated },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      puppeteer,
+    );
+
+    await service.queryTermScores(identity());
+
+    expect(getNavigatedHtml()).toContain('尚未录入');
+    expect(getNavigatedHtml()).not.toContain('已录入0');
   });
 
   it('queries anonymous term scores without loading all passing scores', async () => {
@@ -1108,13 +1159,31 @@ describe('hbu-jw term scores module', () => {
         avgcj: '88.2',
         rank: '3/78',
       }),
+      thisTermScoreRow({
+        id: {
+          courseNumber: '2023S01004',
+          executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
+          studentNumber: '20231202051',
+        },
+        courseName: '暂存课程',
+        courseScore: '84',
+        inputStatusCode: '04',
+        inputStatusExplain: '暂存',
+      }),
     ]);
     const getAllPassingScores = vi.fn();
-    const getSubitemScoreStudentNumbers = vi.fn(async () => []);
+    const getSubitemScoreDetails = vi.fn(async () => ({
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      message: '',
+      rows: [
+        { id: { studentNumber: '20231202051', scoreTypeCode: '001' }, zcj: 84 },
+      ],
+    }));
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwTermScoresService(
       { ensureAuthenticated },
-      { getThisTermScores, getAllPassingScores, getSubitemScoreStudentNumbers },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -1124,7 +1193,8 @@ describe('hbu-jw term scores module', () => {
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
     expect(getAllPassingScores).not.toHaveBeenCalled();
-    expect(getSubitemScoreStudentNumbers).not.toHaveBeenCalled();
+    expect(getSubitemScoreDetails).toHaveBeenCalledTimes(1);
+    expect(getNavigatedHtml()).toContain('已录入1');
     expect(getNavigatedHtml()).toContain('<td class="score-col muted">*</td>');
     expect(getNavigatedHtml()).toContain('<td class="point-col muted">*</td>');
     expect(getNavigatedHtml()).toContain('<td class="avg-col num">88.2</td>');
@@ -1139,18 +1209,18 @@ describe('hbu-jw term scores module', () => {
     }));
     const getThisTermScores = vi.fn();
     const getAllPassingScores = vi.fn();
-    const getSubitemScoreStudentNumbers = vi.fn();
+    const getSubitemScoreDetails = vi.fn();
     const { puppeteer } = createPuppeteerHarness();
     const service = new HbuJwTermScoresService(
       { ensureAuthenticated },
-      { getThisTermScores, getAllPassingScores, getSubitemScoreStudentNumbers },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
       puppeteer,
     );
 
     await expect(service.queryTermScores(identity())).rejects.toThrow('请先发送“教务绑定”。');
     expect(getThisTermScores).not.toHaveBeenCalled();
     expect(getAllPassingScores).not.toHaveBeenCalled();
-    expect(getSubitemScoreStudentNumbers).not.toHaveBeenCalled();
+    expect(getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 });
 
@@ -1356,9 +1426,31 @@ describe('hbu-jw course query module', () => {
         params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01106', kxh: '02', kssj: '20260620', kcsxdm: '003' },
       },
     ];
+    const prefixCandidates = [
+      {
+        courseName: 'AB',
+        courseNumber: 'A001',
+        sequenceNumber: '01',
+        propertyName: '必修',
+        termCode: '2025-2026-2-2',
+        termLabel: '2025-2026学年春(三学期)',
+        params: { zxjxjhh: '2025-2026-2-2', kch: 'A001', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      },
+      {
+        courseName: 'ABC',
+        courseNumber: 'A002',
+        sequenceNumber: '01',
+        propertyName: '必修',
+        termCode: '2025-2026-2-2',
+        termLabel: '2025-2026学年春(三学期)',
+        params: { zxjxjhh: '2025-2026-2-2', kch: 'A002', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      },
+    ];
 
     expect(matchCourseCandidates(candidates, '2023S01105').map((course) => course.courseName)).toEqual(['模式识别与机器学习']);
-    expect(matchCourseCandidates(candidates, '模式识别')).toHaveLength(2);
+    expect(matchCourseCandidates(candidates, '模式识别').map((course) => course.courseName)).toEqual(['模式识别与机器学习']);
+    expect(matchCourseCandidates(prefixCandidates, 'A').map((course) => course.courseName)).toEqual(['AB']);
+    expect(matchCourseCandidates(prefixCandidates, 'AB').map((course) => course.courseName)).toEqual(['AB']);
   });
 
   it('uses the authenticated session to query and render one course detail list', async () => {
@@ -1608,40 +1700,6 @@ describe('hbu-jw http client', () => {
     await expect(malformedClient.getThisTermScores({ cookies: [] })).rejects.toThrow('结构异常');
   });
 
-  it('loads subitem score student numbers from the look endpoint', async () => {
-    const row = thisTermScoreRow({
-      id: {
-        courseNumber: '2023S01004',
-        executiveEducationPlanNumber: '2025-2026-2-2',
-        examtime: '1',
-        studentNumber: '20231202051',
-      },
-      courseName: '编译原理',
-      coureSequenceNumber: '01',
-      inputStatusExplain: '暂存',
-    });
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === 'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/subitemScore/index') {
-        return new Response('<script>const look = "/student/integratedQuery/scoreQuery/subitemScore/token/look";</script>', { status: 200 });
-      }
-      if (url === 'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/subitemScore/token/look') {
-        expect(init?.method).toBe('POST');
-        expect(String(init?.body ?? '')).toBe('zxjxjhh=2025-2026-2-2&kch=2023S01004&kxh=01&kssj=1&kcsxdm=001');
-        return new Response(JSON.stringify({
-          scoreDetailList: [
-            { xh: '20231202051', zcj: '84' },
-            { xh_id: '20231202052', zcj: '87' },
-          ],
-        }), { status: 200, headers: { 'content-type': 'application/json;charset=UTF-8' } });
-      }
-      return new Response('', { status: 500 });
-    });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
-
-    await expect(client.getSubitemScoreStudentNumbers({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] }, row))
-      .resolves.toEqual(['20231202051', '20231202052']);
-  });
-
   it('loads subitem score terms and details from the fixed look endpoint', async () => {
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === 'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/subitemScore/index') {
@@ -1682,13 +1740,13 @@ describe('hbu-jw http client', () => {
   });
 
   it('rejects ambiguous subitem score look pages and malformed look payloads', async () => {
-    const row = thisTermScoreRow({ inputStatusExplain: '暂存' });
+    const params = { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' };
     const ambiguousFetch = vi.fn(async () => new Response([
       '"/student/integratedQuery/scoreQuery/subitemScore/a/look"',
       '"/student/integratedQuery/scoreQuery/subitemScore/b/look"',
     ].join('\n'), { status: 200 }));
     const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
-    await expect(ambiguousClient.getSubitemScoreStudentNumbers({ cookies: [] }, row)).rejects.toThrow('没有唯一的查看地址');
+    await expect(ambiguousClient.getSubitemScoreDetails({ cookies: [] }, params)).rejects.toThrow('没有唯一的查看地址');
 
     const malformedFetch = vi.fn(async (url: string) => {
       if (url.endsWith('/subitemScore/index')) {
@@ -1697,7 +1755,7 @@ describe('hbu-jw http client', () => {
       return new Response('not-json', { status: 200 });
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
-    await expect(malformedClient.getSubitemScoreStudentNumbers({ cookies: [] }, row)).rejects.toThrow('非 JSON');
+    await expect(malformedClient.getSubitemScoreDetails({ cookies: [] }, params)).rejects.toThrow('非 JSON');
   });
 
   it('loads exam schedule from the fullcalendar detail endpoint', async () => {

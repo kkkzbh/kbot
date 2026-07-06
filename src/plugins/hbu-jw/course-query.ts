@@ -168,9 +168,27 @@ export function resolveCourseQueryTerm(terms: HbuJwSubitemScoreTerm[], input: st
 
 export function matchCourseCandidates(candidates: HbuJwCourseQueryCourseCandidate[], query: string): HbuJwCourseQueryCourseCandidate[] {
   const normalizedQuery = normalizeQuery(query);
+  if (!normalizedQuery) return [];
   const exactCourseNumber = candidates.filter((course) => normalizeQuery(course.courseNumber) === normalizedQuery);
   if (exactCourseNumber.length > 0) return exactCourseNumber;
-  return candidates.filter((course) => normalizeQuery(course.courseName).includes(normalizedQuery));
+  const nameMatches = candidates
+    .map((course) => {
+      const normalizedName = normalizeQuery(course.courseName);
+      return {
+        course,
+        startIndex: normalizedName.indexOf(normalizedQuery),
+        nameLength: normalizedName.length,
+      };
+    })
+    .filter((match) => match.startIndex >= 0);
+  if (nameMatches.length === 0) return [];
+
+  const leftmostIndex = Math.min(...nameMatches.map((match) => match.startIndex));
+  const leftmostMatches = nameMatches.filter((match) => match.startIndex === leftmostIndex);
+  const shortestLength = Math.min(...leftmostMatches.map((match) => match.nameLength));
+  return leftmostMatches
+    .filter((match) => match.nameLength === shortestLength)
+    .map((match) => match.course);
 }
 
 export function buildHbuJwCourseQueryResultViews(
