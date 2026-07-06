@@ -44,6 +44,8 @@ deploy/deploy.sh km6
 
 The local script first removes any stale partial upload at `/opt/qqbot/incoming/qqbot.tar.gz.upload`, then compares the current `qqbot` and `chatluna` commit SHAs with `/opt/qqbot/app/build-manifest.json`. If the server already has the same pair of commits, deploy exits without running typecheck, tests, build, upload, or install. Set `QQBOT_FORCE_DEPLOY=1` to force a full deploy.
 
+The `qqbot` package is always built and bundled from the current `HEAD` commit. Local uncommitted `qqbot` changes may exist during deploy; they are ignored and are not copied into the deployment artifact. The temporary `HEAD` snapshot lives under `.tmp/deploy/<run-id>` and is removed when the deploy command exits.
+
 When a full deploy is required, the script runs typecheck, tests, build, packages `qqbot` with the sibling `../chatluna` checkout, uploads one tarball, and asks the server installer to replace the single active instance. LLBot release zips are cached locally under `.tmp/deploy-cache`.
 
 ## Services

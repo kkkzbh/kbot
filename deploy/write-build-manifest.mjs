@@ -37,6 +37,7 @@ const outputPath = args.get('output');
 if (!outputPath) throw new Error('missing --output');
 
 const qqbotRoot = resolve(args.get('qqbot-root') || process.cwd());
+const qqbotPackageRoot = resolve(args.get('qqbot-package-root') || qqbotRoot);
 const chatlunaRoot = resolve(args.get('chatluna-root') || process.env.CHATLUNA_SOURCE_DIR || `${qqbotRoot}/../chatluna`);
 
 const manifest = {
@@ -48,7 +49,7 @@ const manifest = {
   qqbot: {
     root: qqbotRoot,
     sha: commandOutput('git', ['rev-parse', 'HEAD'], qqbotRoot),
-    packageManager: readPackageManager(qqbotRoot),
+    packageManager: readPackageManager(qqbotPackageRoot),
   },
   chatluna: {
     root: chatlunaRoot,

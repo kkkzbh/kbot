@@ -133,11 +133,11 @@ const COPILOT_ENABLED_MODEL_PAYLOAD = [
     id: 'auto',
     name: 'Auto',
     capabilities: { type: 'chat', supports: { structured_outputs: true } },
-    supported_endpoints: ['/chat/completions'],
+    supported_endpoints: ['/v1/responses'],
     qqbot: {
       rateLabel: '0.1x',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'native_chat_json_schema',
+      requestMode: 'responses',
+      structuredOutputProtocol: 'native_responses_json_schema',
       availableModels: ['gpt-5-mini', 'gpt-5.4-mini', 'gpt-5.3-codex'],
     },
   },
@@ -324,8 +324,8 @@ describe('bot-console env helpers', () => {
       expect.objectContaining({
         id: 'copilot',
         strategyId: 'copilot-github-oauth-main-chat',
-        requestMode: 'chat_completions',
-        structuredOutputProtocol: 'native_chat_json_schema',
+        requestMode: 'responses',
+        structuredOutputProtocol: 'native_responses_json_schema',
         defaultModel: 'openai/auto',
         canonicalModel: 'openai/auto',
         transportModel: 'auto',
@@ -472,8 +472,8 @@ describe('bot-console env helpers', () => {
           modelId: 'auto',
           label: 'Auto',
           rateLabel: '0.1x',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
+          requestMode: 'responses',
+          structuredOutputProtocol: 'native_responses_json_schema',
         },
       ],
     });
@@ -491,6 +491,9 @@ describe('bot-console env helpers', () => {
         accountLabel: 'tester',
         authError: 'Copilot session token 换取失败：HTTP 401',
       }),
+      proxyModels: async () => {
+        throw new Error('proxyModels should not be called when auth is expired');
+      },
     });
 
     expect(result).toMatchObject({
@@ -1487,7 +1490,7 @@ describe('bot-console manager', () => {
     ).rejects.toThrow(/OpenAI Tab：.*不在允许的模型族内/);
   });
 
-  it('derives Copilot chat-completions metadata from the selected Copilot model', async () => {
+  it('derives Copilot Responses metadata from the Auto entry', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
     writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
@@ -1575,8 +1578,8 @@ describe('bot-console manager', () => {
     expect(result.modelTabs.activeTab).toBe('copilot');
     expect(result.modelTabs.tabs).toContainEqual(expect.objectContaining({
       id: 'copilot',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'native_chat_json_schema',
+      requestMode: 'responses',
+      structuredOutputProtocol: 'native_responses_json_schema',
       defaultModel: 'openai/auto',
       canonicalModel: 'openai/auto',
       transportModel: 'auto',

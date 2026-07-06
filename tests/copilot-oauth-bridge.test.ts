@@ -264,7 +264,7 @@ describe('copilot oauth bridge helpers', () => {
 
     expect(result.status).toBe(200);
     expect(body.data.map((model) => model.id)).toEqual(['auto']);
-    expect(body.data.every((model) => model.supported_endpoints.includes('/chat/completions'))).toBe(true);
+    expect(body.data.every((model) => model.supported_endpoints.includes('/v1/responses'))).toBe(true);
     expect(body.data[0]?.qqbot).toMatchObject({
       rateLabel: '0.1x',
       availableModels: ['gpt-5-mini', 'gpt-5.4-mini', 'gpt-5.3-codex'],
@@ -278,7 +278,7 @@ describe('copilot oauth bridge helpers', () => {
     );
   });
 
-  it('routes Auto chat completions through Copilot session intent', async () => {
+  it('routes Auto responses through Copilot session intent', async () => {
     const dir = createTempDir();
     const service = new CopilotOAuthBridgeService({
       rootDir: dir,
@@ -316,9 +316,9 @@ describe('copilot oauth bridge helpers', () => {
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const result = await service.proxyChatCompletions({
+    const result = await service.proxyResponses({
       model: 'openai/auto',
-      messages: [{ role: 'user', content: 'hello' }],
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
     });
 
     expect(result).toMatchObject({
@@ -343,7 +343,7 @@ describe('copilot oauth bridge helpers', () => {
       }),
     );
     expect(fetchMock).toHaveBeenLastCalledWith(
-      'https://api.individual.githubcopilot.com/chat/completions',
+      'https://api.individual.githubcopilot.com/responses',
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
@@ -351,7 +351,7 @@ describe('copilot oauth bridge helpers', () => {
         }),
         body: JSON.stringify({
           model: 'gpt-5.4-mini',
-          messages: [{ role: 'user', content: 'hello' }],
+          input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
         }),
       }),
     );

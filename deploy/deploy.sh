@@ -10,8 +10,10 @@ LLBOT_RELEASE_URL="https://github.com/LLOneBot/LuckyLilliaBot/releases/download/
 
 TMP_PARENT="${ROOT_DIR}/.tmp/deploy"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-ARTIFACT_DIR="${TMP_PARENT}/${RUN_ID}/artifacts"
-STAGING_DIR="${TMP_PARENT}/${RUN_ID}/stage"
+RUN_DIR="${TMP_PARENT}/${RUN_ID}"
+ARTIFACT_DIR="${RUN_DIR}/artifacts"
+STAGING_DIR="${RUN_DIR}/stage"
+HEAD_SOURCE_DIR="${RUN_DIR}/head/qqbot"
 CACHE_DIR="${QQBOT_DEPLOY_CACHE_DIR:-${ROOT_DIR}/.tmp/deploy-cache}"
 BUNDLE_PATH="${ARTIFACT_DIR}/qqbot.tar.gz"
 MANIFEST_PATH="${TMP_PARENT}/${RUN_ID}/build-manifest.json"
@@ -120,16 +122,20 @@ ensure_server_env() {
   ssh "${HOST}" "mv $(printf '%q' "${REMOTE_ENV_SERVER}.upload") $(printf '%q' "${REMOTE_ENV_SERVER}") && chmod 600 $(printf '%q' "${REMOTE_ENV_SERVER}")"
 }
 
+materialize_qqbot_head_source() {
+  mkdir -p "${HEAD_SOURCE_DIR}"
+  git archive --format=tar HEAD | tar -xf - -C "${HEAD_SOURCE_DIR}"
+  ln -s "${CHATLUNA_SOURCE_DIR}" "$(dirname "${HEAD_SOURCE_DIR}")/chatluna"
+  if [[ -e "${ROOT_DIR}/node_modules" ]]; then
+    ln -s "${ROOT_DIR}/node_modules" "${HEAD_SOURCE_DIR}/node_modules"
+  fi
+}
+
 mkdir -p "${ARTIFACT_DIR}" "${STAGING_DIR}/qqbot" "${STAGING_DIR}/chatluna"
+trap 'rm -rf "${RUN_DIR}"' EXIT
 cd "${ROOT_DIR}"
 
 clean_remote_upload
-
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "[deploy] local qqbot worktree is not clean" >&2
-  git status --short >&2
-  exit 2
-fi
 
 if [[ -n "$(git -C "${CHATLUNA_SOURCE_DIR}" status --porcelain)" ]]; then
   echo "[deploy] local ChatLuna worktree is not clean" >&2
@@ -139,11 +145,18 @@ fi
 
 QQBOT_SHA="$(git rev-parse HEAD)"
 CHATLUNA_SHA="$(git -C "${CHATLUNA_SOURCE_DIR}" rev-parse HEAD)"
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "[deploy] local qqbot worktree has uncommitted changes; deploying committed HEAD ${QQBOT_SHA}"
+fi
 if remote_already_deployed "${QQBOT_SHA}" "${CHATLUNA_SHA}"; then
   echo "[deploy] remote already has qqbot ${QQBOT_SHA} and ChatLuna ${CHATLUNA_SHA}"
   echo "[deploy] nothing to deploy; set QQBOT_FORCE_DEPLOY=1 to force"
   exit 0
 fi
+
+materialize_qqbot_head_source
+cd "${HEAD_SOURCE_DIR}"
+export CHATLUNA_ROOT_DIR="${CHATLUNA_SOURCE_DIR}"
 
 echo "[deploy] typecheck"
 pnpm typecheck
@@ -157,15 +170,17 @@ pnpm build
 node ./deploy/write-build-manifest.mjs \
   --output "${MANIFEST_PATH}" \
   --qqbot-root "${ROOT_DIR}" \
+  --qqbot-package-root "${HEAD_SOURCE_DIR}" \
   --chatluna-root "${CHATLUNA_SOURCE_DIR}"
 
-
-git ls-files -z --cached --others --exclude-standard \
-  | grep -zv -E '^(chatluna-src|artifacts|\\.tmp)/' \
-  | tar --null -T - -cf - \
+tar \
+  --exclude='./node_modules' \
+  --exclude='./dist' \
+  --exclude='./.tmp' \
+  -cf - -C "${HEAD_SOURCE_DIR}" . \
   | tar -xf - -C "${STAGING_DIR}/qqbot"
 
-cp -a "${ROOT_DIR}/dist" "${STAGING_DIR}/qqbot/dist"
+cp -a "${HEAD_SOURCE_DIR}/dist" "${STAGING_DIR}/qqbot/dist"
 mkdir -p "${STAGING_DIR}/qqbot/vendor/llbot"
 ensure_llbot_release_zip
 cp "${LLBOT_CACHE_PATH}" "${STAGING_DIR}/qqbot/vendor/llbot/LLBot-${LLBOT_VERSION}.zip"

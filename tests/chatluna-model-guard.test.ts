@@ -157,6 +157,7 @@ describe('buildStructuredReplyModelOverride', () => {
       },
     });
     expect(buildStructuredReplyModelOverride('openai/auto')).toEqual({
+      qqbot_request_mode: 'responses',
       qqbot_canonical_model: 'openai/auto',
       qqbot_transport_model: 'auto',
       qqbot_tool_profile: 'qqbot_openai_main_chat',
@@ -246,23 +247,6 @@ describe('buildReplyOutputContract', () => {
         },
       },
     });
-
-    expect(
-      buildReplyOutputContract({
-        model: 'openai/auto',
-      }),
-    ).toMatchObject({
-      requestMode: 'chat_completions',
-      protocol: 'native_chat_json_schema',
-      schema: expect.objectContaining({
-        title: 'StructuredReply',
-      }),
-      instruction: null,
-      overrideRequestParams: {
-        qqbot_canonical_model: 'openai/auto',
-        qqbot_transport_model: 'auto',
-      },
-    });
   });
 
   it('routes DeepSeek chat completions through the plain text reply protocol', () => {
@@ -283,19 +267,20 @@ describe('buildReplyOutputContract', () => {
     });
   });
 
-  it('routes the Copilot Auto entry through chat completions native structured outputs', () => {
+  it('routes the Copilot Auto entry through Responses API native structured outputs', () => {
     expect(
       buildReplyOutputContract({
         model: 'openai/auto',
       }),
     ).toMatchObject({
-      requestMode: 'chat_completions',
-      protocol: 'native_chat_json_schema',
+      requestMode: 'responses',
+      protocol: 'native_responses_json_schema',
       schema: expect.objectContaining({
         title: 'StructuredReply',
       }),
       instruction: null,
       overrideRequestParams: {
+        qqbot_request_mode: 'responses',
         qqbot_canonical_model: 'openai/auto',
         qqbot_transport_model: 'auto',
       },
@@ -539,8 +524,8 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
       tabId: 'copilot',
       provider: 'openai',
       strategyId: 'copilot-github-oauth-main-chat',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'native_chat_json_schema',
+      requestMode: 'responses',
+      structuredOutputProtocol: 'native_responses_json_schema',
       baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
       defaultModel: 'openai/auto',
       canonicalModel: 'openai/auto',
@@ -584,8 +569,8 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
       tabId: 'copilot',
       provider: 'openai',
       strategyId: 'copilot-github-oauth-main-chat',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'native_chat_json_schema',
+      requestMode: 'responses',
+      structuredOutputProtocol: 'native_responses_json_schema',
       defaultModel: 'openai/auto',
       canonicalModel: 'openai/auto',
       transportModel: 'auto',
@@ -661,8 +646,8 @@ describe('syncRoomModelToMainChatRuntime', () => {
       canonicalModel: 'openai/auto',
       transportModel: 'auto',
       strategyId: 'copilot-github-oauth-main-chat',
-      requestMode: 'chat_completions',
-      outputProtocol: 'native_chat_json_schema',
+      requestMode: 'responses',
+      outputProtocol: 'native_responses_json_schema',
     });
     expect(room.model).toBe('openai/auto');
     expect(clearCache).toHaveBeenCalledWith(room);

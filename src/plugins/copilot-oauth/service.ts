@@ -629,14 +629,10 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     const normalizedBody = normalizeCopilotRequestBody(body);
     try {
       await this.assertCopilotModelCallable(normalizedBody, 'responses');
+      return await this.doProxyResponses(normalizedBody, false);
     } catch (error) {
       return this.buildProxyErrorResponse(error);
     }
-    return this.proxyUpstream({
-      method: 'POST',
-      path: '/v1/responses',
-      body: normalizedBody,
-    });
   }
 
   async proxyChatCompletions(body: unknown): Promise<{ status: number; headers: Record<string, string>; body: string }> {
@@ -666,6 +662,35 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     if (response.status === 401 && !retried) {
       this.invalidateAutoSession();
       return this.doProxyChatCompletions(body, true);
+    }
+
+    const responseBody = await response.text();
+    return {
+      status: response.status,
+      headers: {
+        'content-type': response.headers.get('content-type') || 'application/json; charset=utf-8',
+      },
+      body: responseBody,
+    };
+  }
+
+  private async doProxyResponses(
+    body: unknown,
+    retried: boolean,
+  ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    const session = await this.resolveCopilotSession({ forceRefresh: retried });
+    const prepared = await this.prepareCopilotResponsesRequest(session, body);
+    const response = await fetchExternal(`${session.baseUrl}/responses`, 'Copilot upstream 请求', {
+      method: 'POST',
+      headers: buildCopilotRequestHeaders(session.token, {
+        autoSessionToken: prepared.autoSession.token,
+      }),
+      body: JSON.stringify(prepared.body),
+    });
+
+    if (response.status === 401 && !retried) {
+      this.invalidateAutoSession();
+      return this.doProxyResponses(body, true);
     }
 
     const responseBody = await response.text();
@@ -875,9 +900,9 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     if (availableModels.length === 0) {
       throw new Error('Copilot Auto session 响应缺少 available_models。');
     }
-    const chatModels = availableModels.filter(isCopilotAutoChatModelId);
-    if (chatModels.length === 0) {
-      throw new Error(`Copilot Auto session 未返回可走 chat/completions 的模型：${availableModels.join(' / ')}`);
+    const responsesModels = availableModels.filter(isCopilotAutoResponsesModelId);
+    if (responsesModels.length === 0) {
+      throw new Error(`Copilot Auto session 未返回可走 Responses API 的模型：${availableModels.join(' / ')}`);
     }
 
     return {
@@ -909,24 +934,42 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     };
   }
 
+  private async prepareCopilotResponsesRequest(
+    session: CopilotSessionRecord,
+    body: unknown,
+  ): Promise<{ body: unknown; autoSession: CopilotAutoSessionRecord; selectedModel: string }> {
+    await this.assertCopilotModelCallable(body, 'responses');
+    const model = readCopilotRequestModel(body);
+    if (model !== COPILOT_AUTO_MODEL_ID) {
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot bridge 只接受 Auto 入口模型：${model ?? '<empty>'}`);
+    }
+    const autoSession = await this.resolveCopilotAutoSession(session);
+    const selectedModel = await this.resolveCopilotAutoModel(session, autoSession, body);
+    return {
+      body: withCopilotRequestModel(body, selectedModel),
+      autoSession,
+      selectedModel,
+    };
+  }
+
   private async resolveCopilotAutoModel(
     session: CopilotSessionRecord,
     autoSession: CopilotAutoSessionRecord,
     body: unknown,
   ): Promise<string> {
-    const prompt = extractCopilotChatPrompt(body);
+    const prompt = extractCopilotRequestPrompt(body);
     if (!prompt) {
-      throw new CopilotBridgeHttpError(400, 'GitHub Copilot Auto 路由需要 chat/completions messages 中存在 user 文本。');
+      throw new CopilotBridgeHttpError(400, 'GitHub Copilot Auto 路由需要请求体中存在 user 文本。');
     }
-    const availableChatModels = autoSession.availableModels.filter(isCopilotAutoChatModelId);
-    const response = await this.requestCopilotRouterDecision(session, autoSession, prompt, availableChatModels);
+    const availableModels = autoSession.availableModels.filter(isCopilotAutoResponsesModelId);
+    const response = await this.requestCopilotRouterDecision(session, autoSession, prompt, availableModels);
     const candidates = normalizeStringList(response.candidate_models);
     const chosen = trimOptionalText(response.chosen_model);
-    const selected = pickCopilotAutoCandidate([chosen, ...candidates], availableChatModels);
+    const selected = pickCopilotAutoCandidate([chosen, ...candidates], availableModels);
     if (selected) return selected;
     throw new CopilotBridgeHttpError(
       502,
-      `Copilot Auto router 未返回可走 chat/completions 的候选模型。available=${availableChatModels.join(' / ')} candidates=${candidates.join(' / ') || '<empty>'}`,
+      `Copilot Auto router 未返回可走 Responses API 的候选模型。available=${availableModels.join(' / ')} candidates=${candidates.join(' / ') || '<empty>'}`,
     );
   }
 
@@ -1188,7 +1231,7 @@ function normalizeDiscountedCosts(value: unknown): Record<string, number> {
   return result;
 }
 
-function isCopilotAutoChatModelId(model: string): boolean {
+function isCopilotAutoResponsesModelId(model: string): boolean {
   const normalized = normalizeCopilotModelId(model);
   return Boolean(normalized && /^gpt-/i.test(normalized));
 }
@@ -1197,9 +1240,28 @@ function pickCopilotAutoCandidate(candidates: readonly (string | null)[], availa
   const available = new Set(availableModels);
   for (const candidate of candidates) {
     const normalized = trimOptionalText(candidate);
-    if (normalized && available.has(normalized) && isCopilotAutoChatModelId(normalized)) {
+    if (normalized && available.has(normalized) && isCopilotAutoResponsesModelId(normalized)) {
       return normalized;
     }
+  }
+  return null;
+}
+
+function extractCopilotRequestPrompt(body: unknown): string | null {
+  return extractCopilotResponsesPrompt(body) ?? extractCopilotChatPrompt(body);
+}
+
+function extractCopilotResponsesPrompt(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const input = (body as Record<string, unknown>).input;
+  if (typeof input === 'string') return trimOptionalText(input);
+  if (!Array.isArray(input)) return null;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    if ((item as Record<string, unknown>).role !== 'user') continue;
+    const text = extractCopilotContentText((item as Record<string, unknown>).content);
+    if (text) return text;
   }
   return null;
 }

@@ -146,8 +146,8 @@ export const COPILOT_MODEL_OPTIONS = [
   {
     modelId: COPILOT_AUTO_MODEL_ID,
     label: 'Auto',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'native_chat_json_schema',
+    requestMode: 'responses',
+    structuredOutputProtocol: 'native_responses_json_schema',
   },
 ] as const satisfies readonly CopilotModelOption[];
 
