@@ -114,23 +114,66 @@ if [[ ! -d "${STAGE_QQBOT}/dist" ]]; then
 fi
 
 write_runtime_env() {
-  : > "${ENV_RUNTIME}"
-  printf '%s\n' "SQLITE_PATH=${DATA_DIR}/koishi.db" >> "${ENV_RUNTIME}"
-  printf '%s\n' "PMHQ_QQ_CONFIG_DIR=${DATA_DIR}/pmhq/QQ" >> "${ENV_RUNTIME}"
-  printf '%s\n' "QQBOT_QQ_CONFIG_MOUNT_SOURCE=${DATA_DIR}/pmhq/QQ" >> "${ENV_RUNTIME}"
-  printf '%s\n' "PMHQ_BIND_HOST=127.0.0.1" >> "${ENV_RUNTIME}"
-  printf '%s\n' "PMHQ_PORT=13000" >> "${ENV_RUNTIME}"
-  printf '%s\n' "LLBOT_RUNTIME_DIR=${DATA_DIR}/llbot-runtime" >> "${ENV_RUNTIME}"
-  printf '%s\n' "LLONEBOT_DATA_DIR=${DATA_DIR}/llonebot" >> "${ENV_RUNTIME}"
-  printf '%s\n' "LLONEBOT_WEBUI_PORT=3080" >> "${ENV_RUNTIME}"
-  printf '%s\n' "LLONEBOT_WS_PORT=3001" >> "${ENV_RUNTIME}"
-  printf '%s\n' "ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001" >> "${ENV_RUNTIME}"
-  printf '%s\n' "CHATLUNA_STORAGE_PATH=${DATA_DIR}/chatluna-storage" >> "${ENV_RUNTIME}"
-  printf '%s\n' "CHATLUNA_STORAGE_SERVER_PATH=http://127.0.0.1:5140" >> "${ENV_RUNTIME}"
-  printf '%s\n' "CHATLUNA_RUNTIME_PRESET_DIR=${DATA_DIR}/chathub/presets" >> "${ENV_RUNTIME}"
-  printf '%s\n' "CHATLUNA_STICKER_DIR=${DATA_DIR}/chathub/stickers" >> "${ENV_RUNTIME}"
-  printf '%s\n' "PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell" >> "${ENV_RUNTIME}"
-  chmod 600 "${ENV_RUNTIME}"
+  local generated_keys=(
+    SQLITE_PATH
+    PMHQ_QQ_CONFIG_DIR
+    QQBOT_QQ_CONFIG_MOUNT_SOURCE
+    PMHQ_BIND_HOST
+    PMHQ_PORT
+    LLBOT_RUNTIME_DIR
+    LLONEBOT_DATA_DIR
+    LLONEBOT_WEBUI_PORT
+    LLONEBOT_WS_PORT
+    ONEBOT_WS_ENDPOINT
+    CHATLUNA_STORAGE_PATH
+    CHATLUNA_STORAGE_SERVER_PATH
+    CHATLUNA_RUNTIME_PRESET_DIR
+    CHATLUNA_STICKER_DIR
+    PUPPETEER_EXECUTABLE_PATH
+  )
+  local tmp
+  tmp="$(mktemp "${ENV_RUNTIME}.tmp.XXXXXX")"
+
+  is_generated_runtime_key() {
+    local key="$1"
+    local item
+    for item in "${generated_keys[@]}"; do
+      [[ "${key}" == "${item}" ]] && return 0
+    done
+    return 1
+  }
+
+  if [[ -f "${ENV_RUNTIME}" ]]; then
+    local line key
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+        key="${BASH_REMATCH[1]}"
+        is_generated_runtime_key "${key}" && continue
+      fi
+      printf '%s\n' "${line}" >> "${tmp}"
+    done < "${ENV_RUNTIME}"
+    if [[ -s "${tmp}" ]]; then
+      printf '\n' >> "${tmp}"
+    fi
+  fi
+
+  printf '%s\n' "SQLITE_PATH=${DATA_DIR}/koishi.db" >> "${tmp}"
+  printf '%s\n' "PMHQ_QQ_CONFIG_DIR=${DATA_DIR}/pmhq/QQ" >> "${tmp}"
+  printf '%s\n' "QQBOT_QQ_CONFIG_MOUNT_SOURCE=${DATA_DIR}/pmhq/QQ" >> "${tmp}"
+  printf '%s\n' "PMHQ_BIND_HOST=127.0.0.1" >> "${tmp}"
+  printf '%s\n' "PMHQ_PORT=13000" >> "${tmp}"
+  printf '%s\n' "LLBOT_RUNTIME_DIR=${DATA_DIR}/llbot-runtime" >> "${tmp}"
+  printf '%s\n' "LLONEBOT_DATA_DIR=${DATA_DIR}/llonebot" >> "${tmp}"
+  printf '%s\n' "LLONEBOT_WEBUI_PORT=3080" >> "${tmp}"
+  printf '%s\n' "LLONEBOT_WS_PORT=3001" >> "${tmp}"
+  printf '%s\n' "ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_STORAGE_PATH=${DATA_DIR}/chatluna-storage" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_STORAGE_SERVER_PATH=http://127.0.0.1:5140" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_RUNTIME_PRESET_DIR=${DATA_DIR}/chathub/presets" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_STICKER_DIR=${DATA_DIR}/chathub/stickers" >> "${tmp}"
+  printf '%s\n' "PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell" >> "${tmp}"
+  chmod 600 "${tmp}"
+  mv "${tmp}" "${ENV_RUNTIME}"
 }
 write_runtime_env
 

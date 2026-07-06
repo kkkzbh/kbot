@@ -124,6 +124,8 @@ type BotConsoleManagerOptions = {
   codexBridge?: CodexBridgeStateProvider;
 };
 
+type SystemdScope = 'system' | 'user';
+
 type EnvLine =
   | { type: 'kv'; key: string; rawValue: string }
   | { type: 'other'; value: string };
@@ -338,10 +340,25 @@ function expandHomePath(value: string): string {
   return value;
 }
 
+function normalizeManagedGroupList(value: string): string {
+  return value
+    .split(/[,\s，、]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(',');
+}
+
 function normalizeManagedEnvValue(key: string, value: string | null | undefined): string | null | undefined {
   if (value == null) return value;
   if (key === 'CHATLUNA_COMMON_FS_SCOPE_PATH') {
     return expandHomePath(value.trim());
+  }
+  if (
+    key === 'CHAT_NATURAL_TRIGGER_GROUPS' ||
+    key === 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS' ||
+    key === 'HBU_JW_ALLOWED_GROUPS'
+  ) {
+    return normalizeManagedGroupList(value);
   }
   return value;
 }
@@ -1275,6 +1292,14 @@ export function resolveManagedServiceUnits(baseFilePath: string | null | undefin
   return BOT_CONSOLE_SERVICE_UNITS;
 }
 
+function resolveSystemdScope(baseFilePath: string | null | undefined): SystemdScope {
+  return isServerEnvFilePath(baseFilePath) ? 'system' : 'user';
+}
+
+function withSystemdScope(scope: SystemdScope, args: string[]): string[] {
+  return scope === 'user' ? ['--user', ...args] : args;
+}
+
 export function normalizePresetDocument(input: PresetDocument): PresetDocument {
   const name = input.name.trim();
   if (!name) throw new Error('预设名不能为空。');
@@ -1408,6 +1433,10 @@ export class BotConsoleManager {
 
   get managedServiceUnits(): readonly BotServiceUnit[] {
     return resolveManagedServiceUnits(this.envFiles.baseFilePath);
+  }
+
+  private get systemdScope(): SystemdScope {
+    return resolveSystemdScope(this.envFiles.baseFilePath);
   }
 
   private get canManageLocalTtsGateway(): boolean {
@@ -1822,15 +1851,16 @@ export class BotConsoleManager {
 
   async scheduleRestart(unit: BotServiceUnit): Promise<void> {
     const transientUnit = `${unit.replaceAll(/[^A-Za-z0-9]+/g, '-')}-restart-${Date.now()}`;
+    const scope = this.systemdScope;
     await this.execFile(
       'systemd-run',
       [
-        '--user',
+        ...withSystemdScope(scope, []),
         '--quiet',
         '--on-active=1s',
         `--unit=${transientUnit}`,
         'systemctl',
-        '--user',
+        ...withSystemdScope(scope, []),
         'restart',
         unit,
       ],
@@ -1849,7 +1879,7 @@ export class BotConsoleManager {
       await this.scheduleRestart(unit);
       return this.getServiceStatus(unit);
     }
-    await this.execFile('systemctl', ['--user', action, unit], { cwd: this.rootDir, timeout: 15_000 });
+    await this.execFile('systemctl', withSystemdScope(this.systemdScope, [action, unit]), { cwd: this.rootDir, timeout: 15_000 });
     return this.getServiceStatus(unit);
   }
 
@@ -1864,13 +1894,12 @@ export class BotConsoleManager {
     }
     const { stdout } = await this.execFile(
       'systemctl',
-      [
-        '--user',
+      withSystemdScope(this.systemdScope, [
         'show',
         unit,
         '--property',
         'Description,LoadState,ActiveState,SubState,UnitFileState',
-      ],
+      ]),
       { cwd: this.rootDir, timeout: 15_000 },
     );
     return parseSystemdShowOutput(stdout, unit);
@@ -2051,12 +2080,17 @@ export class BotConsoleManager {
 
     const providedById = new Map<BotConsoleModelTabId, Partial<BotConsoleBuiltinModelTab>>();
     for (const item of providedTabs) {
+      const rawId = String(item?.id ?? '').trim();
+      let id: BotConsoleModelTabId;
       try {
-        const id = normalizeMainChatBuiltinTabId(item?.id) as BotConsoleModelTabId;
-        providedById.set(id, item);
+        id = normalizeMainChatBuiltinTabId(rawId) as BotConsoleModelTabId;
       } catch {
-        // Ignore unknown tab ids in the payload rather than aborting the entire save.
+        throw new Error(`未知模型 Tab：${rawId}`);
       }
+      if (providedById.has(id)) {
+        throw new Error(`重复模型 Tab：${id}`);
+      }
+      providedById.set(id, item);
     }
 
     const tabs: BotConsoleBuiltinModelTab[] = MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => {

@@ -1821,6 +1821,10 @@ describe('hbu-jw bind page rendering', () => {
     expect(html).toContain('教务登录验证成功');
     expect(html).toContain('你可以直接关闭这个页面');
     expect(html).toContain('教务确认 123456');
+    expect(html).toContain('data-copy-confirm-command');
+    expect(html).toContain('data-copy-text="教务确认 123456"');
+    expect(html).toContain('复制确认消息');
+    expect(html).toContain('navigator.clipboard.writeText');
     expect(html).not.toContain('请输入教务系统密码');
   });
 
@@ -1870,6 +1874,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -1914,6 +1920,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
     });
 
     expect(ctx.model.extend).toHaveBeenCalledWith('hbu_jw_bind_challenge', expect.anything(), expect.anything());
@@ -1961,6 +1969,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -1977,6 +1987,128 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('请发送完整确认命令：教务确认 <6位确认码>。确认码会在网页登录成功后的页面上显示。');
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('passes bare hbu-jw keywords through outside natural trigger groups', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    const next = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '教务绑定',
+      send,
+    }, next);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(database.tables.get('hbu_jw_bind_challenge') ?? []).toHaveLength(0);
+  });
+
+  it('passes bare hbu-jw keywords through when natural trigger is disabled', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    const next = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '教务绑定',
+      send,
+    }, next);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(database.tables.get('hbu_jw_bind_challenge') ?? []).toHaveLength(0);
+  });
+
+  it('accepts explicitly mentioned hbu-jw keywords outside natural trigger groups', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    const next = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '<at id="100000001"/> 教务绑定',
+      stripped: { content: '教务绑定', atSelf: true },
+      send,
+    }, next);
+
+    const reply = send.mock.calls[0]?.[0];
+    expect(renderMessageContent(reply)).toContain('https://bot.example/jw/bind?token=');
+    expect(next).not.toHaveBeenCalled();
+    expect(database.tables.get('hbu_jw_bind_challenge')?.[0]).toMatchObject({
+      ownerKey: 'onebot:1405359129',
+      channelId: 'group:100',
+      status: 'created',
+    });
   });
 
   it('blocks the menu keyword outside allowed groups before rendering the image', async () => {
@@ -1999,6 +2131,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -2035,6 +2169,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -2071,6 +2207,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -2108,6 +2246,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -2146,6 +2286,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -2183,6 +2325,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -2372,6 +2516,8 @@ describe('hbu-jw plugin integration', () => {
       publicBaseUrl: 'https://bot.example',
       credentialKekPath: join(dir, 'kek.key'),
       allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
     });
 
     const handler = middleware.mock.calls[0]?.[0];

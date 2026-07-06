@@ -27,7 +27,7 @@ export function renderBindPage(options: BindPageOptions): string {
   const username = escapeHtml(options.username ?? '');
   const state = options.state ?? 'form';
   const message = escapeHtml(options.message ?? '');
-  const confirmCode = escapeHtml(options.confirmCode ?? '');
+  const confirmCommand = escapeHtml(options.confirmCode ? `教务确认 ${options.confirmCode}` : '');
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -195,7 +195,7 @@ export function renderBindPage(options: BindPageOptions): string {
 
       .confirm-command {
         display: block;
-        margin-top: 8px;
+        margin: 8px 0 0;
         padding: 16px 18px;
         border-radius: 12px;
         color: #0f5f3d;
@@ -205,6 +205,45 @@ export function renderBindPage(options: BindPageOptions): string {
         letter-spacing: 0.06em;
         line-height: 1.2;
         word-break: break-all;
+      }
+
+      .confirm-command-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin-top: -4px;
+      }
+
+      .copy-command {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        border: 0;
+        border-radius: 9px;
+        padding: 0 18px;
+        color: #ffffff;
+        background: var(--accent);
+        font-weight: 740;
+        cursor: pointer;
+      }
+
+      .copy-command:hover,
+      .copy-command:focus-visible {
+        background: var(--accent-deep);
+      }
+
+      .copy-command:focus-visible {
+        outline: 2px solid rgba(31, 138, 91, 0.36);
+        outline-offset: 2px;
+      }
+
+      .copy-status {
+        min-height: 24px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
       }
 
       .confirm-code {
@@ -466,7 +505,7 @@ export function renderBindPage(options: BindPageOptions): string {
             <h1>教务系统账号绑定</h1>
           </header>
 
-          ${renderStateBlock(state, message, qq, confirmCode)}
+          ${renderStateBlock(state, message, qq, confirmCommand)}
           ${state === 'success' || state === 'invalid' ? '' : renderForm({ qq, token, submitPath, username, persistCredentialConsent: options.persistCredentialConsent ?? false })}
 
           <section class="security" aria-label="安全说明">
@@ -488,7 +527,7 @@ export function renderBindPage(options: BindPageOptions): string {
 </html>`;
 }
 
-function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'success', message: string, qq: string, confirmCode: string): string {
+function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'success', message: string, qq: string, confirmCommand: string): string {
   if (state === 'success') {
     return `<section class="success-card" aria-live="polite">
               <div class="success-heading">
@@ -504,14 +543,40 @@ function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'success', messa
               </div>
               <p class="success-text">
                 请回到刚才发起绑定的聊天，由 QQ ${qq} 发送下面这条消息完成绑定：
-                <span class="confirm-command">教务确认 ${confirmCode}</span>
+                <span class="confirm-command" data-confirm-command>${confirmCommand}</span>
               </p>
-            </section>`;
+              <div class="confirm-command-actions">
+                <button class="copy-command" type="button" data-copy-confirm-command data-copy-text="${confirmCommand}">复制确认消息</button>
+                <span class="copy-status" data-copy-status aria-live="polite"></span>
+              </div>
+            </section>
+            ${renderCopyConfirmCommandScript()}`;
   }
   if (state === 'error' || state === 'invalid') {
     return `<p class="notice is-error">${message}</p>`;
   }
   return '';
+}
+
+function renderCopyConfirmCommandScript(): string {
+  return `<script>
+            (() => {
+              const button = document.querySelector('[data-copy-confirm-command]');
+              const status = document.querySelector('[data-copy-status]');
+              if (!button || !status) return;
+              button.addEventListener('click', async () => {
+                const text = button.getAttribute('data-copy-text') || '';
+                try {
+                  if (!text) throw new Error('empty confirm command');
+                  if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+                  await navigator.clipboard.writeText(text);
+                  status.textContent = '已复制确认消息';
+                } catch {
+                  status.textContent = '复制失败，请手动选择上方命令';
+                }
+              });
+            })();
+          </script>`;
 }
 
 function renderForm(options: { qq: string; token: string; submitPath: string; username: string; persistCredentialConsent: boolean }): string {

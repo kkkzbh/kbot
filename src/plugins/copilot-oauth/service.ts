@@ -116,6 +116,16 @@ function parseJson<T>(raw: string, label: string): T {
   }
 }
 
+async function readHttpErrorDetail(response: Response): Promise<string | null> {
+  const text = (await response.text().catch(() => '')).trim();
+  return text ? text.slice(0, 240) : null;
+}
+
+async function buildHttpError(prefix: string, response: Response): Promise<Error> {
+  const detail = await readHttpErrorDetail(response);
+  return new Error(detail ? `${prefix}：HTTP ${response.status} ${detail}` : `${prefix}：HTTP ${response.status}`);
+}
+
 function isSessionUsable(record: CopilotSessionRecord, now = Date.now()): boolean {
   return record.expiresAt - now > SESSION_EXPIRY_SKEW_MS;
 }
@@ -442,7 +452,6 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
     const fallback =
       trimOptionalText(process.env.CHATLUNA_COPILOT_API_KEY) ??
-      trimOptionalText(process.env.CHATLUNA_API_KEY) ??
       `qqbot-copilot-${randomBytes(24).toString('hex')}`;
 
     await writeFileAtomic(this.secretFilePath, `${fallback}\n`);
@@ -471,7 +480,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       body,
     });
     if (!response.ok) {
-      throw new Error(`GitHub 设备码申请失败：HTTP ${response.status}`);
+      throw await buildHttpError('GitHub 设备码申请失败', response);
     }
     const payload = (await response.json()) as DeviceCodeResponse;
     if (!payload.device_code || !payload.user_code || !payload.verification_uri || !payload.expires_in) {
@@ -495,7 +504,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       body,
     });
     if (!response.ok) {
-      throw new Error(`GitHub 设备登录换 token 失败：HTTP ${response.status}`);
+      throw await buildHttpError('GitHub 设备登录换 token 失败', response);
     }
     return (await response.json()) as DeviceTokenSuccessResponse | DeviceTokenPendingResponse;
   }
@@ -565,7 +574,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       },
     });
     if (!response.ok) {
-      throw new Error(`Copilot session token 换取失败：HTTP ${response.status}`);
+      throw await buildHttpError('Copilot session token 换取失败', response);
     }
     const payload = (await response.json()) as CopilotTokenResponse;
     const token = trimOptionalText(payload.token);

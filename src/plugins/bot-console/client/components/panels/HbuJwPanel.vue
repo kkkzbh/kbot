@@ -34,8 +34,14 @@ const numberKeys = [
 
 const hbuJwChangedCount = computed(() => HBU_JW_ENV_KEYS.filter(key => changedHbuJwEnvKeys.value.has(key)).length)
 const allowedGroupsLabel = computed(() => {
-  const value = (envDraft.HBU_JW_ALLOWED_GROUPS ?? '').trim()
+  const value = normalizeGroupList(envDraft.HBU_JW_ALLOWED_GROUPS ?? '')
   return value || '未配置群聊白名单'
+})
+const naturalTriggerEnabled = computed(() => normalizeExplicitTrue(envDraft.CHAT_NATURAL_TRIGGER_ENABLED))
+const naturalTriggerGroupsLabel = computed(() => {
+  if (!naturalTriggerEnabled.value) return '自然触发未开启'
+  const value = normalizeGroupList(envDraft.CHAT_NATURAL_TRIGGER_GROUPS ?? '')
+  return value || '未配置自然触发白名单'
 })
 const publicBaseUrlLabel = computed(() => (envDraft.HBU_JW_PUBLIC_BASE_URL ?? '').trim() || '跟随 Koishi 本地端口')
 const bindPagePathLabel = computed(() => (envDraft.HBU_JW_BIND_PAGE_PATH ?? '').trim() || '/jw/bind')
@@ -67,8 +73,21 @@ function placeholder(key: string): string {
   return ''
 }
 
+function normalizeGroupList(value: string): string {
+  return value
+    .split(/[,\s，、]+/)
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(',')
+}
+
+function normalizeExplicitTrue(value: string | undefined): boolean {
+  return String(value ?? '').trim().toLowerCase() === 'true'
+}
+
 async function handleSave(restartAfter = false): Promise<void> {
   try {
+    envDraft.HBU_JW_ALLOWED_GROUPS = normalizeGroupList(envDraft.HBU_JW_ALLOWED_GROUPS ?? '')
     await bc.saveHbuJwSettings(restartAfter)
     toastAdd(restartAfter ? '教务系统配置已保存，正在重启机器人…' : '教务系统配置已保存', 'success')
   } catch (error: unknown) {
@@ -112,7 +131,12 @@ async function handleSave(restartAfter = false): Promise<void> {
       <div class="bc-status-card">
         <span class="bc-status-label">群聊白名单</span>
         <strong>{{ allowedGroupsLabel }}</strong>
-        <p class="bc-muted">私聊始终允许使用教务功能。</p>
+        <p class="bc-muted">控制群聊是否允许使用教务功能。</p>
+      </div>
+      <div class="bc-status-card">
+        <span class="bc-status-label">裸教务触发</span>
+        <strong>{{ naturalTriggerGroupsLabel }}</strong>
+        <p class="bc-muted">不在自然触发白名单的群需要 at 小祥。</p>
       </div>
       <div class="bc-status-card">
         <span class="bc-status-label">绑定入口</span>
@@ -122,7 +146,7 @@ async function handleSave(restartAfter = false): Promise<void> {
       <div class="bc-status-card">
         <span class="bc-status-label">登录态刷新</span>
         <strong>{{ normalizeBoolean(envDraft.HBU_JW_AUTO_RELOGIN_ENABLED) ? '自动重登开启' : '自动重登关闭' }}</strong>
-        <p class="bc-muted">{{ normalizeBoolean(envDraft.HBU_JW_KEEP_ALIVE_ENABLED) ? '保活开启' : '保活关闭' }}</p>
+        <p class="bc-muted">{{ normalizeExplicitTrue(envDraft.HBU_JW_KEEP_ALIVE_ENABLED) ? '保活开启' : '保活关闭' }}</p>
       </div>
     </div>
 
@@ -135,7 +159,7 @@ async function handleSave(restartAfter = false): Promise<void> {
       />
       <ToggleCard
         label="登录态保活"
-        :model-value="normalizeBoolean(envDraft.HBU_JW_KEEP_ALIVE_ENABLED)"
+        :model-value="normalizeExplicitTrue(envDraft.HBU_JW_KEEP_ALIVE_ENABLED)"
         :is-dirty="isDirty('HBU_JW_KEEP_ALIVE_ENABLED')"
         @update:model-value="value => setBooleanEnv('HBU_JW_KEEP_ALIVE_ENABLED', value)"
       />

@@ -900,12 +900,28 @@ onBeforeUnmount(() => {
                 <span v-if="copilotAuthAttempt">
                   <strong>验证码：</strong>
                   <code>{{ copilotAuthAttempt.userCode }}</code>
+                  <button
+                    class="bc-btn bc-btn-sm"
+                    type="button"
+                    style="margin-left: 0.5rem;"
+                    @click="copyText(copilotAuthAttempt.userCode, 'GitHub Copilot 验证码')"
+                  >
+                    复制验证码
+                  </button>
                   <a
                     :href="copilotAuthAttempt.verificationUri"
                     target="_blank"
                     rel="noopener noreferrer"
                     style="margin-left: 0.5rem;"
                   >打开 GitHub 授权页</a>
+                  <button
+                    class="bc-btn bc-btn-sm"
+                    type="button"
+                    style="margin-left: 0.5rem;"
+                    @click="copyText(copilotAuthAttempt.verificationUri, 'GitHub Copilot 授权链接')"
+                  >
+                    复制链接
+                  </button>
                 </span>
               </div>
               <div class="bc-model-secondary-actions">

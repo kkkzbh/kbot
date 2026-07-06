@@ -70,6 +70,8 @@ plugins:
       keepAliveIntervalMs: ${{ +env.HBU_JW_KEEP_ALIVE_INTERVAL_MS || 180000 }}
       keepAliveRecentUseWindowMs: ${{ +env.HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS || 86400000 }}
       allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/triggers/group-natural:natural-trigger:
       enabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
       enabledGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}

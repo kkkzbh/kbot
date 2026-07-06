@@ -74,7 +74,7 @@ export const FIELD_HINTS: Record<string, string> = {
   CHAT_NATURAL_TRIGGER_GROUPS:
     '只有填在这里的群号才会命中群聊自然触发。多个群号用英文逗号分隔；留空时不会在任何群自动触发。',
   HBU_JW_ALLOWED_GROUPS:
-    '只有填在这里的群号才可以在群聊里使用教务绑定、状态、解绑和 GPA 查询。多个群号用英文逗号分隔；留空时群聊不可用，私聊仍可用。',
+    '只有填在这里的群号才可以在群聊里使用教务绑定、状态、解绑和 GPA 查询。裸教务触发由自然触发白名单控制；留空时群聊不可用，私聊仍可用。',
   HBU_JW_PUBLIC_BASE_URL:
     '群聊或私聊回复绑定链接时使用的外部可访问地址。留空时运行时使用本机 Koishi 端口。',
   HBU_JW_BIND_PAGE_PATH:

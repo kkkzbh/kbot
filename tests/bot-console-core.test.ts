@@ -770,6 +770,26 @@ describe('bot-console manager', () => {
     });
   });
 
+  it('normalizes managed group allowlists before saving env', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.local');
+    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+
+    const manager = new BotConsoleManager({ rootDir: dir, envFilePath });
+    await expect(
+      manager.saveEnv({
+        HBU_JW_ALLOWED_GROUPS: '100\n200， group:300',
+        CHAT_NATURAL_TRIGGER_GROUPS: '100、200 300',
+        CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100\n guild:200',
+      }),
+    ).resolves.toMatchObject({
+      HBU_JW_ALLOWED_GROUPS: '100,200,group:300',
+      CHAT_NATURAL_TRIGGER_GROUPS: '100,200,300',
+      CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100,guild:200',
+    });
+    expect(readFileSync(envFilePath, 'utf8')).toContain('HBU_JW_ALLOWED_GROUPS=100,200,group:300');
+  });
+
   it('expands ~/ for file system scope paths when saving env', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
@@ -1783,6 +1803,29 @@ describe('bot-console manager', () => {
     ).rejects.toThrow('保存模型 Tab 必须携带已修改的 Tab 列表');
   });
 
+  it('rejects unknown model tabs in save payloads', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.local');
+    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+
+    const manager = new BotConsoleManager({ rootDir: dir, envFilePath });
+    await expect(
+      manager.saveModelTabs({
+        activeTab: 'openai',
+        dirtyTabIds: ['openai'],
+        tabs: [
+          {
+            id: 'openai',
+            baseUrl: 'https://shell.wyzai.top/v1',
+            apiKey: 'sk-openai',
+            defaultModel: 'openai/gpt-5.4-medium-thinking',
+          },
+          { id: 'ghost' },
+        ] as any,
+      }),
+    ).rejects.toThrow('未知模型 Tab：ghost');
+  });
+
   it('schedules qqbot.target restart through a transient user unit', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
@@ -1850,6 +1893,42 @@ describe('bot-console manager', () => {
       2,
       'systemctl',
       ['--user', 'show', 'qqbot-koishi.service', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState'],
+      expect.objectContaining({ cwd: dir, timeout: 15_000 }),
+    );
+    expect(status.activeState).toBe('active');
+  });
+
+  it('uses system-level systemctl for server-mode service actions', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    const execFile = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({
+        stdout: [
+          'Description=QQBot Koishi Service',
+          'LoadState=loaded',
+          'ActiveState=active',
+          'SubState=running',
+          'UnitFileState=enabled',
+        ].join('\n'),
+        stderr: '',
+      });
+
+    const manager = new BotConsoleManager({ rootDir: dir, envFilePath, execFile });
+    const status = await manager.runServiceAction('qqbot-koishi.service', 'restart');
+
+    expect(execFile).toHaveBeenNthCalledWith(
+      1,
+      'systemd-run',
+      ['--quiet', '--on-active=1s', expect.stringMatching(/^--unit=qqbot-koishi-service-restart-\d+$/), 'systemctl', 'restart', 'qqbot-koishi.service'],
+      expect.objectContaining({ cwd: dir, timeout: 15_000 }),
+    );
+    expect(execFile).toHaveBeenNthCalledWith(
+      2,
+      'systemctl',
+      ['show', 'qqbot-koishi.service', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState'],
       expect.objectContaining({ cwd: dir, timeout: 15_000 }),
     );
     expect(status.activeState).toBe('active');

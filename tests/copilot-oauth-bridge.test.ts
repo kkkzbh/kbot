@@ -87,6 +87,44 @@ describe('copilot oauth bridge helpers', () => {
     );
   });
 
+  it('does not seed the Copilot bridge secret from the generic ChatLuna key', async () => {
+    const dir = createTempDir();
+    vi.stubEnv('CHATLUNA_API_KEY', 'generic-chatluna-secret');
+
+    const service = new CopilotOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+    });
+
+    const config = await service.getRuntimeConfig();
+    expect(config.apiKey).not.toBe('generic-chatluna-secret');
+    expect(config.apiKey).toMatch(/^qqbot-copilot-[a-f0-9]{48}$/);
+    expect((await readFile(join(dir, '.runtime/github-copilot.bridge-secret'), 'utf8')).trim()).toBe(config.apiKey);
+  });
+
+  it('includes upstream device-code HTTP details in OAuth errors', async () => {
+    const dir = createTempDir();
+    const fetchMock = vi.fn().mockResolvedValue(new Response('bad oauth app', { status: 403 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const service = new CopilotOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+    });
+
+    await expect(service.startLogin()).rejects.toThrow('GitHub 设备码申请失败：HTTP 403 bad oauth app');
+  });
+
   it('does not synthesize a hardcoded models response when OAuth is unavailable', async () => {
     const dir = createTempDir();
     const service = new CopilotOAuthBridgeService({

@@ -35,6 +35,8 @@ export interface Config {
   keepAliveIntervalMs?: number;
   keepAliveRecentUseWindowMs?: number;
   allowedGroups?: string[] | string;
+  naturalTriggerEnabled?: boolean;
+  naturalTriggerGroups?: string[] | string;
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -49,6 +51,11 @@ export const Config: Schema<Config> = Schema.object({
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用教务系统功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用教务系统功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
+  ]),
+  naturalTriggerEnabled: Schema.boolean().default(false).description('是否允许自然触发白名单群聊裸触发教务命令。'),
+  naturalTriggerGroups: Schema.union([
+    Schema.array(Schema.string()).role('table').description('允许群聊裸触发教务命令的自然触发白名单群号列表。'),
+    Schema.string().description('允许群聊裸触发教务命令的自然触发白名单群号，多个群号用英文逗号分隔。'),
   ]),
 });
 
@@ -71,6 +78,8 @@ interface RuntimeConfig {
   keepAliveIntervalMs: number;
   keepAliveRecentUseWindowMs: number;
   allowedGroups: Set<string>;
+  naturalTriggerEnabled: boolean;
+  naturalTriggerGroups: Set<string>;
   bindSubmitPath: string;
   campusBackgroundPath: string;
 }
@@ -126,6 +135,8 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     keepAliveIntervalMs: requirePositiveInteger(config.keepAliveIntervalMs ?? DEFAULT_KEEP_ALIVE_INTERVAL_MS, 'hbu-jw.keepAliveIntervalMs'),
     keepAliveRecentUseWindowMs: requirePositiveInteger(config.keepAliveRecentUseWindowMs ?? DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS, 'hbu-jw.keepAliveRecentUseWindowMs'),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'hbu-jw.allowedGroups'),
+    naturalTriggerEnabled: config.naturalTriggerEnabled === true,
+    naturalTriggerGroups: parseGroupSet(config.naturalTriggerGroups ?? ''),
     bindSubmitPath: `${bindPagePath}/submit`,
     campusBackgroundPath: `${bindPagePath}/assets/campus-bg.jpg`,
   };
@@ -210,6 +221,10 @@ function registerKeywordMiddleware(
     const text = normalizeCommandText(session);
     const command = parseHbuJwCommand(text);
     if (!command) return next();
+
+    if (!canInvokeHbuJwInSession(session, runtime.naturalTriggerEnabled, runtime.naturalTriggerGroups)) {
+      return next();
+    }
 
     if (!canUseHbuJwInSession(session, runtime.allowedGroups)) {
       await session.send('当前群未开启教务系统功能。');
@@ -450,6 +465,20 @@ function canUseHbuJwInSession(session: Session, allowedGroups: Set<string>): boo
   if (carrier.isDirect === true) return true;
   const groupId = normalizeGroupId(carrier.guildId) ?? normalizeGroupId(carrier.channelId);
   return Boolean(groupId && allowedGroups.has(groupId));
+}
+
+function canInvokeHbuJwInSession(session: Session, naturalTriggerEnabled: boolean, naturalTriggerGroups: Set<string>): boolean {
+  const carrier = session as Session & {
+    isDirect?: boolean;
+    guildId?: string | null;
+    channelId?: string | null;
+    stripped?: { atSelf?: unknown };
+  };
+  if (carrier.isDirect === true) return true;
+  if (carrier.stripped?.atSelf === true) return true;
+  if (!naturalTriggerEnabled) return false;
+  const groupId = normalizeGroupId(carrier.guildId) ?? normalizeGroupId(carrier.channelId);
+  return Boolean(groupId && naturalTriggerGroups.has(groupId));
 }
 
 function resolveOwnerIdentity(session: Session): OwnerIdentity {
