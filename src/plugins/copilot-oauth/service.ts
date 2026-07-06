@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { ProxyAgent, type Dispatcher } from 'undici';
 import type {
   BotConsoleAuthStatus,
   CopilotAuthAttempt,
@@ -15,6 +16,7 @@ const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
 const GITHUB_USER_URL = 'https://api.github.com/user';
 const DEFAULT_COPILOT_API_BASE_URL = 'https://api.individual.githubcopilot.com';
 const SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1000;
+const proxyAgents = new Map<string, ProxyAgent>();
 
 type ResolvedEnvFiles = {
   mode: 'single' | 'layered';
@@ -73,6 +75,10 @@ type DeviceLoginAttempt = CopilotAuthAttempt & {
   intervalMs: number;
 };
 
+type FetchInitWithDispatcher = RequestInit & {
+  dispatcher?: Dispatcher;
+};
+
 export type CopilotConsoleStatus = Pick<
   CopilotAuthState,
   'authKind' | 'authStatus' | 'accountLabel' | 'authError' | 'attempt'
@@ -124,6 +130,120 @@ async function readHttpErrorDetail(response: Response): Promise<string | null> {
 async function buildHttpError(prefix: string, response: Response): Promise<Error> {
   const detail = await readHttpErrorDetail(response);
   return new Error(detail ? `${prefix}：HTTP ${response.status} ${detail}` : `${prefix}：HTTP ${response.status}`);
+}
+
+function defaultPortForProtocol(protocol: string): string {
+  if (protocol === 'http:') return '80';
+  if (protocol === 'https:') return '443';
+  return '';
+}
+
+function parseNoProxyEntry(entry: string): { host: string; port: string | null } {
+  const value = entry.trim().toLowerCase();
+  if (!value) return { host: '', port: null };
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']');
+    if (end >= 0) {
+      const host = value.slice(1, end);
+      const rest = value.slice(end + 1);
+      return { host, port: rest.startsWith(':') ? rest.slice(1) : null };
+    }
+  }
+  const lastColon = value.lastIndexOf(':');
+  if (lastColon > 0 && value.indexOf(':') === lastColon) {
+    const port = value.slice(lastColon + 1);
+    if (/^\d+$/.test(port)) return { host: value.slice(0, lastColon), port };
+  }
+  return { host: value, port: null };
+}
+
+function matchesNoProxyHost(host: string, pattern: string): boolean {
+  if (pattern === '*') return true;
+  if (pattern.startsWith('*.')) {
+    const suffix = pattern.slice(1);
+    return host.endsWith(suffix) && host.length > suffix.length;
+  }
+  if (pattern.startsWith('.')) {
+    const suffix = pattern.slice(1);
+    return host === suffix || host.endsWith(pattern);
+  }
+  return host === pattern;
+}
+
+function shouldBypassProxy(url: URL, env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = trimOptionalText(env.NO_PROXY) ?? trimOptionalText(env.no_proxy);
+  if (!raw) return false;
+  const host = url.hostname.toLowerCase();
+  const port = url.port || defaultPortForProtocol(url.protocol);
+  return raw.split(',').some((entry) => {
+    const parsed = parseNoProxyEntry(entry);
+    if (!parsed.host) return false;
+    if (parsed.port && parsed.port !== port) return false;
+    return matchesNoProxyHost(host, parsed.host);
+  });
+}
+
+function resolveProxyUrl(target: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const url = new URL(target);
+  if (shouldBypassProxy(url, env)) return null;
+  const proxy =
+    url.protocol === 'http:'
+      ? trimOptionalText(env.HTTP_PROXY) ?? trimOptionalText(env.http_proxy) ?? trimOptionalText(env.ALL_PROXY) ?? trimOptionalText(env.all_proxy)
+      : trimOptionalText(env.HTTPS_PROXY) ?? trimOptionalText(env.https_proxy) ?? trimOptionalText(env.ALL_PROXY) ?? trimOptionalText(env.all_proxy);
+  if (!proxy) return null;
+  const parsed = new URL(proxy);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Copilot OAuth 代理协议不支持：${parsed.protocol}，请使用 http 或 https 代理。`);
+  }
+  return parsed.toString();
+}
+
+function redactProxyUrl(proxyUrl: string): string {
+  const url = new URL(proxyUrl);
+  if (url.username || url.password) {
+    url.username = '***';
+    url.password = '';
+  }
+  return url.toString();
+}
+
+function getProxyAgent(proxyUrl: string): ProxyAgent {
+  const current = proxyAgents.get(proxyUrl);
+  if (current) return current;
+  const agent = new ProxyAgent(proxyUrl);
+  proxyAgents.set(proxyUrl, agent);
+  return agent;
+}
+
+function createFetchInit(target: string, init: RequestInit = {}): { init: FetchInitWithDispatcher; proxyUrl: string | null } {
+  const proxyUrl = resolveProxyUrl(target);
+  if (!proxyUrl) return { init, proxyUrl: null };
+  return {
+    init: {
+      ...init,
+      dispatcher: getProxyAgent(proxyUrl),
+    },
+    proxyUrl,
+  };
+}
+
+function formatFetchFailure(label: string, target: string, proxyUrl: string | null, error: unknown): string {
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : null;
+  const causeCode = typeof cause === 'object' && cause && 'code' in cause ? String((cause as { code?: unknown }).code ?? '') : '';
+  const causeMessage = cause instanceof Error ? cause.message : '';
+  const message = error instanceof Error ? error.message : String(error);
+  const detail = [causeCode, causeMessage || message].filter(Boolean).join(' ');
+  const proxy = proxyUrl ? `，proxy=${redactProxyUrl(proxyUrl)}` : '';
+  return `${label}失败：${detail || message}（url=${target}${proxy}）`;
+}
+
+async function fetchExternal(target: string, label: string, init: RequestInit = {}): Promise<Response> {
+  const request = createFetchInit(target, init);
+  try {
+    return await fetch(target, request.init);
+  } catch (error) {
+    throw new Error(formatFetchFailure(label, target, request.proxyUrl, error));
+  }
 }
 
 function isSessionUsable(record: CopilotSessionRecord, now = Date.now()): boolean {
@@ -471,7 +591,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       client_id: trimOptionalText(process.env.CHATLUNA_COPILOT_OAUTH_CLIENT_ID) ?? DEFAULT_CLIENT_ID,
       scope: 'read:user',
     });
-    const response = await fetch(DEVICE_CODE_URL, {
+    const response = await fetchExternal(DEVICE_CODE_URL, 'GitHub 设备码申请', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -495,7 +615,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       device_code: deviceCode,
       grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
     });
-    const response = await fetch(ACCESS_TOKEN_URL, {
+    const response = await fetchExternal(ACCESS_TOKEN_URL, 'GitHub 设备登录换 token', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -510,7 +630,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   }
 
   private async fetchGitHubAccount(accessToken: string): Promise<{ login: string | null; id: string | null }> {
-    const response = await fetch(GITHUB_USER_URL, {
+    const response = await fetchExternal(GITHUB_USER_URL, 'GitHub 账号信息读取', {
       headers: {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${accessToken}`,
@@ -567,7 +687,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       throw new Error('GitHub Copilot 尚未完成 OAuth 登录。');
     }
 
-    const response = await fetch(COPILOT_TOKEN_URL, {
+    const response = await fetchExternal(COPILOT_TOKEN_URL, 'Copilot session token 换取', {
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${oauth.githubToken}`,
@@ -627,7 +747,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     retried: boolean,
   ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     const session = await this.resolveCopilotSession({ forceRefresh: retried });
-    const response = await fetch(`${session.baseUrl}${args.path}`, {
+    const response = await fetchExternal(`${session.baseUrl}${args.path}`, 'Copilot upstream 请求', {
       method: args.method,
       headers: buildCopilotRequestHeaders(session.token),
       body: args.body == null ? undefined : JSON.stringify(args.body),

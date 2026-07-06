@@ -125,6 +125,71 @@ describe('copilot oauth bridge helpers', () => {
     await expect(service.startLogin()).rejects.toThrow('GitHub 设备码申请失败：HTTP 403 bad oauth app');
   });
 
+  it('uses HTTPS_PROXY for GitHub device-code requests', async () => {
+    const dir = createTempDir();
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7897');
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('NO_PROXY', '');
+    vi.stubEnv('no_proxy', '');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      device_code: 'device-code',
+      user_code: 'ABCD-1234',
+      verification_uri: 'https://github.com/login/device',
+      expires_in: 900,
+      interval: 5,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const service = new CopilotOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+    });
+
+    await service.startLogin();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://github.com/login/device/code',
+      expect.objectContaining({
+        dispatcher: expect.any(Object),
+      }),
+    );
+  });
+
+  it('respects NO_PROXY for GitHub device-code requests', async () => {
+    const dir = createTempDir();
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7897');
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('NO_PROXY', 'github.com');
+    vi.stubEnv('no_proxy', '');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      device_code: 'device-code',
+      user_code: 'ABCD-1234',
+      verification_uri: 'https://github.com/login/device',
+      expires_in: 900,
+      interval: 5,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const service = new CopilotOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+    });
+
+    await service.startLogin();
+
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('dispatcher');
+  });
+
   it('does not synthesize a hardcoded models response when OAuth is unavailable', async () => {
     const dir = createTempDir();
     const service = new CopilotOAuthBridgeService({
