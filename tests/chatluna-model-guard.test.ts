@@ -19,7 +19,7 @@ import {
   buildNativeJsonOutputContractLines,
   buildReplySemanticContractLines,
 } from '../src/plugins/shared/llm/reply-output-contract.js';
-import { mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
+import { canHotSwitchMainChatModelOnly, mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
 import { syncRoomModelToMainChatRuntime } from '../src/plugins/model-guard/hot-switch.js';
 import { deriveOneBotAvatarUrl, resolveSessionAvatarUrl, resolveSessionDisplayName, resolveSessionQqNick } from '../src/plugins/shared/session/index.js';
 
@@ -448,6 +448,42 @@ describe('isSupportedMainChatModelForTab', () => {
     expect(isSupportedMainChatModelForTab('mimo', 'mimo-v2.5-pro')).toBe(true);
     expect(isSupportedMainChatModelForTab('mimo', 'mimo/mimo-v2.5-pro')).toBe(true);
     expect(isSupportedMainChatModelForTab('mimo', 'mimo-v2.5-tts')).toBe(false);
+  });
+});
+
+describe('canHotSwitchMainChatModelOnly', () => {
+  it('requires a restart for Copilot OAuth model registry changes', () => {
+    const current = resolveMainChatRuntimeProfileFromEnv({
+      CHATLUNA_ACTIVE_TAB: 'copilot',
+      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
+      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-5.4-mini',
+    });
+    const next = resolveMainChatRuntimeProfileFromEnv({
+      CHATLUNA_ACTIVE_TAB: 'copilot',
+      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
+      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gpt-5-mini',
+    });
+
+    expect(canHotSwitchMainChatModelOnly(current, next)).toBe(false);
+  });
+
+  it('allows hot switching static OpenAI model variants on the same endpoint', () => {
+    const current = resolveMainChatRuntimeProfileFromEnv({
+      CHATLUNA_ACTIVE_TAB: 'openai',
+      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
+      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
+      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
+    });
+    const next = resolveMainChatRuntimeProfileFromEnv({
+      CHATLUNA_ACTIVE_TAB: 'openai',
+      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
+      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
+      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-high-thinking',
+    });
+
+    expect(canHotSwitchMainChatModelOnly(current, next)).toBe(true);
   });
 });
 

@@ -52,5 +52,6 @@ export function canHotSwitchMainChatModelOnly(
   current: MainChatRuntimeProfile,
   next: MainChatRuntimeProfile,
 ): boolean {
-  return sameRuntimeEndpoint(current, next) && current.canonicalModel !== next.canonicalModel;
+  if (!sameRuntimeEndpoint(current, next) || current.canonicalModel === next.canonicalModel) return false;
+  return next.tabId !== 'codex' && next.tabId !== 'copilot';
 }
