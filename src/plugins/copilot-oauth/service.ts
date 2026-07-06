@@ -22,7 +22,8 @@ const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
 const GITHUB_USER_URL = 'https://api.github.com/user';
 const DEFAULT_COPILOT_API_BASE_URL = 'https://api.individual.githubcopilot.com';
 const SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1000;
-const AUTO_ROUTER_TIMEOUT_MS = 2500;
+const AUTO_ROUTER_TIMEOUT_MS = 10_000;
+const COPILOT_AUTO_MIN_OUTPUT_TOKENS = 512;
 const proxyAgents = new Map<string, ProxyAgent>();
 
 type ResolvedEnvFiles = {
@@ -946,7 +947,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     const autoSession = await this.resolveCopilotAutoSession(session);
     const selectedModel = await this.resolveCopilotAutoModel(session, autoSession, body);
     return {
-      body: withCopilotRequestModel(body, selectedModel),
+      body: normalizeCopilotAutoResponsesBody(withCopilotRequestModel(body, selectedModel)),
       autoSession,
       selectedModel,
     };
@@ -1130,6 +1131,10 @@ function normalizeCopilotRequestBody(body: unknown): unknown {
   return normalized;
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 function withCopilotRequestModel(body: unknown, model: string): unknown {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new CopilotBridgeHttpError(400, 'GitHub Copilot 请求体必须是 JSON object。');
@@ -1138,6 +1143,28 @@ function withCopilotRequestModel(body: unknown, model: string): unknown {
     ...(body as Record<string, unknown>),
     model,
   };
+}
+
+function normalizeCopilotAutoResponsesBody(body: unknown): unknown {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new CopilotBridgeHttpError(400, 'GitHub Copilot 请求体必须是 JSON object。');
+  }
+
+  const normalized = { ...(body as Record<string, unknown>) };
+  const maxOutputTokens = normalized.max_output_tokens;
+  if (maxOutputTokens == null) {
+    normalized.max_output_tokens = COPILOT_AUTO_MIN_OUTPUT_TOKENS;
+  } else if (typeof maxOutputTokens !== 'number' || !Number.isFinite(maxOutputTokens) || maxOutputTokens <= 0) {
+    throw new CopilotBridgeHttpError(400, 'GitHub Copilot Responses 请求的 max_output_tokens 必须是正数。');
+  } else if (maxOutputTokens < COPILOT_AUTO_MIN_OUTPUT_TOKENS) {
+    normalized.max_output_tokens = COPILOT_AUTO_MIN_OUTPUT_TOKENS;
+  }
+  if (normalized.reasoning == null) {
+    normalized.reasoning = { effort: 'low' };
+  } else if (!isJsonObject(normalized.reasoning)) {
+    throw new CopilotBridgeHttpError(400, 'GitHub Copilot Responses 请求的 reasoning 必须是 JSON object。');
+  }
+  return normalized;
 }
 
 function readCopilotRequestModel(body: unknown): string | null {

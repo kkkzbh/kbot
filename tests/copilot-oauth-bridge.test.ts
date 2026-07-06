@@ -352,6 +352,8 @@ describe('copilot oauth bridge helpers', () => {
         body: JSON.stringify({
           model: 'gpt-5.4-mini',
           input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+          max_output_tokens: 512,
+          reasoning: { effort: 'low' },
         }),
       }),
     );
