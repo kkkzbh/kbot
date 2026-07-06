@@ -1066,7 +1066,7 @@ describe('hbu-jw term scores module', () => {
     expect(getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 
-  it('uses look result row counts for recorded term score status', async () => {
+  it('uses primary look result row counts for recorded term score status', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
       cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
@@ -1091,7 +1091,11 @@ describe('hbu-jw term scores module', () => {
       message: '',
       rows: [
         { id: { studentNumber: '20231202051', scoreTypeCode: '001' }, zcj: 84 },
+        { id: { studentNumber: '20231202051', scoreTypeCode: '002' }, zcj: 84 },
+        { id: { studentNumber: '20231202051', scoreTypeCode: '003' }, zcj: 84 },
         { id: { studentNumber: '20231202052', scoreTypeCode: '001' }, zcj: 81 },
+        { id: { studentNumber: '20231202052', scoreTypeCode: '002' }, zcj: 81 },
+        { id: { studentNumber: '20231202052', scoreTypeCode: '003' }, zcj: 81 },
       ],
     }));
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
@@ -1111,7 +1115,49 @@ describe('hbu-jw term scores module', () => {
     expect(getNavigatedHtml()).toContain('<td class="score-col score">84</td>');
   });
 
-  it('uses empty look results as pending term score status', async () => {
+  it('uses pending raw status look results for recorded term score status', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getThisTermScores = vi.fn(async () => [
+      thisTermScoreRow({
+        id: {
+          courseNumber: '2023S01004',
+          executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
+          studentNumber: '20231202051',
+        },
+        courseName: '编译原理',
+        courseScore: '',
+        inputStatusCode: '01',
+        inputStatusExplain: '尚未录入',
+      }),
+    ]);
+    const getAllPassingScores = vi.fn(async () => []);
+    const getSubitemScoreDetails = vi.fn(async () => ({
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      message: '',
+      rows: [
+        { id: { studentNumber: '20231202051', scoreTypeCode: '001' }, zcj: null },
+        { id: { studentNumber: '20231202051', scoreTypeCode: '002' }, zcj: null },
+        { id: { studentNumber: '20231202051', scoreTypeCode: '003' }, zcj: null },
+      ],
+    }));
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService(
+      { ensureAuthenticated },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      puppeteer,
+    );
+
+    await service.queryTermScores(identity());
+
+    expect(getSubitemScoreDetails).toHaveBeenCalledTimes(1);
+    expect(getNavigatedHtml()).toContain('已录入1');
+  });
+
+  it('uses look results without primary score rows as pending term score status', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
       cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
@@ -1134,7 +1180,10 @@ describe('hbu-jw term scores module', () => {
     const getSubitemScoreDetails = vi.fn(async () => ({
       params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
       message: '',
-      rows: [],
+      rows: [
+        { id: { studentNumber: '20231202051', scoreTypeCode: '002' }, zcj: null },
+        { id: { studentNumber: '20231202051', scoreTypeCode: '003' }, zcj: null },
+      ],
     }));
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwTermScoresService(

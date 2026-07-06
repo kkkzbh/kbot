@@ -637,16 +637,21 @@ async function resolveLookStatusOverrides(
   cookieJar: SerializedCookieJar,
   rows: HbuJwThisTermScoreRow[],
 ): Promise<Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>> {
-  const rowsNeedingLook = rows.filter((row) => readRawTermScoreStatus(row) === 'needs-look');
+  const rowsNeedingLook = rows.filter((row) => readRawTermScoreStatus(row) !== 'confirmed');
   if (rowsNeedingLook.length === 0) return new Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>();
 
   const overrides = new Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>();
   await Promise.all(rowsNeedingLook.map(async (row) => {
     const result = await jwClient.getSubitemScoreDetails(cookieJar, buildSubitemScoreLookParamsFromThisTermRow(row));
-    const recordedCount = result.rows.length;
+    const recordedCount = result.rows.filter(isPrimarySubitemScoreType).length;
     overrides.set(row, recordedCount > 0 ? { kind: 'recorded', recordedCount } : { kind: 'pending' });
   }));
   return overrides;
+}
+
+function isPrimarySubitemScoreType(row: { id?: { scoreTypeCode?: string | null } | null }): boolean {
+  const code = readOptionalText(row.id?.scoreTypeCode);
+  return code === '001' || code === '1';
 }
 
 function sortOperationTime(value: unknown): string {
