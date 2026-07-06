@@ -228,14 +228,34 @@ describe('copilot oauth bridge helpers', () => {
       updatedAt: Date.now(),
     });
 
-    const fetchMock = vi.fn().mockResolvedValue({
-      status: 200,
-      headers: {
-        get(name: string) {
-          return name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url === 'https://api.individual.githubcopilot.com/models') {
+        return {
+          status: 200,
+          headers: {
+            get(name: string) {
+              return name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null;
+            },
+          },
+          text: async () => JSON.stringify({
+            data: [{
+              id: 'gpt-4o',
+              model_picker_enabled: true,
+              capabilities: { type: 'chat' },
+              supported_endpoints: ['/chat/completions'],
+            }],
+          }),
+        };
+      }
+      return {
+        status: 200,
+        headers: {
+          get(name: string) {
+            return name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null;
+          },
         },
-      },
-      text: async () => '{"ok":true}',
+        text: async () => '{"ok":true}',
+      };
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
@@ -251,7 +271,7 @@ describe('copilot oauth bridge helpers', () => {
       },
       body: '{"ok":true}',
     });
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenLastCalledWith(
       'https://api.individual.githubcopilot.com/chat/completions',
       expect.objectContaining({
         method: 'POST',
@@ -260,6 +280,57 @@ describe('copilot oauth bridge helpers', () => {
           messages: [{ role: 'user', content: 'hello' }],
         }),
       }),
+    );
+  });
+
+  it('rejects Copilot chat completions for policy-only models', async () => {
+    const dir = createTempDir();
+    const service = new CopilotOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+    });
+
+    vi.spyOn(service, 'resolveCopilotSession').mockResolvedValue({
+      token: 'copilot-session-token',
+      baseUrl: 'https://api.individual.githubcopilot.com',
+      expiresAt: Date.now() + 60_000,
+      updatedAt: Date.now(),
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: {
+        get(name: string) {
+          return name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null;
+        },
+      },
+      text: async () => JSON.stringify({
+        data: [{
+          id: 'gpt-5-mini',
+          model_picker_enabled: false,
+          capabilities: { type: 'chat' },
+          supported_endpoints: ['/chat/completions', '/responses'],
+        }],
+      }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await service.proxyChatCompletions({
+      model: 'openai/gpt-5-mini',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    expect(result.status).toBe(400);
+    expect(result.body).toContain('GitHub Copilot 模型未开放 model picker/API chat 调用：gpt-5-mini');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.individual.githubcopilot.com/models',
+      expect.objectContaining({ method: 'GET' }),
     );
   });
 });

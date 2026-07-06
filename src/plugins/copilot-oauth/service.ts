@@ -65,6 +65,13 @@ type CopilotSessionRecord = {
   updatedAt: number;
 };
 
+type CopilotModelCatalogEntry = {
+  modelId: string;
+  modelPickerEnabled: boolean;
+  chatModel: boolean;
+  supportedEndpoints: string[];
+};
+
 type CopilotBridgeRuntimeConfig = {
   baseUrl: string;
   apiKey: string;
@@ -307,6 +314,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   readonly secretFilePath: string;
   private readonly attempts = new Map<string, DeviceLoginAttempt>();
   private sessionRefreshPromise: Promise<CopilotSessionRecord> | null = null;
+  private modelCatalogCache: { sessionToken: string; models: Map<string, CopilotModelCatalogEntry> } | null = null;
 
   constructor(args: { rootDir: string; envFiles: ResolvedEnvFiles }) {
     this.rootDir = args.rootDir;
@@ -528,6 +536,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   async logout(): Promise<CopilotConsoleStatus> {
     this.attempts.clear();
+    this.modelCatalogCache = null;
     await Promise.all([
       rm(this.oauthFilePath, { force: true }),
       rm(this.sessionFilePath, { force: true }),
@@ -550,6 +559,11 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   async proxyResponses(body: unknown): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     const normalizedBody = normalizeCopilotRequestBody(body);
+    try {
+      await this.assertCopilotModelCallable(normalizedBody, 'responses');
+    } catch (error) {
+      return this.buildProxyErrorResponse(error);
+    }
     return this.proxyUpstream({
       method: 'POST',
       path: '/v1/responses',
@@ -559,6 +573,11 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   async proxyChatCompletions(body: unknown): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     const normalizedBody = normalizeCopilotRequestBody(body);
+    try {
+      await this.assertCopilotModelCallable(normalizedBody, 'chat_completions');
+    } catch (error) {
+      return this.buildProxyErrorResponse(error);
+    }
     return this.proxyUpstream({
       method: 'POST',
       path: '/chat/completions',
@@ -730,12 +749,17 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     try {
       return await this.doProxyUpstream(args, false);
     } catch (error) {
-      return {
-        status: 401,
-        headers: { 'content-type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(buildJsonError(error instanceof Error ? error.message : String(error))),
-      };
+      return this.buildProxyErrorResponse(error);
     }
+  }
+
+  private buildProxyErrorResponse(error: unknown): { status: number; headers: Record<string, string>; body: string } {
+    const status = error instanceof CopilotBridgeHttpError ? error.status : 401;
+    return {
+      status,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(buildJsonError(error instanceof Error ? error.message : String(error))),
+    };
   }
 
   private async doProxyUpstream(
@@ -765,6 +789,64 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
       },
       body,
     };
+  }
+
+  private async getCopilotModelCatalog(): Promise<Map<string, CopilotModelCatalogEntry>> {
+    const session = await this.resolveCopilotSession({ forceRefresh: false });
+    if (this.modelCatalogCache?.sessionToken === session.token) {
+      return this.modelCatalogCache.models;
+    }
+
+    const response = await this.doProxyUpstream({
+      method: 'GET',
+      path: '/models',
+    }, false);
+    if (response.status < 200 || response.status >= 300) {
+      throw new CopilotBridgeHttpError(
+        502,
+        `GitHub Copilot /models 校验失败：HTTP ${response.status} ${response.body.slice(0, 240)}`,
+      );
+    }
+
+    const payload = parseJson<unknown>(response.body, 'GitHub Copilot /models');
+    const models = parseCopilotModelCatalog(payload);
+    const refreshedSession = await this.resolveCopilotSession({ forceRefresh: false });
+    this.modelCatalogCache = { sessionToken: refreshedSession.token, models };
+    return models;
+  }
+
+  private async assertCopilotModelCallable(body: unknown, requestMode: 'chat_completions' | 'responses'): Promise<void> {
+    const model = readCopilotRequestModel(body);
+    if (!model) {
+      throw new CopilotBridgeHttpError(400, 'GitHub Copilot 请求缺少 model。');
+    }
+    const catalog = await this.getCopilotModelCatalog();
+    const entry = catalog.get(model);
+    if (!entry) {
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot /models 未返回模型：${model}`);
+    }
+    if (!entry.chatModel) {
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot 模型不是 chat 类型：${model}`);
+    }
+    if (!entry.modelPickerEnabled) {
+      throw new CopilotBridgeHttpError(
+        400,
+        `GitHub Copilot 模型未开放 model picker/API chat 调用：${model}`,
+      );
+    }
+    if (!copilotCatalogEntrySupportsRequestMode(entry, requestMode)) {
+      const modeLabel = requestMode === 'responses' ? 'Responses API' : 'chat/completions';
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot 模型不支持 ${modeLabel}：${model}`);
+    }
+  }
+}
+
+class CopilotBridgeHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
   }
 }
 
@@ -813,4 +895,63 @@ function normalizeCopilotRequestBody(body: unknown): unknown {
     normalized.model = normalizeCopilotModelId(model) ?? model.trim();
   }
   return normalized;
+}
+
+function readCopilotRequestModel(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const model = (body as Record<string, unknown>).model;
+  return typeof model === 'string' ? normalizeCopilotModelId(model) : null;
+}
+
+function readRecordString(value: Record<string, unknown>, key: string): string | null {
+  const item = value[key];
+  return typeof item === 'string' && item.trim() ? item.trim() : null;
+}
+
+function readRecordStringArray(value: Record<string, unknown>, key: string): string[] {
+  const item = value[key];
+  if (!Array.isArray(item)) return [];
+  return item
+    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    .map((entry) => entry.trim());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCopilotCatalogChatModel(record: Record<string, unknown>): boolean {
+  const capabilities = record.capabilities;
+  return isRecord(capabilities) && readRecordString(capabilities, 'type') === 'chat';
+}
+
+function parseCopilotModelCatalog(payload: unknown): Map<string, CopilotModelCatalogEntry> {
+  const result = new Map<string, CopilotModelCatalogEntry>();
+  if (!isRecord(payload) || !Array.isArray(payload.data)) return result;
+  for (const item of payload.data) {
+    if (!isRecord(item)) continue;
+    const modelId = normalizeCopilotModelId(readRecordString(item, 'id'));
+    if (!modelId) continue;
+    result.set(modelId, {
+      modelId,
+      modelPickerEnabled: item.model_picker_enabled === true,
+      chatModel: isCopilotCatalogChatModel(item),
+      supportedEndpoints: readRecordStringArray(item, 'supported_endpoints'),
+    });
+  }
+  return result;
+}
+
+function copilotEndpointMatchesRequestMode(endpoint: string, requestMode: 'chat_completions' | 'responses'): boolean {
+  const normalized = endpoint.trim().toLowerCase().replace(/^ws:/u, '');
+  return requestMode === 'responses'
+    ? normalized === '/responses' || normalized === '/v1/responses'
+    : normalized === '/chat/completions' || normalized === '/v1/chat/completions';
+}
+
+function copilotCatalogEntrySupportsRequestMode(
+  entry: CopilotModelCatalogEntry,
+  requestMode: 'chat_completions' | 'responses',
+): boolean {
+  return entry.supportedEndpoints.some((endpoint) => copilotEndpointMatchesRequestMode(endpoint, requestMode));
 }

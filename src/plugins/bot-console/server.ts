@@ -62,7 +62,7 @@ import {
   normalizeMainChatBuiltinTabId,
   normalizeMimoModelId,
   registerCodexDynamicModelOptions,
-  registerCopilotDynamicModelOptions,
+  replaceCopilotDynamicModelOptions,
   type CodexModelOption,
   resolveMainChatActiveTabFromEnv,
   resolveMainChatTabStateFromEnv,
@@ -609,6 +609,10 @@ function isCopilotModelPolicyEnabled(record: Record<string, unknown>): boolean {
   return state == null || state === 'enabled';
 }
 
+function isCopilotModelPickerEnabled(record: Record<string, unknown>): boolean {
+  return record.model_picker_enabled === true;
+}
+
 function findStaticCopilotModelOption(modelId: string): CopilotModelOption | undefined {
   const normalized = normalizeCopilotModelId(modelId);
   if (!normalized) return undefined;
@@ -682,6 +686,7 @@ function parseCopilotModelListPayload(payload: unknown): BotConsoleModelOption[]
       const id = readStringField(item, 'id');
       if (!id) return [];
       if (!isCopilotModelPolicyEnabled(item)) return [];
+      if (!isCopilotModelPickerEnabled(item)) return [];
       if (!isCopilotChatModel(item)) return [];
       const route = resolveCopilotOutputRoute(item);
       if (!route) return [];
@@ -798,9 +803,10 @@ export async function listCopilotModelsFromOAuthBridge(
 
     const models = parseCopilotModelListPayload(payload);
     if (models.length === 0) {
-      throw new Error('GitHub Copilot /models returned no enabled chat models.');
+      replaceCopilotDynamicModelOptions([]);
+      throw new Error('GitHub Copilot /models returned no model_picker_enabled chat models.');
     }
-    registerCopilotDynamicModelOptions(models.flatMap((model): CopilotModelOption[] => {
+    replaceCopilotDynamicModelOptions(models.flatMap((model): CopilotModelOption[] => {
       if (!model.requestMode || !model.structuredOutputProtocol) return [];
       return [{
         modelId: model.modelId,

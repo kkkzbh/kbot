@@ -302,6 +302,11 @@ export function registerCopilotDynamicModelOptions(models: readonly CopilotModel
   }
 }
 
+export function replaceCopilotDynamicModelOptions(models: readonly CopilotModelOption[]): void {
+  copilotDynamicModelOptions.clear();
+  registerCopilotDynamicModelOptions(models);
+}
+
 export function formatDeepSeekModelOptionLabel(option: DeepSeekModelOption): string {
   return option.deprecated && option.deprecationDate
     ? `${option.label} (deprecated ${option.deprecationDate})`

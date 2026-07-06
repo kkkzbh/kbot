@@ -133,7 +133,7 @@ const COPILOT_ENABLED_MODEL_PAYLOAD = [
     id: 'gpt-5.4-mini',
     name: 'GPT-5.4 mini',
     policy: { state: 'enabled' },
-    model_picker_enabled: false,
+    model_picker_enabled: true,
     capabilities: { type: 'chat', supports: { structured_outputs: true } },
     supported_endpoints: ['/responses', 'ws:/responses'],
   },
@@ -141,7 +141,7 @@ const COPILOT_ENABLED_MODEL_PAYLOAD = [
     id: 'gpt-4o',
     name: 'GPT-4o',
     policy: { state: 'enabled' },
-    model_picker_enabled: false,
+    model_picker_enabled: true,
     capabilities: { type: 'chat', supports: { structured_outputs: true } },
     supported_endpoints: ['/chat/completions'],
   },
@@ -465,7 +465,7 @@ describe('bot-console env helpers', () => {
     });
   });
 
-  it('loads policy-enabled chat models from the Copilot OAuth bridge models endpoint', async () => {
+  it('loads picker-enabled chat models from the Copilot OAuth bridge models endpoint', async () => {
     const result = await listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels([
       {
         id: 'gpt-5.4',
@@ -479,7 +479,7 @@ describe('bot-console env helpers', () => {
         id: 'gpt-5.4-mini',
         name: 'GPT-5.4 mini',
         policy: { state: 'enabled' },
-        model_picker_enabled: false,
+        model_picker_enabled: true,
         capabilities: { type: 'chat', supports: { structured_outputs: true, tool_calls: true, vision: true } },
         supported_endpoints: ['/responses', 'ws:/responses'],
       },
@@ -487,11 +487,19 @@ describe('bot-console env helpers', () => {
         id: 'new-usage-model',
         name: 'New Usage Model',
         policy: { state: 'enabled' },
-        model_picker_enabled: false,
+        model_picker_enabled: true,
         capabilities: { type: 'chat', supports: { structured_outputs: true } },
         preview: true,
         supported_endpoints: ['/responses'],
         warning_message: 'Your billing plan has changed to usage-based billing and model multipliers no longer apply.',
+      },
+      {
+        id: 'policy-only-model',
+        name: 'Policy only',
+        policy: { state: 'enabled' },
+        model_picker_enabled: false,
+        capabilities: { type: 'chat', supports: { structured_outputs: true } },
+        supported_endpoints: ['/responses'],
       },
       {
         id: 'embedding-model',
@@ -533,6 +541,26 @@ describe('bot-console env helpers', () => {
       ],
     });
     expect(result.models.find((model) => model.modelId === 'new-usage-model')?.rateLabel).toBeUndefined();
+    expect(result.models.some((model) => model.modelId === 'policy-only-model')).toBe(false);
+  });
+
+  it('reports Copilot unavailable when models are policy-enabled but not picker-enabled', async () => {
+    const result = await listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels([
+      {
+        id: 'gpt-5-mini',
+        name: 'GPT-5 mini',
+        policy: { state: 'enabled' },
+        model_picker_enabled: false,
+        capabilities: { type: 'chat', supports: { structured_outputs: true } },
+        supported_endpoints: ['/chat/completions', '/responses'],
+      },
+    ]));
+
+    expect(result).toMatchObject({
+      source: 'dynamic',
+      models: [],
+      error: 'GitHub Copilot /models returned no model_picker_enabled chat models.',
+    });
   });
 
   it('does not fall back to a hardcoded Copilot model list when the bridge is unavailable', async () => {
