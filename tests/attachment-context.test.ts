@@ -581,7 +581,7 @@ describe('attachment ChatLuna lifecycle', () => {
       options: {
         conversation: {
           conversationId: 'conv-attachment-context',
-          effectiveModel: 'openai/gpt-5.4-mini',
+          effectiveModel: 'openai/gpt-4.1',
           conversation: {
             id: 'conv-attachment-context',
             model: 'stale-model',

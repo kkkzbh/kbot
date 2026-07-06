@@ -548,9 +548,13 @@ describe('task automation tools and execution', () => {
 
   it('keeps the CHAT_REPLY_V1 contract in automation metadata for tool continuations', async () => {
     const originalActiveTab = process.env.CHATLUNA_ACTIVE_TAB;
-    const originalCopilotModel = process.env.CHATLUNA_COPILOT_DEFAULT_MODEL;
-    process.env.CHATLUNA_ACTIVE_TAB = 'copilot';
-    process.env.CHATLUNA_COPILOT_DEFAULT_MODEL = 'gemini-3.1-pro-preview';
+    const originalDeepSeekBaseUrl = process.env.CHATLUNA_DEEPSEEK_BASE_URL;
+    const originalDeepSeekApiKey = process.env.CHATLUNA_DEEPSEEK_API_KEY;
+    const originalDeepSeekModel = process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL;
+    process.env.CHATLUNA_ACTIVE_TAB = 'deepseek';
+    process.env.CHATLUNA_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+    process.env.CHATLUNA_DEEPSEEK_API_KEY = 'sk-deepseek';
+    process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
     mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv(process.env));
 
     try {
@@ -599,10 +603,20 @@ describe('task automation tools and execution', () => {
       ]);
     } finally {
       process.env.CHATLUNA_ACTIVE_TAB = originalActiveTab;
-      if (originalCopilotModel === undefined) {
-        delete process.env.CHATLUNA_COPILOT_DEFAULT_MODEL;
+      if (originalDeepSeekBaseUrl === undefined) {
+        delete process.env.CHATLUNA_DEEPSEEK_BASE_URL;
       } else {
-        process.env.CHATLUNA_COPILOT_DEFAULT_MODEL = originalCopilotModel;
+        process.env.CHATLUNA_DEEPSEEK_BASE_URL = originalDeepSeekBaseUrl;
+      }
+      if (originalDeepSeekApiKey === undefined) {
+        delete process.env.CHATLUNA_DEEPSEEK_API_KEY;
+      } else {
+        process.env.CHATLUNA_DEEPSEEK_API_KEY = originalDeepSeekApiKey;
+      }
+      if (originalDeepSeekModel === undefined) {
+        delete process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL;
+      } else {
+        process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL = originalDeepSeekModel;
       }
       mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv(process.env));
     }

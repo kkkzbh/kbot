@@ -135,7 +135,7 @@ export const CODEX_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:5140/api/internal
 export const CODEX_DEFAULT_MODEL = 'openai/gpt-5.5';
 export const CODEX_DEFAULT_REASONING_EFFORT = 'medium' as const satisfies MainChatReasoningEffort;
 export const COPILOT_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:5140/api/internal/copilot/v1';
-export const COPILOT_DEFAULT_MODEL = 'openai/gpt-5.4-mini';
+export const COPILOT_DEFAULT_MODEL = 'openai/gpt-4.1';
 export const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com';
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
 export const MIMO_DEFAULT_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1';
@@ -143,75 +143,25 @@ export const MIMO_DEFAULT_MODEL = 'mimo-v2.5-pro';
 export const MAIN_CHAT_BUILTIN_TAB_IDS = ['siliconflow', 'openai', 'codex', 'copilot', 'deepseek', 'mimo'] as const satisfies readonly MainChatBuiltinTabId[];
 export const COPILOT_MODEL_OPTIONS = [
   {
-    modelId: 'gpt-5.4-mini',
-    label: 'GPT-5.4 mini',
-    rateLabel: '0.33x',
-    requestMode: 'responses',
-    structuredOutputProtocol: 'native_responses_json_schema',
-  },
-  {
-    modelId: 'gpt-5-mini',
-    label: 'GPT-5 mini',
+    modelId: 'gpt-4.1',
+    label: 'GPT-4.1 Auto',
     rateLabel: '0x',
     requestMode: 'chat_completions',
     structuredOutputProtocol: 'native_chat_json_schema',
   },
   {
-    modelId: 'gpt-4.1',
-    label: 'GPT-4.1',
+    modelId: 'gpt-4o-mini',
+    label: 'GPT-4o mini Auto',
     rateLabel: '0x',
     requestMode: 'chat_completions',
     structuredOutputProtocol: 'native_chat_json_schema',
   },
   {
     modelId: 'gpt-4o',
-    label: 'GPT-4o',
+    label: 'GPT-4o Auto',
     rateLabel: '0x',
     requestMode: 'chat_completions',
     structuredOutputProtocol: 'native_chat_json_schema',
-    deprecated: true,
-  },
-  {
-    modelId: 'claude-haiku-4.5',
-    label: 'Claude Haiku 4.5',
-    rateLabel: '0.33x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-  },
-  {
-    modelId: 'claude-sonnet-4.5',
-    label: 'Claude Sonnet 4.5',
-    rateLabel: '1x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-  },
-  {
-    modelId: 'claude-opus-4.5',
-    label: 'Claude Opus 4.5',
-    rateLabel: '1x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-  },
-  {
-    modelId: 'gemini-3-flash-preview',
-    label: 'Gemini 3 Flash',
-    rateLabel: '0.33x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-  },
-  {
-    modelId: 'gemini-3.1-pro-preview',
-    label: 'Gemini 3.1 Pro',
-    rateLabel: '1x',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-  },
-  {
-    modelId: 'oswe-vscode-prime',
-    label: 'Raptor mini',
-    rateLabel: '1x',
-    requestMode: 'responses',
-    structuredOutputProtocol: 'native_responses_json_schema',
   },
 ] as const satisfies readonly CopilotModelOption[];
 
@@ -267,10 +217,8 @@ export function formatCopilotModelOptionLabel(option: CopilotModelOption): strin
 export function getCopilotModelOption(model?: string | null): CopilotModelOption | null {
   const normalized = normalizeCopilotModelId(model);
   if (!normalized) return null;
-  return copilotDynamicModelOptions.get(normalized) ?? COPILOT_MODEL_OPTIONS.find((option) => option.modelId === normalized) ?? null;
+  return COPILOT_MODEL_OPTIONS.find((option) => option.modelId === normalized) ?? null;
 }
-
-const copilotDynamicModelOptions = new Map<string, CopilotModelOption>();
 
 const codexDynamicModelOptions = new Map<string, CodexModelOption>();
 
@@ -289,22 +237,6 @@ export function registerCodexDynamicModelOptions(models: readonly CodexModelOpti
       modelId,
     });
   }
-}
-
-export function registerCopilotDynamicModelOptions(models: readonly CopilotModelOption[]): void {
-  for (const model of models) {
-    const modelId = normalizeCopilotModelId(model.modelId);
-    if (!modelId) continue;
-    copilotDynamicModelOptions.set(modelId, {
-      ...model,
-      modelId,
-    });
-  }
-}
-
-export function replaceCopilotDynamicModelOptions(models: readonly CopilotModelOption[]): void {
-  copilotDynamicModelOptions.clear();
-  registerCopilotDynamicModelOptions(models);
 }
 
 export function formatDeepSeekModelOptionLabel(option: DeepSeekModelOption): string {
@@ -578,10 +510,10 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
       const option = getCopilotModelOption(model);
       const mode = this.resolveRequestMode(model) === 'responses' ? 'Responses API' : 'chat/completions';
       return {
-        description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 ${option ? formatCopilotModelOptionLabel(option) : 'OAuth 可用模型'}，并走 ${mode} / ${this.resolveStructuredOutputProtocol(model)}。`,
+        description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 Auto 静态模型 ${option ? formatCopilotModelOptionLabel(option) : '未配置'}，并走 ${mode} / ${this.resolveStructuredOutputProtocol(model)}。`,
         modelHint: option
-          ? `当前从 OAuth 可用模型列表选择，已选 ${formatCopilotModelOptionLabel(option)}。`
-          : '当前从 OAuth 可用模型列表选择；已知模型按路由表走 native 或 CHAT_REPLY_V1，未知模型默认只走文本协议。',
+          ? `当前从 Copilot Auto 静态模型列表选择，已选 ${formatCopilotModelOptionLabel(option)}。`
+          : '当前模型不在 Copilot Auto 静态模型列表中。',
       };
     },
   },
@@ -1040,11 +972,19 @@ function isCodexModelId(model?: string | null): boolean {
 }
 
 function getCopilotRequestMode(model?: string | null): MainChatRequestMode {
-  return getCopilotModelOption(model)?.requestMode ?? 'responses';
+  return requireCopilotModelOption(model).requestMode;
 }
 
 function getCopilotStructuredOutputProtocol(model?: string | null): StructuredOutputProtocol {
-  return getCopilotModelOption(model)?.structuredOutputProtocol ?? 'chat_reply_v1';
+  return requireCopilotModelOption(model).structuredOutputProtocol;
+}
+
+function requireCopilotModelOption(model?: string | null): CopilotModelOption {
+  const option = getCopilotModelOption(model);
+  if (!option) {
+    throw new Error(`GitHub Copilot Auto 静态模型列表不支持：${String(model ?? '').trim() || '<empty>'}`);
+  }
+  return option;
 }
 
 function resolveOpenAIGpt54ReasoningEffort(model?: string | null): 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
@@ -1162,8 +1102,8 @@ const COPILOT_UI_SCHEMA: BuiltinTabUiSchema = {
   apiKeyVisible: false,
   modelInputKind: 'select-dynamic',
   modelOptions: [],
-  allowedModelExamples: [],
-  allowedModelsDescription: 'GitHub Copilot Tab 只能选择当前 OAuth 账号 /models 返回且启用的模型。Bridge 地址 / API key 由本地 OAuth bridge 自动接管。',
+  allowedModelExamples: COPILOT_MODEL_OPTIONS.map((option) => option.modelId),
+  allowedModelsDescription: 'GitHub Copilot Tab 只能选择 Copilot Student/Free Auto 静态模型列表中的模型。Bridge 地址 / API key 由本地 OAuth bridge 自动接管。',
   secondaryAction: 'copilot-oauth',
 };
 
@@ -1215,7 +1155,7 @@ export interface MainChatModelValidationResult {
 }
 
 /**
- * Validate a tab's defaultModel value with optional dynamic-list support (DeepSeek).
+ * Validate a tab's defaultModel value with provider-owned model lists.
  * Returns a structured result so callers can render the same message client-side and server-side.
  */
 export function validateMainChatTabModel(
@@ -1223,7 +1163,7 @@ export function validateMainChatTabModel(
   rawModel: string | null | undefined,
   options: {
     codexDynamicModelIds?: readonly string[];
-    copilotDynamicModelIds?: readonly string[];
+    copilotModelIds?: readonly string[];
     deepseekDynamicModelIds?: readonly string[];
     mimoDynamicModelIds?: readonly string[];
   } = {},
@@ -1307,28 +1247,18 @@ export function validateMainChatTabModel(
 
   if (id === 'copilot') {
     const transportModel = normalizeCopilotModelId(trimmed);
-    const dynamicIds = (options.copilotDynamicModelIds ?? [])
+    const configuredIds = (options.copilotModelIds ?? COPILOT_MODEL_OPTIONS.map((option) => option.modelId))
       .map((value) => normalizeCopilotModelId(value))
       .filter((value): value is string => Boolean(value));
-    if (dynamicIds.length > 0) {
-      const supportedIds = new Set<string>(dynamicIds);
-      if (!transportModel || !supportedIds.has(transportModel)) {
-        return {
-          ok: false,
-          message: `GitHub Copilot Tab：'${trimmed}' 不在当前 OAuth 可用模型列表内。可选：${[...supportedIds].slice(0, 6).join(' / ')}${supportedIds.size > 6 ? ' …' : ''}`,
-          suggestions: [...supportedIds],
-        };
-      }
-      return { ok: true };
-    }
-
-    if (!transportModel) {
+    const supportedIds = new Set<string>(configuredIds);
+    if (!transportModel || !supportedIds.has(transportModel)) {
       return {
         ok: false,
-        message: `GitHub Copilot Tab 默认模型不能为空。${schema.allowedModelsDescription}`,
-        suggestions: schema.allowedModelExamples,
+        message: `GitHub Copilot Tab：'${trimmed}' 不在 Copilot Auto 静态模型列表内。可选：${[...supportedIds].slice(0, 6).join(' / ')}${supportedIds.size > 6 ? ' …' : ''}`,
+        suggestions: [...supportedIds],
       };
     }
+
     return { ok: true };
   }
 

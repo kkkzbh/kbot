@@ -62,14 +62,10 @@ import {
   normalizeMainChatBuiltinTabId,
   normalizeMimoModelId,
   registerCodexDynamicModelOptions,
-  replaceCopilotDynamicModelOptions,
   type CodexModelOption,
   resolveMainChatActiveTabFromEnv,
   resolveMainChatTabStateFromEnv,
   validateMainChatTabModel,
-  type CopilotModelOption,
-  type MainChatRequestMode,
-  type OutputProtocolId,
 } from '../shared/llm/index.js';
 import {
   applyTtsLocalEnvPatchToContent,
@@ -526,110 +522,8 @@ function readStringField(record: Record<string, unknown>, key: string): string |
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function readStringArrayField(record: Record<string, unknown>, key: string): string[] {
-  const value = record[key];
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    .map((item) => item.trim());
-}
-
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isSupportedCopilotModelEndpoint(endpoint: string): boolean {
-  const normalized = endpoint.trim().toLowerCase().replace(/^ws:/u, '');
-  return normalized === '/responses'
-    || normalized === '/v1/responses'
-    || normalized === '/chat/completions'
-    || normalized === '/v1/chat/completions';
-}
-
-function hasCopilotEndpoint(endpoints: readonly string[], kind: MainChatRequestMode): boolean {
-  return endpoints.some((endpoint) => {
-    const normalized = endpoint.trim().toLowerCase().replace(/^ws:/u, '');
-    return kind === 'responses'
-      ? normalized === '/responses' || normalized === '/v1/responses'
-      : normalized === '/chat/completions' || normalized === '/v1/chat/completions';
-  });
-}
-
-function copilotModelSupportsStructuredOutputs(record: Record<string, unknown>): boolean {
-  const capabilities = record.capabilities;
-  if (!isObjectRecord(capabilities)) return false;
-  const supports = capabilities.supports;
-  if (!isObjectRecord(supports)) return false;
-  return supports.structured_outputs === true;
-}
-
-function isCopilotChatModel(record: Record<string, unknown>): boolean {
-  const capabilities = record.capabilities;
-  if (!isObjectRecord(capabilities)) return false;
-  return readStringField(capabilities, 'type') === 'chat';
-}
-
-function readCopilotModelSupports(record: Record<string, unknown>): Record<string, unknown> | null {
-  const capabilities = record.capabilities;
-  if (!isObjectRecord(capabilities)) return null;
-  const supports = capabilities.supports;
-  return isObjectRecord(supports) ? supports : null;
-}
-
-function resolveCopilotOutputRoute(record: Record<string, unknown>): {
-  requestMode: MainChatRequestMode;
-  structuredOutputProtocol: OutputProtocolId;
-} | null {
-  const endpoints = readStringArrayField(record, 'supported_endpoints');
-  if (!endpoints.some(isSupportedCopilotModelEndpoint)) return null;
-
-  const hasResponses = hasCopilotEndpoint(endpoints, 'responses');
-  const hasChatCompletions = hasCopilotEndpoint(endpoints, 'chat_completions');
-  const native = copilotModelSupportsStructuredOutputs(record);
-
-  if (native && hasResponses) {
-    return { requestMode: 'responses', structuredOutputProtocol: 'native_responses_json_schema' };
-  }
-  if (native && hasChatCompletions) {
-    return { requestMode: 'chat_completions', structuredOutputProtocol: 'native_chat_json_schema' };
-  }
-  if (hasResponses) {
-    return { requestMode: 'responses', structuredOutputProtocol: 'chat_reply_v1' };
-  }
-  if (hasChatCompletions) {
-    return { requestMode: 'chat_completions', structuredOutputProtocol: 'chat_reply_v1' };
-  }
-  return null;
-}
-
-function isCopilotModelPolicyEnabled(record: Record<string, unknown>): boolean {
-  const policy = record.policy;
-  if (!isObjectRecord(policy)) return true;
-  const state = readStringField(policy, 'state')?.toLowerCase();
-  return state == null || state === 'enabled';
-}
-
-function isCopilotModelPickerEnabled(record: Record<string, unknown>): boolean {
-  return record.model_picker_enabled === true;
-}
-
-function findStaticCopilotModelOption(modelId: string): CopilotModelOption | undefined {
-  const normalized = normalizeCopilotModelId(modelId);
-  if (!normalized) return undefined;
-  return COPILOT_MODEL_OPTIONS.find((option) => option.modelId === normalized);
-}
-
-function resolveCopilotRateLabel(modelId: string): string | undefined {
-  return findStaticCopilotModelOption(modelId)?.rateLabel;
-}
-
-function buildCopilotMetadataTags(record: Record<string, unknown>): string[] {
-  const tags: string[] = [];
-  const supports = readCopilotModelSupports(record);
-  if (supports?.tool_calls === true) tags.push('tools');
-  if (supports?.vision === true) tags.push('vision');
-  if (record.preview === true) tags.push('preview');
-  return tags;
 }
 
 function normalizeCopilotModelList(models: readonly BotConsoleModelOption[]): BotConsoleModelOption[] {
@@ -656,6 +550,10 @@ function normalizeCopilotModelList(models: readonly BotConsoleModelOption[]): Bo
   return result;
 }
 
+function cloneStaticCopilotModelOptions(): BotConsoleModelOption[] {
+  return normalizeCopilotModelList(COPILOT_MODEL_OPTIONS.map((option) => ({ ...option })));
+}
+
 function normalizeCodexModelList(models: readonly BotConsoleModelOption[]): BotConsoleModelOption[] {
   const result: BotConsoleModelOption[] = [];
   const seen = new Set<string>();
@@ -673,33 +571,6 @@ function normalizeCodexModelList(models: readonly BotConsoleModelOption[]): BotC
     seen.add(modelId);
   }
   return result;
-}
-
-function parseCopilotModelListPayload(payload: unknown): BotConsoleModelOption[] {
-  if (!isObjectRecord(payload)) return [];
-  const data = payload.data;
-  if (!Array.isArray(data)) return [];
-
-  return normalizeCopilotModelList(
-    data.flatMap((item): BotConsoleModelOption[] => {
-      if (!isObjectRecord(item)) return [];
-      const id = readStringField(item, 'id');
-      if (!id) return [];
-      if (!isCopilotModelPolicyEnabled(item)) return [];
-      if (!isCopilotModelPickerEnabled(item)) return [];
-      if (!isCopilotChatModel(item)) return [];
-      const route = resolveCopilotOutputRoute(item);
-      if (!route) return [];
-      return [{
-        modelId: id,
-        label: readStringField(item, 'name') ?? id,
-        rateLabel: resolveCopilotRateLabel(id),
-        requestMode: route.requestMode,
-        structuredOutputProtocol: route.structuredOutputProtocol,
-        metadataTags: buildCopilotMetadataTags(item),
-      }];
-    }),
-  );
 }
 
 function parseCodexModelListPayload(payload: unknown): BotConsoleModelOption[] {
@@ -737,6 +608,14 @@ function staticMimoModelList(error: string | null): MimoModelListResponse {
   };
 }
 
+function staticCopilotModelList(error: string | null): CopilotModelListResponse {
+  return {
+    source: 'static',
+    models: error ? [] : cloneStaticCopilotModelOptions(),
+    error,
+  };
+}
+
 function parseDeepSeekModelListPayload(payload: unknown): BotConsoleModelOption[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
   const data = (payload as { data?: unknown }).data;
@@ -766,11 +645,7 @@ function parseMimoModelListPayload(payload: unknown): BotConsoleModelOption[] {
 }
 
 function unavailableCopilotModelList(error: string | null): CopilotModelListResponse {
-  return {
-    source: 'dynamic',
-    models: [],
-    error,
-  };
+  return staticCopilotModelList(error);
 }
 
 function unavailableCodexModelList(error: string | null): CodexModelListResponse {
@@ -784,45 +659,16 @@ function unavailableCodexModelList(error: string | null): CodexModelListResponse
 export async function listCopilotModelsFromOAuthBridge(
   bridge: CopilotBridgeStateProvider | undefined,
 ): Promise<CopilotModelListResponse> {
-  if (!bridge?.proxyModels) {
+  if (!bridge) {
     return unavailableCopilotModelList('GitHub Copilot OAuth bridge is unavailable.');
   }
 
   try {
-    const response = await bridge.proxyModels();
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(`GitHub Copilot /models returned HTTP ${response.status}: ${response.body.slice(0, 240)}`);
+    const status = await bridge.getConsoleStatus({ probe: true });
+    if (status.authStatus !== 'ready') {
+      throw new Error(status.authError ?? `GitHub Copilot OAuth status is ${status.authStatus}.`);
     }
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(response.body) as unknown;
-    } catch (error) {
-      throw new Error(`GitHub Copilot /models returned non-JSON response: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const models = parseCopilotModelListPayload(payload);
-    if (models.length === 0) {
-      replaceCopilotDynamicModelOptions([]);
-      throw new Error('GitHub Copilot /models returned no model_picker_enabled chat models.');
-    }
-    replaceCopilotDynamicModelOptions(models.flatMap((model): CopilotModelOption[] => {
-      if (!model.requestMode || !model.structuredOutputProtocol) return [];
-      return [{
-        modelId: model.modelId,
-        label: model.label,
-        rateLabel: model.rateLabel ?? '',
-        requestMode: model.requestMode,
-        structuredOutputProtocol: model.structuredOutputProtocol,
-        deprecated: model.deprecated,
-      }];
-    }));
-
-    return {
-      source: 'dynamic',
-      models,
-      error: null,
-    };
+    return staticCopilotModelList(null);
   } catch (error) {
     return unavailableCopilotModelList(error instanceof Error ? error.message : String(error));
   }
@@ -989,6 +835,17 @@ function normalizeModelTabInput(
   const reasoningEffort = id === 'codex'
     ? normalizeCodexReasoningEffort(input?.reasoningEffort ?? fallbackTab.reasoningEffort) ?? CODEX_DEFAULT_REASONING_EFFORT
     : null;
+  if (options.validate !== false) {
+    const validation = validateMainChatTabModel(id, normalizedModel || rawModel, {
+      codexDynamicModelIds: options.codexModelIds,
+      copilotModelIds: options.copilotModelIds,
+      deepseekDynamicModelIds: options.deepseekModelIds,
+      mimoDynamicModelIds: options.mimoModelIds,
+    });
+    if (!validation.ok) {
+      throw new Error(validation.message ?? `${definition.title} Tab 的默认模型不合法：${normalizedModel || rawModel || '空值'}`);
+    }
+  }
   const requestMode = strategy.resolveRequestMode(normalizedModel);
   const structuredOutputProtocol = strategy.resolveStructuredOutputProtocol(normalizedModel);
   const consoleDescription = strategy.describeForConsole(normalizedModel, { reasoningEffort });
@@ -1021,18 +878,6 @@ function normalizeModelTabInput(
     canonicalModel: normalizedModel,
     transportModel: strategy.transportModel(normalizedModel) ?? normalizedModel,
   };
-
-  if (options.validate !== false) {
-    const validation = validateMainChatTabModel(id, normalized.defaultModel || rawModel, {
-      codexDynamicModelIds: options.codexModelIds,
-      copilotDynamicModelIds: options.copilotModelIds,
-      deepseekDynamicModelIds: options.deepseekModelIds,
-      mimoDynamicModelIds: options.mimoModelIds,
-    });
-    if (!validation.ok) {
-      throw new Error(validation.message ?? `${normalized.title} Tab 的默认模型不合法：${normalized.defaultModel || '空值'}`);
-    }
-  }
 
   return normalized;
 }

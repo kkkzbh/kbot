@@ -263,7 +263,7 @@ function createSession(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 function createConversation(conversationId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const model = overrides.model ?? 'openai/gpt-5.4-mini';
+  const model = overrides.model ?? 'openai/gpt-4.1';
   return {
     conversationId,
     effectiveModel: model,
@@ -592,7 +592,7 @@ describe('realtime message plugin', () => {
       options: {
         conversation: {
           conversationId: 'conv-realtime-resolution',
-          effectiveModel: 'openai/gpt-5.4-mini',
+          effectiveModel: 'openai/gpt-4.1',
           conversation: {
             id: 'conv-realtime-resolution',
             model: 'stale-model',
@@ -605,7 +605,7 @@ describe('realtime message plugin', () => {
     expect(messageTransformer.transform).toHaveBeenCalledWith(
       expect.any(Object),
       expect.any(Array),
-      'openai/gpt-5.4-mini',
+      'openai/gpt-4.1',
       undefined,
       expect.objectContaining({
         quote: false,

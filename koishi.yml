@@ -135,10 +135,8 @@ plugins:
         'gpt-5.4-minimal-thinking', 'gpt-5.4-low-thinking',
         'gpt-5.4-medium-thinking', 'gpt-5.4-high-thinking',
         'gpt-5.4-xhigh-thinking', 'gpt-5.4-thinking', 'gpt-5.5',
-        'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5-mini', 'gpt-4.1', 'gpt-4o',
-        'claude-haiku-4.5', 'claude-sonnet-4.5', 'claude-opus-4.5',
-        'gemini-3-flash-preview', 'gemini-3.1-pro-preview',
-        'oswe-vscode-prime' ] : []), ...(env.CHATLUNA_PLATFORM === 'deepseek'
+        'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-4.1', 'gpt-4o-mini',
+        'gpt-4o' ] : []), ...(env.CHATLUNA_PLATFORM === 'deepseek'
         ? [ 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat' ] : []),
         ...(env.CHATLUNA_PLATFORM === 'mimo' ? [ 'mimo-v2.5-pro',
         'mimo-v2.5', 'mimo-v2-pro', 'mimo-v2-omni' ] : []), String(

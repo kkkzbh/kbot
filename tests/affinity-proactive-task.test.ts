@@ -396,10 +396,10 @@ describe('affinity proactive task prompt and provider adapter', () => {
 
   it('uses CHAT_REPLY_V1 when the current provider requires the text protocol', async () => {
     mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/gemini-3.1-pro-preview',
+      CHATLUNA_ACTIVE_TAB: 'deepseek',
+      CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+      CHATLUNA_DEEPSEEK_API_KEY: 'sk-deepseek',
+      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek-v4-flash',
     }));
     const chatluna = createChatLuna([
       'CHAT_REPLY_V1 abc12345',

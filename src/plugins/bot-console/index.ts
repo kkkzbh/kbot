@@ -431,7 +431,7 @@ export function apply(ctx: Context): void {
           ...result,
           hotSwitched,
           restartRequired: !hotSwitchable,
-          restartReason: hotSwitchable ? null : 'provider、接口地址、密钥或 OAuth 动态模型注册变更需要重启 Koishi。',
+          restartReason: hotSwitchable ? null : 'provider、接口地址、密钥或 OAuth bridge 状态变更需要重启 Koishi。',
         };
       } catch (err) {
         // Re-throw with a freshly constructed Error so the message survives koishi's IPC

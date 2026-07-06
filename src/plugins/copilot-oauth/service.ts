@@ -7,6 +7,11 @@ import type {
   CopilotAuthAttempt,
   CopilotAuthState,
 } from '../../types/bot-console.js';
+import {
+  COPILOT_MODEL_OPTIONS,
+  type CopilotModelOption,
+  type MainChatRequestMode,
+} from '../shared/llm/index.js';
 
 const DEFAULT_KOISHI_PORT = '5140';
 const DEFAULT_CLIENT_ID = 'Iv1.b507a08c87ecfe98';
@@ -65,13 +70,6 @@ type CopilotSessionRecord = {
   updatedAt: number;
 };
 
-type CopilotModelCatalogEntry = {
-  modelId: string;
-  modelPickerEnabled: boolean;
-  chatModel: boolean;
-  supportedEndpoints: string[];
-};
-
 type CopilotBridgeRuntimeConfig = {
   baseUrl: string;
   apiKey: string;
@@ -95,6 +93,30 @@ export interface CopilotBridgeStateProvider {
   getRuntimeConfig(): Promise<CopilotBridgeRuntimeConfig>;
   getConsoleStatus(options?: { probe?: boolean }): Promise<CopilotConsoleStatus>;
 }
+
+type StaticCopilotModelPayload = {
+  object: 'list';
+  data: Array<{
+    id: string;
+    object: 'model';
+    name: string;
+    owned_by: 'github-copilot-auto';
+    supported_endpoints: string[];
+    capabilities: {
+      type: 'chat';
+      supports: {
+        structured_outputs: boolean;
+        streaming: true;
+        tool_calls: true;
+      };
+    };
+    qqbot: {
+      rateLabel: string;
+      requestMode: MainChatRequestMode;
+      structuredOutputProtocol: CopilotModelOption['structuredOutputProtocol'];
+    };
+  }>;
+};
 
 function trimOptionalText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -314,7 +336,6 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   readonly secretFilePath: string;
   private readonly attempts = new Map<string, DeviceLoginAttempt>();
   private sessionRefreshPromise: Promise<CopilotSessionRecord> | null = null;
-  private modelCatalogCache: { sessionToken: string; models: Map<string, CopilotModelCatalogEntry> } | null = null;
 
   constructor(args: { rootDir: string; envFiles: ResolvedEnvFiles }) {
     this.rootDir = args.rootDir;
@@ -536,7 +557,6 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   async logout(): Promise<CopilotConsoleStatus> {
     this.attempts.clear();
-    this.modelCatalogCache = null;
     await Promise.all([
       rm(this.oauthFilePath, { force: true }),
       rm(this.sessionFilePath, { force: true }),
@@ -551,10 +571,16 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   }
 
   async proxyModels(): Promise<{ status: number; headers: Record<string, string>; body: string }> {
-    return this.proxyUpstream({
-      method: 'GET',
-      path: '/models',
-    });
+    try {
+      await this.resolveCopilotSession({ forceRefresh: false });
+      return {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(buildStaticCopilotModelPayload()),
+      };
+    } catch (error) {
+      return this.buildProxyErrorResponse(error);
+    }
   }
 
   async proxyResponses(body: unknown): Promise<{ status: number; headers: Record<string, string>; body: string }> {
@@ -743,7 +769,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
   private async proxyUpstream(args: {
     method: 'GET' | 'POST';
-    path: '/models' | '/chat/completions' | '/v1/responses';
+    path: '/chat/completions' | '/v1/responses';
     body?: unknown;
   }): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     try {
@@ -765,7 +791,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   private async doProxyUpstream(
     args: {
       method: 'GET' | 'POST';
-      path: '/models' | '/chat/completions' | '/v1/responses';
+      path: '/chat/completions' | '/v1/responses';
       body?: unknown;
     },
     retried: boolean,
@@ -791,52 +817,18 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     };
   }
 
-  private async getCopilotModelCatalog(): Promise<Map<string, CopilotModelCatalogEntry>> {
-    const session = await this.resolveCopilotSession({ forceRefresh: false });
-    if (this.modelCatalogCache?.sessionToken === session.token) {
-      return this.modelCatalogCache.models;
-    }
-
-    const response = await this.doProxyUpstream({
-      method: 'GET',
-      path: '/models',
-    }, false);
-    if (response.status < 200 || response.status >= 300) {
-      throw new CopilotBridgeHttpError(
-        502,
-        `GitHub Copilot /models 校验失败：HTTP ${response.status} ${response.body.slice(0, 240)}`,
-      );
-    }
-
-    const payload = parseJson<unknown>(response.body, 'GitHub Copilot /models');
-    const models = parseCopilotModelCatalog(payload);
-    const refreshedSession = await this.resolveCopilotSession({ forceRefresh: false });
-    this.modelCatalogCache = { sessionToken: refreshedSession.token, models };
-    return models;
-  }
-
-  private async assertCopilotModelCallable(body: unknown, requestMode: 'chat_completions' | 'responses'): Promise<void> {
+  private async assertCopilotModelCallable(body: unknown, requestMode: MainChatRequestMode): Promise<void> {
     const model = readCopilotRequestModel(body);
     if (!model) {
       throw new CopilotBridgeHttpError(400, 'GitHub Copilot 请求缺少 model。');
     }
-    const catalog = await this.getCopilotModelCatalog();
-    const entry = catalog.get(model);
-    if (!entry) {
-      throw new CopilotBridgeHttpError(400, `GitHub Copilot /models 未返回模型：${model}`);
+    const option = getStaticCopilotModelOption(model);
+    if (!option) {
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot Auto 静态模型列表不支持：${model}`);
     }
-    if (!entry.chatModel) {
-      throw new CopilotBridgeHttpError(400, `GitHub Copilot 模型不是 chat 类型：${model}`);
-    }
-    if (!entry.modelPickerEnabled) {
-      throw new CopilotBridgeHttpError(
-        400,
-        `GitHub Copilot 模型未开放 model picker/API chat 调用：${model}`,
-      );
-    }
-    if (!copilotCatalogEntrySupportsRequestMode(entry, requestMode)) {
+    if (option.requestMode !== requestMode) {
       const modeLabel = requestMode === 'responses' ? 'Responses API' : 'chat/completions';
-      throw new CopilotBridgeHttpError(400, `GitHub Copilot 模型不支持 ${modeLabel}：${model}`);
+      throw new CopilotBridgeHttpError(400, `GitHub Copilot Auto 静态模型不支持 ${modeLabel}：${model}`);
     }
   }
 }
@@ -855,9 +847,11 @@ function buildCopilotRequestHeaders(token: string): Record<string, string> {
     Accept: 'application/json',
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
-    'Editor-Version': 'vscode/1.99.0',
-    'Editor-Plugin-Version': 'copilot-chat/0.26.7',
-    'User-Agent': 'GitHubCopilotChat/0.26.7',
+    'Editor-Version': 'vscode/1.126.0',
+    'Editor-Plugin-Version': 'copilot-chat/0.48.1',
+    'Copilot-Integration-Id': 'vscode-chat',
+    'User-Agent': 'GitHubCopilotChat/0.48.1',
+    'X-GitHub-Api-Version': '2026-06-01',
   };
 }
 
@@ -903,55 +897,38 @@ function readCopilotRequestModel(body: unknown): string | null {
   return typeof model === 'string' ? normalizeCopilotModelId(model) : null;
 }
 
-function readRecordString(value: Record<string, unknown>, key: string): string | null {
-  const item = value[key];
-  return typeof item === 'string' && item.trim() ? item.trim() : null;
+function getStaticCopilotModelOption(model: string): CopilotModelOption | null {
+  const normalized = normalizeCopilotModelId(model);
+  if (!normalized) return null;
+  return COPILOT_MODEL_OPTIONS.find((option) => option.modelId === normalized) ?? null;
 }
 
-function readRecordStringArray(value: Record<string, unknown>, key: string): string[] {
-  const item = value[key];
-  if (!Array.isArray(item)) return [];
-  return item
-    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-    .map((entry) => entry.trim());
+function copilotModelEndpoint(option: CopilotModelOption): string {
+  return option.requestMode === 'responses' ? '/v1/responses' : '/chat/completions';
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isCopilotCatalogChatModel(record: Record<string, unknown>): boolean {
-  const capabilities = record.capabilities;
-  return isRecord(capabilities) && readRecordString(capabilities, 'type') === 'chat';
-}
-
-function parseCopilotModelCatalog(payload: unknown): Map<string, CopilotModelCatalogEntry> {
-  const result = new Map<string, CopilotModelCatalogEntry>();
-  if (!isRecord(payload) || !Array.isArray(payload.data)) return result;
-  for (const item of payload.data) {
-    if (!isRecord(item)) continue;
-    const modelId = normalizeCopilotModelId(readRecordString(item, 'id'));
-    if (!modelId) continue;
-    result.set(modelId, {
-      modelId,
-      modelPickerEnabled: item.model_picker_enabled === true,
-      chatModel: isCopilotCatalogChatModel(item),
-      supportedEndpoints: readRecordStringArray(item, 'supported_endpoints'),
-    });
-  }
-  return result;
-}
-
-function copilotEndpointMatchesRequestMode(endpoint: string, requestMode: 'chat_completions' | 'responses'): boolean {
-  const normalized = endpoint.trim().toLowerCase().replace(/^ws:/u, '');
-  return requestMode === 'responses'
-    ? normalized === '/responses' || normalized === '/v1/responses'
-    : normalized === '/chat/completions' || normalized === '/v1/chat/completions';
-}
-
-function copilotCatalogEntrySupportsRequestMode(
-  entry: CopilotModelCatalogEntry,
-  requestMode: 'chat_completions' | 'responses',
-): boolean {
-  return entry.supportedEndpoints.some((endpoint) => copilotEndpointMatchesRequestMode(endpoint, requestMode));
+function buildStaticCopilotModelPayload(): StaticCopilotModelPayload {
+  return {
+    object: 'list',
+    data: COPILOT_MODEL_OPTIONS.map((option) => ({
+      id: option.modelId,
+      object: 'model',
+      name: option.label,
+      owned_by: 'github-copilot-auto',
+      supported_endpoints: [copilotModelEndpoint(option)],
+      capabilities: {
+        type: 'chat',
+        supports: {
+          structured_outputs: true,
+          streaming: true,
+          tool_calls: true,
+        },
+      },
+      qqbot: {
+        rateLabel: option.rateLabel,
+        requestMode: option.requestMode,
+        structuredOutputProtocol: option.structuredOutputProtocol,
+      },
+    })),
+  };
 }

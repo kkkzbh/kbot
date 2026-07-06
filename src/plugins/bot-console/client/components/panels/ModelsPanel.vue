@@ -74,7 +74,7 @@ const codexModelSource = ref<BotConsoleModelListSource>('static')
 const codexModelError = ref<string | null>(null)
 const codexModelLoading = ref(false)
 const copilotModelOptions = ref<BotConsoleModelOption[]>([])
-const copilotModelSource = ref<BotConsoleModelListSource>('dynamic')
+const copilotModelSource = ref<BotConsoleModelListSource>('static')
 const copilotModelError = ref<string | null>(null)
 const copilotModelLoading = ref(false)
 const deepseekModelOptions = ref<BotConsoleModelOption[]>(DEEPSEEK_MODEL_OPTIONS.map(option => ({ ...option })))
@@ -136,12 +136,12 @@ const selectedModelOption = computed(() => {
 const currentModelSelectLabel = computed(() => {
   if (selectedModelOption.value) return selectedModelOption.value.label
   if (isCodexTab.value && codexModelOptions.value.length === 0) return '暂无 Codex 可用模型'
-  if (isCopilotTab.value && copilotModelOptions.value.length === 0) return '暂无 OAuth 可用模型'
+  if (isCopilotTab.value && copilotModelOptions.value.length === 0) return '暂无 Auto 可用模型'
   return currentModelSelectValue.value || '请选择模型'
 })
 
 const codexSourceLabel = computed(() => codexModelError.value ? (codexModelSource.value === 'static' ? '静态兜底' : '不可用') : (codexModelSource.value === 'dynamic' ? 'Codex 动态' : '静态兜底'))
-const copilotSourceLabel = computed(() => copilotModelError.value ? '不可用' : 'OAuth 动态')
+const copilotSourceLabel = computed(() => copilotModelError.value ? '不可用' : 'Auto 静态')
 const deepseekSourceLabel = computed(() => deepseekModelSource.value === 'dynamic' ? '官方动态' : '官方兜底')
 const mimoSourceLabel = computed(() => mimoModelSource.value === 'dynamic' ? '官方动态' : '静态兜底')
 
@@ -295,7 +295,7 @@ async function refreshCopilotModels() {
     copilotModelError.value = result.error
   } catch (err: unknown) {
     copilotModelOptions.value = []
-    copilotModelSource.value = 'dynamic'
+    copilotModelSource.value = 'static'
     copilotModelError.value = err instanceof Error ? err.message : String(err)
   } finally {
     copilotModelLoading.value = false

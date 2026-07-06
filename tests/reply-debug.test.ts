@@ -7,7 +7,7 @@ describe('reply debug payload', () => {
       options: {
         conversation: {
           conversationId: 'conv-debug',
-          effectiveModel: 'openai/gpt-5.4-mini',
+          effectiveModel: 'openai/gpt-4.1',
           effectivePreset: 'sakiko',
           conversation: {
             id: 'conv-debug',
@@ -26,7 +26,7 @@ describe('reply debug payload', () => {
 
     expect(payload).toEqual(expect.objectContaining({
       conversationId: 'conv-debug',
-      roomModel: 'openai/gpt-5.4-mini',
+      roomModel: 'openai/gpt-4.1',
       preset: 'sakiko',
       stage: 'unit-test',
     }));

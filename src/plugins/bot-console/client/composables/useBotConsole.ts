@@ -81,6 +81,7 @@ import {
   CODEX_DEFAULT_REASONING_EFFORT as SHARED_CODEX_DEFAULT_REASONING_EFFORT,
   CODEX_MODEL_OPTIONS as SHARED_CODEX_MODEL_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS as SHARED_CODEX_REASONING_EFFORT_OPTIONS,
+  COPILOT_DEFAULT_MODEL as SHARED_COPILOT_DEFAULT_MODEL,
   COPILOT_MODEL_OPTIONS as SHARED_COPILOT_MODEL_OPTIONS,
   DEEPSEEK_DEFAULT_BASE_URL as SHARED_DEEPSEEK_DEFAULT_BASE_URL,
   DEEPSEEK_DEFAULT_MODEL as SHARED_DEEPSEEK_DEFAULT_MODEL,
@@ -186,6 +187,7 @@ export const SILICONFLOW_FIXED_MODEL = 'Pro/moonshotai/Kimi-K2.5'
 export const CODEX_BRIDGE_DEFAULT_BASE_URL = SHARED_CODEX_BRIDGE_DEFAULT_BASE_URL
 export const CODEX_DEFAULT_MODEL = SHARED_CODEX_DEFAULT_MODEL
 export const CODEX_DEFAULT_REASONING_EFFORT = SHARED_CODEX_DEFAULT_REASONING_EFFORT
+export const COPILOT_DEFAULT_MODEL = SHARED_COPILOT_DEFAULT_MODEL
 export const CODEX_MODEL_OPTIONS = SHARED_CODEX_MODEL_OPTIONS
 export const CODEX_REASONING_EFFORT_OPTIONS = SHARED_CODEX_REASONING_EFFORT_OPTIONS
 export const DEEPSEEK_DEFAULT_BASE_URL = SHARED_DEEPSEEK_DEFAULT_BASE_URL
@@ -281,7 +283,7 @@ function clonePreset(p: PresetDocument): PresetDocument {
 }
 
 function createEmptyBuiltinModelTab(id: BotConsoleModelTabId): BotConsoleBuiltinModelTab {
-  const copilotDefaultOption = getCopilotModelOption('openai/gpt-5.4-mini')
+  const copilotDefaultOption = getCopilotModelOption(COPILOT_DEFAULT_MODEL)
   const tabMeta: Record<BotConsoleModelTabId, Omit<BotConsoleBuiltinModelTab, 'id' | 'baseUrl' | 'apiKey' | 'defaultModel'>> = {
     siliconflow: {
       title: '硅基流动',
@@ -329,10 +331,10 @@ function createEmptyBuiltinModelTab(id: BotConsoleModelTabId): BotConsoleBuiltin
       strategyId: 'copilot-github-oauth-main-chat',
       requestMode: copilotDefaultOption?.requestMode ?? 'responses',
       structuredOutputProtocol: copilotDefaultOption?.structuredOutputProtocol ?? 'native_responses_json_schema',
-      description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 ${copilotDefaultOption ? formatSharedCopilotModelOptionLabel(copilotDefaultOption) : 'OAuth 可用模型'}。`,
+      description: `当前按 GitHub Copilot OAuth 设备登录接入，运行时通过本地 bridge 使用 ${copilotDefaultOption ? formatSharedCopilotModelOptionLabel(copilotDefaultOption) : 'Copilot Auto 静态模型'}。`,
       modelHint: copilotDefaultOption
-        ? `当前从 OAuth 可用模型列表选择，默认 ${formatSharedCopilotModelOptionLabel(copilotDefaultOption)}。`
-        : '当前从 OAuth 可用模型列表选择。',
+        ? `当前从 Copilot Auto 静态模型列表选择，默认 ${formatSharedCopilotModelOptionLabel(copilotDefaultOption)}。`
+        : '当前从 Copilot Auto 静态模型列表选择。',
       authKind: 'oauth_device',
       authStatus: 'unauthenticated',
       accountLabel: null,

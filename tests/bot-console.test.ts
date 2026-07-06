@@ -288,7 +288,7 @@ describe('bot-console plugin', () => {
           provider: 'openai',
           baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
           apiKey: 'github_pat_123',
-          defaultModel: 'openai/gpt-5.4-mini',
+          defaultModel: 'openai/gpt-4.1',
         },
         {
           id: 'deepseek',
@@ -485,7 +485,7 @@ describe('bot-console plugin', () => {
             provider: 'openai',
             baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
             apiKey: 'github_pat_123',
-            defaultModel: 'openai/gpt-5.4-mini',
+            defaultModel: 'openai/gpt-4.1',
           },
           {
             id: 'deepseek',
