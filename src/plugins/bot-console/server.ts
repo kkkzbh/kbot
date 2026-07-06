@@ -47,6 +47,7 @@ import type {
 import {
   buildMainChatRuntimeEnvPatch,
   CODEX_DEFAULT_REASONING_EFFORT,
+  COPILOT_MODEL_OPTIONS,
   DEEPSEEK_DEFAULT_BASE_URL,
   DEEPSEEK_OFFICIAL_MODEL_OPTIONS,
   getBuiltinMainChatTabDefinition,
@@ -568,6 +569,13 @@ function isCopilotChatModel(record: Record<string, unknown>): boolean {
   return readStringField(capabilities, 'type') === 'chat';
 }
 
+function readCopilotModelSupports(record: Record<string, unknown>): Record<string, unknown> | null {
+  const capabilities = record.capabilities;
+  if (!isObjectRecord(capabilities)) return null;
+  const supports = capabilities.supports;
+  return isObjectRecord(supports) ? supports : null;
+}
+
 function resolveCopilotOutputRoute(record: Record<string, unknown>): {
   requestMode: MainChatRequestMode;
   structuredOutputProtocol: OutputProtocolId;
@@ -601,17 +609,44 @@ function isCopilotModelPolicyEnabled(record: Record<string, unknown>): boolean {
   return state == null || state === 'enabled';
 }
 
+function findStaticCopilotModelOption(modelId: string): CopilotModelOption | undefined {
+  const normalized = normalizeCopilotModelId(modelId);
+  if (!normalized) return undefined;
+  return COPILOT_MODEL_OPTIONS.find((option) => option.modelId === normalized);
+}
+
+function resolveCopilotRateLabel(record: Record<string, unknown>, modelId: string): string | undefined {
+  const staticRateLabel = findStaticCopilotModelOption(modelId)?.rateLabel;
+  if (staticRateLabel) return staticRateLabel;
+  const warning = readStringField(record, 'warning_message')?.toLowerCase();
+  return warning?.includes('usage-based billing') ? 'usage' : undefined;
+}
+
+function buildCopilotMetadataTags(record: Record<string, unknown>): string[] {
+  const tags: string[] = [];
+  const supports = readCopilotModelSupports(record);
+  if (supports?.tool_calls === true) tags.push('tools');
+  if (supports?.vision === true) tags.push('vision');
+  if (record.preview === true) tags.push('preview');
+  return tags;
+}
+
 function normalizeCopilotModelList(models: readonly BotConsoleModelOption[]): BotConsoleModelOption[] {
   const result: BotConsoleModelOption[] = [];
   const seen = new Set<string>();
   for (const item of models) {
     const modelId = normalizeCopilotModelId(item.modelId);
     if (!modelId || seen.has(modelId)) continue;
+    const metadataTags = item.metadataTags
+      ?.map((tag) => tag.trim())
+      .filter(Boolean);
     result.push({
       modelId,
       label: item.label?.trim() || modelId,
+      rateLabel: item.rateLabel?.trim() || undefined,
       requestMode: item.requestMode,
       structuredOutputProtocol: item.structuredOutputProtocol,
+      metadataTags: metadataTags && metadataTags.length > 0 ? [...new Set(metadataTags)] : undefined,
       deprecated: item.deprecated,
       deprecationDate: item.deprecationDate,
     });
@@ -656,8 +691,10 @@ function parseCopilotModelListPayload(payload: unknown): BotConsoleModelOption[]
       return [{
         modelId: id,
         label: readStringField(item, 'name') ?? id,
+        rateLabel: resolveCopilotRateLabel(item, id),
         requestMode: route.requestMode,
         structuredOutputProtocol: route.structuredOutputProtocol,
+        metadataTags: buildCopilotMetadataTags(item),
       }];
     }),
   );
@@ -771,7 +808,7 @@ export async function listCopilotModelsFromOAuthBridge(
       return [{
         modelId: model.modelId,
         label: model.label,
-        rateLabel: '',
+        rateLabel: model.rateLabel ?? '',
         requestMode: model.requestMode,
         structuredOutputProtocol: model.structuredOutputProtocol,
         deprecated: model.deprecated,

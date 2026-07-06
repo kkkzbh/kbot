@@ -472,8 +472,18 @@ describe('bot-console env helpers', () => {
           name: 'GPT-5.4 mini',
           policy: { state: 'enabled' },
           model_picker_enabled: false,
-          capabilities: { type: 'chat', supports: { structured_outputs: true } },
+          capabilities: { type: 'chat', supports: { structured_outputs: true, tool_calls: true, vision: true } },
           supported_endpoints: ['/responses', 'ws:/responses'],
+        },
+        {
+          id: 'new-usage-model',
+          name: 'New Usage Model',
+          policy: { state: 'enabled' },
+          model_picker_enabled: false,
+          capabilities: { type: 'chat', supports: { structured_outputs: true } },
+          preview: true,
+          supported_endpoints: ['/responses'],
+          warning_message: 'Your billing plan has changed to usage-based billing and model multipliers no longer apply.',
         },
         {
           id: 'embedding-model',
@@ -496,7 +506,22 @@ describe('bot-console env helpers', () => {
       source: 'dynamic',
       error: null,
       models: [
-        { modelId: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
+        {
+          modelId: 'gpt-5.4-mini',
+          label: 'GPT-5.4 mini',
+          rateLabel: '0.33x',
+          requestMode: 'responses',
+          structuredOutputProtocol: 'native_responses_json_schema',
+          metadataTags: ['tools', 'vision'],
+        },
+        {
+          modelId: 'new-usage-model',
+          label: 'New Usage Model',
+          rateLabel: 'usage',
+          requestMode: 'responses',
+          structuredOutputProtocol: 'native_responses_json_schema',
+          metadataTags: ['preview'],
+        },
       ],
     });
   });

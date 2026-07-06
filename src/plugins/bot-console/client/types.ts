@@ -251,8 +251,10 @@ export interface BotConsoleModelTabsState {
 export interface BotConsoleModelOption {
   modelId: string;
   label: string;
+  rateLabel?: string;
   requestMode?: "chat_completions" | "responses";
   structuredOutputProtocol?: "native_chat_json_schema" | "native_responses_json_schema" | "chat_reply_v1";
+  metadataTags?: string[];
   deprecated?: boolean;
   deprecationDate?: string;
 }

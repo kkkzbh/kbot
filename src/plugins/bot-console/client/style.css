@@ -1250,6 +1250,158 @@
     margin: 0;
 }
 
+.bc-model-select {
+    position: relative;
+    width: 100%;
+}
+
+.bc-model-select-button {
+    width: 100%;
+    min-height: 2.55rem;
+    padding: 0.45rem 0.75rem;
+    border: 1px solid var(--el-border-color, var(--k-card-border));
+    border-radius: 10px;
+    background: var(--el-bg-color, var(--k-card-bg));
+    color: var(--bc-text-strong);
+    font: inherit;
+    font-size: 0.875rem;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    text-align: left;
+    cursor: pointer;
+    transition:
+        border-color 120ms ease,
+        box-shadow 120ms ease;
+}
+
+.bc-model-select-button:hover:not(:disabled) {
+    border-color: var(--el-border-color-hover, var(--k-color-primary));
+}
+
+.bc-model-select-button:focus-visible,
+.bc-model-select.is-open .bc-model-select-button {
+    outline: none;
+    border-color: var(--k-color-primary);
+    box-shadow: 0 0 0 3px
+        color-mix(in srgb, var(--k-color-primary) 12%, transparent);
+}
+
+.bc-model-select-button:disabled {
+    cursor: not-allowed;
+    color: var(--bc-text-soft);
+    background: color-mix(in srgb, var(--k-card-bg) 90%, var(--k-color-border));
+}
+
+.bc-model-select-label {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bc-model-select-chevron {
+    width: 0.46rem;
+    height: 0.46rem;
+    flex: 0 0 auto;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    opacity: 0.62;
+    transform: translateY(-0.12rem) rotate(45deg);
+}
+
+.bc-model-select.is-open .bc-model-select-chevron {
+    transform: translateY(0.12rem) rotate(225deg);
+}
+
+.bc-model-select-list {
+    position: absolute;
+    z-index: 70;
+    top: calc(100% + 0.35rem);
+    left: 0;
+    right: 0;
+    max-height: min(22rem, 58vh);
+    overflow: auto;
+    padding: 0.35rem;
+    border: 1px solid var(--el-border-color, var(--k-card-border));
+    border-radius: 10px;
+    background: var(--el-bg-color, var(--k-card-bg));
+    box-shadow: 0 18px 40px
+        color-mix(in srgb, var(--k-text-dark) 14%, transparent);
+}
+
+.bc-model-select-option {
+    width: 100%;
+    min-height: 2.75rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(7.5rem, auto);
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.55rem;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--bc-text-strong);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.bc-model-select-option:hover,
+.bc-model-select-option.is-selected {
+    background: color-mix(in srgb, var(--k-color-primary) 11%, transparent);
+}
+
+.bc-model-select-option-text {
+    min-width: 0;
+    display: grid;
+    gap: 0.12rem;
+}
+
+.bc-model-select-option-label,
+.bc-model-select-option-id {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bc-model-select-option-label {
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+
+.bc-model-select-option-id {
+    color: var(--bc-text-soft);
+    font-size: 0.72rem;
+}
+
+.bc-model-select-tags {
+    min-width: 0;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.bc-model-select-tag {
+    flex: 0 0 auto;
+    max-width: 8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0.16rem 0.42rem;
+    border: 1px solid color-mix(in srgb, var(--k-color-primary) 30%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--k-color-primary) 8%, transparent);
+    color: var(--bc-text-secondary);
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
 .bc-card {
     margin-top: 1rem;
     padding: 1rem;

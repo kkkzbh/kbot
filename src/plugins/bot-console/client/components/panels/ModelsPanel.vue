@@ -77,6 +77,8 @@ const mimoModelOptions = ref<BotConsoleModelOption[]>(MIMO_MODEL_OPTIONS.map(opt
 const mimoModelSource = ref<BotConsoleModelListSource>('static')
 const mimoModelError = ref<string | null>(null)
 const mimoModelLoading = ref(false)
+const modelSelectRoot = ref<HTMLElement | null>(null)
+const modelDropdownOpen = ref(false)
 
 const currentDeepSeekModelId = computed(() => {
   const value = currentModelTabDraft.value.defaultModel.trim()
@@ -112,6 +114,22 @@ const currentModelSelectValue = computed(() => {
   if (isCodexTab.value) return currentCodexModelId.value
   if (isCopilotTab.value) return currentCopilotModelId.value
   return currentModelTabDraft.value.defaultModel
+})
+
+const currentModelSelectDisabled = computed(() => {
+  return (isCopilotTab.value && copilotModelOptions.value.length === 0)
+    || (isCodexTab.value && codexModelOptions.value.length === 0)
+})
+
+const selectedModelOption = computed(() => {
+  return currentModelOptions.value.find(option => option.modelId === currentModelSelectValue.value) ?? null
+})
+
+const currentModelSelectLabel = computed(() => {
+  if (selectedModelOption.value) return selectedModelOption.value.label
+  if (isCodexTab.value && codexModelOptions.value.length === 0) return '暂无 Codex 可用模型'
+  if (isCopilotTab.value && copilotModelOptions.value.length === 0) return '暂无 OAuth 可用模型'
+  return currentModelSelectValue.value || '请选择模型'
 })
 
 const codexSourceLabel = computed(() => codexModelError.value ? (codexModelSource.value === 'static' ? '静态兜底' : '不可用') : (codexModelSource.value === 'dynamic' ? 'Codex 动态' : '静态兜底'))
@@ -173,6 +191,44 @@ function setCodexReasoningEffort(value: string) {
   if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh') {
     currentModelTabDraft.value.reasoningEffort = value
   }
+}
+
+function modelOptionTags(option: BotConsoleModelOption | null): string[] {
+  if (!option) return []
+  const tags: string[] = []
+  if (option.rateLabel?.trim()) tags.push(option.rateLabel.trim())
+  if (option.requestMode === 'responses') tags.push('responses')
+  if (option.requestMode === 'chat_completions') tags.push('chat')
+  if (option.structuredOutputProtocol === 'native_responses_json_schema' || option.structuredOutputProtocol === 'native_chat_json_schema') {
+    tags.push('json_schema')
+  } else if (option.structuredOutputProtocol === 'chat_reply_v1') {
+    tags.push('chat_reply')
+  }
+  for (const tag of option.metadataTags ?? []) {
+    const normalized = tag.trim()
+    if (normalized && !tags.includes(normalized)) tags.push(normalized)
+  }
+  return tags
+}
+
+function closeModelDropdown() {
+  modelDropdownOpen.value = false
+}
+
+function toggleModelDropdown() {
+  if (currentModelSelectDisabled.value) return
+  modelDropdownOpen.value = !modelDropdownOpen.value
+}
+
+function selectModelOption(option: BotConsoleModelOption) {
+  setTabField('defaultModel', option.modelId)
+  closeModelDropdown()
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  const root = modelSelectRoot.value
+  if (!root || root.contains(event.target as Node)) return
+  closeModelDropdown()
 }
 
 function stopDeepSeekRefreshTimer() {
@@ -489,6 +545,7 @@ watch(codexAuthAttempt, () => {
 })
 
 watch(activeModelTab, (tabId) => {
+  closeModelDropdown()
   if (tabId === 'codex') {
     void refreshCodexAuthStatus().catch(() => null)
     void refreshCodexModels().catch(() => null)
@@ -520,6 +577,7 @@ watch(
 	)
 
 onMounted(() => {
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
   if (activeModelTab.value === 'codex') {
     void refreshCodexAuthStatus().catch(() => null)
     void refreshCodexModels().catch(() => null)
@@ -536,6 +594,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+    document.removeEventListener('pointerdown', handleDocumentPointerDown)
 	  stopDeepSeekRefreshTimer()
 	  stopMimoRefreshTimer()
 	  stopCopilotPolling()
@@ -660,7 +719,7 @@ onBeforeUnmount(() => {
             >
           </label>
 
-          <label class="bc-field">
+          <div class="bc-field">
             <span class="bc-field-label">
               <span>对话默认模型</span>
               <span
@@ -672,34 +731,68 @@ onBeforeUnmount(() => {
                 <span class="bc-field-tooltip" role="tooltip">{{ currentTabModelHint }}</span>
               </span>
             </span>
-            <select
+            <div
               v-if="currentSchema.modelInputKind !== 'free-text'"
-              :value="currentModelSelectValue"
-              :disabled="(isCopilotTab && copilotModelOptions.length === 0) || (isCodexTab && codexModelOptions.length === 0)"
-              @change="(e) => setTabField('defaultModel', (e.target as HTMLSelectElement).value)"
+              ref="modelSelectRoot"
+              :class="['bc-model-select', modelDropdownOpen && 'is-open']"
+              @keydown.esc.stop.prevent="closeModelDropdown"
             >
-              <option
-                v-if="isCodexTab && codexModelOptions.length === 0"
-                value=""
-                disabled
+              <button
+                type="button"
+                class="bc-model-select-button"
+                :disabled="currentModelSelectDisabled"
+                aria-haspopup="listbox"
+                :aria-expanded="modelDropdownOpen"
+                @click="toggleModelDropdown"
               >
-                暂无 Codex 可用模型
-              </option>
-              <option
-                v-if="isCopilotTab && copilotModelOptions.length === 0"
-                value=""
-                disabled
+                <span class="bc-model-select-label">{{ currentModelSelectLabel }}</span>
+                <span
+                  v-if="modelOptionTags(selectedModelOption).length > 0"
+                  class="bc-model-select-tags"
+                >
+                  <span
+                    v-for="tag in modelOptionTags(selectedModelOption)"
+                    :key="tag"
+                    class="bc-model-select-tag"
+                  >{{ tag }}</span>
+                </span>
+                <span class="bc-model-select-chevron" aria-hidden="true" />
+              </button>
+              <div
+                v-if="modelDropdownOpen"
+                class="bc-model-select-list"
+                role="listbox"
               >
-                暂无 OAuth 可用模型
-              </option>
-              <option
-                v-for="option in currentModelOptions"
-                :key="option.modelId"
-                :value="option.modelId"
-              >
-                {{ option.label }}
-              </option>
-            </select>
+                <button
+                  v-for="option in currentModelOptions"
+                  :key="option.modelId"
+                  type="button"
+                  :class="['bc-model-select-option', option.modelId === currentModelSelectValue && 'is-selected']"
+                  role="option"
+                  :aria-selected="option.modelId === currentModelSelectValue"
+                  :title="option.modelId"
+                  @click="selectModelOption(option)"
+                >
+                  <span class="bc-model-select-option-text">
+                    <span class="bc-model-select-option-label">{{ option.label }}</span>
+                    <span
+                      v-if="option.modelId !== option.label"
+                      class="bc-model-select-option-id"
+                    >{{ option.modelId }}</span>
+                  </span>
+                  <span
+                    v-if="modelOptionTags(option).length > 0"
+                    class="bc-model-select-tags"
+                  >
+                    <span
+                      v-for="tag in modelOptionTags(option)"
+                      :key="tag"
+                      class="bc-model-select-tag"
+                    >{{ tag }}</span>
+                  </span>
+                </button>
+              </div>
+            </div>
             <input
               v-else
               type="text"
@@ -708,7 +801,7 @@ onBeforeUnmount(() => {
               autocomplete="off"
               @input="(e) => setTabField('defaultModel', (e.target as HTMLInputElement).value)"
             >
-          </label>
+          </div>
 
           <label
             v-if="isCodexTab"
