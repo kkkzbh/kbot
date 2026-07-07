@@ -394,8 +394,8 @@ function renderCookieForm(token: string, submitPath: string): string {
   return `<form class="form" method="post" action="${submitPath}">
     <input type="hidden" name="token" value="${token}">
     <label for="cookieText">粘贴整段 Cookie</label>
-    <textarea id="cookieText" name="cookieText" autocomplete="off" spellcheck="false" placeholder="stoken=...; mid=...; account_id=..."></textarea>
-    <p class="hint">只会保存 stoken、mid、stuid、账号 id 等白名单字段。原始整段 Cookie 不会入库。</p>
+    <textarea id="cookieText" name="cookieText" autocomplete="off" spellcheck="false" placeholder="ltoken_v2=...; ltmid_v2=...; account_id_v2=...; cookie_token_v2=..."></textarea>
+    <p class="hint">只会保存登录态白名单字段。绑定和签到可使用网页 Cookie；兑换码需要 Cookie 额外包含 stoken + mid/stuid。原始整段 Cookie 不会入库。</p>
     <button class="submit" type="submit">提交 Cookie</button>
   </form>`;
 }

@@ -6,13 +6,15 @@ import {
 import { GenshinUserError } from './types.js';
 
 const COOKIE_FIELD_SET = new Set<string>(GENSHIN_COOKIE_FIELD_NAMES);
-const ACCOUNT_ID_FIELDS: readonly GenshinCookieFieldName[] = [
+const COOKIE_TOKEN_V1_ACCOUNT_FIELDS: readonly GenshinCookieFieldName[] = [
   'account_id',
-  'account_id_v2',
   'login_uid',
   'ltuid',
+];
+const COOKIE_TOKEN_V2_ACCOUNT_FIELDS: readonly GenshinCookieFieldName[] = [
+  'account_id_v2',
+  'account_mid_v2',
   'ltuid_v2',
-  'stuid',
 ];
 
 export function parseGenshinCookieInput(input: string): GenshinCookieFields {
@@ -36,14 +38,28 @@ export function parseGenshinCookieInput(input: string): GenshinCookieFields {
 }
 
 export function validateGenshinCookieFields(fields: GenshinCookieFields): void {
-  if (!fields.stoken) {
-    throw new GenshinUserError('Cookie 缺少 stoken，请在米游社登录后重新复制完整 Cookie。');
+  if (!hasGenshinBindingCookieCapability(fields)) {
+    throw new GenshinUserError('Cookie 缺少可用于绑定 UID 和签到的登录字段，请在米游社登录后重新复制完整 Cookie。');
   }
-  if (!fields.mid && !fields.stuid) {
-    throw new GenshinUserError('Cookie 缺少 mid 或 stuid，请在米游社登录后重新复制完整 Cookie。');
-  }
-  if (!ACCOUNT_ID_FIELDS.some((name) => Boolean(fields[name]))) {
-    throw new GenshinUserError('Cookie 缺少账号 id，请在米游社登录后重新复制完整 Cookie。');
+}
+
+export function hasGenshinBindingCookieCapability(fields: GenshinCookieFields): boolean {
+  return Boolean(
+    (fields.ltoken_v2 && fields.ltmid_v2)
+      || (fields.ltoken && fields.ltuid)
+      || (fields.cookie_token && hasAnyField(fields, COOKIE_TOKEN_V1_ACCOUNT_FIELDS))
+      || (fields.cookie_token_v2 && hasAnyField(fields, COOKIE_TOKEN_V2_ACCOUNT_FIELDS))
+      || hasGenshinRedeemCookieCapability(fields),
+  );
+}
+
+export function hasGenshinRedeemCookieCapability(fields: GenshinCookieFields): boolean {
+  return Boolean(fields.stoken && (fields.mid || fields.stuid));
+}
+
+export function assertGenshinRedeemCookieCapability(fields: GenshinCookieFields): void {
+  if (!hasGenshinRedeemCookieCapability(fields)) {
+    throw new GenshinUserError('当前绑定 Cookie 不包含 stoken + mid/stuid，不能领取兑换码。请重新绑定包含这组字段的更高权限 Cookie。');
   }
 }
 
@@ -54,6 +70,10 @@ export function buildGenshinCookieHeader(fields: GenshinCookieFields): string {
       return value ? [`${name}=${value}`] : [];
     })
     .join('; ');
+}
+
+function hasAnyField(fields: GenshinCookieFields, names: readonly GenshinCookieFieldName[]): boolean {
+  return names.some((name) => Boolean(fields[name]));
 }
 
 function parseJsonCookieArray(raw: string): Array<[string, string]> {

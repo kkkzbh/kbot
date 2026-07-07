@@ -78,6 +78,30 @@ if [[ ! -f "${ENV_SERVER}" ]]; then
 fi
 chmod 600 "${ENV_SERVER}"
 
+ensure_server_env_key() {
+  local key="$1"
+  local value="$2"
+  if grep -Eq "^${key}=" "${ENV_SERVER}"; then
+    return
+  fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${ENV_SERVER}"
+}
+
+ensure_server_env_defaults() {
+  ensure_server_env_key "GENSHIN_PUBLIC_BASE_URL" "https://genshin.kkkzbh.cn"
+  ensure_server_env_key "GENSHIN_BIND_PAGE_PATH" "/genshin/bind"
+  ensure_server_env_key "GENSHIN_BIND_TOKEN_TTL_MS" "600000"
+  ensure_server_env_key "GENSHIN_CREDENTIAL_KEK_PATH" "${DATA_DIR}/genshin-credential-kek"
+  ensure_server_env_key "GENSHIN_AUTO_SIGN_ENABLED" "true"
+  ensure_server_env_key "GENSHIN_AUTO_SIGN_CRON" '"10 9 * * *"'
+  ensure_server_env_key "GENSHIN_TIMEZONE" "Asia/Shanghai"
+  ensure_server_env_key "GENSHIN_TAKUMI_APP_VERSION" "2.70.1"
+  ensure_server_env_key "GENSHIN_SIGN_ACT_ID" "e202311201442471"
+  ensure_server_env_key "GENSHIN_REDEEM_GAME_VERSION" "CNRELWin6.0.0"
+  chmod 600 "${ENV_SERVER}"
+}
+ensure_server_env_defaults
+
 BUNDLE_ENTRIES="${STAGING_DIR}/bundle.entries"
 tar -tzf "${BUNDLE_PATH}" > "${BUNDLE_ENTRIES}"
 

@@ -14,6 +14,7 @@ export type GenshinCookieFieldName =
   | 'stoken'
   | 'stuid'
   | 'mid'
+  | 'ltoken'
   | 'ltoken_v2'
   | 'ltmid_v2'
   | 'ltuid_v2'
@@ -21,6 +22,7 @@ export type GenshinCookieFieldName =
   | 'cookie_token_v2'
   | 'account_id'
   | 'account_id_v2'
+  | 'account_mid_v2'
   | 'login_uid'
   | 'ltuid';
 
@@ -28,6 +30,7 @@ export const GENSHIN_COOKIE_FIELD_NAMES: readonly GenshinCookieFieldName[] = [
   'stoken',
   'stuid',
   'mid',
+  'ltoken',
   'ltoken_v2',
   'ltmid_v2',
   'ltuid_v2',
@@ -35,6 +38,7 @@ export const GENSHIN_COOKIE_FIELD_NAMES: readonly GenshinCookieFieldName[] = [
   'cookie_token_v2',
   'account_id',
   'account_id_v2',
+  'account_mid_v2',
   'login_uid',
   'ltuid',
 ];

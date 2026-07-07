@@ -152,6 +152,10 @@ function cookieText(): string {
   return 'stoken=v2_secret; mid=mid_secret; account_id=123456; cookie_token=token_secret; ltuid_v2=123456';
 }
 
+function webCookieText(): string {
+  return 'ltoken=legacy_ltoken; ltuid=123456; ltoken_v2=v2_ltoken; ltmid_v2=mid_v2; account_id_v2=123456; account_mid_v2=mid_v2; cookie_token_v2=token_v2';
+}
+
 function createService(options: {
   database?: ReturnType<typeof createDatabase>;
   roles?: GenshinGameRole[];
@@ -239,32 +243,45 @@ describe('genshin cookie parser', () => {
     });
 
     expect(parseGenshinCookieInput(JSON.stringify([
-      { name: 'stoken', value: 'v2_secret' },
-      { name: 'mid', value: 'mid_secret' },
+      { name: 'ltoken_v2', value: 'v2_ltoken' },
+      { name: 'ltmid_v2', value: 'mid_v2' },
       { name: 'account_id_v2', value: '123456' },
+      { name: 'account_mid_v2', value: 'mid_v2' },
       { name: 'unrelated', value: 'drop-me' },
     ]))).toEqual({
-      stoken: 'v2_secret',
-      mid: 'mid_secret',
+      ltoken_v2: 'v2_ltoken',
+      ltmid_v2: 'mid_v2',
       account_id_v2: '123456',
+      account_mid_v2: 'mid_v2',
     });
 
     expect(parseGenshinCookieInput([
       '# Netscape HTTP Cookie File',
-      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tstoken\tv2_secret',
-      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tmid\tmid_secret',
+      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tcookie_token\ttoken_secret',
       '.miyoushe.com\tTRUE\t/\tTRUE\t0\tlogin_uid\t123456',
+      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tltoken\tlegacy_ltoken',
     ].join('\n'))).toEqual({
-      stoken: 'v2_secret',
-      mid: 'mid_secret',
+      cookie_token: 'token_secret',
       login_uid: '123456',
+      ltoken: 'legacy_ltoken',
     });
   });
 
-  it('requires stoken, mid or stuid, and an account id', () => {
-    expect(() => parseGenshinCookieInput('mid=mid_secret; account_id=123456')).toThrow('缺少 stoken');
-    expect(() => parseGenshinCookieInput('stoken=v2_secret; account_id=123456')).toThrow('缺少 mid 或 stuid');
-    expect(() => parseGenshinCookieInput('stoken=v2_secret; mid=mid_secret')).toThrow('缺少账号 id');
+  it('accepts web cookies for binding without requiring stoken', () => {
+    expect(parseGenshinCookieInput(webCookieText())).toMatchObject({
+      ltoken: 'legacy_ltoken',
+      ltoken_v2: 'v2_ltoken',
+      ltmid_v2: 'mid_v2',
+      account_id_v2: '123456',
+      account_mid_v2: 'mid_v2',
+      cookie_token_v2: 'token_v2',
+    });
+  });
+
+  it('requires a binding-capable login field set', () => {
+    expect(() => parseGenshinCookieInput('mid=mid_secret; account_id=123456')).toThrow('缺少可用于绑定 UID 和签到的登录字段');
+    expect(() => parseGenshinCookieInput('ltoken_v2=v2_ltoken; account_id_v2=123456')).toThrow('缺少可用于绑定 UID 和签到的登录字段');
+    expect(() => parseGenshinCookieInput('cookie_token_v2=token_v2')).toThrow('缺少可用于绑定 UID 和签到的登录字段');
   });
 });
 
@@ -332,6 +349,30 @@ describe('genshin binding service', () => {
       uid: '100000001',
       status: 'ok',
       retcode: 0,
+    });
+  });
+
+  it('allows web-cookie binding and sign-in while rejecting redeem without stoken', async () => {
+    const signIn = vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 9 }));
+    const redeemCode = vi.fn(async () => ({ retcode: 0, message: 'OK' }));
+    const { service, database } = createService({ signIn, redeemCode });
+    const started = await service.startBinding(identity());
+    const submitted = await service.submitCookie({ token: extractToken(started.link), cookieText: webCookieText() });
+    await service.confirmBinding(identity(), submitted.kind === 'success' ? submitted.confirmCode : '');
+
+    await expect(service.manualSignIn(identity())).resolves.toMatchObject({
+      role: { uid: '100000001' },
+      status: 'ok',
+    });
+    await expect(service.redeemCode(identity(), 'GENSHIN2026')).rejects.toThrow('当前绑定 Cookie 不包含 stoken');
+
+    expect(signIn).toHaveBeenCalledTimes(1);
+    expect(redeemCode).not.toHaveBeenCalled();
+    expect(database.tables.get('genshin_redeem_record')?.[0]).toMatchObject({
+      uid: '100000001',
+      status: 'failed',
+      retcode: -1,
+      message: expect.stringContaining('当前绑定 Cookie 不包含 stoken'),
     });
   });
 });

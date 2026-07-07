@@ -8,7 +8,7 @@ import {
   sha256Hex,
   type CredentialKek,
 } from '../shared/credential-crypto.js';
-import { parseGenshinCookieInput } from './cookie.js';
+import { assertGenshinRedeemCookieCapability, parseGenshinCookieInput } from './cookie.js';
 import { GenshinStore, signInRecordRow } from './store.js';
 import { GenshinTakumiError, type GenshinSignResult, type GenshinTakumiClient } from './takumi-client.js';
 import {
@@ -235,6 +235,7 @@ export class GenshinService {
     const { payload, role } = this.decryptCredential(credential);
     const now = this.now();
     try {
+      assertGenshinRedeemCookieCapability(payload.cookies);
       const result = await this.client.redeemCode(payload.cookies, role, cdkey);
       await this.store.markCredentialUsed(credential.id, now);
       await this.store.recordRedeem({
