@@ -465,6 +465,64 @@ function thisSemesterSchedule(): HbuJwThisSemesterSchedule {
   };
 }
 
+function crowdedSemesterSchedule(): HbuJwThisSemesterSchedule {
+  return {
+    executiveEducationPlanNumber: '2025-2026-2-2',
+    programPlanName: '2023级计算机科学与技术专业人才培养方案',
+    totalUnits: 5,
+    courses: [
+      {
+        courseNumber: '2023S02001',
+        sequenceNumber: '02',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '模式识别与机器学习',
+        unit: 2,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考试',
+        teacherName: '彭锦佳*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 1,
+            classSessions: 3,
+            continuingSession: 2,
+            classWeek: '111111111111111110000000',
+            weekDescription: '1-17周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'C1座',
+            classroomName: '32',
+          },
+        ],
+      },
+      {
+        courseNumber: '2023S02002',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '数字图像处理实验',
+        unit: 3,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考查',
+        teacherName: '杨文柱*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 1,
+            classSessions: 3,
+            continuingSession: 2,
+            classWeek: '111111111111111110000000',
+            weekDescription: '1-17周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'C1座',
+            classroomName: '32',
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createPuppeteerHarness() {
   let navigatedHtml = '';
   const element = {
@@ -1369,11 +1427,35 @@ describe('hbu-jw schedule module', () => {
     const complete = buildHbuJwScheduleView(thisSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15));
 
     expect(current.currentWeek).toBe(3);
-    expect(current.slots.map((slot) => slot.courseName)).toEqual(['编译原理_01']);
+    expect(current.cells.flatMap((cell) => cell.entries.map((entry) => entry.courseName))).toEqual(['编译原理_01']);
     expect(current.renderedCourseCount).toBe(1);
     expect(current.unarrangedCourseCount).toBe(1);
-    expect(complete.slots.map((slot) => slot.courseName)).toEqual(['软件工程_01', '软件工程_01', '编译原理_01']);
+    expect(complete.cells.flatMap((cell) => cell.entries.map((entry) => entry.courseName))).toEqual(['软件工程_01', '软件工程_01', '编译原理_01']);
     expect(complete.renderedCourseCount).toBe(2);
+  });
+
+  it('groups overlapping full-semester slots into one visible cell', async () => {
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const view = buildHbuJwScheduleView(crowdedSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15));
+
+    expect(view.cells).toHaveLength(1);
+    expect(view.cells[0]).toEqual(expect.objectContaining({
+      kind: 'conflict',
+      classDay: 1,
+      startSection: 3,
+      continuingSession: 2,
+      sectionText: '3-4节',
+    }));
+    expect(view.cells[0]?.entries.map((entry) => entry.courseName)).toEqual(['模式识别与机器学习_02', '数字图像处理实验_01']);
+
+    await renderHbuJwScheduleImage(puppeteer, view);
+
+    expect(getNavigatedHtml()).toContain('2门');
+    expect(getNavigatedHtml()).toContain('同周重叠');
+    expect(getNavigatedHtml()).toContain('course-entry-index">1');
+    expect(getNavigatedHtml()).toContain('course-entry-index">2');
+    expect(getNavigatedHtml()).toContain('模式识别与机器学习_02');
+    expect(getNavigatedHtml()).toContain('数字图像处理实验_01');
   });
 
   it('renders the schedule view as a PNG image with course details in the HTML', async () => {
