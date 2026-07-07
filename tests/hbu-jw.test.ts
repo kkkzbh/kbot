@@ -115,6 +115,7 @@ import {
   buildHbuJwTermScoresView,
   renderHbuJwTermScoresImage,
 } from '../src/plugins/hbu-jw/term-scores.js';
+import { HbuJwUserError } from '../src/plugins/hbu-jw/types.js';
 import type {
   DatabaseLike,
   HbuJwExamPlanEvent,
@@ -1509,19 +1510,32 @@ describe('hbu-jw exam schedule module', () => {
 });
 
 describe('hbu-jw schedule module', () => {
-  it('calculates teaching weeks from fixed HBU term starts', () => {
+  it('calculates teaching weeks from explicit HBU academic calendars', () => {
     expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 1))).toBe(1);
-    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 15))).toBe(3);
-    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 1))).toBe(1);
-    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 15))).toBe(3);
+    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 8))).toBe(1);
+    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 9))).toBe(2);
+    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 15))).toBe(2);
+    expect(calculateTeachingWeek('2025-2026-2-2', Date.UTC(2026, 2, 16))).toBe(3);
+    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 7))).toBe(1);
+    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 8))).toBe(1);
+    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 14))).toBe(1);
+    expect(calculateTeachingWeek('2025-2026-1-1', Date.UTC(2025, 8, 15))).toBe(2);
+  });
+
+  it('rejects unsupported academic calendars instead of guessing term starts', () => {
+    expect(() => calculateTeachingWeek('2027-2028-1-1', Date.UTC(2027, 8, 1))).toThrow(HbuJwUserError);
+    expect(() => calculateTeachingWeek('2027-2028-1-1', Date.UTC(2027, 8, 1))).toThrow(
+      '暂未收录 2027-2028 秋 学期校历，无法计算当前教学周。',
+    );
   });
 
   it('filters current-week slots while complete schedule keeps every arranged slot', () => {
     const current = buildHbuJwScheduleView(thisSemesterSchedule(), 'current-week', Date.UTC(2026, 2, 15));
     const complete = buildHbuJwScheduleView(thisSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15));
 
-    expect(current.currentWeek).toBe(3);
-    expect(current.cells.flatMap((cell) => cell.entries.map((entry) => entry.courseName))).toEqual(['编译原理_01']);
+    expect(current.currentWeek).toBe(2);
+    expect(current.weekRangeText).toBe('2026-03-09 ~ 2026-03-15');
+    expect(current.cells.flatMap((cell) => cell.entries.map((entry) => entry.courseName))).toEqual(['软件工程_01', '软件工程_01']);
     expect(current.renderedCourseCount).toBe(1);
     expect(current.unarrangedCourseCount).toBe(1);
     expect(complete.cells.flatMap((cell) => cell.entries.map((entry) => entry.courseName))).toEqual(['软件工程_01', '软件工程_01', '编译原理_01']);
@@ -1544,14 +1558,18 @@ describe('hbu-jw schedule module', () => {
     const firstFrame = renderHbuJwScheduleHtml(view, { animationFrameIndex: 0 });
     const secondFrame = renderHbuJwScheduleHtml(view, { animationFrameIndex: 1 });
 
-    expect(firstFrame).toContain('1/2');
     expect(firstFrame).toContain('模式识别与机器学习_02');
     expect(firstFrame).not.toContain('数字图像处理实验_01');
+    expect(firstFrame).not.toContain('1/2');
+    expect(firstFrame).not.toContain('course-badge');
+    expect(firstFrame).not.toContain('course-frame');
     expect(firstFrame).not.toContain('course-entry-index');
     expect(firstFrame).not.toContain('course-merged');
-    expect(secondFrame).toContain('2/2');
     expect(secondFrame).toContain('数字图像处理实验_01');
     expect(secondFrame).not.toContain('模式识别与机器学习_02');
+    expect(secondFrame).not.toContain('2/2');
+    expect(secondFrame).not.toContain('course-badge');
+    expect(secondFrame).not.toContain('course-frame');
   });
 
   it('calculates gif frame periods for mixed crowded cells', () => {
@@ -1569,9 +1587,9 @@ describe('hbu-jw schedule module', () => {
     );
 
     expect(String(image)).toContain('image/png');
-    expect(getNavigatedHtml()).toContain('河北大学课表 · 第 3 周');
-    expect(getNavigatedHtml()).toContain('编译原理_01');
-    expect(getNavigatedHtml()).toContain('七一路校区A2座104');
+    expect(getNavigatedHtml()).toContain('河北大学课表 · 第 2 周');
+    expect(getNavigatedHtml()).toContain('软件工程_01');
+    expect(getNavigatedHtml()).toContain('七一路校区A5座312');
     expect(getNavigatedHtml()).toContain('未安排课程');
     expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
   });

@@ -15,12 +15,14 @@ import {
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = DAY_MS * 7;
-const SCHEDULE_WIDTH = 1536;
-const PHASE_WIDTH = 54;
-const TIME_WIDTH = 176;
-const DAY_WIDTH = 184;
-const ROW_HEIGHT = 74;
-const HEADER_HEIGHT = 52;
+const SCHEDULE_CELL_SCALE = 1.2;
+const scaleScheduleCell = (value: number): number => Math.round(value * SCHEDULE_CELL_SCALE);
+const SCHEDULE_WIDTH = scaleScheduleCell(1536);
+const PHASE_WIDTH = scaleScheduleCell(54);
+const TIME_WIDTH = scaleScheduleCell(176);
+const DAY_WIDTH = scaleScheduleCell(184);
+const ROW_HEIGHT = scaleScheduleCell(74);
+const HEADER_HEIGHT = scaleScheduleCell(52);
 const BODY_HEIGHT = ROW_HEIGHT * 11;
 const VIEWPORT_HEIGHT = BODY_HEIGHT + 280;
 const TABLE_WIDTH = PHASE_WIDTH + TIME_WIDTH + DAY_WIDTH * 7;
@@ -43,6 +45,19 @@ const SECTION_TIMES = [
 ] as const;
 
 const DAY_NAMES = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'] as const;
+
+interface HbuJwAcademicCalendarTerm {
+  week1StartDay: number;
+}
+
+const HBU_ACADEMIC_CALENDAR_TERMS = new Map<string, HbuJwAcademicCalendarTerm>([
+  ['2024-2025-1', { week1StartDay: Date.UTC(2024, 8, 2) }],
+  ['2024-2025-2', { week1StartDay: Date.UTC(2025, 1, 24) }],
+  ['2025-2026-1', { week1StartDay: Date.UTC(2025, 8, 8) }],
+  ['2025-2026-2', { week1StartDay: Date.UTC(2026, 2, 2) }],
+  ['2026-2027-1', { week1StartDay: Date.UTC(2026, 7, 31) }],
+  ['2026-2027-2', { week1StartDay: Date.UTC(2027, 1, 22) }],
+]);
 
 const COURSE_TONES = [
   ['#ed6b64', '#ef9188'],
@@ -89,7 +104,7 @@ export interface HbuJwTermInfo {
   academicYearEnd: number;
   termCode: 1 | 2;
   termName: '秋' | '春';
-  termStartDay: number;
+  week1StartDay: number;
 }
 
 export type HbuJwScheduleCellKind = 'single' | 'split' | 'conflict';
@@ -217,7 +232,7 @@ export function buildHbuJwScheduleView(
       : `${formatTermLabel(term)} · 全学期`,
     termLabel: formatTermLabel(term),
     currentWeek,
-    weekRangeText: formatWeekRange(term.termStartDay, currentWeek),
+    weekRangeText: formatWeekRange(term.week1StartDay, currentWeek),
     totalUnits: schedule.totalUnits,
     renderedCourseCount: renderedCourses.size,
     unarrangedCourseCount,
@@ -228,7 +243,7 @@ export function buildHbuJwScheduleView(
 export function calculateTeachingWeek(executiveEducationPlanNumber: string, nowMs: number): number {
   const term = parseExecutiveEducationPlanNumber(executiveEducationPlanNumber);
   const shanghaiDay = toShanghaiUtcDay(nowMs);
-  return Math.max(1, Math.floor((shanghaiDay - term.termStartDay) / WEEK_MS) + 1);
+  return Math.max(1, Math.floor((shanghaiDay - term.week1StartDay) / WEEK_MS) + 1);
 }
 
 export function isClassWeekActive(classWeek: string, teachingWeek: number): boolean {
@@ -531,26 +546,6 @@ export function renderHbuJwScheduleHtml(view: HbuJwScheduleView, options: HbuJwS
       background: linear-gradient(145deg, var(--c1), var(--c2));
       color: #fff;
     }
-    .course-frame {
-      padding-top: 28px;
-    }
-    .course-badge {
-      position: absolute;
-      top: 6px;
-      right: 6px;
-      max-width: 54px;
-      padding: 4px 6px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.92);
-      color: #145945;
-      box-shadow: 0 3px 9px rgba(22, 58, 48, 0.18);
-      font-size: 11px;
-      line-height: 1;
-      font-weight: 900;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
     .course-name {
       font-size: 18px;
       line-height: 1.18;
@@ -678,15 +673,24 @@ function parseExecutiveEducationPlanNumber(value: string): HbuJwTermInfo {
   const academicYearStart = Number(matched[1]);
   const academicYearEnd = Number(matched[2]);
   const termCode = Number(matched[3]) as 1 | 2;
-  const termStartYear = termCode === 1 ? academicYearStart : academicYearEnd;
-  const termStartMonth = termCode === 1 ? 9 : 3;
+  const termName = termCode === 1 ? '秋' : '春';
+  const calendarTerm = HBU_ACADEMIC_CALENDAR_TERMS.get(
+    formatAcademicCalendarTermKey(academicYearStart, academicYearEnd, termCode),
+  );
+  if (!calendarTerm) {
+    throw new HbuJwUserError(`暂未收录 ${academicYearStart}-${academicYearEnd} ${termName} 学期校历，无法计算当前教学周。`);
+  }
   return {
     academicYearStart,
     academicYearEnd,
     termCode,
-    termName: termCode === 1 ? '秋' : '春',
-    termStartDay: Date.UTC(termStartYear, termStartMonth - 1, 1),
+    termName,
+    week1StartDay: calendarTerm.week1StartDay,
   };
+}
+
+function formatAcademicCalendarTermKey(academicYearStart: number, academicYearEnd: number, termCode: 1 | 2): string {
+  return `${academicYearStart}-${academicYearEnd}-${termCode}`;
 }
 
 function toShanghaiUtcDay(nowMs: number): number {
@@ -872,8 +876,7 @@ function renderSingleCourseCell(entry: HbuJwScheduleEntryView, positionStyle: st
 function renderAnimatedCourseCell(cell: HbuJwScheduleCellView, frameIndex: number, positionStyle: string): string {
   const entryIndex = frameIndex % cell.entries.length;
   const entry = cell.entries[entryIndex]!;
-  return `<article class="course course-single course-frame" style="${positionStyle}--c1:${entry.colorStart};--c2:${entry.colorEnd};">
-    <div class="course-badge">${entryIndex + 1}/${cell.entries.length}</div>
+  return `<article class="course course-single" style="${positionStyle}--c1:${entry.colorStart};--c2:${entry.colorEnd};">
     <div class="course-name">${escapeHtml(entry.courseName)}</div>
     <div class="course-line">${escapeHtml(entry.teacherName)}</div>
     <div class="course-line">${escapeHtml(entry.weekDescription)} | ${escapeHtml(entry.sectionText)}</div>
