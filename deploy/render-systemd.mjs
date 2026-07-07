@@ -30,12 +30,14 @@ const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
 const cloudflaredHbuJwTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE', '/etc/cloudflared/qqbot-hbu-jw.token'));
 const cloudflaredGenshinTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE', '/etc/cloudflared/qqbot-genshin.token'));
+const cloudflaredOriginUrl = envValue('QQBOT_CLOUDFLARED_ORIGIN_URL', 'http://127.0.0.1:5140');
 const app = quote(appDir);
 const data = quote(dataDir);
 const server = quote(envServer);
 const runtime = quote(envRuntime);
 const hbuJwToken = quote(cloudflaredHbuJwTokenFile);
 const genshinToken = quote(cloudflaredGenshinTokenFile);
+const cloudflaredOrigin = quote(cloudflaredOriginUrl);
 
 mkdirSync(systemdDir, { recursive: true });
 
@@ -115,7 +117,7 @@ PartOf=qqbot.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file ${hbuJwToken}
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file ${hbuJwToken} --url ${cloudflaredOrigin}
 Restart=always
 RestartSec=5
 
@@ -132,7 +134,7 @@ PartOf=qqbot.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file ${genshinToken}
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file ${genshinToken} --url ${cloudflaredOrigin}
 Restart=always
 RestartSec=5
 
