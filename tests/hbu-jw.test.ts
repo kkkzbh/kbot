@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createCanvas } from '@napi-rs/canvas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('koishi', () => {
@@ -102,7 +103,9 @@ import {
 import {
   HbuJwScheduleService,
   buildHbuJwScheduleView,
+  calculateHbuJwScheduleGifFrameCount,
   calculateTeachingWeek,
+  renderHbuJwScheduleHtml,
   renderHbuJwScheduleImage,
 } from '../src/plugins/hbu-jw/schedule.js';
 import { HbuJwService } from '../src/plugins/hbu-jw/service.js';
@@ -523,8 +526,91 @@ function crowdedSemesterSchedule(): HbuJwThisSemesterSchedule {
   };
 }
 
+function mixedCrowdedSemesterSchedule(): HbuJwThisSemesterSchedule {
+  const schedule = crowdedSemesterSchedule();
+  return {
+    ...schedule,
+    courses: [
+      ...schedule.courses,
+      {
+        courseNumber: '2023S03001',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '课程甲',
+        unit: 1,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考查',
+        teacherName: '甲老师*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 2,
+            classSessions: 5,
+            continuingSession: 2,
+            classWeek: '111111111111111110000000',
+            weekDescription: '1-17周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'A1座',
+            classroomName: '101',
+          },
+        ],
+      },
+      {
+        courseNumber: '2023S03002',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '课程乙',
+        unit: 1,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考查',
+        teacherName: '乙老师*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 2,
+            classSessions: 5,
+            continuingSession: 2,
+            classWeek: '111111111111111110000000',
+            weekDescription: '1-17周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'A1座',
+            classroomName: '101',
+          },
+        ],
+      },
+      {
+        courseNumber: '2023S03003',
+        sequenceNumber: '01',
+        executiveEducationPlanNumber: '2025-2026-2-2',
+        courseName: '课程丙',
+        unit: 1,
+        coursePropertiesName: '必修',
+        courseCategoryName: '学科(专业)基础课',
+        examTypeName: '考查',
+        teacherName: '丙老师*',
+        selectCourseStatusName: '选中',
+        timeAndPlaceList: [
+          {
+            classDay: 2,
+            classSessions: 5,
+            continuingSession: 2,
+            classWeek: '111111111111111110000000',
+            weekDescription: '1-17周',
+            campusName: '七一路校区',
+            teachingBuildingName: 'A1座',
+            classroomName: '101',
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createPuppeteerHarness() {
   let navigatedHtml = '';
+  const screenshotPng = createHarnessPng();
   const element = {
     boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 1536, height: 1008 })),
   };
@@ -537,7 +623,7 @@ function createPuppeteerHarness() {
     }),
     waitForSelector: vi.fn(async () => undefined),
     $: vi.fn(async () => element),
-    screenshot: vi.fn(async () => Buffer.from('png')),
+    screenshot: vi.fn(async () => screenshotPng),
     close: vi.fn(async () => undefined),
   };
   return {
@@ -547,6 +633,14 @@ function createPuppeteerHarness() {
     },
     getNavigatedHtml: () => navigatedHtml,
   };
+}
+
+function createHarnessPng(): Buffer {
+  const canvas = createCanvas(4, 4);
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, 4, 4);
+  return canvas.toBuffer('image/png');
 }
 
 describe('hbu-jw binding service', () => {
@@ -770,7 +864,7 @@ describe('hbu-jw menu module', () => {
           ['匿名成绩', '查看本学期成绩，但不显示敏感数据，可查是否出分'],
           ['课程查询', '查看指定课程的分项成绩接口返回'],
           ['课表', '查看这周的课表'],
-          ['完整课表', '查看本学期的课表'],
+        ['完整课表', '查看本学期动态课表'],
           ['考试安排', '查看本学期的考试安排'],
         ],
       ],
@@ -1434,8 +1528,7 @@ describe('hbu-jw schedule module', () => {
     expect(complete.renderedCourseCount).toBe(2);
   });
 
-  it('groups overlapping full-semester slots into one visible cell', async () => {
-    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+  it('renders crowded cells as frame-selected color blocks without static merged lists', () => {
     const view = buildHbuJwScheduleView(crowdedSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15));
 
     expect(view.cells).toHaveLength(1);
@@ -1448,14 +1541,24 @@ describe('hbu-jw schedule module', () => {
     }));
     expect(view.cells[0]?.entries.map((entry) => entry.courseName)).toEqual(['模式识别与机器学习_02', '数字图像处理实验_01']);
 
-    await renderHbuJwScheduleImage(puppeteer, view);
+    const firstFrame = renderHbuJwScheduleHtml(view, { animationFrameIndex: 0 });
+    const secondFrame = renderHbuJwScheduleHtml(view, { animationFrameIndex: 1 });
 
-    expect(getNavigatedHtml()).toContain('2门');
-    expect(getNavigatedHtml()).toContain('同周重叠');
-    expect(getNavigatedHtml()).toContain('course-entry-index">1');
-    expect(getNavigatedHtml()).toContain('course-entry-index">2');
-    expect(getNavigatedHtml()).toContain('模式识别与机器学习_02');
-    expect(getNavigatedHtml()).toContain('数字图像处理实验_01');
+    expect(firstFrame).toContain('1/2');
+    expect(firstFrame).toContain('模式识别与机器学习_02');
+    expect(firstFrame).not.toContain('数字图像处理实验_01');
+    expect(firstFrame).not.toContain('course-entry-index');
+    expect(firstFrame).not.toContain('course-merged');
+    expect(secondFrame).toContain('2/2');
+    expect(secondFrame).toContain('数字图像处理实验_01');
+    expect(secondFrame).not.toContain('模式识别与机器学习_02');
+  });
+
+  it('calculates gif frame periods for mixed crowded cells', () => {
+    const view = buildHbuJwScheduleView(mixedCrowdedSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15));
+
+    expect(view.cells.map((cell) => cell.entries.length).filter((count) => count > 1)).toEqual([2, 3]);
+    expect(calculateHbuJwScheduleGifFrameCount(view)).toBe(6);
   });
 
   it('renders the schedule view as a PNG image with course details in the HTML', async () => {
@@ -1471,6 +1574,18 @@ describe('hbu-jw schedule module', () => {
     expect(getNavigatedHtml()).toContain('七一路校区A2座104');
     expect(getNavigatedHtml()).toContain('未安排课程');
     expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('renders the full-semester schedule as a GIF image', async () => {
+    const { page, puppeteer } = createPuppeteerHarness();
+    const image = await renderHbuJwScheduleImage(
+      puppeteer,
+      buildHbuJwScheduleView(crowdedSemesterSchedule(), 'full-semester', Date.UTC(2026, 2, 15)),
+      'gif',
+    );
+
+    expect(String(image)).toContain('image/gif');
+    expect(page.screenshot).toHaveBeenCalledTimes(2);
   });
 
   it('uses the authenticated session to query and render schedules', async () => {
@@ -1490,7 +1605,7 @@ describe('hbu-jw schedule module', () => {
     const reply = await service.querySchedule(identity(), 'full-semester');
 
     expect(extractAtIds(reply)).toEqual(['1405359129']);
-    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(renderMessageContent(reply)).toContain('image/gif');
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
     expect(getThisSemesterSchedule).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
   });

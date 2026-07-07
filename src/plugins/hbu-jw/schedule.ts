@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createCanvas, GifDisposal, GifEncoder, loadImage } from '@napi-rs/canvas';
 import { h, type Fragment } from 'koishi';
 import type { HbuJwHttpClient } from './jw-client.js';
 import {
@@ -18,11 +19,14 @@ const SCHEDULE_WIDTH = 1536;
 const PHASE_WIDTH = 54;
 const TIME_WIDTH = 176;
 const DAY_WIDTH = 184;
-const ROW_HEIGHT = 68;
+const ROW_HEIGHT = 74;
 const HEADER_HEIGHT = 52;
 const BODY_HEIGHT = ROW_HEIGHT * 11;
+const VIEWPORT_HEIGHT = BODY_HEIGHT + 280;
 const TABLE_WIDTH = PHASE_WIDTH + TIME_WIDTH + DAY_WIDTH * 7;
 const COURSE_GAP = 8;
+const SCHEDULE_GIF_FRAME_DELAY_MS = 1000;
+const SCHEDULE_GIF_MAX_FRAMES = 12;
 
 const SECTION_TIMES = [
   ['08:20', '09:05'],
@@ -128,6 +132,12 @@ export interface HbuJwScheduleView {
   cells: HbuJwScheduleCellView[];
 }
 
+export type HbuJwScheduleRenderFormat = 'png' | 'gif';
+
+interface HbuJwScheduleRenderOptions {
+  animationFrameIndex?: number;
+}
+
 export class HbuJwScheduleService {
   constructor(
     private readonly authService: HbuJwAuthServiceLike,
@@ -136,7 +146,10 @@ export class HbuJwScheduleService {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
-  async querySchedule(identity: OwnerIdentity, mode: HbuJwScheduleMode): Promise<Fragment> {
+  async querySchedule(
+    identity: OwnerIdentity,
+    mode: HbuJwScheduleMode,
+  ): Promise<Fragment> {
     const auth = await this.authService.ensureAuthenticated(identity);
     if (auth.kind !== 'authenticated') {
       throw new HbuJwUserError(auth.reason);
@@ -145,7 +158,8 @@ export class HbuJwScheduleService {
     try {
       const schedule = await this.jwClient.getThisSemesterSchedule(auth.cookieJar);
       const view = buildHbuJwScheduleView(schedule, mode, this.now());
-      return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwScheduleImage(this.puppeteer, view)];
+      const format: HbuJwScheduleRenderFormat = mode === 'full-semester' ? 'gif' : 'png';
+      return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwScheduleImage(this.puppeteer, view, format)];
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
       throw new HbuJwUserError('教务课表查询失败，请稍后重试。');
@@ -224,14 +238,26 @@ export function isClassWeekActive(classWeek: string, teachingWeek: number): bool
 export async function renderHbuJwScheduleImage(
   puppeteer: HbuJwSchedulePuppeteerLike,
   view: HbuJwScheduleView,
+  format: HbuJwScheduleRenderFormat = 'png',
 ): Promise<ReturnType<typeof h.image>> {
+  if (format === 'gif') {
+    return h.image(await renderHbuJwScheduleGifBuffer(puppeteer, view), 'image/gif');
+  }
+  return h.image(await renderHbuJwSchedulePngBuffer(puppeteer, view), 'image/png');
+}
+
+async function renderHbuJwSchedulePngBuffer(
+  puppeteer: HbuJwSchedulePuppeteerLike,
+  view: HbuJwScheduleView,
+  options: HbuJwScheduleRenderOptions = {},
+): Promise<Buffer> {
   const page = await puppeteer.page();
   let tempDir: string | null = null;
   try {
     tempDir = await mkdtemp(join(tmpdir(), 'qqbot-hbu-jw-schedule-'));
     const htmlPath = join(tempDir, 'schedule.html');
-    await writeFile(htmlPath, renderHbuJwScheduleHtml(view), 'utf8');
-    await page.setViewport?.({ width: SCHEDULE_WIDTH, height: 1040, deviceScaleFactor: 1 });
+    await writeFile(htmlPath, renderHbuJwScheduleHtml(view, options), 'utf8');
+    await page.setViewport?.({ width: SCHEDULE_WIDTH, height: VIEWPORT_HEIGHT, deviceScaleFactor: 1 });
     await page.goto(pathToFileURL(htmlPath).href, { waitUntil: 'networkidle0' });
     await page.waitForSelector?.('#hbu-jw-schedule-card', { timeout: 5000 });
     const card = await page.$('#hbu-jw-schedule-card');
@@ -247,7 +273,7 @@ export async function renderHbuJwScheduleImage(
         height: Math.ceil(box.height),
       },
     });
-    return h.image(Buffer.from(screenshot), 'image/png');
+    return Buffer.from(screenshot);
   } finally {
     await page.close();
     if (tempDir) {
@@ -256,7 +282,67 @@ export async function renderHbuJwScheduleImage(
   }
 }
 
-export function renderHbuJwScheduleHtml(view: HbuJwScheduleView): string {
+async function renderHbuJwScheduleGifBuffer(
+  puppeteer: HbuJwSchedulePuppeteerLike,
+  view: HbuJwScheduleView,
+): Promise<Buffer> {
+  const frameCount = calculateHbuJwScheduleGifFrameCount(view);
+  const frames: Buffer[] = [];
+  for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+    frames.push(await renderHbuJwSchedulePngBuffer(puppeteer, view, { animationFrameIndex: frameIndex }));
+  }
+  return encodeScheduleGif(frames);
+}
+
+export function calculateHbuJwScheduleGifFrameCount(view: HbuJwScheduleView): number {
+  const counts = view.cells.map((cell) => cell.entries.length).filter((count) => count > 1);
+  if (counts.length === 0) return 1;
+  const maxCount = Math.max(...counts);
+  if (maxCount > SCHEDULE_GIF_MAX_FRAMES) {
+    throw new Error(`schedule gif cell has too many entries: ${maxCount}`);
+  }
+  const exactFrameCount = counts.reduce((frameCount, count) => lcm(frameCount, count), 1);
+  return exactFrameCount <= SCHEDULE_GIF_MAX_FRAMES ? exactFrameCount : SCHEDULE_GIF_MAX_FRAMES;
+}
+
+async function encodeScheduleGif(frames: Buffer[]): Promise<Buffer> {
+  const firstFrame = await loadImage(frames[0]!);
+  const canvas = createCanvas(firstFrame.width, firstFrame.height);
+  const context = canvas.getContext('2d');
+  const encoder = new GifEncoder(firstFrame.width, firstFrame.height, { repeat: 0, quality: 10 });
+  try {
+    for (const frame of frames) {
+      const image = await loadImage(frame);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      encoder.addFrame(new Uint8Array(imageData.data), canvas.width, canvas.height, {
+        delay: SCHEDULE_GIF_FRAME_DELAY_MS,
+        disposal: GifDisposal.Background,
+      });
+    }
+    return encoder.finish();
+  } finally {
+    encoder.dispose();
+  }
+}
+
+function gcd(left: number, right: number): number {
+  let a = Math.abs(left);
+  let b = Math.abs(right);
+  while (b !== 0) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+  return a;
+}
+
+function lcm(left: number, right: number): number {
+  return left / gcd(left, right) * right;
+}
+
+export function renderHbuJwScheduleHtml(view: HbuJwScheduleView, options: HbuJwScheduleRenderOptions = {}): string {
   const emptyNote = view.mode === 'current-week' ? '本周无已安排课程' : '暂无已安排课程';
   return `<!doctype html>
 <html lang="zh-CN">
@@ -445,6 +531,26 @@ export function renderHbuJwScheduleHtml(view: HbuJwScheduleView): string {
       background: linear-gradient(145deg, var(--c1), var(--c2));
       color: #fff;
     }
+    .course-frame {
+      padding-top: 28px;
+    }
+    .course-badge {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      max-width: 54px;
+      padding: 4px 6px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.92);
+      color: #145945;
+      box-shadow: 0 3px 9px rgba(22, 58, 48, 0.18);
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .course-name {
       font-size: 18px;
       line-height: 1.18;
@@ -472,152 +578,6 @@ export function renderHbuJwScheduleHtml(view: HbuJwScheduleView): string {
       transform: rotate(-45deg);
     }
     .pin + span { flex: 1 1 auto; }
-    .course-merged {
-      padding: 6px;
-      gap: 5px;
-      border: 1px solid rgba(31, 127, 82, 0.34);
-      background: rgba(253, 255, 254, 0.98);
-      color: #26343c;
-    }
-    .course-merged.course-conflict {
-      border-color: rgba(188, 92, 30, 0.56);
-    }
-    .merged-header {
-      flex: 0 0 auto;
-      min-height: 22px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      overflow: hidden;
-      white-space: nowrap;
-      font-size: 13px;
-      line-height: 1;
-      font-weight: 800;
-      color: #1f6d4a;
-    }
-    .merged-count {
-      flex: 0 0 auto;
-      padding: 4px 7px;
-      border-radius: 999px;
-      background: #1f7f52;
-      color: #fff;
-      font-size: 13px;
-      line-height: 1;
-    }
-    .course-conflict .merged-count {
-      background: #b75a21;
-    }
-    .merged-kind {
-      flex: 0 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .merged-section {
-      flex: 0 0 auto;
-      color: #65737b;
-      font-weight: 750;
-    }
-    .merged-list {
-      flex: 1 1 auto;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      border: 1px solid #d8e5dd;
-      border-radius: 4px;
-      background: #ffffff;
-    }
-    .course-entry {
-      position: relative;
-      flex: 1 1 0;
-      min-height: 0;
-      display: grid;
-      grid-template-columns: 21px minmax(0, 1fr);
-      column-gap: 5px;
-      padding: 4px 5px 4px 0;
-      border-top: 1px solid #dce7e1;
-      overflow: hidden;
-    }
-    .course-entry:first-child {
-      border-top: 0;
-    }
-    .course-entry::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 0;
-      bottom: 0;
-      width: 4px;
-      background: linear-gradient(180deg, var(--entry-c1), var(--entry-c2));
-    }
-    .course-entry-index {
-      align-self: start;
-      justify-self: end;
-      width: 16px;
-      height: 16px;
-      margin-top: 1px;
-      border-radius: 50%;
-      display: grid;
-      place-items: center;
-      background: linear-gradient(135deg, var(--entry-c1), var(--entry-c2));
-      color: #fff;
-      font-size: 11px;
-      line-height: 1;
-      font-weight: 900;
-    }
-    .course-entry-main {
-      min-width: 0;
-      overflow: hidden;
-    }
-    .course-entry-name {
-      font-size: 14px;
-      line-height: 1.12;
-      font-weight: 850;
-      word-break: break-all;
-      color: #26343c;
-    }
-    .course-entry-meta,
-    .course-entry-place {
-      margin-top: 2px;
-      font-size: 12px;
-      line-height: 1.12;
-      font-weight: 700;
-      word-break: break-all;
-      color: #5f6f68;
-    }
-    .course-merged.course-many {
-      padding: 5px;
-    }
-    .course-many .merged-header {
-      min-height: 20px;
-      font-size: 12px;
-    }
-    .course-many .merged-count {
-      padding: 3px 6px;
-      font-size: 12px;
-    }
-    .course-many .course-entry {
-      grid-template-columns: 19px minmax(0, 1fr);
-      padding-top: 3px;
-      padding-bottom: 3px;
-    }
-    .course-many .course-entry-name {
-      font-size: 12px;
-      line-height: 1.1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .course-many .course-entry-meta {
-      font-size: 11px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .course-many .course-entry-place {
-      display: none;
-    }
     .empty-note {
       position: absolute;
       left: ${PHASE_WIDTH + TIME_WIDTH}px;
@@ -695,7 +655,7 @@ export function renderHbuJwScheduleHtml(view: HbuJwScheduleView): string {
           ${renderTimeRows()}
           ${renderGridCells()}
           ${view.cells.length === 0 ? `<div class="empty-note">${emptyNote}</div>` : ''}
-          ${view.cells.map(renderCourseCell).join('')}
+          ${view.cells.map((cell) => renderCourseCell(cell, options)).join('')}
         </div>
       </section>
       <footer class="footer">
@@ -888,7 +848,7 @@ function renderGridCells(): string {
   return cells.join('');
 }
 
-function renderCourseCell(cell: HbuJwScheduleCellView): string {
+function renderCourseCell(cell: HbuJwScheduleCellView, options: HbuJwScheduleRenderOptions): string {
   const left = PHASE_WIDTH + TIME_WIDTH + (cell.classDay - 1) * DAY_WIDTH + COURSE_GAP / 2;
   const top = (cell.startSection - 1) * ROW_HEIGHT + COURSE_GAP / 2;
   const width = DAY_WIDTH - COURSE_GAP;
@@ -897,7 +857,7 @@ function renderCourseCell(cell: HbuJwScheduleCellView): string {
   if (cell.entries.length === 1) {
     return renderSingleCourseCell(cell.entries[0]!, positionStyle);
   }
-  return renderMergedCourseCell(cell, positionStyle);
+  return renderAnimatedCourseCell(cell, options.animationFrameIndex ?? 0, positionStyle);
 }
 
 function renderSingleCourseCell(entry: HbuJwScheduleEntryView, positionStyle: string): string {
@@ -909,36 +869,16 @@ function renderSingleCourseCell(entry: HbuJwScheduleEntryView, positionStyle: st
   </article>`;
 }
 
-function renderMergedCourseCell(cell: HbuJwScheduleCellView, positionStyle: string): string {
-  const densityClass = cell.entries.length > 2 ? 'course-many' : 'course-pair';
-  const kindClass = cell.kind === 'conflict' ? 'course-conflict' : 'course-split';
-  return `<article class="course course-merged ${densityClass} ${kindClass}" style="${positionStyle}">
-    <div class="merged-header">
-      <span class="merged-count">${cell.entries.length}门</span>
-      <span class="merged-kind">${scheduleCellKindText(cell.kind)}</span>
-      <span class="merged-section">${escapeHtml(cell.sectionText)}</span>
-    </div>
-    <div class="merged-list">
-      ${cell.entries.map(renderMergedCourseEntry).join('')}
-    </div>
+function renderAnimatedCourseCell(cell: HbuJwScheduleCellView, frameIndex: number, positionStyle: string): string {
+  const entryIndex = frameIndex % cell.entries.length;
+  const entry = cell.entries[entryIndex]!;
+  return `<article class="course course-single course-frame" style="${positionStyle}--c1:${entry.colorStart};--c2:${entry.colorEnd};">
+    <div class="course-badge">${entryIndex + 1}/${cell.entries.length}</div>
+    <div class="course-name">${escapeHtml(entry.courseName)}</div>
+    <div class="course-line">${escapeHtml(entry.teacherName)}</div>
+    <div class="course-line">${escapeHtml(entry.weekDescription)} | ${escapeHtml(entry.sectionText)}</div>
+    <div class="course-line place"><span class="pin"></span><span>${escapeHtml(entry.placeText)}</span></div>
   </article>`;
-}
-
-function renderMergedCourseEntry(entry: HbuJwScheduleEntryView, index: number): string {
-  return `<section class="course-entry" style="--entry-c1:${entry.colorStart};--entry-c2:${entry.colorEnd};">
-    <div class="course-entry-index">${index + 1}</div>
-    <div class="course-entry-main">
-      <div class="course-entry-name">${escapeHtml(entry.courseName)}</div>
-      <div class="course-entry-meta">${escapeHtml(entry.teacherName)} · ${escapeHtml(entry.weekDescription)} · ${escapeHtml(entry.sectionText)}</div>
-      <div class="course-entry-place">${escapeHtml(entry.placeText)}</div>
-    </div>
-  </section>`;
-}
-
-function scheduleCellKindText(kind: HbuJwScheduleCellKind): string {
-  if (kind === 'split') return '分周安排';
-  if (kind === 'conflict') return '同周重叠';
-  return '单门课程';
 }
 
 function escapeHtml(value: unknown): string {

@@ -75,7 +75,7 @@ const MENU_SECTIONS: HbuJwMenuSectionView[] = [
       { keyword: '匿名成绩', description: '查看本学期成绩，但不显示敏感数据，可查是否出分', icon: 'list' },
       { keyword: '课程查询', description: '查看指定课程的分项成绩接口返回', icon: 'search' },
       { keyword: '课表', description: '查看这周的课表', icon: 'calendar' },
-      { keyword: '完整课表', description: '查看本学期的课表', icon: 'grid' },
+      { keyword: '完整课表', description: '查看本学期动态课表', icon: 'grid' },
       { keyword: '考试安排', description: '查看本学期的考试安排', icon: 'clipboard' },
     ],
   },
