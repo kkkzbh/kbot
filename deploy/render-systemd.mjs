@@ -29,11 +29,13 @@ const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', '/etc/systemd/system'))
 const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
 const cloudflaredHbuJwTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE', '/etc/cloudflared/qqbot-hbu-jw.token'));
+const cloudflaredGenshinTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE', '/etc/cloudflared/qqbot-genshin.token'));
 const app = quote(appDir);
 const data = quote(dataDir);
 const server = quote(envServer);
 const runtime = quote(envRuntime);
 const hbuJwToken = quote(cloudflaredHbuJwTokenFile);
+const genshinToken = quote(cloudflaredGenshinTokenFile);
 
 mkdirSync(systemdDir, { recursive: true });
 
@@ -121,10 +123,27 @@ RestartSec=5
 WantedBy=qqbot.target
 `);
 
+writeUnit(systemdDir, 'cloudflared-qqbot-genshin.service', `
+[Unit]
+Description=Cloudflare Tunnel qqbot-genshin
+After=network-online.target
+Wants=network-online.target
+PartOf=qqbot.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file ${genshinToken}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=qqbot.target
+`);
+
 writeUnit(systemdDir, 'qqbot.target', `
 [Unit]
 Description=QQBot Application Stack Target
-Wants=qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service
+Wants=qqbot-llbot.service qqbot-koishi.service cloudflared-qqbot-hbu-jw.service cloudflared-qqbot-genshin.service
 After=qqbot-llbot.service
 
 [Install]

@@ -38,6 +38,7 @@ export type BotServiceUnit =
   | 'qqbot-llbot.service'
   | 'qqbot-koishi.service'
   | 'cloudflared-qqbot-hbu-jw.service'
+  | 'cloudflared-qqbot-genshin.service'
   | 'qqbot-voice-tts.service'
   | 'qqbot-voice-tts-tailnet.service';
 

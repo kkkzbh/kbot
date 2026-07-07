@@ -114,6 +114,7 @@ export const SERVICE_LABELS: Record<string, string> = {
   'qqbot-llbot.service': 'LLBot 服务',
   'qqbot-koishi.service': '主机器人服务',
   'cloudflared-qqbot-hbu-jw.service': '教务公网隧道',
+  'cloudflared-qqbot-genshin.service': '原神公网隧道',
   'qqbot-voice-tts.service': '语音合成服务',
   'qqbot-voice-tts-tailnet.service': '语音 Tailnet 发布',
 }
@@ -125,6 +126,7 @@ export const SERVICE_HINTS: Record<string, string> = {
   'qqbot-llbot.service': '宿主机上的 OneBot 与 WebUI 进程，负责桥接 PMHQ。',
   'qqbot-koishi.service': '机器人主程序。大多数聊天和控制功能依赖它。',
   'cloudflared-qqbot-hbu-jw.service': 'Cloudflare Tunnel，负责公开教务绑定页。',
+  'cloudflared-qqbot-genshin.service': 'Cloudflare Tunnel，负责公开原神绑定页。',
   'qqbot-voice-tts.service': '只有用到语音播报或语音回复时才需要。',
   'qqbot-voice-tts-tailnet.service':
     '仅在服务器需要经由 Tailnet 访问本机 TTS 时启用。它不会再启动第二份模型。',
@@ -136,6 +138,7 @@ export const VISIBLE_SERVICE_UNITS = [
   'qqbot-llbot.service',
   'qqbot-koishi.service',
   'cloudflared-qqbot-hbu-jw.service',
+  'cloudflared-qqbot-genshin.service',
   'qqbot-voice-tts.service',
   'qqbot-voice-tts-tailnet.service',
 ] as const
@@ -146,6 +149,7 @@ export const ALL_SERVICE_UNITS = [
   'qqbot-llbot.service',
   'qqbot-koishi.service',
   'cloudflared-qqbot-hbu-jw.service',
+  'cloudflared-qqbot-genshin.service',
   'qqbot-voice-tts.service',
   'qqbot-voice-tts-tailnet.service',
 ] as const

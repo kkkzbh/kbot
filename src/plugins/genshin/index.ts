@@ -1,0 +1,455 @@
+import { parseExpression } from 'cron-parser';
+import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
+import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
+import { GenshinService } from './service.js';
+import { ensureGenshinTables, GenshinStore } from './store.js';
+import { GenshinTakumiClient } from './takumi-client.js';
+import { GenshinUserError, type DatabaseLike, type GenshinGameRole, type OwnerIdentity } from './types.js';
+import { renderGenshinBindPage } from './web/bind-page.js';
+
+export const name = 'genshin';
+export const inject = ['server', 'database'] as const;
+
+const logger = new Logger(name);
+const DEFAULT_BIND_PAGE_PATH = '/genshin/bind';
+const DEFAULT_BIND_TOKEN_TTL_MS = 600_000;
+const DEFAULT_AUTO_SIGN_CRON = '10 9 * * *';
+const DEFAULT_TIMEZONE = 'Asia/Shanghai';
+const DEFAULT_ACT_ID = 'e202311201442471';
+const DEFAULT_APP_VERSION = '2.70.1';
+const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
+
+export interface Config {
+  bindPagePath?: string;
+  publicBaseUrl?: string;
+  bindTokenTtlMs?: number;
+  credentialKekPath?: string;
+  autoSignEnabled?: boolean;
+  autoSignCron?: string;
+  timezone?: string;
+  takumiAppVersion?: string;
+  signActId?: string;
+  redeemGameVersion?: string;
+}
+
+export const Config: Schema<Config> = Schema.object({
+  bindPagePath: Schema.string().default(DEFAULT_BIND_PAGE_PATH).description('原神绑定页路径。必须以 / 开头。'),
+  publicBaseUrl: Schema.string().description('私聊回复中使用的外部可访问基础 URL。'),
+  bindTokenTtlMs: Schema.natural().role('time').default(DEFAULT_BIND_TOKEN_TTL_MS).description('绑定链接有效期。'),
+  credentialKekPath: Schema.string().description('原神凭据 KEK 文件路径。文件必须为 0600 权限。'),
+  autoSignEnabled: Schema.boolean().default(true).description('是否启用原神每日自动签到。'),
+  autoSignCron: Schema.string().default(DEFAULT_AUTO_SIGN_CRON).description('自动签到 cron 表达式。'),
+  timezone: Schema.string().default(DEFAULT_TIMEZONE).description('自动签到时区。'),
+  takumiAppVersion: Schema.string().default(DEFAULT_APP_VERSION).description('米游社请求头 x-rpc-app_version。'),
+  signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
+  redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
+});
+
+interface GenshinServicesLike {
+  database: DatabaseLike;
+  server: {
+    get(path: string, handler: (koaCtx: any) => unknown): void;
+    post(path: string, handler: (koaCtx: any) => unknown): void;
+    use?(handler: (koaCtx: any, next: () => Promise<unknown>) => unknown): void;
+  };
+}
+
+interface RuntimeConfig {
+  bindPagePath: string;
+  publicBaseUrl: string;
+  bindTokenTtlMs: number;
+  credentialKekPath: string;
+  bindSubmitPath: string;
+  publicHostGuard: string | null;
+  autoSignEnabled: boolean;
+  autoSignCron: string;
+  timezone: string;
+  takumiAppVersion: string;
+  signActId: string;
+  redeemGameVersion: string;
+}
+
+export function apply(ctx: Context, config: Config): void {
+  const runtime = resolveRuntimeConfig(ctx, config);
+  const genshinCtx = ctx as unknown as GenshinServicesLike;
+  ensureGenshinTables(ctx);
+
+  const kek = loadOrCreateKek(runtime.credentialKekPath);
+  const store = new GenshinStore(genshinCtx.database);
+  const client = new GenshinTakumiClient({
+    appVersion: runtime.takumiAppVersion,
+    actId: runtime.signActId,
+    redeemGameVersion: runtime.redeemGameVersion,
+  });
+  const service = new GenshinService(store, client, kek, {
+    bindPagePath: runtime.bindPagePath,
+    publicBaseUrl: runtime.publicBaseUrl,
+    bindTokenTtlMs: runtime.bindTokenTtlMs,
+    timezone: runtime.timezone,
+  });
+
+  registerHostGuard(genshinCtx, runtime);
+  registerWebRoutes(genshinCtx, service, runtime);
+  registerKeywordMiddleware(ctx, service);
+  registerAutoSign(ctx, service, runtime);
+
+  ctx.on?.('ready', async () => {
+    await store.cleanupExpiredChallenges(Date.now());
+  });
+
+  logger.info('Genshin bind page registered at %s.', runtime.bindPagePath);
+}
+
+function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
+  const bindPagePath = requireAbsolutePath(config.bindPagePath ?? DEFAULT_BIND_PAGE_PATH, 'genshin.bindPagePath');
+  const publicBaseUrl = normalizeBaseUrl(config.publicBaseUrl ?? `http://127.0.0.1:${process.env.KOISHI_PORT || '5140'}`, 'genshin.publicBaseUrl');
+  const credentialKekPath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.credentialKekPath ?? './.runtime/genshin/credential-kek.key');
+  return {
+    bindPagePath,
+    publicBaseUrl,
+    bindTokenTtlMs: requirePositiveInteger(config.bindTokenTtlMs ?? DEFAULT_BIND_TOKEN_TTL_MS, 'genshin.bindTokenTtlMs'),
+    credentialKekPath,
+    bindSubmitPath: `${bindPagePath}/submit`,
+    publicHostGuard: resolvePublicHostGuard(publicBaseUrl),
+    autoSignEnabled: config.autoSignEnabled ?? true,
+    autoSignCron: requireNonEmptyString(config.autoSignCron ?? DEFAULT_AUTO_SIGN_CRON, 'genshin.autoSignCron'),
+    timezone: requireNonEmptyString(config.timezone ?? DEFAULT_TIMEZONE, 'genshin.timezone'),
+    takumiAppVersion: requireNonEmptyString(config.takumiAppVersion ?? DEFAULT_APP_VERSION, 'genshin.takumiAppVersion'),
+    signActId: requireNonEmptyString(config.signActId ?? DEFAULT_ACT_ID, 'genshin.signActId'),
+    redeemGameVersion: requireNonEmptyString(config.redeemGameVersion ?? DEFAULT_REDEEM_GAME_VERSION, 'genshin.redeemGameVersion'),
+  };
+}
+
+function registerHostGuard(ctx: GenshinServicesLike, runtime: RuntimeConfig): void {
+  if (!runtime.publicHostGuard || typeof ctx.server.use !== 'function') return;
+  const allowedPaths = new Set([runtime.bindPagePath, runtime.bindSubmitPath]);
+  ctx.server.use(async (koaCtx: any, next: () => Promise<unknown>) => {
+    const host = String(koaCtx.host ?? koaCtx.hostname ?? koaCtx.get?.('host') ?? koaCtx.request?.headers?.host ?? '').trim().toLowerCase();
+    if (host !== runtime.publicHostGuard) {
+      return next();
+    }
+    const path = String(koaCtx.path ?? koaCtx.request?.path ?? '').trim();
+    if (allowedPaths.has(path)) {
+      return next();
+    }
+    koaCtx.status = 404;
+    koaCtx.body = 'Not Found';
+    return undefined;
+  });
+}
+
+function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, runtime: RuntimeConfig): void {
+  ctx.server.get(runtime.bindPagePath, async (koaCtx: any) => {
+    const token = String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
+    try {
+      const challenge = await service.resolveBindPageChallenge(token);
+      writeHtml(koaCtx, 200, renderGenshinBindPage({
+        qq: challenge.qqUserId,
+        token: challenge.token,
+        submitPath: runtime.bindSubmitPath,
+      }));
+    } catch (error) {
+      writeHtml(koaCtx, 400, renderGenshinBindPage({
+        qq: '',
+        state: 'invalid',
+        message: toUserMessage(error),
+      }));
+    }
+  });
+
+  ctx.server.post(runtime.bindSubmitPath, async (koaCtx: any) => {
+    const body = await readRequestBody(koaCtx);
+    const token = String(body.token ?? '').trim();
+    let qq = '';
+    try {
+      const challenge = await service.resolveBindPageChallenge(token);
+      qq = challenge.qqUserId;
+      const result = await service.submitCookie({
+        token,
+        cookieText: String(body.cookieText ?? ''),
+        selectedRoleKey: String(body.selectedRoleKey ?? ''),
+      });
+      if (result.kind === 'role_selection') {
+        writeHtml(koaCtx, 200, renderGenshinBindPage({
+          qq: result.qqUserId,
+          token,
+          submitPath: runtime.bindSubmitPath,
+          state: 'role_selection',
+          roles: result.roles,
+        }));
+        return;
+      }
+      writeHtml(koaCtx, 200, renderGenshinBindPage({
+        qq: result.qqUserId,
+        state: 'success',
+        confirmCode: result.confirmCode,
+        role: result.role,
+      }));
+    } catch (error) {
+      writeHtml(koaCtx, 400, renderGenshinBindPage({
+        qq,
+        token,
+        submitPath: runtime.bindSubmitPath,
+        state: qq ? 'error' : 'invalid',
+        message: toUserMessage(error),
+      }));
+    }
+  });
+}
+
+function registerKeywordMiddleware(ctx: Context, service: GenshinService): void {
+  ctx.middleware(async (session, next) => {
+    const text = normalizeCommandText(session);
+    const command = parseGenshinCommand(text);
+    if (!command) return next();
+
+    if (!isDirectSession(session)) {
+      await session.send('请私聊机器人使用原神功能。');
+      return;
+    }
+
+    if (command.kind === 'bind') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        const result = await service.startBinding(identity);
+        await session.send(createMentionedReply(identity.qqUserId, `请打开链接完成原神 UID 绑定：\n${result.link}\n链接 10 分钟内有效。\n\n页面验证通过后会显示 6 位确认码。请回到这里发送：\n原神确认 <确认码>\n完成绑定。`));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'confirm_help') {
+      await session.send('请发送完整确认命令：原神确认 <6位确认码>。确认码会在绑定页验证通过后显示。');
+      return;
+    }
+
+    if (command.kind === 'confirm') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        const role = await service.confirmBinding(identity, command.confirmCode);
+        await session.send(createMentionedReply(identity.qqUserId, `原神绑定完成：UID ${role.uid}。`, 'space'));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'sign') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        const result = await service.manualSignIn(identity);
+        await session.send(formatSignReply(result.role, result.status, result.message, result.totalSignDay));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'redeem_help') {
+      await session.send('请发送：原神兑换 <兑换码>。');
+      return;
+    }
+
+    if (command.kind === 'redeem') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        const result = await service.redeemCode(identity, command.cdkey);
+        await session.send(formatRedeemReply(result.role, result.message));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'unbind') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await service.unbind(identity);
+        await session.send('原神绑定已解除。');
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+    }
+  });
+}
+
+function registerAutoSign(ctx: Context, service: GenshinService, runtime: RuntimeConfig): void {
+  if (!runtime.autoSignEnabled) return;
+  let timer: NodeJS.Timeout | null = null;
+  let disposed = false;
+
+  const scheduleNext = () => {
+    if (disposed) return;
+    let nextAt: number;
+    try {
+      nextAt = parseExpression(runtime.autoSignCron, { currentDate: new Date(), tz: runtime.timezone }).next().getTime();
+    } catch (error) {
+      logger.warn('invalid genshin auto sign cron "%s": %s', runtime.autoSignCron, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    const tick = () => {
+      if (disposed) return;
+      const remaining = nextAt - Date.now();
+      if (remaining > 0) {
+        timer = setTimeout(tick, Math.min(remaining, 0x7fffffff));
+        timer.unref?.();
+        return;
+      }
+      scheduleNext();
+      service.runAutoSignIn().catch((error) => {
+        logger.warn('genshin auto sign run failed: %s', error instanceof Error ? error.message : String(error));
+      });
+    };
+    tick();
+  };
+
+  scheduleNext();
+  ctx.on?.('dispose', () => {
+    disposed = true;
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function createMentionedReply(qqUserId: string, content: string, separator: 'newline' | 'space' = 'newline'): Fragment {
+  return [h.at(qqUserId), h.text(`${separator === 'newline' ? '\n' : ' '}${content}`)];
+}
+
+function formatSignReply(role: GenshinGameRole, status: string, message: string, totalSignDay: number | null): string {
+  const dayText = totalSignDay == null ? '' : `，累计签到 ${totalSignDay} 天`;
+  if (status === 'already_done') {
+    return `今天已经签到过了：UID ${role.uid}${dayText}。`;
+  }
+  return `原神签到完成：UID ${role.uid}${dayText}。${message && message !== 'OK' ? `\n${message}` : ''}`;
+}
+
+function formatRedeemReply(role: GenshinGameRole, message: string): string {
+  return `原神兑换码领取完成：UID ${role.uid}。\n${message}`;
+}
+
+function requireAbsolutePath(value: unknown, key: string): string {
+  const path = String(value ?? '').trim();
+  if (!path || !path.startsWith('/')) {
+    throw new Error(`${key} 必须配置为以 / 开头的路径。`);
+  }
+  if (path.includes('?') || path.includes('#')) {
+    throw new Error(`${key} 不能包含查询串或 fragment。`);
+  }
+  return path === '/' ? path : path.replace(/\/+$/, '');
+}
+
+function normalizeBaseUrl(value: unknown, key: string): string {
+  const raw = String(value ?? '').trim();
+  const url = new URL(raw);
+  if (url.protocol !== 'https:' && !isLocalHttpUrl(url)) {
+    throw new Error(`${key} 必须是 https URL；只有 127.0.0.1、localhost 和 ::1 允许使用 http。`);
+  }
+  return raw.replace(/\/+$/, '');
+}
+
+function isLocalHttpUrl(url: URL): boolean {
+  return url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+}
+
+function resolvePublicHostGuard(publicBaseUrl: string): string | null {
+  const url = new URL(publicBaseUrl);
+  if (['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) return null;
+  return url.host.toLowerCase();
+}
+
+function requirePositiveInteger(value: unknown, key: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error(`${key} 必须是正整数。`);
+  }
+  return Math.floor(parsed);
+}
+
+function requireNonEmptyString(value: unknown, key: string): string {
+  const parsed = String(value ?? '').trim();
+  if (!parsed) {
+    throw new Error(`${key} 必须配置。`);
+  }
+  return parsed;
+}
+
+function normalizeCommandText(session: Session): string {
+  const carrier = session as Session & { stripped?: { content?: unknown }; content?: unknown };
+  return String(carrier.stripped?.content ?? carrier.content ?? '').trim();
+}
+
+type GenshinCommand =
+  | { kind: 'bind' }
+  | { kind: 'confirm_help' }
+  | { kind: 'confirm'; confirmCode: string }
+  | { kind: 'sign' }
+  | { kind: 'redeem_help' }
+  | { kind: 'redeem'; cdkey: string }
+  | { kind: 'unbind' };
+
+function parseGenshinCommand(text: string): GenshinCommand | null {
+  if (text === '原神绑定') return { kind: 'bind' };
+  if (/^原神(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };
+  const confirm = text.match(/^原神(?:确认|确定)\s+(\d{6})$/);
+  if (confirm?.[1]) return { kind: 'confirm', confirmCode: confirm[1] };
+  if (text === '原神签到') return { kind: 'sign' };
+  if (/^原神兑换\s*$/.test(text)) return { kind: 'redeem_help' };
+  const redeem = text.match(/^原神兑换\s+([A-Za-z0-9]{6,32})$/);
+  if (redeem?.[1]) return { kind: 'redeem', cdkey: redeem[1] };
+  if (text === '原神解绑') return { kind: 'unbind' };
+  return null;
+}
+
+function isDirectSession(session: Session): boolean {
+  const carrier = session as Session & { isDirect?: boolean };
+  return carrier.isDirect === true;
+}
+
+function resolveOwnerIdentity(session: Session): OwnerIdentity {
+  const platform = String(session.platform ?? '').trim();
+  const qqUserId = String(session.userId ?? '').trim();
+  const channelId = String(session.channelId ?? '').trim();
+  if (!platform || !qqUserId || !channelId) {
+    throw new GenshinUserError('当前会话缺少 QQ 身份信息，无法绑定原神。');
+  }
+  return {
+    ownerKey: `${platform}:${qqUserId}`,
+    platform,
+    qqUserId,
+    channelId,
+  };
+}
+
+function writeHtml(koaCtx: any, status: number, html: string): void {
+  koaCtx.status = status;
+  koaCtx.set('content-type', 'text/html; charset=utf-8');
+  koaCtx.body = html;
+}
+
+async function readRequestBody(koaCtx: any): Promise<Record<string, unknown>> {
+  const body = koaCtx.request?.body;
+  if (body && typeof body === 'object') return body as Record<string, unknown>;
+  const raw = await readRawBody(koaCtx.req);
+  const contentType = String(koaCtx.get?.('content-type') ?? koaCtx.request?.headers?.['content-type'] ?? '');
+  if (contentType.includes('application/json')) {
+    const parsed = JSON.parse(raw || '{}') as unknown;
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+    return {};
+  }
+  return Object.fromEntries(new URLSearchParams(raw));
+}
+
+async function readRawBody(stream: AsyncIterable<Buffer | string> | undefined): Promise<string> {
+  if (!stream) return '';
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function toUserMessage(error: unknown): string {
+  if (error instanceof GenshinUserError) return error.message;
+  logger.warn('genshin operation failed: %s', error instanceof Error ? error.message : String(error));
+  return '原神功能处理失败，请稍后重试。';
+}

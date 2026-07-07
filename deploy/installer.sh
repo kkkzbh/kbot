@@ -14,6 +14,7 @@ WORK_DIR="${STAGING_DIR}/work"
 ENV_SERVER="${SHARED_DIR}/.env.server"
 ENV_RUNTIME="${SHARED_DIR}/.env.runtime"
 CLOUDFLARED_HBU_JW_TOKEN_FILE="${QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE:-/etc/cloudflared/qqbot-hbu-jw.token}"
+CLOUDFLARED_GENSHIN_TOKEN_FILE="${QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE:-/etc/cloudflared/qqbot-genshin.token}"
 SYSTEMD_DIR="/etc/systemd/system"
 
 case "${VERIFY_SCOPE}" in
@@ -43,6 +44,13 @@ if [[ ! -s "${CLOUDFLARED_HBU_JW_TOKEN_FILE}" ]]; then
   exit 2
 fi
 chmod 600 "${CLOUDFLARED_HBU_JW_TOKEN_FILE}"
+
+if [[ ! -s "${CLOUDFLARED_GENSHIN_TOKEN_FILE}" ]]; then
+  echo "[installer] missing Cloudflare tunnel token file: ${CLOUDFLARED_GENSHIN_TOKEN_FILE}" >&2
+  echo "[installer] install the qqbot-genshin token before deploying" >&2
+  exit 2
+fi
+chmod 600 "${CLOUDFLARED_GENSHIN_TOKEN_FILE}"
 
 if ! command -v corepack >/dev/null 2>&1 && ! command -v npm >/dev/null 2>&1; then
   echo "[installer] missing command: corepack or npm" >&2
@@ -200,6 +208,7 @@ QQBOT_DATA_DIR="${DATA_DIR}" \
 QQBOT_SHARED_DIR="${SHARED_DIR}" \
 QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
 QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE="${CLOUDFLARED_HBU_JW_TOKEN_FILE}" \
+QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE="${CLOUDFLARED_GENSHIN_TOKEN_FILE}" \
   node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
 systemctl daemon-reload
 

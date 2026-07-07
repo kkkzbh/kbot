@@ -113,7 +113,7 @@ async function handleAction(unit: string, action: string) {
             <!-- Inline core service status only for qqbot.target -->
             <template v-if="service.unit === 'qqbot.target'">
               <p
-                v-if="getSubService('qqbot-pmhq.service') || getSubService('qqbot-llbot.service') || getSubService('qqbot-koishi.service') || getSubService('cloudflared-qqbot-hbu-jw.service')"
+                v-if="getSubService('qqbot-pmhq.service') || getSubService('qqbot-llbot.service') || getSubService('qqbot-koishi.service') || getSubService('cloudflared-qqbot-hbu-jw.service') || getSubService('cloudflared-qqbot-genshin.service')"
                 class="bc-service-stack"
               >
                 已包含：
@@ -159,6 +159,17 @@ async function handleAction(unit: string, action: string) {
                     ]"
                   >
                     {{ getActiveStateLabel(getSubService('cloudflared-qqbot-hbu-jw.service')!.activeState) }}
+                  </span>
+                </template>
+                <template v-if="getSubService('cloudflared-qqbot-genshin.service')">
+                  &nbsp;/ 原神隧道&nbsp;
+                  <span
+                    :class="[
+                      'bc-status-badge',
+                      `is-${getActiveStateTone(getSubService('cloudflared-qqbot-genshin.service')!.activeState)}`,
+                    ]"
+                  >
+                    {{ getActiveStateLabel(getSubService('cloudflared-qqbot-genshin.service')!.activeState) }}
                   </span>
                 </template>
               </p>

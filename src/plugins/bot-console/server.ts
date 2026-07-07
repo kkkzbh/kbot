@@ -289,6 +289,7 @@ export const BOT_CONSOLE_SERVICE_UNITS: readonly BotServiceUnit[] = [
   'qqbot-llbot.service',
   'qqbot-koishi.service',
   'cloudflared-qqbot-hbu-jw.service',
+  'cloudflared-qqbot-genshin.service',
   'qqbot-voice-tts.service',
   'qqbot-voice-tts-tailnet.service',
 ] as const;
@@ -299,6 +300,7 @@ const BOT_CONSOLE_SERVER_SERVICE_UNITS: readonly BotServiceUnit[] = [
   'qqbot-llbot.service',
   'qqbot-koishi.service',
   'cloudflared-qqbot-hbu-jw.service',
+  'cloudflared-qqbot-genshin.service',
 ] as const;
 
 const ASYNC_RESTART_UNITS = new Set<BotServiceUnit>([

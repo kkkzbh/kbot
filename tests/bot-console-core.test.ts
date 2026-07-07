@@ -1965,8 +1965,9 @@ describe('bot-console manager', () => {
       'qqbot-llbot.service',
       'qqbot-koishi.service',
       'cloudflared-qqbot-hbu-jw.service',
+      'cloudflared-qqbot-genshin.service',
     ]);
-    expect(execFile).toHaveBeenCalledTimes(5);
+    expect(execFile).toHaveBeenCalledTimes(6);
   });
 
   it('rejects local-only TTS service actions in server mode', async () => {
