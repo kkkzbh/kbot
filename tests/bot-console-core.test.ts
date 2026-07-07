@@ -786,15 +786,18 @@ describe('bot-console manager', () => {
     await expect(
       manager.saveEnv({
         HBU_JW_ALLOWED_GROUPS: '100\n200， group:300',
+        GENSHIN_ALLOWED_GROUPS: '300\n400， group:500',
         CHAT_NATURAL_TRIGGER_GROUPS: '100、200 300',
         CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100\n guild:200',
       }),
     ).resolves.toMatchObject({
       HBU_JW_ALLOWED_GROUPS: '100,200,group:300',
+      GENSHIN_ALLOWED_GROUPS: '300,400,group:500',
       CHAT_NATURAL_TRIGGER_GROUPS: '100,200,300',
       CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100,guild:200',
     });
     expect(readFileSync(envFilePath, 'utf8')).toContain('HBU_JW_ALLOWED_GROUPS=100,200,group:300');
+    expect(readFileSync(envFilePath, 'utf8')).toContain('GENSHIN_ALLOWED_GROUPS=300,400,group:500');
   });
 
   it('expands ~/ for file system scope paths when saving env', async () => {

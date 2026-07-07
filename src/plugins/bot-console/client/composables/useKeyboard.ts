@@ -27,6 +27,20 @@ export function useKeyboard(
         return
       }
 
+      if (tab === 'hbu-jw') {
+        if (!bc.canSaveHbuJwSettings.value) return
+        await bc.saveHbuJwSettings(false)
+        toast.add('配置已保存', 'success')
+        return
+      }
+
+      if (tab === 'genshin') {
+        if (!bc.canSaveGenshinSettings.value) return
+        await bc.saveGenshinSettings(false)
+        toast.add('配置已保存', 'success')
+        return
+      }
+
       if (tab === 'models' || tab === 'basic') {
         if (!bc.canSaveEnv.value) return
         await bc.saveEnv(false)

@@ -188,7 +188,7 @@ export class GenshinService {
       throw new GenshinUserError('原神绑定确认码已过期，请重新发送“原神绑定”。');
     }
     if (challenge.channelId !== identity.channelId) {
-      throw new GenshinUserError('请回到发起绑定的私聊窗口发送确认码。');
+      throw new GenshinUserError('请回到发起绑定的聊天发送确认码。');
     }
     if (!challenge.confirmCodeHash || !constantTimeEqualHex(challenge.confirmCodeHash, hashConfirmCode(challenge, confirmCode.trim()))) {
       throw new GenshinUserError('原神确认码不正确。');

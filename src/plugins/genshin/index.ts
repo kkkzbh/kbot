@@ -1,6 +1,8 @@
 import { parseExpression } from 'cron-parser';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
+import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
+import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
 import { GenshinService } from './service.js';
 import { ensureGenshinTables, GenshinStore } from './store.js';
 import { GenshinTakumiClient } from './takumi-client.js';
@@ -8,7 +10,7 @@ import { GenshinUserError, type DatabaseLike, type GenshinGameRole, type OwnerId
 import { renderGenshinBindPage } from './web/bind-page.js';
 
 export const name = 'genshin';
-export const inject = ['server', 'database'] as const;
+export const inject = ['server', 'database', 'puppeteer'] as const;
 
 const logger = new Logger(name);
 const DEFAULT_BIND_PAGE_PATH = '/genshin/bind';
@@ -30,11 +32,14 @@ export interface Config {
   takumiAppVersion?: string;
   signActId?: string;
   redeemGameVersion?: string;
+  allowedGroups?: string[] | string;
+  naturalTriggerEnabled?: boolean;
+  naturalTriggerGroups?: string[] | string;
 }
 
 export const Config: Schema<Config> = Schema.object({
   bindPagePath: Schema.string().default(DEFAULT_BIND_PAGE_PATH).description('原神绑定页路径。必须以 / 开头。'),
-  publicBaseUrl: Schema.string().description('私聊回复中使用的外部可访问基础 URL。'),
+  publicBaseUrl: Schema.string().description('群聊或私聊回复中使用的外部可访问基础 URL。'),
   bindTokenTtlMs: Schema.natural().role('time').default(DEFAULT_BIND_TOKEN_TTL_MS).description('绑定链接有效期。'),
   credentialKekPath: Schema.string().description('原神凭据 KEK 文件路径。文件必须为 0600 权限。'),
   autoSignEnabled: Schema.boolean().default(true).description('是否启用原神每日自动签到。'),
@@ -43,10 +48,20 @@ export const Config: Schema<Config> = Schema.object({
   takumiAppVersion: Schema.string().default(DEFAULT_APP_VERSION).description('米游社请求头 x-rpc-app_version。'),
   signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
   redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
+  allowedGroups: Schema.union([
+    Schema.array(Schema.string()).role('table').description('允许使用原神功能的群号列表。只限制群聊，私聊仍允许使用。'),
+    Schema.string().description('允许使用原神功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
+  ]),
+  naturalTriggerEnabled: Schema.boolean().default(false).description('是否允许自然触发白名单群聊裸触发原神命令。'),
+  naturalTriggerGroups: Schema.union([
+    Schema.array(Schema.string()).role('table').description('允许群聊裸触发原神命令的自然触发白名单群号列表。'),
+    Schema.string().description('允许群聊裸触发原神命令的自然触发白名单群号，多个群号用英文逗号分隔。'),
+  ]),
 });
 
 interface GenshinServicesLike {
   database: DatabaseLike;
+  puppeteer: GenshinMenuPuppeteerLike;
   server: {
     get(path: string, handler: (koaCtx: any) => unknown): void;
     post(path: string, handler: (koaCtx: any) => unknown): void;
@@ -67,6 +82,9 @@ interface RuntimeConfig {
   takumiAppVersion: string;
   signActId: string;
   redeemGameVersion: string;
+  allowedGroups: Set<string>;
+  naturalTriggerEnabled: boolean;
+  naturalTriggerGroups: Set<string>;
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -87,10 +105,11 @@ export function apply(ctx: Context, config: Config): void {
     bindTokenTtlMs: runtime.bindTokenTtlMs,
     timezone: runtime.timezone,
   });
+  const menuService = new GenshinMenuService(genshinCtx.puppeteer);
 
   registerHostGuard(genshinCtx, runtime);
   registerWebRoutes(genshinCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service);
+  registerKeywordMiddleware(ctx, service, menuService, runtime);
   registerAutoSign(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -117,6 +136,9 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     takumiAppVersion: requireNonEmptyString(config.takumiAppVersion ?? DEFAULT_APP_VERSION, 'genshin.takumiAppVersion'),
     signActId: requireNonEmptyString(config.signActId ?? DEFAULT_ACT_ID, 'genshin.signActId'),
     redeemGameVersion: requireNonEmptyString(config.redeemGameVersion ?? DEFAULT_REDEEM_GAME_VERSION, 'genshin.redeemGameVersion'),
+    allowedGroups: requireAllowedGroups(config.allowedGroups, 'genshin.allowedGroups'),
+    naturalTriggerEnabled: config.naturalTriggerEnabled === true,
+    naturalTriggerGroups: parseGroupSet(config.naturalTriggerGroups ?? ''),
   };
 }
 
@@ -197,14 +219,28 @@ function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, ru
   });
 }
 
-function registerKeywordMiddleware(ctx: Context, service: GenshinService): void {
+function registerKeywordMiddleware(ctx: Context, service: GenshinService, menuService: GenshinMenuService, runtime: RuntimeConfig): void {
   ctx.middleware(async (session, next) => {
     const text = normalizeCommandText(session);
     const command = parseGenshinCommand(text);
     if (!command) return next();
 
-    if (!isDirectSession(session)) {
-      await session.send('请私聊机器人使用原神功能。');
+    if (!canInvokeGenshinInSession(session, runtime.naturalTriggerEnabled, runtime.naturalTriggerGroups)) {
+      return next();
+    }
+
+    if (!canUseGenshinInSession(session, runtime.allowedGroups)) {
+      await session.send('当前群未开启原神功能。');
+      return;
+    }
+
+    if (command.kind === 'menu') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await session.send(await menuService.queryMenu(identity.qqUserId));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
       return;
     }
 
@@ -365,6 +401,13 @@ function requirePositiveInteger(value: unknown, key: string): number {
   return Math.floor(parsed);
 }
 
+function requireAllowedGroups(value: unknown, key: string): Set<string> {
+  if (value == null) {
+    throw new Error(`${key} 必须显式配置。`);
+  }
+  return parseGroupSet(value as string[] | string);
+}
+
 function requireNonEmptyString(value: unknown, key: string): string {
   const parsed = String(value ?? '').trim();
   if (!parsed) {
@@ -379,6 +422,7 @@ function normalizeCommandText(session: Session): string {
 }
 
 type GenshinCommand =
+  | { kind: 'menu' }
   | { kind: 'bind' }
   | { kind: 'confirm_help' }
   | { kind: 'confirm'; confirmCode: string }
@@ -388,6 +432,7 @@ type GenshinCommand =
   | { kind: 'unbind' };
 
 function parseGenshinCommand(text: string): GenshinCommand | null {
+  if (text === '原神') return { kind: 'menu' };
   if (text === '原神绑定') return { kind: 'bind' };
   if (/^原神(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };
   const confirm = text.match(/^原神(?:确认|确定)\s+(\d{6})$/);
@@ -400,9 +445,25 @@ function parseGenshinCommand(text: string): GenshinCommand | null {
   return null;
 }
 
-function isDirectSession(session: Session): boolean {
-  const carrier = session as Session & { isDirect?: boolean };
-  return carrier.isDirect === true;
+function canUseGenshinInSession(session: Session, allowedGroups: Set<string>): boolean {
+  const carrier = session as Session & { isDirect?: boolean; guildId?: string | null; channelId?: string | null };
+  if (carrier.isDirect === true) return true;
+  const groupId = normalizeGroupId(carrier.guildId) ?? normalizeGroupId(carrier.channelId);
+  return Boolean(groupId && allowedGroups.has(groupId));
+}
+
+function canInvokeGenshinInSession(session: Session, naturalTriggerEnabled: boolean, naturalTriggerGroups: Set<string>): boolean {
+  const carrier = session as Session & {
+    isDirect?: boolean;
+    guildId?: string | null;
+    channelId?: string | null;
+    stripped?: { atSelf?: unknown };
+  };
+  if (carrier.isDirect === true) return true;
+  if (carrier.stripped?.atSelf === true) return true;
+  if (!naturalTriggerEnabled) return false;
+  const groupId = normalizeGroupId(carrier.guildId) ?? normalizeGroupId(carrier.channelId);
+  return Boolean(groupId && naturalTriggerGroups.has(groupId));
 }
 
 function resolveOwnerIdentity(session: Session): OwnerIdentity {

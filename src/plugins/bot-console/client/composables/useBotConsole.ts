@@ -176,6 +176,20 @@ export const HBU_JW_ENV_KEYS = [
   'HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS',
 ] as const
 
+export const GENSHIN_ENV_KEYS = [
+  'GENSHIN_ALLOWED_GROUPS',
+  'GENSHIN_PUBLIC_BASE_URL',
+  'GENSHIN_BIND_PAGE_PATH',
+  'GENSHIN_BIND_TOKEN_TTL_MS',
+  'GENSHIN_CREDENTIAL_KEK_PATH',
+  'GENSHIN_AUTO_SIGN_ENABLED',
+  'GENSHIN_AUTO_SIGN_CRON',
+  'GENSHIN_TIMEZONE',
+  'GENSHIN_TAKUMI_APP_VERSION',
+  'GENSHIN_SIGN_ACT_ID',
+  'GENSHIN_REDEEM_GAME_VERSION',
+] as const
+
 export const PRIVATE_DEFAULT_SCOPE_ID = 'private-default'
 export const PRIVATE_UNSUPPORTED_FEATURE_KEYS = ['CHAT_NATURAL_TRIGGER_ENABLED', 'QQBOT_REALTIME_MESSAGE_ENABLED'] as const
 
@@ -241,6 +255,7 @@ export const ALL_ENV_KEYS = [
   ...TTS_BOT_ENV_KEYS,
   ...FILE_SYSTEM_CONTROL_KEYS,
   ...HBU_JW_ENV_KEYS,
+  ...GENSHIN_ENV_KEYS,
   ...PRESET_SCOPE_KEYS,
   ...BASIC_KEYS,
   ...MEMORY_KEYS,
@@ -683,6 +698,16 @@ export function useBotConsole() {
 
   const canSaveHbuJwSettings = computed(() => changedHbuJwEnvKeys.value.size > 0)
 
+  const changedGenshinEnvKeys = computed<Set<string>>(() => {
+    const keys = new Set<string>()
+    for (const key of GENSHIN_ENV_KEYS) {
+      if (changedKeys.value.has(key)) keys.add(key)
+    }
+    return keys
+  })
+
+  const canSaveGenshinSettings = computed(() => changedGenshinEnvKeys.value.size > 0)
+
   const dirtyModelTabIds = computed<BotConsoleModelTabId[]>(() => {
     const dirty: BotConsoleModelTabId[] = []
     const originalById = new Map<BotConsoleModelTabId, BotConsoleBuiltinModelTab>()
@@ -1103,6 +1128,10 @@ export function useBotConsole() {
 
   async function saveHbuJwSettings(restartAfter = false): Promise<SaveEnvResponse> {
     return saveEnvPatch(HBU_JW_ENV_KEYS, restartAfter)
+  }
+
+  async function saveGenshinSettings(restartAfter = false): Promise<SaveEnvResponse> {
+    return saveEnvPatch(GENSHIN_ENV_KEYS, restartAfter)
   }
 
   async function probeTtsHealth(): Promise<ProbeTtsHealthResponse> {
@@ -1742,8 +1771,10 @@ export function useBotConsole() {
     changedTtsEnvKeys,
     changedTtsBotEnvKeys,
     changedHbuJwEnvKeys,
+    changedGenshinEnvKeys,
     canSaveTtsSettings,
     canSaveHbuJwSettings,
+    canSaveGenshinSettings,
     modelTabsChanged,
     dirtyModelTabIds,
     currentModelValidation,
@@ -1771,6 +1802,7 @@ export function useBotConsole() {
     saveEnvPatch,
     saveTtsSettings,
     saveHbuJwSettings,
+    saveGenshinSettings,
     probeTtsHealth,
     synthesizeTtsSample,
     saveModelTabs,

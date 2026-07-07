@@ -225,6 +225,17 @@ export const BOT_CONSOLE_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'HBU_JW_KEEP_ALIVE_ENABLED', label: '教务登录态保活', type: 'toggle', section: 'features' },
   { key: 'HBU_JW_KEEP_ALIVE_INTERVAL_MS', label: '教务保活周期', type: 'number', section: 'features' },
   { key: 'HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS', label: '教务保活最近使用窗口', type: 'number', section: 'features' },
+  { key: 'GENSHIN_ALLOWED_GROUPS', label: '原神白名单群', type: 'text', section: 'features' },
+  { key: 'GENSHIN_PUBLIC_BASE_URL', label: '原神绑定外部地址', type: 'text', section: 'features' },
+  { key: 'GENSHIN_BIND_PAGE_PATH', label: '原神绑定页路径', type: 'text', section: 'features' },
+  { key: 'GENSHIN_BIND_TOKEN_TTL_MS', label: '原神绑定链接有效期', type: 'number', section: 'features' },
+  { key: 'GENSHIN_CREDENTIAL_KEK_PATH', label: '原神凭据 KEK 路径', type: 'text', section: 'features' },
+  { key: 'GENSHIN_AUTO_SIGN_ENABLED', label: '原神自动签到', type: 'toggle', section: 'features' },
+  { key: 'GENSHIN_AUTO_SIGN_CRON', label: '原神自动签到时间', type: 'text', section: 'features' },
+  { key: 'GENSHIN_TIMEZONE', label: '原神时区', type: 'text', section: 'features' },
+  { key: 'GENSHIN_TAKUMI_APP_VERSION', label: '原神米游社 App 版本', type: 'text', section: 'features' },
+  { key: 'GENSHIN_SIGN_ACT_ID', label: '原神签到活动 ID', type: 'text', section: 'features' },
+  { key: 'GENSHIN_REDEEM_GAME_VERSION', label: '原神兑换接口版本', type: 'text', section: 'features' },
   { key: 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS', label: '文件系统工具白名单群', type: 'text', section: 'features' },
   { key: 'QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT', label: '实时消息注入条数上限', type: 'number', section: 'features' },
   { key: 'QQBOT_REPLY_INTERRUPT_ENABLED', label: '回复期中断', type: 'toggle', section: 'features' },
@@ -354,7 +365,8 @@ function normalizeManagedEnvValue(key: string, value: string | null | undefined)
   if (
     key === 'CHAT_NATURAL_TRIGGER_GROUPS' ||
     key === 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS' ||
-    key === 'HBU_JW_ALLOWED_GROUPS'
+    key === 'HBU_JW_ALLOWED_GROUPS' ||
+    key === 'GENSHIN_ALLOWED_GROUPS'
   ) {
     return normalizeManagedGroupList(value);
   }

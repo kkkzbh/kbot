@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createCanvas } from '@napi-rs/canvas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('koishi', () => {
@@ -35,6 +36,12 @@ vi.mock('koishi', () => {
       children: [],
       toString: () => `<at id="${id}"/>`,
     }),
+    image: (source: Buffer | string, mime?: string) => ({
+      type: 'image',
+      attrs: { source, mime },
+      children: [],
+      toString: () => `[image:${mime ?? 'unknown'}]`,
+    }),
   };
 
   return {
@@ -45,6 +52,8 @@ vi.mock('koishi', () => {
       boolean: () => createSchemaNode(),
       string: () => createSchemaNode(),
       natural: () => createSchemaNode(),
+      array: () => createSchemaNode(),
+      union: () => createSchemaNode(),
     },
     h: hFactory,
   };
@@ -52,6 +61,11 @@ vi.mock('koishi', () => {
 
 import { apply } from '../src/plugins/genshin/index.js';
 import { parseGenshinCookieInput } from '../src/plugins/genshin/cookie.js';
+import {
+  buildGenshinMenuView,
+  GenshinMenuService,
+  renderGenshinMenuImage,
+} from '../src/plugins/genshin/menu.js';
 import { GenshinService } from '../src/plugins/genshin/service.js';
 import { GenshinStore } from '../src/plugins/genshin/store.js';
 import { GenshinTakumiClient } from '../src/plugins/genshin/takumi-client.js';
@@ -167,9 +181,52 @@ function createService(options: {
   return { service, database, client };
 }
 
+function createPuppeteerHarness() {
+  let navigatedHtml = '';
+  const screenshotPng = createHarnessPng();
+  const element = {
+    boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 1320, height: 820 })),
+  };
+  const page = {
+    setViewport: vi.fn(async () => undefined),
+    goto: vi.fn(async (url: string) => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      navigatedHtml = readFileSync(fileURLToPath(url), 'utf8');
+    }),
+    waitForSelector: vi.fn(async () => undefined),
+    $: vi.fn(async () => element),
+    screenshot: vi.fn(async () => screenshotPng),
+    close: vi.fn(async () => undefined),
+  };
+  return {
+    page,
+    puppeteer: {
+      page: vi.fn(async () => page),
+    },
+    getNavigatedHtml: () => navigatedHtml,
+  };
+}
+
+function createHarnessPng(): Buffer {
+  const canvas = createCanvas(4, 4);
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, 4, 4);
+  return canvas.toBuffer('image/png');
+}
+
 function renderMessageContent(content: unknown): string {
   if (Array.isArray(content)) return content.map((part) => String(part)).join('');
   return String(content ?? '');
+}
+
+function extractAtIds(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part): part is { type: string; attrs?: { id?: string } } => typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'at')
+    .map((part) => String(part.attrs?.id ?? ''))
+    .filter(Boolean);
 }
 
 describe('genshin cookie parser', () => {
@@ -279,6 +336,60 @@ describe('genshin binding service', () => {
   });
 });
 
+describe('genshin menu module', () => {
+  it('builds the genshin menu with currently exposed keywords', () => {
+    const view = buildGenshinMenuView();
+
+    expect(view.title).toBe('原神功能菜单');
+    expect(view.subtitle).toBe('发送 原神 查看本菜单');
+    expect(view.sections.map((section) => [section.title, section.items.map((item) => [item.keyword, item.description])])).toEqual([
+      [
+        '账号',
+        [
+          ['原神绑定', '绑定米游社国服原神 UID'],
+          ['原神确认 <确认码>', '绑定页验证通过后确认绑定'],
+          ['原神解绑', '解除当前 QQ 与原神 UID 的绑定'],
+        ],
+      ],
+      [
+        '日常',
+        [
+          ['原神签到', '为已绑定 UID 执行每日签到'],
+          ['原神兑换 <兑换码>', '为已绑定 UID 领取兑换码奖励'],
+        ],
+      ],
+    ]);
+  });
+
+  it('renders the menu view as a PNG image', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const image = await renderGenshinMenuImage(puppeteer, buildGenshinMenuView());
+    const html = getNavigatedHtml();
+
+    expect(String(image)).toContain('image/png');
+    expect(html).toContain('原神功能菜单');
+    expect(html).toContain('发送 <strong>原神</strong> 查看本菜单');
+    expect(html).toContain('class="panel-title">账号');
+    expect(html).toContain('class="panel-title">日常');
+    expect(html).toContain('原神绑定');
+    expect(html).toContain('原神确认 <span class="param">&lt;确认码&gt;</span>');
+    expect(html).toContain('原神兑换 <span class="param">&lt;兑换码&gt;</span>');
+    expect(html).not.toContain('原神资料');
+    expect(html).not.toContain('抽卡记录');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('returns a mentioned menu image without requiring authentication', async () => {
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new GenshinMenuService(puppeteer);
+
+    const reply = await service.queryMenu('1405359129');
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+  });
+});
+
 describe('genshin takumi client', () => {
   it('sends CN role, sign-in, authkey, and redeem requests with the expected shape', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
@@ -343,6 +454,7 @@ describe('genshin plugin routes and middleware', () => {
     const dir = createTempDir();
     const database = createDatabase();
     const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
     const server = {
       use: vi.fn(),
       get: vi.fn(),
@@ -355,6 +467,7 @@ describe('genshin plugin routes and middleware', () => {
       server,
       middleware,
       on: vi.fn(),
+      puppeteer,
     };
 
     apply(ctx as never, {
@@ -362,6 +475,7 @@ describe('genshin plugin routes and middleware', () => {
       publicBaseUrl: 'https://genshin.example',
       credentialKekPath: join(dir, 'kek.key'),
       autoSignEnabled: false,
+      allowedGroups: '',
     });
 
     expect(ctx.model.extend).toHaveBeenCalledWith('genshin_bind_challenge', expect.anything(), expect.anything());
@@ -396,22 +510,70 @@ describe('genshin plugin routes and middleware', () => {
     });
   });
 
-  it('keeps genshin commands in private chat', async () => {
+  it('returns the genshin menu in allowed natural-trigger groups without creating a binding challenge', async () => {
     const dir = createTempDir();
+    const database = createDatabase();
     const middleware = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const ctx = {
       baseDir: dir,
-      database: createDatabase(),
+      database,
       model: { extend: vi.fn() },
       server: { get: vi.fn(), post: vi.fn() },
       middleware,
       on: vi.fn(),
+      puppeteer,
     };
 
     apply(ctx as never, {
       publicBaseUrl: 'https://genshin.example',
       credentialKekPath: join(dir, 'kek.key'),
       autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '原神',
+      send,
+    }, vi.fn());
+
+    const reply = send.mock.calls[0]?.[0];
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('原神功能菜单');
+    expect(database.tables.get('genshin_bind_challenge') ?? []).toHaveLength(0);
+  });
+
+  it('passes bare genshin keywords through outside natural trigger groups', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
     });
 
     const handler = middleware.mock.calls[0]?.[0];
@@ -426,8 +588,150 @@ describe('genshin plugin routes and middleware', () => {
       send,
     }, next);
 
-    expect(send).toHaveBeenCalledWith('请私聊机器人使用原神功能。');
+    expect(send).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(database.tables.get('genshin_bind_challenge') ?? []).toHaveLength(0);
+  });
+
+  it('accepts explicitly mentioned genshin keywords outside natural trigger groups', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    const next = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '<at id="100000001"/> 原神绑定',
+      stripped: { content: '原神绑定', atSelf: true },
+      send,
+    }, next);
+
+    const reply = send.mock.calls[0]?.[0];
+    expect(renderMessageContent(reply)).toContain('https://genshin.example/genshin/bind?token=');
     expect(next).not.toHaveBeenCalled();
+    expect(database.tables.get('genshin_bind_challenge')?.[0]).toMatchObject({
+      ownerKey: 'onebot:1405359129',
+      channelId: 'group:100',
+      status: 'created',
+    });
+  });
+
+  it('blocks genshin keywords outside allowed groups before rendering the menu', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '200',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '原神',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启原神功能。');
+    expect(puppeteer.page).not.toHaveBeenCalled();
+  });
+
+  it('allows genshin menu in private chats regardless of the group allowlist', async () => {
+    const dir = createTempDir();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database: createDatabase(),
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '原神',
+      send,
+    }, vi.fn());
+
+    expect(renderMessageContent(send.mock.calls[0]?.[0])).toContain('image/png');
+  });
+
+  it('requires the genshin allowlist to be explicitly configured', () => {
+    const dir = createTempDir();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database: createDatabase(),
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware: vi.fn(),
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    expect(() => apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+    })).toThrow('genshin.allowedGroups 必须显式配置');
   });
 
   it('renders the bind page without profile or gacha features', () => {

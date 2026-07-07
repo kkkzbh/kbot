@@ -48,6 +48,17 @@ export const FIELD_LABELS: Record<string, string> = {
   HBU_JW_KEEP_ALIVE_ENABLED: '登录态保活',
   HBU_JW_KEEP_ALIVE_INTERVAL_MS: '保活周期',
   HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS: '保活最近使用窗口',
+  GENSHIN_ALLOWED_GROUPS: '原神白名单群',
+  GENSHIN_PUBLIC_BASE_URL: '绑定外部地址',
+  GENSHIN_BIND_PAGE_PATH: '绑定页路径',
+  GENSHIN_BIND_TOKEN_TTL_MS: '绑定链接有效期',
+  GENSHIN_CREDENTIAL_KEK_PATH: '凭据 KEK 路径',
+  GENSHIN_AUTO_SIGN_ENABLED: '自动签到',
+  GENSHIN_AUTO_SIGN_CRON: '自动签到时间',
+  GENSHIN_TIMEZONE: '时区',
+  GENSHIN_TAKUMI_APP_VERSION: '米游社 App 版本',
+  GENSHIN_SIGN_ACT_ID: '签到活动 ID',
+  GENSHIN_REDEEM_GAME_VERSION: '兑换接口版本',
   CHAT_NATURAL_TRIGGER_ALIASES: '触发别名',
   CHATLUNA_COMMAND_AUTHORITY: '命令权限等级',
 }
@@ -91,6 +102,28 @@ export const FIELD_HINTS: Record<string, string> = {
     '登录态保活检查间隔，单位毫秒。',
   HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS:
     '只对最近这段时间内验证过的登录态执行保活，单位毫秒。',
+  GENSHIN_ALLOWED_GROUPS:
+    '只有填在这里的群号才可以在群聊里使用原神绑定、签到、兑换和菜单。裸原神触发由自然触发白名单控制；留空时群聊不可用，私聊仍可用。',
+  GENSHIN_PUBLIC_BASE_URL:
+    '群聊或私聊回复绑定链接时使用的外部可访问地址。留空时运行时使用本机 Koishi 端口。',
+  GENSHIN_BIND_PAGE_PATH:
+    '原神绑定网页路径，必须以 / 开头。留空时使用 /genshin/bind。',
+  GENSHIN_BIND_TOKEN_TTL_MS:
+    '绑定链接有效期，单位毫秒。',
+  GENSHIN_CREDENTIAL_KEK_PATH:
+    '本机加密密钥文件路径。用于加密保存原神米游社 Cookie，文件权限必须只允许运行用户读取。',
+  GENSHIN_AUTO_SIGN_ENABLED:
+    '是否启用已绑定 UID 的每日自动签到。',
+  GENSHIN_AUTO_SIGN_CRON:
+    '自动签到 cron 表达式，按下方时区计算。',
+  GENSHIN_TIMEZONE:
+    '自动签到日期和定时任务使用的 IANA 时区。',
+  GENSHIN_TAKUMI_APP_VERSION:
+    '米游社请求头 x-rpc-app_version。只有接口协议变化时才需要调整。',
+  GENSHIN_SIGN_ACT_ID:
+    '原神签到活动 act_id。只有米游社活动 ID 变化时才需要调整。',
+  GENSHIN_REDEEM_GAME_VERSION:
+    '兑换码接口 game_version。只有兑换接口要求变化时才需要调整。',
   QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT:
     '每次主链路触发时，最多注入这么多条尚未写入会话历史的实时消息；注入后旧缓存会整体清空。',
   QQ_VOICE_TTS_BASE_URL:
