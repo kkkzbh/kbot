@@ -4,6 +4,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { h, type Fragment } from 'koishi';
 import {
+  formatAcademicFallbackNotice,
+  hbuJwDatabaseFallbackPolicy,
+  type HbuJwAcademicCache,
+  type HbuJwAcademicQueryResult,
+} from './academic-cache.js';
+import {
   buildSubitemScoreLookParamsFromScoreRow,
   buildSubitemScoreLookParamsFromThisTermRow,
   type HbuJwHttpClient,
@@ -24,7 +30,7 @@ const COURSE_QUERY_PAGE_SIZE = 100;
 
 export interface HbuJwCourseQueryAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
-    | { kind: 'authenticated'; cookieJar: SerializedCookieJar }
+    | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
     | { kind: 'needs_binding'; reason: string }
     | { kind: 'invalid'; reason: string }
   >;
@@ -86,6 +92,7 @@ export class HbuJwCourseQueryService {
     private readonly authService: HbuJwCourseQueryAuthServiceLike,
     private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
     private readonly puppeteer: HbuJwCourseQueryPuppeteerLike,
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
   ) {}
 
   async queryHelp(qqUserId: string): Promise<Fragment> {
@@ -98,12 +105,15 @@ export class HbuJwCourseQueryService {
       throw new HbuJwUserError(auth.reason);
     }
 
-    const terms = await this.jwClient.getSubitemScoreTerms(auth.cookieJar);
+    const queryResults: Array<HbuJwAcademicQueryResult<unknown>> = [];
+    const termsResult = await this.loadSubitemScoreTerms(identity, auth);
+    queryResults.push(termsResult);
+    const terms = termsResult.data;
     const term = resolveCourseQueryTerm(terms, input.termInput ?? '0');
     const currentTerm = requireSelectedTerm(terms);
     const candidates = term.code === currentTerm.code
-      ? await this.loadThisTermCandidates(auth.cookieJar, term)
-      : await this.loadHistoricalCandidates(auth.cookieJar, term);
+      ? await this.loadThisTermCandidates(identity, auth, term, queryResults)
+      : await this.loadHistoricalCandidates(identity, auth, term, queryResults);
     const matched = matchCourseCandidates(candidates, input.courseQuery);
 
     if (matched.length === 0) {
@@ -114,27 +124,66 @@ export class HbuJwCourseQueryService {
     }
 
     const course = matched[0]!;
-    const result = await this.jwClient.getSubitemScoreDetails(auth.cookieJar, course.params);
-    const pages = buildHbuJwCourseQueryResultViews(course, result.rows);
+    const result = await this.loadSubitemScoreDetails(identity, auth, course.params);
+    queryResults.push(result);
+    const pages = buildHbuJwCourseQueryResultViews(course, result.data.rows);
     const images = await Promise.all(pages.map((page) => renderHbuJwCourseQueryResultImage(this.puppeteer, page)));
-    return [h.at(identity.qqUserId), h.text('\n'), ...interleaveImages(images)];
+    const notice = formatAcademicFallbackNotice(queryResults);
+    return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), ...interleaveImages(images)];
   }
 
-  private async loadThisTermCandidates(cookieJar: SerializedCookieJar, term: HbuJwSubitemScoreTerm): Promise<HbuJwCourseQueryCourseCandidate[]> {
-    const rows = await this.jwClient.getThisTermScores(cookieJar);
-    return rows
+  private async loadThisTermCandidates(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    term: HbuJwSubitemScoreTerm,
+    queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
+  ): Promise<HbuJwCourseQueryCourseCandidate[]> {
+    const result = this.academicCache
+      ? await this.academicCache.getThisTermScores(identity, auth, hbuJwDatabaseFallbackPolicy())
+      : { data: await this.jwClient.getThisTermScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
+    queryResults.push(result);
+    return result.data
       .filter((row) => readText(row.id?.executiveEducationPlanNumber) === term.code)
       .map((row) => candidateFromThisTermRow(row, term));
   }
 
-  private async loadHistoricalCandidates(cookieJar: SerializedCookieJar, term: HbuJwSubitemScoreTerm): Promise<HbuJwCourseQueryCourseCandidate[]> {
-    const rows = await this.jwClient.getAllPassingScores(cookieJar);
-    return rows
+  private async loadHistoricalCandidates(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    term: HbuJwSubitemScoreTerm,
+    queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
+  ): Promise<HbuJwCourseQueryCourseCandidate[]> {
+    const result = this.academicCache
+      ? await this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy())
+      : { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
+    queryResults.push(result);
+    return result.data
       .filter((row) => {
         const id = isRecord(row.id) ? row.id : {};
         return readText(id.executiveEducationPlanNumber) === term.code;
       })
       .map((row) => candidateFromScoreRow(row, term));
+  }
+
+  private async loadSubitemScoreTerms(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+  ): Promise<HbuJwAcademicQueryResult<HbuJwSubitemScoreTerm[]>> {
+    if (this.academicCache) {
+      return this.academicCache.getSubitemScoreTerms(identity, auth, hbuJwDatabaseFallbackPolicy());
+    }
+    return { data: await this.jwClient.getSubitemScoreTerms(auth.cookieJar), source: 'remote', fetchedAt: Date.now() };
+  }
+
+  private async loadSubitemScoreDetails(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    params: HbuJwSubitemScoreLookParams,
+  ): Promise<Awaited<ReturnType<HbuJwAcademicCache['getSubitemScoreDetails']>>> {
+    if (this.academicCache) {
+      return this.academicCache.getSubitemScoreDetails(identity, auth, params, hbuJwDatabaseFallbackPolicy());
+    }
+    return { data: await this.jwClient.getSubitemScoreDetails(auth.cookieJar, params), source: 'remote', fetchedAt: Date.now() };
   }
 }
 

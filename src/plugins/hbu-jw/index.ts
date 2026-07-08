@@ -2,6 +2,7 @@ import { createReadStream, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
+import { HbuJwAcademicCache } from './academic-cache.js';
 import { HbuJwCourseQueryService } from './course-query.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwExamScheduleService } from './exams.js';
@@ -97,17 +98,18 @@ export function apply(ctx: Context, config: Config): void {
   const kek = loadOrCreateKek(runtime.credentialKekPath);
   const store = new HbuJwStore(hbuCtx.database);
   const jwClient = new HbuJwHttpClient();
+  const academicCache = new HbuJwAcademicCache(store, jwClient);
   const service = new HbuJwService(store, jwClient, kek, {
     bindPagePath: runtime.bindPagePath,
     publicBaseUrl: runtime.publicBaseUrl,
     bindTokenTtlMs: runtime.bindTokenTtlMs,
     autoReloginEnabled: runtime.autoReloginEnabled,
   });
-  const gpaService = new HbuJwGpaService(service, jwClient);
-  const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer);
-  const termScoresService = new HbuJwTermScoresService(service, jwClient, hbuCtx.puppeteer);
-  const courseQueryService = new HbuJwCourseQueryService(service, jwClient, hbuCtx.puppeteer);
-  const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer);
+  const gpaService = new HbuJwGpaService(service, jwClient, academicCache);
+  const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer, undefined, academicCache);
+  const termScoresService = new HbuJwTermScoresService(service, jwClient, hbuCtx.puppeteer, academicCache);
+  const courseQueryService = new HbuJwCourseQueryService(service, jwClient, hbuCtx.puppeteer, academicCache);
+  const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer, undefined, academicCache);
   const menuService = new HbuJwMenuService(hbuCtx.puppeteer);
 
   registerWebRoutes(hbuCtx, service, runtime);

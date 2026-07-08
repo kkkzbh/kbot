@@ -75,6 +75,10 @@ vi.mock('koishi', () => {
 
 import { apply } from '../src/plugins/hbu-jw/index.js';
 import {
+  HbuJwAcademicCache,
+  hbuJwDatabaseFallbackPolicy,
+} from '../src/plugins/hbu-jw/academic-cache.js';
+import {
   HbuJwCourseQueryService,
   buildHbuJwCourseQueryResultViews,
   matchCourseCandidates,
@@ -779,7 +783,11 @@ describe('hbu-jw binding service', () => {
 
     const result = await service.ensureAuthenticated(identity());
 
-    expect(result).toEqual({ kind: 'authenticated', cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'fresh' }] } });
+    expect(result).toEqual({
+      kind: 'authenticated',
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'fresh' }] },
+      credentialVersion: 1,
+    });
     expect(login).toHaveBeenCalledTimes(2);
   });
 
@@ -838,6 +846,155 @@ describe('hbu-jw binding service', () => {
       revokedAt: null,
       version: 2,
     });
+  });
+
+  it('clears academic cache when confirming a new binding', async () => {
+    const { service, database } = createService();
+    const first = await service.startBinding(identity());
+    const firstSubmitted = await service.submitCredentials({
+      token: extractToken(first.link),
+      username: 'student-1',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    await service.confirmBinding(identity(), firstSubmitted.confirmCode);
+    database.tables.set('hbu_jw_academic_item', [
+      {
+        id: 1,
+        recordKey: 'old-score',
+        ownerKey: identity().ownerKey,
+        credentialVersion: 1,
+        dataKind: 'passing_score',
+        scopeKey: 'all',
+        position: 0,
+        rawJson: '{"courseName":"旧缓存"}',
+        sourceHash: 'hash',
+        fetchedAt: 1_000,
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+    ]);
+    database.tables.set('hbu_jw_academic_sync_state', [
+      {
+        id: 1,
+        syncKey: `${identity().ownerKey}:1:passing_score:all`,
+        ownerKey: identity().ownerKey,
+        credentialVersion: 1,
+        dataKind: 'passing_score',
+        scopeKey: 'all',
+        lastAttemptedAt: 1_000,
+        lastSucceededAt: 1_000,
+        lastFailureReason: null,
+        rowCount: 1,
+        sourceHash: 'hash',
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
+    ]);
+
+    const second = await service.startBinding(identity());
+    const secondSubmitted = await service.submitCredentials({
+      token: extractToken(second.link),
+      username: 'student-1',
+      password: 'new-secret-password',
+      persistCredentialConsent: true,
+    });
+    await service.confirmBinding(identity(), secondSubmitted.confirmCode);
+
+    expect(database.tables.get('hbu_jw_academic_item')).toEqual([]);
+    expect(database.tables.get('hbu_jw_academic_sync_state')).toEqual([]);
+    expect(database.tables.get('hbu_jw_credential')?.[0]).toMatchObject({ version: 2 });
+  });
+});
+
+describe('hbu-jw academic cache', () => {
+  const auth = {
+    cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    credentialVersion: 1,
+  };
+
+  it('falls back to a fresh empty database snapshot', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const seedClient = {
+      getExamSchedule: vi.fn(async () => []),
+    };
+    const seedCache = new HbuJwAcademicCache(store, seedClient as never, () => Date.UTC(2026, 6, 1));
+
+    const seeded = await seedCache.getExamSchedule(identity(), auth, hbuJwDatabaseFallbackPolicy());
+
+    expect(seeded).toMatchObject({ source: 'remote', data: [] });
+    expect(database.tables.get('hbu_jw_academic_sync_state')?.[0]).toMatchObject({
+      dataKind: 'exam_event',
+      scopeKey: 'current',
+      rowCount: 0,
+    });
+
+    const failingClient = {
+      getExamSchedule: vi.fn(async () => {
+        throw new Error('jw unavailable');
+      }),
+    };
+    const fallbackCache = new HbuJwAcademicCache(store, failingClient as never, () => Date.UTC(2026, 6, 2));
+
+    const fallback = await fallbackCache.getExamSchedule(identity(), auth, hbuJwDatabaseFallbackPolicy());
+
+    expect(fallback).toMatchObject({ source: 'database', data: [] });
+    expect(failingClient.getExamSchedule).toHaveBeenCalledWith(auth.cookieJar);
+  });
+
+  it('rejects stale database snapshots', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const seedCache = new HbuJwAcademicCache(
+      store,
+      { getExamSchedule: vi.fn(async () => [examPlanEvent()]) } as never,
+      () => Date.UTC(2026, 6, 1),
+    );
+    await seedCache.getExamSchedule(identity(), auth, hbuJwDatabaseFallbackPolicy());
+    const staleCache = new HbuJwAcademicCache(
+      store,
+      {
+        getExamSchedule: vi.fn(async () => {
+          throw new Error('jw unavailable');
+        }),
+      } as never,
+      () => Date.UTC(2027, 0, 15),
+    );
+
+    await expect(staleCache.getExamSchedule(identity(), auth, hbuJwDatabaseFallbackPolicy())).rejects.toThrow('jw unavailable');
+  });
+
+  it('updates changed rows and deletes rows missing from the latest remote snapshot', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const firstClient = {
+      getAllPassingScores: vi.fn(async () => [
+        scoreRow({ id: { executiveEducationPlanNumber: '2025-2026-2-2', courseNumber: 'CACHE001' }, courseName: '缓存软件工程', gradePointScore: 4 }),
+        scoreRow({ id: { executiveEducationPlanNumber: '2025-2026-2-2', courseNumber: 'CACHE002' }, courseName: '待删除课程', gradePointScore: 3 }),
+      ]),
+    };
+    const firstCache = new HbuJwAcademicCache(store, firstClient as never, () => Date.UTC(2026, 6, 1));
+    await firstCache.getAllPassingScores(identity(), auth, hbuJwDatabaseFallbackPolicy());
+    const firstRows = database.tables.get('hbu_jw_academic_item') ?? [];
+    const stableRecordKey = firstRows.find((row) => String(row.rawJson).includes('缓存软件工程'))?.recordKey;
+
+    const secondClient = {
+      getAllPassingScores: vi.fn(async () => [
+        scoreRow({ id: { executiveEducationPlanNumber: '2025-2026-2-2', courseNumber: 'CACHE001' }, courseName: '缓存软件工程', gradePointScore: 4.5 }),
+      ]),
+    };
+    const secondCache = new HbuJwAcademicCache(store, secondClient as never, () => Date.UTC(2026, 6, 2));
+    await secondCache.getAllPassingScores(identity(), auth, hbuJwDatabaseFallbackPolicy());
+
+    const rows = database.tables.get('hbu_jw_academic_item') ?? [];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ recordKey: stableRecordKey, fetchedAt: Date.UTC(2026, 6, 2) });
+    expect(JSON.parse(String(rows[0]?.rawJson))).toMatchObject({
+      courseName: '缓存软件工程',
+      gradePointScore: 4.5,
+    });
+    expect(JSON.stringify(rows)).not.toContain('待删除课程');
   });
 });
 
@@ -967,6 +1124,68 @@ describe('hbu-jw GPA calculation', () => {
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
     expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+  });
+
+  it('writes remote GPA source rows into the academic cache', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      credentialVersion: 1,
+    }));
+    const getAllPassingScores = vi.fn(async () => [
+      scoreRow({ id: { courseNumber: '2023D00003' }, courseName: '程序设计', credit: '3', gradePointScore: 4.5 }),
+    ]);
+    const cache = new HbuJwAcademicCache(store, { getAllPassingScores } as never, () => Date.UTC(2026, 6, 1));
+    const service = new HbuJwGpaService({ ensureAuthenticated }, { getAllPassingScores }, cache);
+
+    await service.queryGpa(identity());
+
+    expect(database.tables.get('hbu_jw_academic_item')).toMatchObject([
+      {
+        ownerKey: identity().ownerKey,
+        credentialVersion: 1,
+        dataKind: 'passing_score',
+        scopeKey: 'all',
+      },
+    ]);
+    expect(database.tables.get('hbu_jw_academic_item')?.[0]?.rawJson).toContain('程序设计');
+  });
+
+  it('falls back to cached GPA source rows with an explicit database marker', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const auth = {
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      credentialVersion: 1,
+    };
+    const seedGetAllPassingScores = vi.fn(async () => [
+      scoreRow({ id: { courseNumber: '2023D00003' }, courseName: '程序设计', credit: '3', gradePointScore: 4.5 }),
+    ]);
+    const seedCache = new HbuJwAcademicCache(store, { getAllPassingScores: seedGetAllPassingScores } as never, () => Date.UTC(2026, 6, 1));
+    await new HbuJwGpaService(
+      { ensureAuthenticated: vi.fn(async () => auth) },
+      { getAllPassingScores: seedGetAllPassingScores },
+      seedCache,
+    ).queryGpa(identity());
+
+    const failingGetAllPassingScores = vi.fn(async () => {
+      throw new Error('jw unavailable');
+    });
+    const failingCache = new HbuJwAcademicCache(store, { getAllPassingScores: failingGetAllPassingScores } as never, () => Date.UTC(2026, 6, 2));
+    const service = new HbuJwGpaService(
+      { ensureAuthenticated: vi.fn(async () => auth) },
+      { getAllPassingScores: failingGetAllPassingScores },
+      failingCache,
+    );
+
+    const reply = await service.queryGpa(identity());
+
+    expect(renderMessageContent(reply)).toContain('实时查询失败，以下为数据库记录');
+    expect(renderMessageContent(reply)).toContain('GPA：4.50');
+    expect(failingGetAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
   });
 
   it('surfaces binding requirements before querying scores', async () => {
@@ -1217,6 +1436,115 @@ describe('hbu-jw term scores module', () => {
     expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
     expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
     expect(getSubitemScoreDetails).not.toHaveBeenCalled();
+  });
+
+  it('falls back to cached term score rows with an explicit database marker', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const auth = {
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      credentialVersion: 1,
+    };
+    const ensureAuthenticated = vi.fn(async () => auth);
+    const seedTermRows = [
+      thisTermScoreRow({
+        id: { courseNumber: 'CACHE001', executiveEducationPlanNumber: '2025-2026-2-2' },
+        courseName: '缓存软件工程',
+        credit: 3,
+        gradePoint: 4.5,
+      }),
+    ];
+    const seedPassingRows = [
+      scoreRow({ id: { courseNumber: 'CACHE001' }, courseName: '缓存软件工程', credit: 3, gradePointScore: 4.5 }),
+    ];
+    const seedClient = {
+      getThisTermScores: vi.fn(async () => seedTermRows),
+      getAllPassingScores: vi.fn(async () => seedPassingRows),
+      getSubitemScoreDetails: vi.fn(),
+    };
+    const seedCache = new HbuJwAcademicCache(store, seedClient as never, () => Date.UTC(2026, 6, 1));
+    await new HbuJwTermScoresService(
+      { ensureAuthenticated },
+      seedClient,
+      createPuppeteerHarness().puppeteer,
+      seedCache,
+    ).queryTermScores(identity());
+
+    const failingClient = {
+      getThisTermScores: vi.fn(async () => {
+        throw new Error('jw term scores unavailable');
+      }),
+      getAllPassingScores: vi.fn(async () => {
+        throw new Error('jw passing scores unavailable');
+      }),
+      getSubitemScoreDetails: vi.fn(),
+    };
+    const fallbackCache = new HbuJwAcademicCache(store, failingClient as never, () => Date.UTC(2026, 6, 2));
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService(
+      { ensureAuthenticated },
+      failingClient,
+      puppeteer,
+      fallbackCache,
+    );
+
+    const reply = await service.queryTermScores(identity());
+
+    expect(renderMessageContent(reply)).toContain('实时查询失败，以下为数据库记录');
+    expect(getNavigatedHtml()).toContain('缓存软件工程');
+    expect(failingClient.getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(failingClient.getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+  });
+
+  it('does not use cached term score rows from another credential version', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const seedClient = {
+      getThisTermScores: vi.fn(async () => [thisTermScoreRow({ courseName: '旧账号课程' })]),
+      getAllPassingScores: vi.fn(async () => [scoreRow({ id: { courseNumber: '2023S01003' }, courseName: '旧账号课程', credit: 3, gradePointScore: 4.5 })]),
+      getSubitemScoreDetails: vi.fn(),
+    };
+    const seedCache = new HbuJwAcademicCache(store, seedClient as never, () => Date.UTC(2026, 6, 1));
+    await new HbuJwTermScoresService(
+      {
+        ensureAuthenticated: vi.fn(async () => ({
+          kind: 'authenticated' as const,
+          cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+          credentialVersion: 1,
+        })),
+      },
+      seedClient,
+      createPuppeteerHarness().puppeteer,
+      seedCache,
+    ).queryTermScores(identity());
+
+    const failingClient = {
+      getThisTermScores: vi.fn(async () => {
+        throw new Error('jw unavailable');
+      }),
+      getAllPassingScores: vi.fn(async () => {
+        throw new Error('jw unavailable');
+      }),
+      getSubitemScoreDetails: vi.fn(),
+    };
+    const fallbackCache = new HbuJwAcademicCache(store, failingClient as never, () => Date.UTC(2026, 6, 2));
+    const service = new HbuJwTermScoresService(
+      {
+        ensureAuthenticated: vi.fn(async () => ({
+          kind: 'authenticated' as const,
+          cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+          credentialVersion: 2,
+        })),
+      },
+      failingClient,
+      createPuppeteerHarness().puppeteer,
+      fallbackCache,
+    );
+
+    await expect(service.queryTermScores(identity())).rejects.toThrow('教务成绩查询失败，请稍后重试。');
+    expect(database.tables.get('hbu_jw_academic_item')?.some((row) => row.credentialVersion === 1)).toBe(true);
+    expect(database.tables.get('hbu_jw_academic_item')?.some((row) => row.credentialVersion === 2)).toBe(false);
   });
 
   it('uses primary look result row counts for recorded term score status', async () => {

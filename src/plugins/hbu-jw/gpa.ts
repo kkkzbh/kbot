@@ -1,4 +1,9 @@
 import { h, type Fragment } from 'koishi';
+import {
+  formatAcademicFallbackNotice,
+  hbuJwDatabaseFallbackPolicy,
+  type HbuJwAcademicCache,
+} from './academic-cache.js';
 import type { HbuJwHttpClient } from './jw-client.js';
 import { HbuJwUserError, type HbuJwScoreRow, type OwnerIdentity, type SerializedCookieJar } from './types.js';
 
@@ -74,7 +79,7 @@ export interface HbuJwGpaResult {
 
 export interface HbuJwAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
-    | { kind: 'authenticated'; cookieJar: SerializedCookieJar }
+    | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
     | { kind: 'needs_binding'; reason: string }
     | { kind: 'invalid'; reason: string }
   >;
@@ -84,6 +89,7 @@ export class HbuJwGpaService {
   constructor(
     private readonly authService: HbuJwAuthServiceLike,
     private readonly jwClient: Pick<HbuJwHttpClient, 'getAllPassingScores'>,
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getAllPassingScores'>,
   ) {}
 
   async queryGpa(identity: OwnerIdentity): Promise<Fragment> {
@@ -93,8 +99,10 @@ export class HbuJwGpaService {
     }
 
     try {
-      const rows = await this.jwClient.getAllPassingScores(auth.cookieJar);
-      return formatGpaReply(identity.qqUserId, calculateHbuJwGpa(rows));
+      const query = this.academicCache
+        ? await this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy())
+        : { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
+      return formatGpaReply(identity.qqUserId, calculateHbuJwGpa(query.data), formatAcademicFallbackNotice([query]));
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
       throw new HbuJwUserError('教务成绩查询失败，请稍后重试。');
@@ -209,14 +217,15 @@ export function calculateHbuJwGpaFromTotals(totals: HbuJwGpaTotals): number | nu
   return totals.weightedGradePoints / totals.includedCredits;
 }
 
-export function formatGpaReply(qqUserId: string, result: HbuJwGpaResult): Fragment {
+export function formatGpaReply(qqUserId: string, result: HbuJwGpaResult, notice?: string | null): Fragment {
   const body = [
+    notice,
     `GPA：${result.gpaRounded}`,
     '口径：当前所有已返回成绩中的必修课，排除固定不计 GPA 课程和艺术教育课程',
     `覆盖：${formatCoveredTerms(result.coveredTerms)}`,
     `计入：${result.includedCourseCount} 门 / ${formatNumber(result.includedCredits)} 学分`,
     `排除：非必修 ${result.excludedNonRequiredCount} 门，固定 ${result.excludedFixedCourses.length} 门，艺术 ${result.excludedArtCourses.length} 门，无绩点 ${result.skippedNoGradePointCourses.length} 门`,
-  ].join('\n');
+  ].filter((line): line is string => Boolean(line)).join('\n');
   return [h.at(qqUserId), h.text(`\n${body}`)];
 }
 

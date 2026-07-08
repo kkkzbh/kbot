@@ -3,6 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { h, type Fragment } from 'koishi';
+import {
+  formatAcademicFallbackNotice,
+  hbuJwDatabaseFallbackPolicy,
+  type HbuJwAcademicCache,
+} from './academic-cache.js';
 import type { HbuJwHttpClient } from './jw-client.js';
 import {
   HbuJwUserError,
@@ -18,7 +23,7 @@ const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 
 export interface HbuJwExamScheduleAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
-    | { kind: 'authenticated'; cookieJar: SerializedCookieJar }
+    | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
     | { kind: 'needs_binding'; reason: string }
     | { kind: 'invalid'; reason: string }
   >;
@@ -68,6 +73,7 @@ export class HbuJwExamScheduleService {
     private readonly jwClient: Pick<HbuJwHttpClient, 'getExamSchedule'>,
     private readonly puppeteer: HbuJwExamSchedulePuppeteerLike,
     private readonly now: () => Date = () => new Date(),
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getExamSchedule'>,
   ) {}
 
   async queryExamSchedule(identity: OwnerIdentity): Promise<Fragment> {
@@ -77,9 +83,12 @@ export class HbuJwExamScheduleService {
     }
 
     try {
-      const exams = await this.jwClient.getExamSchedule(auth.cookieJar);
-      const view = buildHbuJwExamScheduleView(exams, this.now());
-      return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwExamScheduleImage(this.puppeteer, view)];
+      const query = this.academicCache
+        ? await this.academicCache.getExamSchedule(identity, auth, hbuJwDatabaseFallbackPolicy())
+        : { data: await this.jwClient.getExamSchedule(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now().getTime() };
+      const view = buildHbuJwExamScheduleView(query.data, this.now());
+      const notice = formatAcademicFallbackNotice([query]);
+      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwExamScheduleImage(this.puppeteer, view)];
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
       throw new HbuJwUserError('教务考试安排查询失败，请稍后重试。');

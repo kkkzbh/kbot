@@ -2,6 +2,9 @@ import type { Context } from 'koishi';
 import type {
   BindChallengeStatus,
   DatabaseLike,
+  HbuJwAcademicDataKind,
+  HbuJwAcademicItem,
+  HbuJwAcademicSyncState,
   HbuJwAuthAudit,
   HbuJwBindChallenge,
   HbuJwCredential,
@@ -12,6 +15,13 @@ import type {
 import { HBU_JW_SERVICE_ID } from './types.js';
 
 const ACTIVE_CHALLENGE_STATUSES: BindChallengeStatus[] = ['created', 'login_pending', 'login_succeeded'];
+
+export interface HbuJwAcademicItemInput {
+  recordKey: string;
+  rawJson: string;
+  sourceHash: string;
+  position: number;
+}
 
 export function ensureHbuJwTables(ctx: Context): void {
   ctx.model.extend(
@@ -101,6 +111,53 @@ export function ensureHbuJwTables(ctx: Context): void {
     {
       autoInc: true,
       indexes: [['ownerKey'], ['eventType'], ['createdAt']],
+    },
+  );
+
+  ctx.model.extend(
+    'hbu_jw_academic_sync_state',
+    {
+      id: 'unsigned',
+      syncKey: 'string',
+      ownerKey: 'string',
+      credentialVersion: 'unsigned',
+      dataKind: 'string',
+      scopeKey: 'string',
+      lastAttemptedAt: 'double',
+      lastSucceededAt: { type: 'double', nullable: true },
+      lastFailureReason: { type: 'text', nullable: true },
+      rowCount: 'integer',
+      sourceHash: { type: 'string', nullable: true },
+      createdAt: 'double',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: ['syncKey'],
+      indexes: [['ownerKey', 'credentialVersion', 'dataKind'], ['updatedAt']],
+    },
+  );
+
+  ctx.model.extend(
+    'hbu_jw_academic_item',
+    {
+      id: 'unsigned',
+      recordKey: 'string',
+      ownerKey: 'string',
+      credentialVersion: 'unsigned',
+      dataKind: 'string',
+      scopeKey: 'string',
+      position: 'integer',
+      rawJson: 'text',
+      sourceHash: 'string',
+      fetchedAt: 'double',
+      createdAt: 'double',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: ['recordKey'],
+      indexes: [['ownerKey', 'credentialVersion', 'dataKind'], ['scopeKey'], ['fetchedAt']],
     },
   );
 }
@@ -388,4 +445,190 @@ export class HbuJwStore {
     const rows = await this.database.get<HbuJwSession>('hbu_jw_session', { status: 'active' });
     return rows.filter((row) => row.validatedAt >= cutoff);
   }
+
+  async beginAcademicSync(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+    now: number,
+  ): Promise<void> {
+    const syncKey = academicSyncKey(ownerKey, credentialVersion, dataKind, scopeKey);
+    const [existing] = await this.database.get<HbuJwAcademicSyncState>('hbu_jw_academic_sync_state', { syncKey });
+    const patch = {
+      syncKey,
+      ownerKey,
+      credentialVersion,
+      dataKind,
+      scopeKey,
+      lastAttemptedAt: now,
+      lastFailureReason: null,
+      rowCount: existing?.rowCount ?? 0,
+      sourceHash: existing?.sourceHash ?? null,
+      updatedAt: now,
+    };
+    if (existing) {
+      await this.database.set('hbu_jw_academic_sync_state', { id: existing.id }, patch);
+      return;
+    }
+    await this.database.create('hbu_jw_academic_sync_state', {
+      ...patch,
+      lastSucceededAt: null,
+      createdAt: now,
+    });
+  }
+
+  async completeAcademicSync(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+    rowCount: number,
+    sourceHash: string,
+    now: number,
+  ): Promise<void> {
+    const syncKey = academicSyncKey(ownerKey, credentialVersion, dataKind, scopeKey);
+    const [existing] = await this.database.get<HbuJwAcademicSyncState>('hbu_jw_academic_sync_state', { syncKey });
+    const row = {
+      syncKey,
+      ownerKey,
+      credentialVersion,
+      dataKind,
+      scopeKey,
+      lastAttemptedAt: now,
+      lastSucceededAt: now,
+      lastFailureReason: null,
+      rowCount,
+      sourceHash,
+      updatedAt: now,
+    };
+    if (existing) {
+      await this.database.set('hbu_jw_academic_sync_state', { id: existing.id }, row);
+      return;
+    }
+    await this.database.create('hbu_jw_academic_sync_state', {
+      ...row,
+      createdAt: now,
+    });
+  }
+
+  async failAcademicSync(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+    reason: string,
+    now: number,
+  ): Promise<void> {
+    const syncKey = academicSyncKey(ownerKey, credentialVersion, dataKind, scopeKey);
+    const [existing] = await this.database.get<HbuJwAcademicSyncState>('hbu_jw_academic_sync_state', { syncKey });
+    const patch = {
+      syncKey,
+      ownerKey,
+      credentialVersion,
+      dataKind,
+      scopeKey,
+      lastAttemptedAt: now,
+      lastFailureReason: reason,
+      rowCount: existing?.rowCount ?? 0,
+      sourceHash: existing?.sourceHash ?? null,
+      updatedAt: now,
+    };
+    if (existing) {
+      await this.database.set('hbu_jw_academic_sync_state', { id: existing.id }, patch);
+      return;
+    }
+    await this.database.create('hbu_jw_academic_sync_state', {
+      ...patch,
+      lastSucceededAt: null,
+      createdAt: now,
+    });
+  }
+
+  async getAcademicSyncState(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+  ): Promise<HbuJwAcademicSyncState | null> {
+    const syncKey = academicSyncKey(ownerKey, credentialVersion, dataKind, scopeKey);
+    const [row] = await this.database.get<HbuJwAcademicSyncState>('hbu_jw_academic_sync_state', { syncKey });
+    return row ?? null;
+  }
+
+  async replaceAcademicItems(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+    items: HbuJwAcademicItemInput[],
+    now: number,
+  ): Promise<void> {
+    const currentRows = await this.database.get<HbuJwAcademicItem>('hbu_jw_academic_item', {
+      ownerKey,
+      credentialVersion,
+      dataKind,
+      scopeKey,
+    });
+    const nextKeys = new Set(items.map((item) => item.recordKey));
+    await Promise.all(currentRows
+      .filter((row) => !nextKeys.has(row.recordKey))
+      .map((row) => this.database.remove('hbu_jw_academic_item', { id: row.id })));
+
+    for (const item of items) {
+      const [existing] = await this.database.get<HbuJwAcademicItem>('hbu_jw_academic_item', { recordKey: item.recordKey });
+      const row = {
+        ownerKey,
+        credentialVersion,
+        dataKind,
+        scopeKey,
+        position: item.position,
+        rawJson: item.rawJson,
+        sourceHash: item.sourceHash,
+        fetchedAt: now,
+        updatedAt: now,
+      };
+      if (existing) {
+        await this.database.set('hbu_jw_academic_item', { id: existing.id }, row);
+        continue;
+      }
+      await this.database.create('hbu_jw_academic_item', {
+        recordKey: item.recordKey,
+        ...row,
+        createdAt: now,
+      });
+    }
+  }
+
+  async listAcademicItems(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+    minFetchedAt: number,
+  ): Promise<HbuJwAcademicItem[]> {
+    const rows = await this.database.get<HbuJwAcademicItem>('hbu_jw_academic_item', {
+      ownerKey,
+      credentialVersion,
+      dataKind,
+      scopeKey,
+    });
+    return rows
+      .filter((row) => row.fetchedAt >= minFetchedAt)
+      .sort((left, right) => left.position - right.position || left.recordKey.localeCompare(right.recordKey));
+  }
+
+  async removeAcademicData(ownerKey: string): Promise<void> {
+    await this.database.remove('hbu_jw_academic_item', { ownerKey });
+    await this.database.remove('hbu_jw_academic_sync_state', { ownerKey });
+  }
+}
+
+function academicSyncKey(
+  ownerKey: string,
+  credentialVersion: number,
+  dataKind: HbuJwAcademicDataKind,
+  scopeKey: string,
+): string {
+  return `${ownerKey}:${credentialVersion}:${dataKind}:${scopeKey}`;
 }

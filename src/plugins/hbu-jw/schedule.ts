@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createCanvas, GifDisposal, GifEncoder, loadImage } from '@napi-rs/canvas';
 import { h, type Fragment } from 'koishi';
+import {
+  formatAcademicFallbackNotice,
+  hbuJwDatabaseFallbackPolicy,
+  type HbuJwAcademicCache,
+} from './academic-cache.js';
 import type { HbuJwHttpClient } from './jw-client.js';
 import {
   HbuJwUserError,
@@ -76,7 +81,7 @@ export type HbuJwScheduleMode = 'current-week' | 'full-semester';
 
 export interface HbuJwAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
-    | { kind: 'authenticated'; cookieJar: SerializedCookieJar }
+    | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
     | { kind: 'needs_binding'; reason: string }
     | { kind: 'invalid'; reason: string }
   >;
@@ -159,6 +164,7 @@ export class HbuJwScheduleService {
     private readonly jwClient: Pick<HbuJwHttpClient, 'getThisSemesterSchedule'>,
     private readonly puppeteer: HbuJwSchedulePuppeteerLike,
     private readonly now: () => number = () => Date.now(),
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisSemesterSchedule'>,
   ) {}
 
   async querySchedule(
@@ -171,10 +177,13 @@ export class HbuJwScheduleService {
     }
 
     try {
-      const schedule = await this.jwClient.getThisSemesterSchedule(auth.cookieJar);
-      const view = buildHbuJwScheduleView(schedule, mode, this.now());
+      const query = this.academicCache
+        ? await this.academicCache.getThisSemesterSchedule(identity, auth, hbuJwDatabaseFallbackPolicy())
+        : { data: await this.jwClient.getThisSemesterSchedule(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now() };
+      const view = buildHbuJwScheduleView(query.data, mode, this.now());
       const format: HbuJwScheduleRenderFormat = mode === 'full-semester' ? 'gif' : 'png';
-      return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwScheduleImage(this.puppeteer, view, format)];
+      const notice = formatAcademicFallbackNotice([query]);
+      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwScheduleImage(this.puppeteer, view, format)];
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
       throw new HbuJwUserError('教务课表查询失败，请稍后重试。');

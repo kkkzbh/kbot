@@ -1,5 +1,7 @@
 import 'koishi';
 import type {
+  HbuJwAcademicItem,
+  HbuJwAcademicSyncState,
   HbuJwAuthAudit,
   HbuJwBindChallenge,
   HbuJwCredential,
@@ -12,5 +14,7 @@ declare module 'koishi' {
     hbu_jw_session: HbuJwSession;
     hbu_jw_credential: HbuJwCredential;
     hbu_jw_auth_audit: HbuJwAuthAudit;
+    hbu_jw_academic_sync_state: HbuJwAcademicSyncState;
+    hbu_jw_academic_item: HbuJwAcademicItem;
   }
 }

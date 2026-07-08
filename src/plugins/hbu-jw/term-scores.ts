@@ -4,6 +4,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { h, type Fragment } from 'koishi';
 import {
+  formatAcademicFallbackNotice,
+  hbuJwDatabaseFallbackPolicy,
+  type HbuJwAcademicCache,
+  type HbuJwAcademicQueryResult,
+} from './academic-cache.js';
+import {
   addHbuJwGpaCourseToTotals,
   calculateHbuJwGpaFromTotals,
   createHbuJwGpaTotals,
@@ -18,6 +24,8 @@ import {
 } from './jw-client.js';
 import {
   type HbuJwScoreRow,
+  type HbuJwSubitemScoreLookParams,
+  type HbuJwSubitemScoreLookResult,
   HbuJwUserError,
   type HbuJwThisTermScoreRow,
   type OwnerIdentity,
@@ -33,7 +41,7 @@ const ANONYMIZED_TEXT = '*';
 
 export interface HbuJwTermScoresAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
-    | { kind: 'authenticated'; cookieJar: SerializedCookieJar }
+    | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
     | { kind: 'needs_binding'; reason: string }
     | { kind: 'invalid'; reason: string }
   >;
@@ -101,6 +109,7 @@ export class HbuJwTermScoresService {
     private readonly authService: HbuJwTermScoresAuthServiceLike,
     private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreDetails'>,
     private readonly puppeteer: HbuJwTermScoresPuppeteerLike,
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreDetails'>,
   ) {}
 
   async queryTermScores(identity: OwnerIdentity, mode: HbuJwTermScoresMode = 'full'): Promise<Fragment> {
@@ -110,29 +119,80 @@ export class HbuJwTermScoresService {
     }
 
     try {
+      const queryResults: Array<HbuJwAcademicQueryResult<unknown>> = [];
       const view = mode === 'full'
-        ? await this.buildFullView(auth.cookieJar)
-        : await this.buildAnonymousView(auth.cookieJar);
-      return [h.at(identity.qqUserId), h.text('\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
+        ? await this.buildFullView(identity, auth, queryResults)
+        : await this.buildAnonymousView(identity, auth, queryResults);
+      const notice = formatAcademicFallbackNotice(queryResults);
+      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
     } catch (error) {
       if (error instanceof HbuJwUserError) throw error;
       throw new HbuJwUserError('教务成绩查询失败，请稍后重试。');
     }
   }
 
-  private async buildFullView(cookieJar: SerializedCookieJar): Promise<HbuJwTermScoresView> {
-    const [scores, allPassingScores] = await Promise.all([
-      this.jwClient.getThisTermScores(cookieJar),
-      this.jwClient.getAllPassingScores(cookieJar),
+  private async buildFullView(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
+  ): Promise<HbuJwTermScoresView> {
+    const [scoresResult, allPassingScoresResult] = await Promise.all([
+      this.loadThisTermScores(identity, auth),
+      this.loadAllPassingScores(identity, auth),
     ]);
-    const statusOverrides = await resolveLookStatusOverrides(this.jwClient, cookieJar, scores);
-    return buildHbuJwTermScoresView({ mode: 'full', rows: scores, allPassingRows: allPassingScores, statusOverrides });
+    queryResults.push(scoresResult, allPassingScoresResult);
+    const statusOverrides = await resolveLookStatusOverrides(async (params) => {
+      const result = await this.loadSubitemScoreDetails(identity, auth, params);
+      queryResults.push(result);
+      return result.data;
+    }, scoresResult.data);
+    return buildHbuJwTermScoresView({ mode: 'full', rows: scoresResult.data, allPassingRows: allPassingScoresResult.data, statusOverrides });
   }
 
-  private async buildAnonymousView(cookieJar: SerializedCookieJar): Promise<HbuJwTermScoresView> {
-    const scores = await this.jwClient.getThisTermScores(cookieJar);
-    const statusOverrides = await resolveLookStatusOverrides(this.jwClient, cookieJar, scores);
-    return buildHbuJwTermScoresView({ mode: 'anonymous', rows: scores, statusOverrides });
+  private async buildAnonymousView(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
+  ): Promise<HbuJwTermScoresView> {
+    const scoresResult = await this.loadThisTermScores(identity, auth);
+    queryResults.push(scoresResult);
+    const statusOverrides = await resolveLookStatusOverrides(async (params) => {
+      const result = await this.loadSubitemScoreDetails(identity, auth, params);
+      queryResults.push(result);
+      return result.data;
+    }, scoresResult.data);
+    return buildHbuJwTermScoresView({ mode: 'anonymous', rows: scoresResult.data, statusOverrides });
+  }
+
+  private async loadThisTermScores(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+  ): Promise<HbuJwAcademicQueryResult<HbuJwThisTermScoreRow[]>> {
+    if (this.academicCache) {
+      return this.academicCache.getThisTermScores(identity, auth, hbuJwDatabaseFallbackPolicy());
+    }
+    return { data: await this.jwClient.getThisTermScores(auth.cookieJar), source: 'remote', fetchedAt: Date.now() };
+  }
+
+  private async loadAllPassingScores(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+  ): Promise<HbuJwAcademicQueryResult<HbuJwScoreRow[]>> {
+    if (this.academicCache) {
+      return this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy());
+    }
+    return { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote', fetchedAt: Date.now() };
+  }
+
+  private async loadSubitemScoreDetails(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    params: HbuJwSubitemScoreLookParams,
+  ): Promise<HbuJwAcademicQueryResult<HbuJwSubitemScoreLookResult>> {
+    if (this.academicCache) {
+      return this.academicCache.getSubitemScoreDetails(identity, auth, params, hbuJwDatabaseFallbackPolicy());
+    }
+    return { data: await this.jwClient.getSubitemScoreDetails(auth.cookieJar, params), source: 'remote', fetchedAt: Date.now() };
   }
 }
 
@@ -633,8 +693,7 @@ function statusSortWeight(statusKind: HbuJwTermScoreStatusKind): number {
 }
 
 async function resolveLookStatusOverrides(
-  jwClient: Pick<HbuJwHttpClient, 'getSubitemScoreDetails'>,
-  cookieJar: SerializedCookieJar,
+  loadDetails: (params: HbuJwSubitemScoreLookParams) => Promise<HbuJwSubitemScoreLookResult>,
   rows: HbuJwThisTermScoreRow[],
 ): Promise<Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>> {
   const rowsNeedingLook = rows.filter((row) => readRawTermScoreStatus(row) !== 'confirmed');
@@ -642,7 +701,7 @@ async function resolveLookStatusOverrides(
 
   const overrides = new Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>();
   await Promise.all(rowsNeedingLook.map(async (row) => {
-    const result = await jwClient.getSubitemScoreDetails(cookieJar, buildSubitemScoreLookParamsFromThisTermRow(row));
+    const result = await loadDetails(buildSubitemScoreLookParamsFromThisTermRow(row));
     const recordedCount = result.rows.filter(isPrimarySubitemScoreType).length;
     overrides.set(row, recordedCount > 0 ? { kind: 'recorded', recordedCount } : { kind: 'pending' });
   }));

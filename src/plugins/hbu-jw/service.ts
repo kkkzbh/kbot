@@ -48,7 +48,7 @@ export interface SubmitCredentialsResult {
 }
 
 export type AuthenticatedSessionResult =
-  | { kind: 'authenticated'; cookieJar: SerializedCookieJar }
+  | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
   | { kind: 'needs_binding'; reason: string }
   | { kind: 'invalid'; reason: string };
 
@@ -180,6 +180,7 @@ export class HbuJwService {
       this.kek,
     );
     await this.store.updateCredentialEnvelope(credentialRow, credential.cipherText, credential.meta, now);
+    await this.store.removeAcademicData(identity.ownerKey);
     await this.store.replaceSession(identity, challenge.pendingCookieJarCipher, 'active', now);
     await this.store.clearChallengeSecrets(challenge.id, 'confirmed', now);
     await this.audit(identity.ownerKey, 'bind_confirmed', 'ok');
@@ -204,6 +205,7 @@ export class HbuJwService {
     const now = this.now();
     await this.store.removeSession(identity.ownerKey);
     await this.store.revokeCredential(identity.ownerKey, now);
+    await this.store.removeAcademicData(identity.ownerKey);
     await this.store.cancelActiveChallenges(identity.ownerKey, now);
     await this.store.clearOwnerChallengeSecrets(identity.ownerKey, now);
     await this.audit(identity.ownerKey, 'unbind', 'ok');
@@ -212,18 +214,21 @@ export class HbuJwService {
   async ensureAuthenticated(identity: OwnerIdentity): Promise<AuthenticatedSessionResult> {
     const now = this.now();
     const session = await this.store.getSession(identity.ownerKey);
+    const credential = await this.store.getActiveCredential(identity.ownerKey);
     if (session?.status === 'active') {
       const cookieJar = this.decryptCookieJar(identity.ownerKey, session.cookieJarCipher);
       if (await this.jwClient.validate(cookieJar)) {
+        if (!credential) {
+          throw new Error(`active hbu-jw session is missing credential: owner=${identity.ownerKey}`);
+        }
         await this.store.markSessionValidated(identity.ownerKey, now);
         await this.audit(identity.ownerKey, 'session_validated', 'ok');
-        return { kind: 'authenticated', cookieJar };
+        return { kind: 'authenticated', cookieJar, credentialVersion: credential.version };
       }
       await this.store.setSessionStatus(identity.ownerKey, 'expired', 'session_expired', now);
       await this.audit(identity.ownerKey, 'session_expired', 'expired');
     }
 
-    const credential = await this.store.getActiveCredential(identity.ownerKey);
     if (!credential) {
       return { kind: 'needs_binding', reason: '请先发送“教务绑定”。' };
     }
@@ -243,7 +248,7 @@ export class HbuJwService {
       await this.store.replaceSession(identity, cookieJarCipher, 'active', now);
       await this.store.markCredentialUsed(credential.id, now);
       await this.audit(identity.ownerKey, 'credential_refresh_succeeded', 'ok');
-      return { kind: 'authenticated', cookieJar: login.cookieJar };
+      return { kind: 'authenticated', cookieJar: login.cookieJar, credentialVersion: credential.version };
     } catch {
       await this.store.setSessionStatus(identity.ownerKey, 'invalid', 'credential_refresh_failed', now);
       await this.store.markCredentialFailure(credential.id, 'credential_refresh_failed', now);

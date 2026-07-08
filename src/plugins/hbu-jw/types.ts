@@ -63,6 +63,46 @@ export interface HbuJwAuthAudit {
   createdAt: number;
 }
 
+export type HbuJwAcademicDataKind =
+  | 'subitem_term'
+  | 'passing_score'
+  | 'term_score'
+  | 'subitem_detail'
+  | 'schedule_header'
+  | 'schedule_course'
+  | 'exam_event';
+
+export interface HbuJwAcademicSyncState {
+  id: number;
+  syncKey: string;
+  ownerKey: string;
+  credentialVersion: number;
+  dataKind: HbuJwAcademicDataKind;
+  scopeKey: string;
+  lastAttemptedAt: number;
+  lastSucceededAt?: number | null;
+  lastFailureReason?: string | null;
+  rowCount: number;
+  sourceHash?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HbuJwAcademicItem {
+  id: number;
+  recordKey: string;
+  ownerKey: string;
+  credentialVersion: number;
+  dataKind: HbuJwAcademicDataKind;
+  scopeKey: string;
+  position: number;
+  rawJson: string;
+  sourceHash: string;
+  fetchedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface SerializedCookieJar {
   cookies: Array<{
     name: string;
