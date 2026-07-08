@@ -205,7 +205,7 @@ export class GenshinService {
     }
 
     try {
-      const cookies = result.cookies;
+      const cookies = await this.client.exchangeCookieToken(result.cookies);
       const roles = await this.client.listRoles(cookies);
       if (roles.length === 0) {
         throw new GenshinUserError('该米游社账号没有可绑定的国服原神 UID。');

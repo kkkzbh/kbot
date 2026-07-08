@@ -174,6 +174,7 @@ function createService(options: {
   const client = {
     createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/login-platform/mobile.html?tk=ticket-secret#/login/qr' })),
     queryQrLogin: vi.fn(async () => qrResults.shift() ?? { status: 'Confirmed', cookies: passportCookies }),
+    exchangeCookieToken: vi.fn(async (cookies: GenshinCookieFields) => ({ ...cookies, cookie_token: 'cookie_token_secret', account_id: '123456' })),
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
     redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
@@ -345,6 +346,14 @@ describe('genshin binding service', () => {
     const [challenge] = database.tables.get('genshin_bind_challenge') ?? [];
     expect(challenge).toMatchObject({ status: 'role_selecting', pendingRolesJson: JSON.stringify(roles) });
     expect(JSON.stringify(challenge)).not.toContain('v2_secret');
+    expect(JSON.stringify(challenge)).not.toContain('cookie_token_secret');
+    expect(client.exchangeCookieToken).toHaveBeenCalledWith({
+      stoken: 'v2_secret',
+      mid: 'mid_secret',
+      account_id: '123456',
+      login_uid: '123456',
+      stuid: '123456',
+    });
 
     const second = await service.selectRole({ token, selectedRoleKey: '100000002:cn_qd01' });
     expect(second).toMatchObject({ kind: 'success', role: roles[1] });
@@ -359,6 +368,7 @@ describe('genshin binding service', () => {
       revokedAt: null,
     });
     expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain('v2_secret');
+    expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain('cookie_token_secret');
     expect(database.tables.get('genshin_bind_challenge')?.[0]).toMatchObject({
       status: 'confirmed',
       pendingCredentialCipher: null,
@@ -651,7 +661,10 @@ describe('genshin takumi client', () => {
           },
         });
       }
-      if (url.pathname === '/binding/api/getUserGameRolesByStoken') {
+      if (url.pathname === '/account/auth/api/getCookieAccountInfoBySToken') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { uid: '123456', cookie_token: 'cookie_token_secret' } });
+      }
+      if (url.pathname === '/binding/api/getUserGameRolesByCookieToken') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { list: [{ game_biz: 'hk4e_cn', game_uid: '100000001', region: 'cn_gf01', region_name: '天空岛', nickname: '旅行者', level: 60 }] } });
       }
       if (url.pathname === '/event/luna/info') {
@@ -699,7 +712,7 @@ describe('genshin takumi client', () => {
     if (qrResult.status !== 'Confirmed' || !qrResult.cookies) {
       throw new Error('expected confirmed qr result');
     }
-    const cookies = qrResult.cookies;
+    const cookies = await client.exchangeCookieToken(qrResult.cookies);
     const [selectedRole] = await client.listRoles(cookies);
 
     await client.signIn(cookies, selectedRole);
@@ -710,7 +723,8 @@ describe('genshin takumi client', () => {
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/account/ma-cn-passport/app/createQRLogin',
       '/account/ma-cn-passport/app/queryQRLoginStatus',
-      '/binding/api/getUserGameRolesByStoken',
+      '/account/auth/api/getCookieAccountInfoBySToken',
+      '/binding/api/getUserGameRolesByCookieToken',
       '/event/luna/info',
       '/device-fp/api/getFp',
       '/event/luna/sign',
@@ -733,28 +747,34 @@ describe('genshin takumi client', () => {
       'x-rpc-device_id': '00000000-0000-4000-8000-000000000001',
       'content-type': 'application/json',
     });
-    expect(cookies).toMatchObject({ stoken: 'v2_secret', mid: 'mid_secret', stuid: '123456' });
-    expect(new URL(calls[2].url).hostname).toBe('api-takumi.miyoushe.com');
-    expect(calls[2].url).toContain('game_biz=hk4e_cn');
+    expect(cookies).toMatchObject({ stoken: 'v2_secret', mid: 'mid_secret', stuid: '123456', cookie_token: 'cookie_token_secret' });
+    expect(new URL(calls[2].url).hostname).toBe('passport-api.mihoyo.com');
+    expect(new URL(calls[2].url).searchParams.get('stoken')).toBe('v2_secret');
+    expect(new URL(calls[2].url).searchParams.get('uid')).toBe('123456');
     expect(calls[2].init.headers).toMatchObject({
       cookie: expect.stringContaining('stoken=v2_secret'),
-      'x-rpc-client_type': '2',
-      ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
     });
-    expect(calls[5].init.method).toBe('POST');
-    expect(calls[5].init.headers).toMatchObject({
+    expect(String((calls[2].init.headers as Record<string, string>).cookie)).toContain('mid=mid_secret');
+    expect(String((calls[2].init.headers as Record<string, string>).cookie)).toContain('stuid=123456');
+    expect(new URL(calls[3].url).hostname).toBe('passport-api.mihoyo.com');
+    expect(calls[3].url).toContain('game_biz=hk4e_cn');
+    expect(calls[3].init.headers).toMatchObject({
+      cookie: 'account_id=123456; cookie_token=cookie_token_secret',
+    });
+    expect(calls[6].init.method).toBe('POST');
+    expect(calls[6].init.headers).toMatchObject({
       cookie: expect.stringContaining('stoken=v2_secret'),
       'x-rpc-signgame': 'hk4e',
       ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
     });
-    const redeemUrl = new URL(calls[7].url);
+    const redeemUrl = new URL(calls[8].url);
     expect(redeemUrl.hostname).toBe('hk4e-api.mihoyo.com');
     expect(redeemUrl.searchParams.get('auth_appid')).toBe('apicdkey');
     expect(redeemUrl.searchParams.get('authkey')).toBe('authkey-secret');
     expect(redeemUrl.searchParams.get('game_biz')).toBe('hk4e_cn');
-    expect(JSON.parse(String(calls[6].init.body))).toMatchObject({ auth_appid: 'apicdkey' });
-    expect(JSON.parse(String(calls[8].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
-    const gachaUrl = new URL(calls[9].url);
+    expect(JSON.parse(String(calls[7].init.body))).toMatchObject({ auth_appid: 'apicdkey' });
+    expect(JSON.parse(String(calls[9].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
+    const gachaUrl = new URL(calls[10].url);
     expect(gachaUrl.hostname).toBe('hk4e-api.mihoyo.com');
     expect(gachaUrl.pathname).toBe('/event/gacha_info/api/getGachaLog');
     expect(gachaUrl.searchParams.get('authkey_ver')).toBe('1');

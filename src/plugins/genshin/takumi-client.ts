@@ -12,7 +12,6 @@ import {
 } from './types.js';
 
 const API_TAKUMI_BASE_URL = 'https://api-takumi.mihoyo.com';
-const API_TAKUMI_MIYOUSHE_BASE_URL = 'https://api-takumi.miyoushe.com';
 const PASSPORT_API_BASE_URL = 'https://passport-api.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
@@ -24,7 +23,6 @@ const REDEEM_AUTH_APPID = 'apicdkey';
 const GACHA_AUTH_APPID = 'webview_gacha';
 const DS1_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
 const DS2_SALT = '9nQiU3AV0rJSIBWgdynfoGMGKaklfbM7';
-const K2_SALT = 'BIPaooxbWZW02fGHZL1If26mYCljPgst';
 
 export interface GenshinTakumiClientOptions {
   fetchImpl?: typeof fetch;
@@ -84,6 +82,11 @@ interface RoleListPayload {
     nickname?: string;
     level?: string | number;
   }>;
+}
+
+interface CookieAccountInfoPayload {
+  uid?: string | number;
+  cookie_token?: string;
 }
 
 interface SignInfoPayload {
@@ -164,17 +167,17 @@ export class GenshinTakumiClient {
   }
 
   async listRoles(cookies: GenshinCookieFields): Promise<GenshinGameRole[]> {
-    if (!cookies.stoken || !cookies.mid) {
-      throw new GenshinTakumiError('当前登录凭据缺少 stoken + mid，无法读取原神 UID。', {
+    if (!cookies.cookie_token || !cookies.account_id) {
+      throw new GenshinTakumiError('当前登录凭据缺少 cookie_token + account_id，无法读取原神 UID。', {
         retcode: null,
-        diagnostic: 'listRoles missing stoken or mid',
+        diagnostic: 'listRoles missing cookie_token or account_id',
       });
     }
-    const url = new URL('/binding/api/getUserGameRolesByStoken', API_TAKUMI_MIYOUSHE_BASE_URL);
+    const url = new URL('/binding/api/getUserGameRolesByCookieToken', PASSPORT_API_BASE_URL);
     url.searchParams.set('game_biz', GENSHIN_GAME_BIZ);
     const payload = await this.requestJson<RoleListPayload>(url, {
       method: 'GET',
-      headers: this.stokenRoleHeaders(cookies),
+      headers: this.cookieTokenRoleHeaders(cookies),
     });
     const list = payload.data?.list ?? [];
     return list
@@ -226,6 +229,45 @@ export class GenshinTakumiClient {
     return {
       status,
       cookies: parsePassportQrCookies(payload.data, payload.retcode),
+    };
+  }
+
+  async exchangeCookieToken(cookies: GenshinCookieFields): Promise<GenshinCookieFields> {
+    const stuid = String(cookies.stuid ?? cookies.account_id ?? cookies.login_uid ?? '').trim();
+    if (!cookies.stoken || !cookies.mid || !stuid) {
+      throw new GenshinTakumiError('当前登录凭据缺少 stoken + mid + stuid，无法换取 cookie_token。', {
+        retcode: null,
+        diagnostic: 'exchangeCookieToken missing stoken, mid, or stuid',
+      });
+    }
+    const url = new URL('/account/auth/api/getCookieAccountInfoBySToken', PASSPORT_API_BASE_URL);
+    url.searchParams.set('stoken', cookies.stoken);
+    url.searchParams.set('uid', stuid);
+    const payload = await this.requestJson<CookieAccountInfoPayload>(url, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        cookie: buildCookieHeaderPairs([
+          ['mid', cookies.mid],
+          ['stoken', cookies.stoken],
+          ['stuid', stuid],
+        ]),
+      },
+    });
+    const cookieToken = String(payload.data?.cookie_token ?? '').trim();
+    const accountId = String(payload.data?.uid ?? '').trim();
+    if (!cookieToken || !accountId) {
+      throw new GenshinTakumiError('米游社未返回有效 cookie_token + account_id。', {
+        retcode: payload.retcode,
+        diagnostic: 'cookie token exchange missing cookie_token or uid',
+      });
+    }
+    return {
+      ...cookies,
+      cookie_token: cookieToken,
+      account_id: accountId,
+      login_uid: accountId,
+      stuid,
     };
   }
 
@@ -492,13 +534,14 @@ export class GenshinTakumiClient {
     };
   }
 
-  private stokenRoleHeaders(cookies: GenshinCookieFields): Record<string, string> {
-    return this.baseHeaders(cookies, {
-      referer: 'https://app.mihoyo.com',
-      origin: 'https://app.mihoyo.com',
-      'x-rpc-client_type': '2',
-      ds: createSimpleDs(K2_SALT),
-    });
+  private cookieTokenRoleHeaders(cookies: GenshinCookieFields): Record<string, string> {
+    return {
+      accept: 'application/json, text/plain, */*',
+      cookie: buildCookieHeaderPairs([
+        ['account_id', cookies.account_id],
+        ['cookie_token', cookies.cookie_token],
+      ]),
+    };
   }
 
   private passportQrHeaders(): Record<string, string> {
@@ -524,13 +567,6 @@ function createDs2(): string {
   const timestamp = Math.floor(Date.now() / 1000);
   const random = randomAlphaNum(6);
   const digest = md5(`salt=${DS2_SALT}&t=${timestamp}&r=${random}`);
-  return `${timestamp},${random},${digest}`;
-}
-
-function createSimpleDs(salt: string): string {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const random = randomAlphaNum(6);
-  const digest = md5(`salt=${salt}&t=${timestamp}&r=${random}`);
   return `${timestamp},${random},${digest}`;
 }
 
@@ -594,6 +630,15 @@ function readQrTicket(rawUrl: string): string {
   } catch {
     return '';
   }
+}
+
+function buildCookieHeaderPairs(pairs: Array<[string, string | undefined]>): string {
+  return pairs
+    .flatMap(([name, value]) => {
+      const normalized = String(value ?? '').trim();
+      return normalized ? [`${name}=${normalized}`] : [];
+    })
+    .join('; ');
 }
 
 function normalizeQrLoginStatus(value: unknown): GenshinQrLoginStatus {
