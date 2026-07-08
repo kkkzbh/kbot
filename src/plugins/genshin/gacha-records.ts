@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { h } from 'koishi';
 import { assertGenshinAdvancedCookieCapability } from './cookie.js';
 import { decryptGenshinCredential } from './credential.js';
-import { GENSHIN_GACHA_ICON_BASE_URL, GENSHIN_GACHA_ICON_NAMES } from './gacha-icon-data.js';
+import { GENSHIN_GACHA_ICON_BASE_URL, GENSHIN_GACHA_ICON_NAMES, GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME } from './gacha-icon-data.js';
 import { gachaRecordKey, gachaSyncKey, type GenshinStore } from './store.js';
 import {
   GenshinTakumiError,
@@ -651,7 +651,7 @@ function buildPoolHistoryRows(
     const pityCount = nextFiveIndex == null ? poolRecords.length - index : nextFiveIndex - index;
     return {
       name: record.name,
-      iconUrl: resolveGachaIconUrl(record.itemId, pool.tone),
+      iconUrl: resolveGachaIconUrl(record.itemId, record.name, pool.tone),
       itemType: record.itemType,
       rankType: record.rankType,
       pityCount,
@@ -715,8 +715,9 @@ function renderHistoryRow(row: GenshinGachaHistoryRowView, pool: GenshinGachaPoo
   </div>`;
 }
 
-function resolveGachaIconUrl(itemId: string, tone: GenshinGachaPoolTone): string {
-  const iconName = GENSHIN_GACHA_ICON_NAMES[itemId as keyof typeof GENSHIN_GACHA_ICON_NAMES];
+function resolveGachaIconUrl(itemId: string, itemName: string, tone: GenshinGachaPoolTone): string {
+  const iconName = GENSHIN_GACHA_ICON_NAMES[itemId as keyof typeof GENSHIN_GACHA_ICON_NAMES]
+    ?? GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME[itemName as keyof typeof GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME];
   if (!iconName) return renderUnknownWishIconSrc(tone);
   return `${GENSHIN_GACHA_ICON_BASE_URL}${encodeURIComponent(iconName)}.png`;
 }

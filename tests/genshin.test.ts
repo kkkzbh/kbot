@@ -745,11 +745,31 @@ describe('genshin gacha records renderer', () => {
         rankType: '5',
         time: '2026-07-08 19:10:00',
       }),
+      gachaRecord({
+        id: 5,
+        recordKey: gachaRecordKey('100000001', 'cn_gf01', '1000000000000000005'),
+        recordId: '1000000000000000005',
+        itemId: '',
+        name: '奈芙尔',
+        itemType: '角色',
+        rankType: '5',
+        time: '2026-07-08 19:40:00',
+      }),
+      gachaRecord({
+        id: 6,
+        recordKey: gachaRecordKey('100000001', 'cn_gf01', '1000000000000000006'),
+        recordId: '1000000000000000006',
+        itemId: '',
+        name: '西风剑',
+        itemType: '武器',
+        rankType: '4',
+        time: '2026-07-08 19:41:00',
+      }),
     ], {
       uid: '100000001',
       nickname: '旅行者',
       regionName: '天空岛',
-      addedCount: 4,
+      addedCount: 6,
       syncedAt: 1_788_891_000_000,
       timezone: 'Asia/Shanghai',
     });
@@ -766,10 +786,12 @@ describe('genshin gacha records renderer', () => {
     expect(html).not.toContain('集录祈愿');
     expect(html).not.toContain('新手祈愿');
     expect(html).toContain('data:image/svg+xml');
+    expect(html).toContain('https://enka.network/ui/UI_AvatarIcon_Nefer.png');
     expect(html).toContain('https://enka.network/ui/UI_AvatarIcon_Ayaka.png');
     expect(html).toContain('https://enka.network/ui/UI_EquipIcon_Sword_Narukami.png');
     expect(html).toContain('https://enka.network/ui/UI_EquipIcon_Catalyst_Dvalin.png');
     expect(html).toContain('已垫 1 抽');
+    expect(html).toContain('奈芙尔');
     expect(html).toContain('神里绫华');
     expect(html).toContain('雾切之回光');
     expect(html).toContain('天空之卷');
