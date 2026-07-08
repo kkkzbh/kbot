@@ -171,7 +171,7 @@ function createService(options: {
   const kek = loadOrCreateKek(join(dir, 'kek.key'));
   const qrResults = [...(options.qrResults ?? [{ status: 'Confirmed' as const, accountId: '123456', gameToken: 'game_token_secret' }])];
   const client = {
-    createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/login?ticket=ticket-secret' })),
+    createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=4&ticket=ticket-secret' })),
     queryQrLogin: vi.fn(async () => qrResults.shift() ?? { status: 'Confirmed', accountId: '123456', gameToken: 'game_token_secret' }),
     exchangeGameToken: options.exchangeGameToken ?? vi.fn(async () => ({ stoken: 'v2_secret', mid: 'mid_secret', account_id: '123456', stuid: '123456' })),
     listRoles: vi.fn(async () => options.roles ?? [role()]),
@@ -337,7 +337,7 @@ describe('genshin binding service', () => {
     const token = extractToken(started.link);
 
     const page = await service.resolveBindPageChallenge(token);
-    expect(page).toMatchObject({ state: 'qr', qrUrl: 'https://user.mihoyo.com/login?ticket=ticket-secret' });
+    expect(page).toMatchObject({ state: 'qr', qrUrl: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=4&ticket=ticket-secret' });
 
     const first = await service.pollQrLogin(token);
 
@@ -634,7 +634,7 @@ describe('genshin takumi client', () => {
     const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
       calls.push({ url: url.toString(), init });
       if (url.pathname === '/hk4e_cn/combo/panda/qrcode/fetch') {
-        return jsonResponse({ retcode: 0, message: 'OK', data: { url: 'https://user.mihoyo.com/login?ticket=ticket-secret' } });
+        return jsonResponse({ retcode: 0, message: 'OK', data: { url: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=4&ticket=ticket-secret' } });
       }
       if (url.pathname === '/hk4e_cn/combo/panda/qrcode/query') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { stat: 'Confirmed', payload: { raw: JSON.stringify({ uid: '123456', token: 'game_token_secret' }) } } });
@@ -711,8 +711,10 @@ describe('genshin takumi client', () => {
       '/binding/api/genAuthKey',
       '/event/gacha_info/api/getGachaLog',
     ]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ app_id: '2' });
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ app_id: '2' });
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ app_id: '4' });
+    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ app_id: '4' });
+    expect(calls[0].init.headers).toEqual({ 'content-type': 'application/json;charset=utf-8' });
+    expect(calls[1].init.headers).toEqual({ 'content-type': 'application/json;charset=utf-8' });
     expect(calls[2].init.headers).toMatchObject({
       'x-rpc-app_id': 'bll8iq97cem8',
     });
@@ -761,6 +763,22 @@ describe('genshin takumi client', () => {
     });
 
     await expect(client.queryQrLogin('expired-ticket')).resolves.toEqual({ status: 'Expired' });
+  });
+
+  it('rejects game-token qr fetch responses for the wrong app id', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      retcode: 0,
+      message: 'OK',
+      data: { url: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=2&ticket=ticket-secret' },
+    }));
+    const client = new GenshinTakumiClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      deviceId: '00000000-0000-4000-8000-000000000001',
+    });
+
+    await expect(client.createQrLogin()).rejects.toMatchObject({
+      diagnostic: 'qrcode fetch app_id mismatch expected=4 actual=2',
+    });
   });
 });
 

@@ -17,7 +17,7 @@ const HK4E_SDK_BASE_URL = 'https://hk4e-sdk.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
 const MIYOUSHE_APP_ID = 'bll8iq97cem8';
-const DEFAULT_GAME_TOKEN_QR_APP_ID = '2';
+const DEFAULT_GAME_TOKEN_QR_APP_ID = '4';
 const REDEEM_AUTH_APPID = 'apicdkey';
 const GACHA_AUTH_APPID = 'webview_gacha';
 const DS1_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
@@ -209,13 +209,20 @@ export class GenshinTakumiClient {
       app_id: this.gameTokenQrAppId,
       device: this.deviceId,
     });
-    const payload = await this.postApp<QrFetchPayload>(new URL('/hk4e_cn/combo/panda/qrcode/fetch', HK4E_SDK_BASE_URL), body);
+    const payload = await this.postSdkJson<QrFetchPayload>(new URL('/hk4e_cn/combo/panda/qrcode/fetch', HK4E_SDK_BASE_URL), body);
     const url = String(payload.data?.url ?? '').trim();
     const ticket = readQrTicket(url);
     if (!url || !ticket) {
       throw new GenshinTakumiError('米游社未返回有效扫码登录票据。', {
         retcode: payload.retcode,
         diagnostic: 'qrcode fetch missing url or ticket',
+      });
+    }
+    const returnedAppId = readQrAppId(url);
+    if (returnedAppId !== this.gameTokenQrAppId) {
+      throw new GenshinTakumiError('米游社返回的扫码登录应用与原神绑定配置不一致。', {
+        retcode: payload.retcode,
+        diagnostic: `qrcode fetch app_id mismatch expected=${this.gameTokenQrAppId} actual=${returnedAppId ?? 'missing'}`,
       });
     }
     return { url, ticket };
@@ -229,13 +236,7 @@ export class GenshinTakumiClient {
     });
     const payload = await this.requestRawJson<TakumiResponse<QrQueryPayload>>(new URL('/hk4e_cn/combo/panda/qrcode/query', HK4E_SDK_BASE_URL), {
       method: 'POST',
-      headers: this.baseHeaders(undefined, {
-        'content-type': 'application/json;charset=utf-8',
-        referer: 'https://app.mihoyo.com',
-        'x-rpc-app_id': MIYOUSHE_APP_ID,
-        'x-rpc-verify_key': MIYOUSHE_APP_ID,
-        ds: createDs1('', body),
-      }),
+      headers: sdkJsonHeaders(),
       body,
     });
     if (payload.retcode === -106) {
@@ -456,16 +457,10 @@ export class GenshinTakumiClient {
     });
   }
 
-  private async postApp<T>(url: URL, body: string): Promise<TakumiResponse<T>> {
+  private async postSdkJson<T>(url: URL, body: string): Promise<TakumiResponse<T>> {
     return this.requestJson<T>(url, {
       method: 'POST',
-      headers: this.baseHeaders(undefined, {
-        'content-type': 'application/json;charset=utf-8',
-        referer: 'https://app.mihoyo.com',
-        'x-rpc-app_id': MIYOUSHE_APP_ID,
-        'x-rpc-verify_key': MIYOUSHE_APP_ID,
-        ds: createDs1('', body),
-      }),
+      headers: sdkJsonHeaders(),
       body,
     });
   }
@@ -662,6 +657,20 @@ function readQrTicket(rawUrl: string): string {
   } catch {
     return '';
   }
+}
+
+function readQrAppId(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).searchParams.get('app_id')?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function sdkJsonHeaders(): Record<string, string> {
+  return {
+    'content-type': 'application/json;charset=utf-8',
+  };
 }
 
 function normalizeQrLoginStatus(value: unknown): GenshinQrLoginStatus {

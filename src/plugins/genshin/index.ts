@@ -22,7 +22,7 @@ const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACT_ID = 'e202311201442471';
 const DEFAULT_APP_VERSION = '2.70.1';
 const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
-const DEFAULT_GAME_TOKEN_QR_APP_ID = '2';
+const DEFAULT_GAME_TOKEN_QR_APP_ID = '4';
 
 export interface Config {
   bindPagePath?: string;
