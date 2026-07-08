@@ -4,11 +4,17 @@ import {
   GENSHIN_GAME_BIZ,
   type GenshinCookieFields,
   type GenshinGameRole,
+  type GenshinQrLoginResult,
+  type GenshinQrLoginStatus,
+  type GenshinQrLoginTicket,
 } from './types.js';
 
 const API_TAKUMI_BASE_URL = 'https://api-takumi.mihoyo.com';
+const HK4E_SDK_BASE_URL = 'https://hk4e-sdk.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
+const MIYOUSHE_APP_ID = 'bll8iq97cem8';
+const GENSHIN_QR_APP_ID = '4';
 const DS1_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
 const DS2_SALT = '9nQiU3AV0rJSIBWgdynfoGMGKaklfbM7';
 
@@ -62,6 +68,36 @@ interface AuthKeyPayload {
   authkey?: string;
 }
 
+interface QrFetchPayload {
+  url?: string;
+}
+
+interface QrQueryPayload {
+  stat?: string;
+  payload?: {
+    proto?: string;
+    raw?: string;
+    uid?: string | number;
+    token?: string;
+  };
+}
+
+interface QrRawPayload {
+  uid?: string | number;
+  token?: string;
+}
+
+interface GameTokenPayload {
+  token?: {
+    token_type?: number;
+    token?: string;
+  };
+  user_info?: {
+    aid?: string | number;
+    mid?: string;
+  };
+}
+
 export class GenshinTakumiError extends Error {
   readonly retcode: number | null;
   readonly diagnostic: string;
@@ -112,6 +148,79 @@ export class GenshinTakumiClient {
         gameBiz: GENSHIN_GAME_BIZ as typeof GENSHIN_GAME_BIZ,
       }))
       .filter((role) => Boolean(role.uid && role.region));
+  }
+
+  async createQrLogin(): Promise<GenshinQrLoginTicket> {
+    const body = JSON.stringify({
+      app_id: GENSHIN_QR_APP_ID,
+      device: this.deviceId,
+    });
+    const payload = await this.postApp<QrFetchPayload>(new URL('/hk4e_cn/combo/panda/qrcode/fetch', HK4E_SDK_BASE_URL), body);
+    const url = String(payload.data?.url ?? '').trim();
+    const ticket = readQrTicket(url);
+    if (!url || !ticket) {
+      throw new GenshinTakumiError('米游社未返回有效扫码登录票据。', {
+        retcode: payload.retcode,
+        diagnostic: 'qrcode fetch missing url or ticket',
+      });
+    }
+    return { url, ticket };
+  }
+
+  async queryQrLogin(ticket: string): Promise<GenshinQrLoginResult> {
+    const body = JSON.stringify({
+      app_id: GENSHIN_QR_APP_ID,
+      device: this.deviceId,
+      ticket,
+    });
+    const payload = await this.postApp<QrQueryPayload>(new URL('/hk4e_cn/combo/panda/qrcode/query', HK4E_SDK_BASE_URL), body);
+    const status = normalizeQrLoginStatus(payload.data?.stat);
+    if (status !== 'Confirmed') {
+      return { status };
+    }
+    const raw = parseQrRawPayload(payload.data?.payload);
+    if (!raw.accountId || !raw.gameToken) {
+      throw new GenshinTakumiError('米游社扫码登录未返回有效 Game Token。', {
+        retcode: payload.retcode,
+        diagnostic: 'qrcode query confirmed without accountId or gameToken',
+      });
+    }
+    return {
+      status,
+      accountId: raw.accountId,
+      gameToken: raw.gameToken,
+    };
+  }
+
+  async exchangeGameToken(accountId: string, gameToken: string): Promise<GenshinCookieFields> {
+    const numericAccountId = Number(accountId);
+    if (!Number.isSafeInteger(numericAccountId) || numericAccountId <= 0) {
+      throw new GenshinTakumiError('米游社扫码登录返回了无效账号 ID。', {
+        retcode: null,
+        diagnostic: `invalid accountId=${accountId}`,
+      });
+    }
+    const body = JSON.stringify({
+      account_id: numericAccountId,
+      game_token: gameToken,
+    });
+    const payload = await this.postApp<GameTokenPayload>(new URL('/account/ma-cn-session/app/getTokenByGameToken', API_TAKUMI_BASE_URL), body);
+    const stoken = String(payload.data?.token?.token ?? '').trim();
+    const mid = String(payload.data?.user_info?.mid ?? '').trim();
+    const aid = String(payload.data?.user_info?.aid ?? accountId).trim();
+    if (!stoken || !mid) {
+      throw new GenshinTakumiError('米游社未返回可用于高级功能的 stoken + mid。', {
+        retcode: payload.retcode,
+        diagnostic: 'game token exchange missing stoken or mid',
+      });
+    }
+    return {
+      stoken,
+      mid,
+      account_id: aid,
+      login_uid: aid,
+      stuid: aid,
+    };
   }
 
   async signIn(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinSignResult> {
@@ -218,6 +327,20 @@ export class GenshinTakumiClient {
     return this.requestJson<T>(url, {
       method: 'POST',
       headers: this.baseHeaders(cookies, headers),
+      body,
+    });
+  }
+
+  private async postApp<T>(url: URL, body: string): Promise<TakumiResponse<T>> {
+    return this.requestJson<T>(url, {
+      method: 'POST',
+      headers: this.baseHeaders(undefined, {
+        'content-type': 'application/json;charset=utf-8',
+        referer: 'https://app.mihoyo.com',
+        'x-rpc-app_id': MIYOUSHE_APP_ID,
+        'x-rpc-verify_key': MIYOUSHE_APP_ID,
+        ds: createDs1('', body),
+      }),
       body,
     });
   }
@@ -358,6 +481,48 @@ function normalizeLevel(value: unknown): number | null {
   if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readQrTicket(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).searchParams.get('ticket')?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeQrLoginStatus(value: unknown): GenshinQrLoginStatus {
+  if (value === 'Init' || value === 'Scanned' || value === 'Confirmed') return value;
+  throw new GenshinTakumiError('米游社返回了未知扫码登录状态。', {
+    retcode: null,
+    diagnostic: `unknown qrcode status=${String(value)}`,
+  });
+}
+
+function parseQrRawPayload(payload: QrQueryPayload['payload']): { accountId: string; gameToken: string } {
+  const directAccountId = String(payload?.uid ?? '').trim();
+  const directGameToken = String(payload?.token ?? '').trim();
+  if (directAccountId && directGameToken) {
+    return {
+      accountId: directAccountId,
+      gameToken: directGameToken,
+    };
+  }
+  const raw = String(payload?.raw ?? '').trim();
+  if (!raw) return { accountId: '', gameToken: '' };
+  try {
+    const parsed = JSON.parse(raw) as QrRawPayload;
+    return {
+      accountId: String(parsed.uid ?? '').trim(),
+      gameToken: String(parsed.token ?? '').trim(),
+    };
+  } catch (error) {
+    throw new GenshinTakumiError('米游社扫码登录返回了无效账号载荷。', {
+      retcode: null,
+      diagnostic: `invalid qrcode raw payload=${clipDiagnostic(raw)}`,
+      cause: error,
+    });
+  }
 }
 
 function describeError(error: unknown): string {

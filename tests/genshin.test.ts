@@ -60,7 +60,6 @@ vi.mock('koishi', () => {
 });
 
 import { apply } from '../src/plugins/genshin/index.js';
-import { parseGenshinCookieInput } from '../src/plugins/genshin/cookie.js';
 import {
   buildGenshinMenuView,
   GenshinMenuService,
@@ -148,24 +147,22 @@ function extractToken(link: string): string {
   return new URL(link).searchParams.get('token') ?? '';
 }
 
-function cookieText(): string {
-  return 'stoken=v2_secret; mid=mid_secret; account_id=123456; cookie_token=token_secret; ltuid_v2=123456';
-}
-
-function webCookieText(): string {
-  return 'ltoken=legacy_ltoken; ltuid=123456; ltoken_v2=v2_ltoken; ltmid_v2=mid_v2; account_id_v2=123456; account_mid_v2=mid_v2; cookie_token_v2=token_v2';
-}
-
 function createService(options: {
   database?: ReturnType<typeof createDatabase>;
   roles?: GenshinGameRole[];
+  qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed'; accountId?: string; gameToken?: string }>;
+  exchangeGameToken?: ReturnType<typeof vi.fn>;
   signIn?: ReturnType<typeof vi.fn>;
   redeemCode?: ReturnType<typeof vi.fn>;
   now?: () => number;
 } = {}) {
   const dir = createTempDir();
   const database = options.database ?? createDatabase();
+  const qrResults = [...(options.qrResults ?? [{ status: 'Confirmed' as const, accountId: '123456', gameToken: 'game_token_secret' }])];
   const client = {
+    createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/login?ticket=ticket-secret' })),
+    queryQrLogin: vi.fn(async () => qrResults.shift() ?? { status: 'Confirmed', accountId: '123456', gameToken: 'game_token_secret' }),
+    exchangeGameToken: options.exchangeGameToken ?? vi.fn(async () => ({ stoken: 'v2_secret', mid: 'mid_secret', account_id: '123456', stuid: '123456' })),
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
     redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
@@ -183,6 +180,14 @@ function createService(options: {
     options.now ?? (() => 1_000),
   );
   return { service, database, client };
+}
+
+async function completeQrBinding(service: GenshinService, token: string) {
+  await service.resolveBindPageChallenge(token);
+  const result = await service.pollQrLogin(token);
+  if (result.kind !== 'success') throw new Error(`expected successful qr binding, got ${result.kind}`);
+  await service.confirmBinding(identity(), result.confirmCode);
+  return result;
 }
 
 function createPuppeteerHarness() {
@@ -233,73 +238,26 @@ function extractAtIds(content: unknown): string[] {
     .filter(Boolean);
 }
 
-describe('genshin cookie parser', () => {
-  it('extracts whitelist fields from header, JSON, and Netscape Cookie-Editor exports', () => {
-    expect(parseGenshinCookieInput(cookieText())).toMatchObject({
-      stoken: 'v2_secret',
-      mid: 'mid_secret',
-      account_id: '123456',
-      cookie_token: 'token_secret',
-    });
-
-    expect(parseGenshinCookieInput(JSON.stringify([
-      { name: 'ltoken_v2', value: 'v2_ltoken' },
-      { name: 'ltmid_v2', value: 'mid_v2' },
-      { name: 'account_id_v2', value: '123456' },
-      { name: 'account_mid_v2', value: 'mid_v2' },
-      { name: 'unrelated', value: 'drop-me' },
-    ]))).toEqual({
-      ltoken_v2: 'v2_ltoken',
-      ltmid_v2: 'mid_v2',
-      account_id_v2: '123456',
-      account_mid_v2: 'mid_v2',
-    });
-
-    expect(parseGenshinCookieInput([
-      '# Netscape HTTP Cookie File',
-      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tcookie_token\ttoken_secret',
-      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tlogin_uid\t123456',
-      '.miyoushe.com\tTRUE\t/\tTRUE\t0\tltoken\tlegacy_ltoken',
-    ].join('\n'))).toEqual({
-      cookie_token: 'token_secret',
-      login_uid: '123456',
-      ltoken: 'legacy_ltoken',
-    });
-  });
-
-  it('accepts web cookies for binding without requiring stoken', () => {
-    expect(parseGenshinCookieInput(webCookieText())).toMatchObject({
-      ltoken: 'legacy_ltoken',
-      ltoken_v2: 'v2_ltoken',
-      ltmid_v2: 'mid_v2',
-      account_id_v2: '123456',
-      account_mid_v2: 'mid_v2',
-      cookie_token_v2: 'token_v2',
-    });
-  });
-
-  it('requires a binding-capable login field set', () => {
-    expect(() => parseGenshinCookieInput('mid=mid_secret; account_id=123456')).toThrow('缺少可用于绑定 UID 和签到的登录字段');
-    expect(() => parseGenshinCookieInput('ltoken_v2=v2_ltoken; account_id_v2=123456')).toThrow('缺少可用于绑定 UID 和签到的登录字段');
-    expect(() => parseGenshinCookieInput('cookie_token_v2=token_v2')).toThrow('缺少可用于绑定 UID 和签到的登录字段');
-  });
-});
-
 describe('genshin binding service', () => {
-  it('keeps normalized cookies encrypted while waiting for a multi-role selection', async () => {
+  it('keeps qr-derived stoken cookies encrypted while waiting for a multi-role selection', async () => {
     const roles = [role({ uid: '100000001' }), role({ uid: '100000002', region: 'cn_qd01', regionName: '世界树' })];
-    const { service, database } = createService({ roles });
+    const { service, database, client } = createService({ roles });
     const started = await service.startBinding(identity());
     const token = extractToken(started.link);
 
-    const first = await service.submitCookie({ token, cookieText: cookieText() });
+    const page = await service.resolveBindPageChallenge(token);
+    expect(page).toMatchObject({ state: 'qr', qrUrl: 'https://user.mihoyo.com/login?ticket=ticket-secret' });
+
+    const first = await service.pollQrLogin(token);
 
     expect(first).toMatchObject({ kind: 'role_selection', roles });
     const [challenge] = database.tables.get('genshin_bind_challenge') ?? [];
     expect(challenge).toMatchObject({ status: 'role_selecting', pendingRolesJson: JSON.stringify(roles) });
     expect(JSON.stringify(challenge)).not.toContain('v2_secret');
+    expect(JSON.stringify(challenge)).not.toContain('game_token_secret');
+    expect(client.exchangeGameToken).toHaveBeenCalledWith('123456', 'game_token_secret');
 
-    const second = await service.submitCookie({ token, selectedRoleKey: '100000002:cn_qd01' });
+    const second = await service.selectRole({ token, selectedRoleKey: '100000002:cn_qd01' });
     expect(second).toMatchObject({ kind: 'success', role: roles[1] });
     await service.confirmBinding(identity(), second.kind === 'success' ? second.confirmCode : '');
 
@@ -312,6 +270,7 @@ describe('genshin binding service', () => {
       revokedAt: null,
     });
     expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain('v2_secret');
+    expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain('game_token_secret');
     expect(database.tables.get('genshin_bind_challenge')?.[0]).toMatchObject({
       status: 'confirmed',
       pendingCredentialCipher: null,
@@ -324,8 +283,7 @@ describe('genshin binding service', () => {
     const redeemCode = vi.fn(async () => ({ retcode: 0, message: 'OK' }));
     const { service, database } = createService({ signIn, redeemCode });
     const started = await service.startBinding(identity());
-    const submitted = await service.submitCookie({ token: extractToken(started.link), cookieText: cookieText() });
-    await service.confirmBinding(identity(), submitted.kind === 'success' ? submitted.confirmCode : '');
+    await completeQrBinding(service, extractToken(started.link));
 
     await expect(service.manualSignIn(identity())).resolves.toMatchObject({
       role: { uid: '100000001' },
@@ -352,28 +310,24 @@ describe('genshin binding service', () => {
     });
   });
 
-  it('allows web-cookie binding and sign-in while rejecting redeem without stoken', async () => {
-    const signIn = vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 9 }));
-    const redeemCode = vi.fn(async () => ({ retcode: 0, message: 'OK' }));
-    const { service, database } = createService({ signIn, redeemCode });
+  it('tracks qr scanned state before app confirmation', async () => {
+    const { service, database, client } = createService({
+      qrResults: [
+        { status: 'Init' },
+        { status: 'Scanned' },
+        { status: 'Confirmed', accountId: '123456', gameToken: 'game_token_secret' },
+      ],
+    });
     const started = await service.startBinding(identity());
-    const submitted = await service.submitCookie({ token: extractToken(started.link), cookieText: webCookieText() });
-    await service.confirmBinding(identity(), submitted.kind === 'success' ? submitted.confirmCode : '');
+    const token = extractToken(started.link);
+    await service.resolveBindPageChallenge(token);
 
-    await expect(service.manualSignIn(identity())).resolves.toMatchObject({
-      role: { uid: '100000001' },
-      status: 'ok',
-    });
-    await expect(service.redeemCode(identity(), 'GENSHIN2026')).rejects.toThrow('当前绑定 Cookie 不包含 stoken');
+    await expect(service.pollQrLogin(token)).resolves.toMatchObject({ kind: 'pending' });
+    await expect(service.pollQrLogin(token)).resolves.toMatchObject({ kind: 'scanned' });
+    expect(database.tables.get('genshin_bind_challenge')?.[0]).toMatchObject({ status: 'qr_scanned' });
 
-    expect(signIn).toHaveBeenCalledTimes(1);
-    expect(redeemCode).not.toHaveBeenCalled();
-    expect(database.tables.get('genshin_redeem_record')?.[0]).toMatchObject({
-      uid: '100000001',
-      status: 'failed',
-      retcode: -1,
-      message: expect.stringContaining('当前绑定 Cookie 不包含 stoken'),
-    });
+    await expect(service.pollQrLogin(token)).resolves.toMatchObject({ kind: 'success' });
+    expect(client.queryQrLogin).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -432,10 +386,19 @@ describe('genshin menu module', () => {
 });
 
 describe('genshin takumi client', () => {
-  it('sends CN role, sign-in, authkey, and redeem requests with the expected shape', async () => {
+  it('sends QR login, CN role, sign-in, authkey, and redeem requests with the expected shape', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
       calls.push({ url: url.toString(), init });
+      if (url.pathname === '/hk4e_cn/combo/panda/qrcode/fetch') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { url: 'https://user.mihoyo.com/login?ticket=ticket-secret' } });
+      }
+      if (url.pathname === '/hk4e_cn/combo/panda/qrcode/query') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { stat: 'Confirmed', payload: { raw: JSON.stringify({ uid: '123456', token: 'game_token_secret' }) } } });
+      }
+      if (url.pathname === '/account/ma-cn-session/app/getTokenByGameToken') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { token: { token_type: 2, token: 'v2_secret' }, user_info: { aid: '123456', mid: 'mid_secret' } } });
+      }
       if (url.pathname === '/binding/api/getUserGameRolesByCookie') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { list: [{ game_biz: 'hk4e_cn', game_uid: '100000001', region: 'cn_gf01', region_name: '天空岛', nickname: '旅行者', level: 60 }] } });
       }
@@ -461,13 +424,21 @@ describe('genshin takumi client', () => {
       deviceId: '00000000-0000-4000-8000-000000000001',
       redeemGameVersion: 'CNRELWin6.0.0',
     });
-    const cookies = parseGenshinCookieInput(cookieText());
+    const qr = await client.createQrLogin();
+    const qrResult = await client.queryQrLogin(qr.ticket);
+    if (qrResult.status !== 'Confirmed' || !qrResult.accountId || !qrResult.gameToken) {
+      throw new Error('expected confirmed qr result');
+    }
+    const cookies = await client.exchangeGameToken(qrResult.accountId, qrResult.gameToken);
     const [selectedRole] = await client.listRoles(cookies);
 
     await client.signIn(cookies, selectedRole);
     await client.redeemCode(cookies, selectedRole, 'GENSHIN2026');
 
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/hk4e_cn/combo/panda/qrcode/fetch',
+      '/hk4e_cn/combo/panda/qrcode/query',
+      '/account/ma-cn-session/app/getTokenByGameToken',
       '/binding/api/getUserGameRolesByCookie',
       '/event/luna/info',
       '/device-fp/api/getFp',
@@ -475,14 +446,15 @@ describe('genshin takumi client', () => {
       '/binding/api/genAuthKey',
       '/common/apicdkey/api/exchangeCdkey',
     ]);
-    expect(calls[0].url).toContain('game_biz=hk4e_cn');
-    expect(calls[3].init.method).toBe('POST');
-    expect(calls[3].init.headers).toMatchObject({
+    expect(cookies).toMatchObject({ stoken: 'v2_secret', mid: 'mid_secret', stuid: '123456' });
+    expect(calls[3].url).toContain('game_biz=hk4e_cn');
+    expect(calls[6].init.method).toBe('POST');
+    expect(calls[6].init.headers).toMatchObject({
       cookie: expect.stringContaining('stoken=v2_secret'),
       'x-rpc-signgame': 'hk4e',
       ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
     });
-    const redeemUrl = new URL(calls[5].url);
+    const redeemUrl = new URL(calls[8].url);
     expect(redeemUrl.hostname).toBe('hk4e-api.mihoyo.com');
     expect(redeemUrl.searchParams.get('auth_appid')).toBe('apicdkey');
     expect(redeemUrl.searchParams.get('authkey')).toBe('authkey-secret');
@@ -522,6 +494,7 @@ describe('genshin plugin routes and middleware', () => {
     expect(ctx.model.extend).toHaveBeenCalledWith('genshin_bind_challenge', expect.anything(), expect.anything());
     expect(server.use).toHaveBeenCalledWith(expect.any(Function));
     expect(server.get).toHaveBeenCalledWith('/genshin/bind', expect.any(Function));
+    expect(server.get).toHaveBeenCalledWith('/genshin/bind/status', expect.any(Function));
     expect(server.post).toHaveBeenCalledWith('/genshin/bind/submit', expect.any(Function));
     const guard = server.use.mock.calls[0]?.[0];
     const next = vi.fn(async () => undefined);
@@ -530,8 +503,9 @@ describe('genshin plugin routes and middleware', () => {
     expect(forbidden).toMatchObject({ status: 404, body: 'Not Found' });
     expect(next).not.toHaveBeenCalled();
     await guard({ host: 'genshin.example', path: '/genshin/bind' }, next);
+    await guard({ host: 'genshin.example', path: '/genshin/bind/status' }, next);
     await guard({ host: 'other.example', path: '/console' }, next);
-    expect(next).toHaveBeenCalledTimes(2);
+    expect(next).toHaveBeenCalledTimes(3);
     const handler = middleware.mock.calls[0]?.[0];
     const send = vi.fn();
     await handler({
@@ -775,18 +749,19 @@ describe('genshin plugin routes and middleware', () => {
     })).toThrow('genshin.allowedGroups 必须显式配置');
   });
 
-  it('renders the bind page without profile or gacha features', () => {
+  it('renders the qr bind page', () => {
     const html = renderGenshinBindPage({
       qq: '1405359129',
       token: 'token',
       submitPath: '/genshin/bind/submit',
+      statusPath: '/genshin/bind/status?token=token',
+      qrImageDataUrl: 'data:image/png;base64,qr',
     });
 
-    expect(html).toContain('粘贴整段 Cookie');
-    expect(html).toContain('Cookie-Editor');
-    expect(html).toContain('米游社原神页面');
-    expect(html).not.toContain('原神资料');
-    expect(html).not.toContain('抽卡记录');
+    expect(html).toContain('米游社 App');
+    expect(html).toContain('data-qr-status-path="/genshin/bind/status?token=token"');
+    expect(html).toContain('data:image/png;base64,qr');
+    expect(html).not.toContain('Cookie-Editor');
   });
 });
 

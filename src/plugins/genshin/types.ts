@@ -3,6 +3,8 @@ export const GENSHIN_GAME_BIZ = 'hk4e_cn';
 
 export type GenshinBindChallengeStatus =
   | 'created'
+  | 'qr_pending'
+  | 'qr_scanned'
   | 'verifying'
   | 'role_selecting'
   | 'login_succeeded'
@@ -58,6 +60,19 @@ export interface GenshinCredentialPayload {
   cookies: GenshinCookieFields;
 }
 
+export type GenshinQrLoginStatus = 'Init' | 'Scanned' | 'Confirmed';
+
+export interface GenshinQrLoginTicket {
+  url: string;
+  ticket: string;
+}
+
+export interface GenshinQrLoginResult {
+  status: GenshinQrLoginStatus;
+  accountId?: string;
+  gameToken?: string;
+}
+
 export interface GenshinBindChallenge {
   id: number;
   tokenHash: string;
@@ -67,6 +82,8 @@ export interface GenshinBindChallenge {
   channelId: string;
   status: GenshinBindChallengeStatus;
   verifyAttemptId?: string | null;
+  qrTicket?: string | null;
+  qrUrl?: string | null;
   confirmCodeHash?: string | null;
   pendingCredentialCipher?: string | null;
   pendingCredentialMeta?: string | null;

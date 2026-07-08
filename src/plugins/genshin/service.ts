@@ -8,7 +8,7 @@ import {
   sha256Hex,
   type CredentialKek,
 } from '../shared/credential-crypto.js';
-import { assertGenshinRedeemCookieCapability, parseGenshinCookieInput } from './cookie.js';
+import { assertGenshinRedeemCookieCapability } from './cookie.js';
 import { GenshinStore, signInRecordRow } from './store.js';
 import { GenshinTakumiError, type GenshinSignResult, type GenshinTakumiClient } from './takumi-client.js';
 import {
@@ -17,6 +17,7 @@ import {
   type GenshinCredential,
   type GenshinCredentialPayload,
   type GenshinGameRole,
+  type GenshinQrLoginResult,
   type GenshinOperationStatus,
   type GenshinSignInTrigger,
   GenshinUserError,
@@ -40,9 +41,19 @@ export interface StartBindingResult {
 export interface BindPageChallenge {
   token: string;
   qqUserId: string;
+  state: 'qr' | 'role_selection';
+  qrUrl?: string;
+  qrStatus?: 'qr_pending' | 'qr_scanned';
+  roles?: GenshinGameRole[];
 }
 
-export type SubmitCookieResult =
+export type QrBindingStatusResult =
+  | { kind: 'pending'; message: string }
+  | { kind: 'scanned'; message: string }
+  | { kind: 'role_selection'; roles: GenshinGameRole[] }
+  | { kind: 'success'; confirmCode: string; role: GenshinGameRole };
+
+export type SelectRoleResult =
   | { kind: 'role_selection'; qqUserId: string; roles: GenshinGameRole[] }
   | { kind: 'success'; qqUserId: string; confirmCode: string; role: GenshinGameRole };
 
@@ -80,35 +91,115 @@ export class GenshinService {
     return {
       link: `${this.config.publicBaseUrl}${this.config.bindPagePath}?token=${encodeURIComponent(token)}`,
       expiresAt,
-    };
+    }
   }
 
   async resolveBindPageChallenge(token: string): Promise<BindPageChallenge> {
     const challenge = await this.requireUsableChallenge(token);
-    return {
-      token,
-      qqUserId: challenge.qqUserId,
-    };
+    if (challenge.status === 'created') {
+      const qr = await this.client.createQrLogin();
+      const updated = await this.store.setChallengeQrTicket(challenge.id, qr.ticket, qr.url, this.now());
+      if (!updated || updated.status !== 'qr_pending' || !updated.qrUrl) {
+        throw new GenshinUserError('原神扫码登录状态已变化，请重新发送“原神绑定”。');
+      }
+      await this.audit(challenge.ownerKey, 'qr_created', 'ok');
+      return {
+        token,
+        qqUserId: updated.qqUserId,
+        state: 'qr',
+        qrUrl: updated.qrUrl,
+        qrStatus: 'qr_pending',
+      };
+    }
+    if (challenge.status === 'qr_pending' || challenge.status === 'qr_scanned') {
+      if (!challenge.qrUrl || !challenge.qrTicket) {
+        throw new Error('genshin qr challenge is missing qr state.');
+      }
+      return {
+        token,
+        qqUserId: challenge.qqUserId,
+        state: 'qr',
+        qrUrl: challenge.qrUrl,
+        qrStatus: challenge.status,
+      };
+    }
+    if (challenge.status === 'role_selecting') {
+      if (!challenge.pendingRolesJson) {
+        throw new Error('genshin role_selecting challenge is missing pending roles.');
+      }
+      return {
+        token,
+        qqUserId: challenge.qqUserId,
+        state: 'role_selection',
+        roles: parseRolesJson(challenge.pendingRolesJson),
+      };
+    }
+    if (challenge.status === 'verifying') {
+      throw new GenshinUserError('扫码确认正在处理，请稍后刷新页面。');
+    }
+    if (challenge.status === 'login_succeeded') {
+      throw new GenshinUserError('确认码已生成，请使用页面显示的确认码；如果页面已关闭，请重新发送“原神绑定”。');
+    }
+    throw new GenshinUserError('绑定链接已失效，请重新发送“原神绑定”。');
   }
 
-  async submitCookie(args: { token: string; cookieText?: string; selectedRoleKey?: string }): Promise<SubmitCookieResult> {
-    const challenge = await this.requireUsableChallenge(args.token);
-    if (challenge.status === 'role_selecting') {
-      return this.completeRoleSelection(challenge, args.selectedRoleKey ?? '');
+  async pollQrLogin(token: string): Promise<QrBindingStatusResult> {
+    const challenge = await this.requireUsableChallenge(token);
+    if (challenge.status === 'created') {
+      await this.resolveBindPageChallenge(token);
+      return { kind: 'pending', message: '请使用米游社 App 扫描二维码。' };
     }
-    if (challenge.status !== 'created') {
-      throw new GenshinUserError('该绑定链接已经提交过 Cookie，请重新发送“原神绑定”生成新链接。');
+    if (challenge.status === 'role_selecting') {
+      if (!challenge.pendingRolesJson) {
+        throw new Error('genshin role_selecting challenge is missing pending roles.');
+      }
+      return { kind: 'role_selection', roles: parseRolesJson(challenge.pendingRolesJson) };
+    }
+    if (challenge.status === 'login_succeeded') {
+      throw new GenshinUserError('确认码已生成，请使用页面显示的确认码；如果页面已关闭，请重新发送“原神绑定”。');
+    }
+    if (challenge.status !== 'qr_pending' && challenge.status !== 'qr_scanned') {
+      throw new GenshinUserError('当前绑定流程不能轮询扫码状态，请重新发送“原神绑定”。');
+    }
+    if (!challenge.qrTicket) {
+      throw new Error('genshin qr challenge is missing ticket.');
     }
 
-    const cookies = parseGenshinCookieInput(args.cookieText ?? '');
+    const result = await this.client.queryQrLogin(challenge.qrTicket);
+    if (result.status === 'Init') {
+      return { kind: 'pending', message: '请使用米游社 App 扫描二维码。' };
+    }
+    if (result.status === 'Scanned') {
+      if (challenge.status !== 'qr_scanned') {
+        await this.store.markChallengeQrScanned(challenge.id, this.now());
+        await this.audit(challenge.ownerKey, 'qr_scanned', 'ok');
+      }
+      return { kind: 'scanned', message: '已扫码，请在米游社 App 内确认登录。' };
+    }
+    return this.completeQrLogin(challenge, result);
+  }
+
+  async selectRole(args: { token: string; selectedRoleKey?: string }): Promise<SelectRoleResult> {
+    const challenge = await this.requireUsableChallenge(args.token);
+    if (challenge.status !== 'role_selecting') {
+      throw new GenshinUserError('当前绑定流程不需要选择 UID。');
+    }
+    return this.completeRoleSelection(challenge, args.selectedRoleKey ?? '');
+  }
+
+  private async completeQrLogin(challenge: GenshinBindChallenge, result: GenshinQrLoginResult): Promise<QrBindingStatusResult> {
+    if (!result.accountId || !result.gameToken) {
+      throw new Error('confirmed genshin qr result is missing account id or game token.');
+    }
     const now = this.now();
     const verifyAttemptId = createRandomToken(16);
-    const claimedChallenge = await this.store.claimChallengeForVerification(challenge.id, verifyAttemptId, now);
+    const claimedChallenge = await this.store.claimQrChallengeForVerification(challenge.id, verifyAttemptId, now);
     if (!claimedChallenge) {
-      throw new GenshinUserError('该绑定链接已经提交过 Cookie，请重新发送“原神绑定”生成新链接。');
+      throw new GenshinUserError('该绑定链接状态已变化，请重新发送“原神绑定”。');
     }
 
     try {
+      const cookies = await this.client.exchangeGameToken(result.accountId, result.gameToken);
       const roles = await this.client.listRoles(cookies);
       if (roles.length === 0) {
         throw new GenshinUserError('该米游社账号没有可绑定的国服原神 UID。');
@@ -119,11 +210,13 @@ export class GenshinService {
         pendingCredentialAad(claimedChallenge),
         this.kek,
       );
-      const selectedRole = args.selectedRoleKey ? findRoleByKey(roles, args.selectedRoleKey) : roles.length === 1 ? roles[0] : null;
+      const selectedRole = roles.length === 1 ? roles[0] : null;
       if (!selectedRole) {
         const updated = await this.store.completeChallengeVerification(claimedChallenge.id, verifyAttemptId, {
           status: 'role_selecting',
           verifyAttemptId: null,
+          qrTicket: null,
+          qrUrl: null,
           pendingCredentialCipher: encrypted.cipherText,
           pendingCredentialMeta: encrypted.meta,
           pendingRolesJson: JSON.stringify(roles),
@@ -136,17 +229,15 @@ export class GenshinService {
           throw new GenshinUserError('该绑定链接状态已变化，请重新发送“原神绑定”。');
         }
         await this.audit(claimedChallenge.ownerKey, 'roles_loaded', 'ok');
-        return {
-          kind: 'role_selection',
-          qqUserId: claimedChallenge.qqUserId,
-          roles,
-        };
+        return { kind: 'role_selection', roles };
       }
 
       const confirmCode = createConfirmCode();
       const updated = await this.store.completeChallengeVerification(claimedChallenge.id, verifyAttemptId, {
         status: 'login_succeeded',
         verifyAttemptId: null,
+        qrTicket: null,
+        qrUrl: null,
         pendingCredentialCipher: encrypted.cipherText,
         pendingCredentialMeta: encrypted.meta,
         pendingRolesJson: null,
@@ -158,21 +249,20 @@ export class GenshinService {
       if (!updated || updated.status !== 'login_succeeded') {
         throw new GenshinUserError('该绑定链接状态已变化，请重新发送“原神绑定”。');
       }
-      await this.audit(claimedChallenge.ownerKey, 'cookie_verified', 'ok');
+      await this.audit(claimedChallenge.ownerKey, 'qr_login_verified', 'ok');
       return {
         kind: 'success',
-        qqUserId: claimedChallenge.qqUserId,
         confirmCode,
         role: selectedRole,
       };
     } catch (error) {
       const reason = formatFailureReason(error);
       await this.store.releaseChallengeVerification(claimedChallenge.id, verifyAttemptId, reason, now);
-      await this.audit(claimedChallenge.ownerKey, 'cookie_verification_failed', 'failed', reason);
-      logger.warn('genshin cookie verification failed: owner=%s reason=%s', claimedChallenge.ownerKey, reason);
+      await this.audit(claimedChallenge.ownerKey, 'qr_login_verification_failed', 'failed', reason);
+      logger.warn('genshin qr login verification failed: owner=%s reason=%s', claimedChallenge.ownerKey, reason);
       if (error instanceof GenshinUserError) throw error;
       if (error instanceof GenshinTakumiError) throw new GenshinUserError(error.message);
-      throw new GenshinUserError('原神绑定验证失败，请稍后重试。');
+      throw new GenshinUserError('原神扫码绑定验证失败，请稍后重试。');
     }
   }
 
@@ -287,7 +377,7 @@ export class GenshinService {
     }
   }
 
-  private async completeRoleSelection(challenge: GenshinBindChallenge, selectedRoleKey: string): Promise<SubmitCookieResult> {
+  private async completeRoleSelection(challenge: GenshinBindChallenge, selectedRoleKey: string): Promise<SelectRoleResult> {
     if (!challenge.pendingCredentialCipher || !challenge.pendingCredentialMeta || !challenge.pendingRolesJson) {
       throw new Error('genshin role_selecting challenge is missing pending state.');
     }

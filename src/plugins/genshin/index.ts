@@ -1,13 +1,14 @@
 import { parseExpression } from 'cron-parser';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
+import QRCode from 'qrcode';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
-import { GenshinService } from './service.js';
+import { GenshinService, type QrBindingStatusResult } from './service.js';
 import { ensureGenshinTables, GenshinStore } from './store.js';
 import { GenshinTakumiClient } from './takumi-client.js';
 import { GenshinUserError, type DatabaseLike, type GenshinGameRole, type OwnerIdentity } from './types.js';
-import { renderGenshinBindPage } from './web/bind-page.js';
+import { renderGenshinBindPage, renderGenshinBindSuccessFragment } from './web/bind-page.js';
 
 export const name = 'genshin';
 export const inject = ['server', 'database', 'puppeteer'] as const;
@@ -75,6 +76,7 @@ interface RuntimeConfig {
   bindTokenTtlMs: number;
   credentialKekPath: string;
   bindSubmitPath: string;
+  bindStatusPath: string;
   publicHostGuard: string | null;
   autoSignEnabled: boolean;
   autoSignCron: string;
@@ -129,6 +131,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     bindTokenTtlMs: requirePositiveInteger(config.bindTokenTtlMs ?? DEFAULT_BIND_TOKEN_TTL_MS, 'genshin.bindTokenTtlMs'),
     credentialKekPath,
     bindSubmitPath: `${bindPagePath}/submit`,
+    bindStatusPath: `${bindPagePath}/status`,
     publicHostGuard: resolvePublicHostGuard(publicBaseUrl),
     autoSignEnabled: config.autoSignEnabled ?? true,
     autoSignCron: requireNonEmptyString(config.autoSignCron ?? DEFAULT_AUTO_SIGN_CRON, 'genshin.autoSignCron'),
@@ -144,7 +147,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
 
 function registerHostGuard(ctx: GenshinServicesLike, runtime: RuntimeConfig): void {
   if (!runtime.publicHostGuard || typeof ctx.server.use !== 'function') return;
-  const allowedPaths = new Set([runtime.bindPagePath, runtime.bindSubmitPath]);
+  const allowedPaths = new Set([runtime.bindPagePath, runtime.bindSubmitPath, runtime.bindStatusPath]);
   ctx.server.use(async (koaCtx: any, next: () => Promise<unknown>) => {
     const host = String(koaCtx.host ?? koaCtx.hostname ?? koaCtx.get?.('host') ?? koaCtx.request?.headers?.host ?? '').trim().toLowerCase();
     if (host !== runtime.publicHostGuard) {
@@ -165,10 +168,17 @@ function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, ru
     const token = String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
     try {
       const challenge = await service.resolveBindPageChallenge(token);
+      const qrImageDataUrl = challenge.state === 'qr' && challenge.qrUrl
+        ? await QRCode.toDataURL(challenge.qrUrl, { errorCorrectionLevel: 'M', margin: 2, width: 280 })
+        : undefined;
       writeHtml(koaCtx, 200, renderGenshinBindPage({
         qq: challenge.qqUserId,
         token: challenge.token,
         submitPath: runtime.bindSubmitPath,
+        statusPath: `${runtime.bindStatusPath}?token=${encodeURIComponent(token)}`,
+        state: challenge.state,
+        qrImageDataUrl,
+        roles: challenge.roles,
       }));
     } catch (error) {
       writeHtml(koaCtx, 400, renderGenshinBindPage({
@@ -179,6 +189,18 @@ function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, ru
     }
   });
 
+  ctx.server.get(runtime.bindStatusPath, async (koaCtx: any) => {
+    const token = String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
+    try {
+      writeJson(koaCtx, 200, bindStatusResponse(await service.pollQrLogin(token)));
+    } catch (error) {
+      writeJson(koaCtx, 400, {
+        kind: 'error',
+        message: toUserMessage(error),
+      });
+    }
+  });
+
   ctx.server.post(runtime.bindSubmitPath, async (koaCtx: any) => {
     const body = await readRequestBody(koaCtx);
     const token = String(body.token ?? '').trim();
@@ -186,9 +208,8 @@ function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, ru
     try {
       const challenge = await service.resolveBindPageChallenge(token);
       qq = challenge.qqUserId;
-      const result = await service.submitCookie({
+      const result = await service.selectRole({
         token,
-        cookieText: String(body.cookieText ?? ''),
         selectedRoleKey: String(body.selectedRoleKey ?? ''),
       });
       if (result.kind === 'role_selection') {
@@ -217,6 +238,29 @@ function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, ru
       }));
     }
   });
+}
+
+function bindStatusResponse(result: QrBindingStatusResult): Record<string, unknown> {
+  if (result.kind === 'success') {
+    const confirmCommand = `原神确认 ${result.confirmCode}`;
+    return {
+      kind: 'success',
+      html: renderGenshinBindSuccessFragment(confirmCommand, roleDisplayText(result.role)),
+    };
+  }
+  if (result.kind === 'role_selection') {
+    return {
+      kind: 'role_selection',
+      roles: result.roles.map((role) => ({
+        uid: role.uid,
+        region: role.region,
+        regionName: role.regionName,
+        nickname: role.nickname,
+        level: role.level,
+      })),
+    };
+  }
+  return result;
 }
 
 function registerKeywordMiddleware(ctx: Context, service: GenshinService, menuService: GenshinMenuService, runtime: RuntimeConfig): void {
@@ -363,6 +407,10 @@ function formatRedeemReply(role: GenshinGameRole, message: string): string {
   return `原神兑换码领取完成：UID ${role.uid}。\n${message}`;
 }
 
+function roleDisplayText(role: GenshinGameRole): string {
+  return `${role.nickname || '旅行者'} / UID ${role.uid} / ${role.regionName || role.region}`;
+}
+
 function requireAbsolutePath(value: unknown, key: string): string {
   const path = String(value ?? '').trim();
   if (!path || !path.startsWith('/')) {
@@ -485,6 +533,12 @@ function writeHtml(koaCtx: any, status: number, html: string): void {
   koaCtx.status = status;
   koaCtx.set('content-type', 'text/html; charset=utf-8');
   koaCtx.body = html;
+}
+
+function writeJson(koaCtx: any, status: number, body: Record<string, unknown>): void {
+  koaCtx.status = status;
+  koaCtx.set('content-type', 'application/json; charset=utf-8');
+  koaCtx.body = body;
 }
 
 async function readRequestBody(koaCtx: any): Promise<Record<string, unknown>> {

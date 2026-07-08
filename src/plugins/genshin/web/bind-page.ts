@@ -5,7 +5,9 @@ export interface GenshinBindPageOptions {
   qq: string;
   token?: string;
   submitPath?: string;
-  state?: 'form' | 'error' | 'invalid' | 'success' | 'role_selection';
+  statusPath?: string;
+  qrImageDataUrl?: string;
+  state?: 'qr' | 'error' | 'invalid' | 'success' | 'role_selection';
   message?: string;
   confirmCode?: string;
   role?: GenshinGameRole;
@@ -25,7 +27,9 @@ export function renderGenshinBindPage(options: GenshinBindPageOptions): string {
   const qq = escapeHtml(options.qq);
   const token = escapeHtml(options.token ?? '');
   const submitPath = escapeHtml(options.submitPath ?? '');
-  const state = options.state ?? 'form';
+  const statusPath = escapeHtml(options.statusPath ?? '');
+  const qrImageDataUrl = escapeHtml(options.qrImageDataUrl ?? '');
+  const state = options.state ?? 'qr';
   const message = escapeHtml(options.message ?? '');
   const confirmCommand = escapeHtml(options.confirmCode ? `原神确认 ${options.confirmCode}` : '');
   const selectedRoleText = options.role ? `${options.role.nickname || '旅行者'} / UID ${options.role.uid} / ${options.role.regionName || options.role.region}` : '';
@@ -176,7 +180,26 @@ export function renderGenshinBindPage(options: GenshinBindPageOptions): string {
         background: var(--danger-bg);
       }
 
-      .form { display: grid; gap: 20px; }
+	      .form { display: grid; gap: 20px; }
+
+	      .qr-card {
+	        display: grid;
+	        gap: 18px;
+	        justify-items: center;
+	        padding: 28px;
+	        border: 1px solid rgba(31, 138, 91, 0.22);
+	        border-radius: 16px;
+	        background: #ffffff;
+	      }
+
+	      .qr-image {
+	        display: block;
+	        width: min(76vw, 280px);
+	        aspect-ratio: 1;
+	        border: 1px solid var(--line);
+	        border-radius: 12px;
+	        background: #ffffff;
+	      }
 
       label {
         color: #1b2537;
@@ -335,36 +358,77 @@ export function renderGenshinBindPage(options: GenshinBindPageOptions): string {
         <div class="guide-inner">
           <p class="eyebrow">Genshin CN UID Binding</p>
           <h1>原神 UID 绑定</h1>
-          <p class="lead">用于每日签到和手动兑换码领取。页面只接收 Cookie-Editor 复制的整段 Cookie，后端会自动提取需要的字段。</p>
-          <ol class="steps">
-            <li><span class="step-index">1</span><span>安装 <a href="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank" rel="noreferrer">Cookie-Editor</a>。</span></li>
-            <li><span class="step-index">2</span><span>打开 <a href="https://www.miyoushe.com/ys/" target="_blank" rel="noreferrer">米游社原神页面</a> 并登录国服账号。</span></li>
-            <li><span class="step-index">3</span><span>点击 Cookie-Editor，复制当前站点全部 Cookie。</span></li>
-            <li><span class="step-index">4</span><span>回到本页面粘贴并提交，随后回 QQ 私聊发送确认命令。</span></li>
-          </ol>
+	          <p class="lead">用于每日签到、兑换码和后续抽卡记录读取。请使用米游社 App 扫码确认，后端只保存必要登录字段。</p>
+	          <ol class="steps">
+	            <li><span class="step-index">1</span><span>打开米游社 App 的扫一扫。</span></li>
+	            <li><span class="step-index">2</span><span>扫描本页面二维码并在 App 内确认登录。</span></li>
+	            <li><span class="step-index">3</span><span>页面验证通过后选择 UID，随后回 QQ 私聊发送确认命令。</span></li>
+	          </ol>
         </div>
       </section>
       <section class="panel">
         <div class="shell">
           ${qq ? `<p class="qq">当前绑定 QQ：${qq}</p>` : ''}
           ${message ? `<p class="notice ${state === 'error' || state === 'invalid' ? 'is-error' : ''}">${message}</p>` : ''}
-          ${renderState({ state, token, submitPath, confirmCommand, selectedRoleText, roles: options.roles ?? [] })}
+	          ${renderState({ state, token, submitPath, statusPath, qrImageDataUrl, confirmCommand, selectedRoleText, roles: options.roles ?? [] })}
         </div>
       </section>
     </main>
     <script>
-      const button = document.querySelector('[data-copy-command]');
-      const status = document.querySelector('[data-copy-status]');
-      if (button && status) {
-        button.addEventListener('click', async () => {
-          try {
-            await navigator.clipboard.writeText(button.getAttribute('data-copy-command') || '');
-            status.textContent = '已复制';
-          } catch {
-            status.textContent = '复制失败，请手动选择确认命令';
-          }
-        });
-      }
+	      function bindCopyButton() {
+	        const button = document.querySelector('[data-copy-command]');
+	        const status = document.querySelector('[data-copy-status]');
+	        if (!button || !status) return;
+	        button.addEventListener('click', async () => {
+	          try {
+	            await navigator.clipboard.writeText(button.getAttribute('data-copy-command') || '');
+	            status.textContent = '已复制';
+	          } catch {
+	            status.textContent = '复制失败，请手动选择确认命令';
+	          }
+	        });
+	      }
+	      bindCopyButton();
+
+	      const qrCard = document.querySelector('[data-qr-status-path]');
+	      if (qrCard) {
+	        const path = qrCard.getAttribute('data-qr-status-path') || '';
+	        const status = document.querySelector('[data-qr-status]');
+	        const shell = document.querySelector('.shell');
+	        let stopped = false;
+	        const poll = async () => {
+	          if (stopped) return;
+	          try {
+	            const response = await fetch(path, { headers: { accept: 'application/json' } });
+	            const payload = await response.json();
+	            if (!response.ok || payload.kind === 'error') {
+	              stopped = true;
+	              if (status) status.textContent = payload.message || '扫码状态查询失败，请重新发送“原神绑定”。';
+	              return;
+	            }
+	            if (payload.kind === 'pending' || payload.kind === 'scanned') {
+	              if (status) status.textContent = payload.message || '';
+	              return;
+	            }
+	            if (payload.kind === 'role_selection') {
+	              stopped = true;
+	              window.location.reload();
+	              return;
+	            }
+	            if (payload.kind === 'success') {
+	              stopped = true;
+	              if (shell && typeof payload.html === 'string') {
+	                shell.innerHTML = payload.html;
+	                bindCopyButton();
+	              }
+	            }
+	          } catch {
+	            if (status) status.textContent = '扫码状态查询失败，稍后会继续重试。';
+	          }
+	        };
+	        poll();
+	        window.setInterval(poll, 2200);
+	      }
     </script>
   </body>
 </html>`;
@@ -374,6 +438,8 @@ function renderState(options: {
   state: GenshinBindPageOptions['state'];
   token: string;
   submitPath: string;
+  statusPath: string;
+  qrImageDataUrl: string;
   confirmCommand: string;
   selectedRoleText: string;
   roles: GenshinGameRole[];
@@ -381,23 +447,23 @@ function renderState(options: {
   if (options.state === 'invalid') {
     return '<p class="hint">请回到 QQ 私聊重新发送“原神绑定”获取新链接。</p>';
   }
+  if (options.state === 'error') {
+    return '<p class="hint">请刷新当前绑定页重试；如果仍然失败，请回到 QQ 私聊重新发送“原神绑定”。</p>';
+  }
   if (options.state === 'success') {
-    return renderSuccess(options.confirmCommand, options.selectedRoleText);
+    return renderGenshinBindSuccessFragment(options.confirmCommand, options.selectedRoleText);
   }
   if (options.state === 'role_selection') {
     return renderRoleSelection(options.token, options.submitPath, options.roles);
   }
-  return renderCookieForm(options.token, options.submitPath);
+  return renderQrLogin(options.statusPath, options.qrImageDataUrl);
 }
 
-function renderCookieForm(token: string, submitPath: string): string {
-  return `<form class="form" method="post" action="${submitPath}">
-    <input type="hidden" name="token" value="${token}">
-    <label for="cookieText">粘贴整段 Cookie</label>
-    <textarea id="cookieText" name="cookieText" autocomplete="off" spellcheck="false" placeholder="ltoken_v2=...; ltmid_v2=...; account_id_v2=...; cookie_token_v2=..."></textarea>
-    <p class="hint">只会保存登录态白名单字段。绑定和签到可使用网页 Cookie；兑换码需要 Cookie 额外包含 stoken + mid/stuid。原始整段 Cookie 不会入库。</p>
-    <button class="submit" type="submit">提交 Cookie</button>
-  </form>`;
+function renderQrLogin(statusPath: string, qrImageDataUrl: string): string {
+  return `<section class="qr-card" data-qr-status-path="${statusPath}">
+    <img class="qr-image" src="${qrImageDataUrl}" alt="米游社扫码登录二维码">
+    <p class="hint" data-qr-status>请使用米游社 App 扫描二维码。</p>
+  </section>`;
 }
 
 function renderRoleSelection(token: string, submitPath: string, roles: GenshinGameRole[]): string {
@@ -421,9 +487,9 @@ function renderRoleSelection(token: string, submitPath: string, roles: GenshinGa
   </form>`;
 }
 
-function renderSuccess(confirmCommand: string, selectedRoleText: string): string {
+export function renderGenshinBindSuccessFragment(confirmCommand: string, selectedRoleText: string): string {
   return `<section class="success-card">
-    <h2 class="success-title">Cookie 验证通过</h2>
+    <h2 class="success-title">扫码验证通过</h2>
     <p class="success-text">已选择 ${escapeHtml(selectedRoleText)}。请回到 QQ 私聊发送下面的确认命令完成绑定。</p>
     <code class="confirm-command">${confirmCommand}</code>
     <div class="copy-row">

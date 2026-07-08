@@ -14,7 +14,7 @@ import type {
 } from './types.js';
 import { GENSHIN_SERVICE_ID } from './types.js';
 
-const ACTIVE_CHALLENGE_STATUSES: GenshinBindChallengeStatus[] = ['created', 'verifying', 'role_selecting', 'login_succeeded'];
+const ACTIVE_CHALLENGE_STATUSES: GenshinBindChallengeStatus[] = ['created', 'qr_pending', 'qr_scanned', 'verifying', 'role_selecting', 'login_succeeded'];
 
 export function ensureGenshinTables(ctx: Context): void {
   ctx.model.extend(
@@ -28,6 +28,8 @@ export function ensureGenshinTables(ctx: Context): void {
       channelId: 'string',
       status: 'string',
       verifyAttemptId: { type: 'string', nullable: true },
+      qrTicket: { type: 'string', nullable: true },
+      qrUrl: { type: 'text', nullable: true },
       confirmCodeHash: { type: 'string', nullable: true },
       pendingCredentialCipher: { type: 'text', nullable: true },
       pendingCredentialMeta: { type: 'text', nullable: true },
@@ -159,6 +161,8 @@ export class GenshinStore {
       channelId: identity.channelId,
       status: 'created',
       verifyAttemptId: null,
+      qrTicket: null,
+      qrUrl: null,
       confirmCodeHash: null,
       pendingCredentialCipher: null,
       pendingCredentialMeta: null,
@@ -189,8 +193,27 @@ export class GenshinStore {
     return rows.sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null;
   }
 
-  async claimChallengeForVerification(id: number, verifyAttemptId: string, now: number): Promise<GenshinBindChallenge | null> {
+  async setChallengeQrTicket(id: number, ticket: string, url: string, now: number): Promise<GenshinBindChallenge | null> {
     await this.database.set('genshin_bind_challenge', { id, status: 'created' }, {
+      status: 'qr_pending',
+      qrTicket: ticket,
+      qrUrl: url,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    return this.findChallengeById(id);
+  }
+
+  async markChallengeQrScanned(id: number, now: number): Promise<void> {
+    await this.database.set('genshin_bind_challenge', { id, status: 'qr_pending' }, {
+      status: 'qr_scanned',
+      errorMessage: null,
+      updatedAt: now,
+    });
+  }
+
+  async claimQrChallengeForVerification(id: number, verifyAttemptId: string, now: number): Promise<GenshinBindChallenge | null> {
+    await this.database.set('genshin_bind_challenge', { id, status: { $in: ['qr_pending', 'qr_scanned'] } }, {
       status: 'verifying',
       verifyAttemptId,
       errorMessage: null,
@@ -204,6 +227,8 @@ export class GenshinStore {
     await this.database.set('genshin_bind_challenge', { id, status: 'verifying', verifyAttemptId }, {
       status: 'created',
       verifyAttemptId: null,
+      qrTicket: null,
+      qrUrl: null,
       pendingCredentialCipher: null,
       pendingCredentialMeta: null,
       pendingRolesJson: null,
@@ -231,6 +256,8 @@ export class GenshinStore {
   async clearOwnerChallengeSecrets(ownerKey: string, now: number): Promise<void> {
     await this.database.set('genshin_bind_challenge', { ownerKey }, {
       verifyAttemptId: null,
+      qrTicket: null,
+      qrUrl: null,
       confirmCodeHash: null,
       pendingCredentialCipher: null,
       pendingCredentialMeta: null,
@@ -383,6 +410,8 @@ function clearedChallengePatch(status: GenshinBindChallengeStatus, now: number):
   return {
     status,
     verifyAttemptId: null,
+    qrTicket: null,
+    qrUrl: null,
     confirmCodeHash: null,
     pendingCredentialCipher: null,
     pendingCredentialMeta: null,
