@@ -41,6 +41,16 @@ const cloudflaredOrigin = quote(cloudflaredOriginUrl);
 
 mkdirSync(systemdDir, { recursive: true });
 
+const podmanRestartDropInDir = join(systemdDir, 'podman-restart.service.d');
+mkdirSync(podmanRestartDropInDir, { recursive: true });
+writeUnit(podmanRestartDropInDir, 'qqbot-no-global-stop.conf', `
+[Service]
+# The boot helper may start shared root Podman containers, but stop belongs to
+# each app-specific service. Its vendor ExecStop stops every boot-managed
+# container and can take PMHQ down with unrelated stacks.
+ExecStop=
+`);
+
 writeUnit(systemdDir, 'qqbot-pmhq.service', `
 [Unit]
 Description=QQBot PMHQ Service

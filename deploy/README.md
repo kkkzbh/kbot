@@ -72,6 +72,8 @@ qqbot.target
 PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot and console. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
 The Genshin Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-genshin.token` and exposes the bind page through `genshin.kkkzbh.cn`.
 
+Deploy installs `/etc/systemd/system/podman-restart.service.d/qqbot-no-global-stop.conf` so the Podman boot helper can start restart-policy containers without stopping unrelated root Podman containers later. PMHQ has `restart: always`; stop it through `qqbot-pmhq.service`, not through global Podman stop-all commands.
+
 Do not restart or recreate PMHQ during ordinary deploys, code updates, or bot restarts. PMHQ contains the QQ desktop device profile; touching it can make QQ treat the server as a new device. Restart LLBot and Koishi for normal runtime recovery.
 
 ## Operations

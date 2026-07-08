@@ -14,7 +14,7 @@ services:
       com.qqbot.pmhq.config-signature: "${QQBOT_PMHQ_CONFIG_SIGNATURE:-unmanaged}"
     volumes:
       - ${PMHQ_QQ_CONFIG_DIR:-./data/pmhq/QQ}:/root/.config/QQ:Z
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:13000/health"]
       interval: 30s

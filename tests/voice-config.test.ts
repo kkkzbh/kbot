@@ -46,6 +46,7 @@ describe('qq voice config wiring', () => {
     const content = readFileSync(resolve(process.cwd(), 'compose.yaml'), 'utf8');
 
     expect(content).toContain('"${PMHQ_BIND_HOST:-127.0.0.1}:${PMHQ_PORT:-13000}:13000"');
+    expect(content).toContain('restart: always');
     expect(content).not.toContain('network_mode: "pasta:');
     expect(content).toContain('voice-asr:');
     expect(content).toContain('"127.0.0.1:${VOICE_ASR_PORT:-5161}:8080"');
@@ -186,6 +187,14 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('wait_for "host login network is reachable"');
     expect(content).toContain('wait_for "${PMHQ_CONTAINER} outbound network is ready"');
     expect(content).not.toContain('compose up -d llbot');
+  });
+
+  it('clears podman-restart global stop during systemd rendering', () => {
+    const content = readFileSync(resolve(process.cwd(), 'deploy/render-systemd.mjs'), 'utf8');
+
+    expect(content).toContain("join(systemdDir, 'podman-restart.service.d')");
+    expect(content).toContain("'qqbot-no-global-stop.conf'");
+    expect(content).toContain('ExecStop=');
   });
 
 
