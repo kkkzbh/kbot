@@ -6,6 +6,7 @@ import { h } from 'koishi';
 import { assertGenshinAdvancedCookieCapability } from './cookie.js';
 import { decryptGenshinCredential } from './credential.js';
 import { GENSHIN_GACHA_ICON_BASE_URL, GENSHIN_GACHA_ICON_NAMES, GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME } from './gacha-icon-data.js';
+import type { GenshinGachaIconResolver } from './gacha-icon-resolver.js';
 import { gachaRecordKey, gachaSyncKey, type GenshinStore } from './store.js';
 import {
   GenshinTakumiError,
@@ -30,6 +31,7 @@ const MAX_POOL_HISTORY_ROWS = 8;
 export interface GenshinGachaServiceOptions {
   timezone: string;
   requestIntervalMs: number;
+  iconResolver?: GenshinGachaIconResolver;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
 }
@@ -97,6 +99,7 @@ export class GenshinGachaService {
   private readonly activeQueries = new Map<string, Promise<GenshinGachaRecordsView>>();
   private readonly timezone: string;
   private readonly requestIntervalMs: number;
+  private readonly iconResolver: GenshinGachaIconResolver | null;
   private readonly now: () => number;
   private readonly sleep: (delayMs: number) => Promise<void>;
   private gachaPageRequestChain: Promise<void> = Promise.resolve();
@@ -110,6 +113,7 @@ export class GenshinGachaService {
   ) {
     this.timezone = options.timezone;
     this.requestIntervalMs = options.requestIntervalMs;
+    this.iconResolver = options.iconResolver ?? null;
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep ?? sleepMs;
   }
@@ -144,6 +148,7 @@ export class GenshinGachaService {
         createdAt: now,
       });
       const records = await this.store.listGachaRecords(role.uid, role.region);
+      const iconNamesByRecordKey = await this.iconResolver?.resolveIconNames(records) ?? {};
       return buildGachaRecordsView(records, {
         uid: role.uid,
         nickname: role.nickname,
@@ -151,6 +156,7 @@ export class GenshinGachaService {
         addedCount,
         syncedAt: now,
         timezone: this.timezone,
+        iconNamesByRecordKey,
       });
     } catch (error) {
       const result = gachaFailure(error);
@@ -576,6 +582,7 @@ export function buildGachaRecordsView(
     addedCount: number;
     syncedAt: number;
     timezone: string;
+    iconNamesByRecordKey?: Record<string, string>;
   },
 ): GenshinGachaRecordsView {
   const sorted = [...records].sort(compareGachaRecordDesc);
@@ -587,7 +594,7 @@ export function buildGachaRecordsView(
     syncedAtText: `同步 ${formatDateTimeInTimeZone(options.syncedAt, options.timezone)}`,
     addedCount: options.addedCount,
     totalCount: sorted.length,
-    poolViews: buildPoolViews(sorted),
+    poolViews: buildPoolViews(sorted, options.iconNamesByRecordKey ?? {}),
   };
 }
 
@@ -619,13 +626,13 @@ function toGachaRecordRow(args: {
   };
 }
 
-function buildPoolViews(records: GenshinGachaRecord[]): GenshinGachaPoolView[] {
+function buildPoolViews(records: GenshinGachaRecord[], iconNamesByRecordKey: Record<string, string>): GenshinGachaPoolView[] {
   return POOL_VIEWS.flatMap((pool) => {
     const poolRecords = records.filter((record) => record.uigfGachaType === pool.uigfGachaType);
     if (!pool.defaultVisible && poolRecords.length === 0) return [];
     const firstFiveIndex = poolRecords.findIndex((record) => record.rankType === '5');
     const currentPity = firstFiveIndex < 0 ? poolRecords.length : firstFiveIndex;
-    const allHistoryRows = buildPoolHistoryRows(poolRecords, pool);
+    const allHistoryRows = buildPoolHistoryRows(poolRecords, pool, iconNamesByRecordKey);
     return [{
       title: pool.title,
       tone: pool.tone,
@@ -642,6 +649,7 @@ function buildPoolViews(records: GenshinGachaRecord[]): GenshinGachaPoolView[] {
 function buildPoolHistoryRows(
   poolRecords: GenshinGachaRecord[],
   pool: (typeof POOL_VIEWS)[number],
+  iconNamesByRecordKey: Record<string, string>,
 ): GenshinGachaHistoryRowView[] {
   const fiveIndexes = poolRecords
     .map((record, index) => ({ record, index }))
@@ -651,7 +659,7 @@ function buildPoolHistoryRows(
     const pityCount = nextFiveIndex == null ? poolRecords.length - index : nextFiveIndex - index;
     return {
       name: record.name,
-      iconUrl: resolveGachaIconUrl(record.itemId, record.name, pool.tone),
+      iconUrl: resolveGachaIconUrl(record.itemId, record.name, iconNamesByRecordKey[record.recordKey], pool.tone),
       itemType: record.itemType,
       rankType: record.rankType,
       pityCount,
@@ -715,8 +723,9 @@ function renderHistoryRow(row: GenshinGachaHistoryRowView, pool: GenshinGachaPoo
   </div>`;
 }
 
-function resolveGachaIconUrl(itemId: string, itemName: string, tone: GenshinGachaPoolTone): string {
-  const iconName = GENSHIN_GACHA_ICON_NAMES[itemId as keyof typeof GENSHIN_GACHA_ICON_NAMES]
+function resolveGachaIconUrl(itemId: string, itemName: string, resolvedIconName: string | undefined, tone: GenshinGachaPoolTone): string {
+  const iconName = resolvedIconName
+    ?? GENSHIN_GACHA_ICON_NAMES[itemId as keyof typeof GENSHIN_GACHA_ICON_NAMES]
     ?? GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME[itemName as keyof typeof GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME];
   if (!iconName) return renderUnknownWishIconSrc(tone);
   return `${GENSHIN_GACHA_ICON_BASE_URL}${encodeURIComponent(iconName)}.png`;

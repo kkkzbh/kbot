@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { GenshinGachaService, renderGenshinGachaRecordsImage } from './gacha-records.js';
+import { GenshinGachaIconResolver } from './gacha-icon-resolver.js';
 import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
 import { GenshinService, type QrBindingStatusResult } from './service.js';
 import { ensureGenshinTables, GenshinStore } from './store.js';
@@ -23,6 +24,7 @@ const DEFAULT_ACT_ID = 'e202311201442471';
 const DEFAULT_APP_VERSION = '2.70.1';
 const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
 const DEFAULT_GACHA_REQUEST_INTERVAL_MS = 1_200;
+const DEFAULT_GACHA_ICON_CACHE_PATH = './.runtime/genshin/gacha-icon-cache.json';
 
 export interface Config {
   bindPagePath?: string;
@@ -36,6 +38,7 @@ export interface Config {
   signActId?: string;
   redeemGameVersion?: string;
   gachaRequestIntervalMs?: number;
+  gachaIconCachePath?: string;
   allowedGroups?: string[] | string;
   naturalTriggerEnabled?: boolean;
   naturalTriggerGroups?: string[] | string;
@@ -53,6 +56,7 @@ export const Config: Schema<Config> = Schema.object({
   signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
   redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
   gachaRequestIntervalMs: Schema.natural().role('time').default(DEFAULT_GACHA_REQUEST_INTERVAL_MS).description('抽卡记录分页请求间隔，用于控制米游社接口访问频率。'),
+  gachaIconCachePath: Schema.string().default(DEFAULT_GACHA_ICON_CACHE_PATH).description('抽卡记录物品图标运行时缓存文件路径。'),
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用原神功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用原神功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
@@ -89,6 +93,7 @@ interface RuntimeConfig {
   signActId: string;
   redeemGameVersion: string;
   gachaRequestIntervalMs: number;
+  gachaIconCachePath: string;
   allowedGroups: Set<string>;
   naturalTriggerEnabled: boolean;
   naturalTriggerGroups: Set<string>;
@@ -113,9 +118,13 @@ export function apply(ctx: Context, config: Config): void {
     timezone: runtime.timezone,
   });
   const menuService = new GenshinMenuService(genshinCtx.puppeteer);
+  const iconResolver = new GenshinGachaIconResolver({
+    cachePath: runtime.gachaIconCachePath,
+  });
   const gachaService = new GenshinGachaService(store, client, kek, {
     timezone: runtime.timezone,
     requestIntervalMs: runtime.gachaRequestIntervalMs,
+    iconResolver,
   });
 
   registerHostGuard(genshinCtx, runtime);
@@ -134,6 +143,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
   const bindPagePath = requireAbsolutePath(config.bindPagePath ?? DEFAULT_BIND_PAGE_PATH, 'genshin.bindPagePath');
   const publicBaseUrl = normalizeBaseUrl(config.publicBaseUrl ?? `http://127.0.0.1:${process.env.KOISHI_PORT || '5140'}`, 'genshin.publicBaseUrl');
   const credentialKekPath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.credentialKekPath ?? './.runtime/genshin/credential-kek.key');
+  const gachaIconCachePath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.gachaIconCachePath ?? DEFAULT_GACHA_ICON_CACHE_PATH);
   return {
     bindPagePath,
     publicBaseUrl,
@@ -142,6 +152,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     bindSubmitPath: `${bindPagePath}/submit`,
     bindStatusPath: `${bindPagePath}/status`,
     publicHostGuard: resolvePublicHostGuard(publicBaseUrl),
+    gachaIconCachePath,
     autoSignEnabled: config.autoSignEnabled ?? true,
     autoSignCron: requireNonEmptyString(config.autoSignCron ?? DEFAULT_AUTO_SIGN_CRON, 'genshin.autoSignCron'),
     timezone: requireNonEmptyString(config.timezone ?? DEFAULT_TIMEZONE, 'genshin.timezone'),

@@ -1,5 +1,5 @@
 import { mkdtempSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createCanvas } from '@napi-rs/canvas';
@@ -65,6 +65,7 @@ import {
   GenshinGachaService,
   renderGenshinGachaRecordsImage,
 } from '../src/plugins/genshin/gacha-records.js';
+import { GenshinGachaIconResolver } from '../src/plugins/genshin/gacha-icon-resolver.js';
 import {
   buildGenshinMenuView,
   GenshinMenuService,
@@ -543,6 +544,60 @@ describe('genshin gacha records service', () => {
     expect(fetchGachaLogPage.mock.calls.map((call) => call[3])).toEqual(['100', '200', '301', '400', '302', '500']);
     expect(sleep).toHaveBeenCalledTimes(5);
     expect(sleep).toHaveBeenCalledWith(1_200);
+  });
+
+  it('resolves missing gacha item ids through the runtime icon cache', async () => {
+    const dir = createTempDir();
+    const fetchGachaLogPage = vi.fn(async (_cookies, _role, _authKey, gachaType: string, endId: string) => {
+      if (gachaType === '302' && endId === '0') {
+        return {
+          list: [
+            gachaItem({
+              gachaType: '302',
+              itemId: '',
+              name: '雾切之回光',
+              itemType: '武器',
+              rankType: '5',
+              id: '1000000000000000005',
+            }),
+          ],
+        };
+      }
+      return { list: [] };
+    });
+    const iconDictFetch = vi.fn(async () => jsonResponse({
+      雾切之回光: 11509,
+      西风剑: 11401,
+    }));
+    const { service, database, client, kek } = createService({ fetchGachaLogPage, now: () => 1_000 });
+    const started = await service.startBinding(identity());
+    await completeQrBinding(service, extractToken(started.link));
+    const iconResolver = new GenshinGachaIconResolver({
+      cachePath: join(dir, 'gacha-icon-cache.json'),
+      fetchImpl: iconDictFetch as unknown as typeof fetch,
+      now: () => 2_000,
+    });
+    const gachaService = new GenshinGachaService(new GenshinStore(database as unknown as DatabaseLike), client as unknown as GenshinTakumiClient, kek, {
+      timezone: 'Asia/Shanghai',
+      requestIntervalMs: 0,
+      iconResolver,
+      now: () => 2_000,
+    });
+
+    const view = await gachaService.queryGachaRecords(identity());
+
+    expect(iconDictFetch).toHaveBeenCalledTimes(1);
+    expect(view.poolViews.find((pool) => pool.title === '武器活动祈愿')?.historyRows[0]).toMatchObject({
+      name: '雾切之回光',
+      iconUrl: 'https://enka.network/ui/UI_EquipIcon_Sword_Narukami.png',
+    });
+    const cache = JSON.parse(await readFile(join(dir, 'gacha-icon-cache.json'), 'utf8'));
+    expect(cache.entries['雾切之回光']).toMatchObject({
+      itemId: '11509',
+      iconName: 'UI_EquipIcon_Sword_Narukami',
+      source: 'uigf-dict',
+      updatedAt: 2_000,
+    });
   });
 
   it('keeps local gacha records when official pages are empty', async () => {
