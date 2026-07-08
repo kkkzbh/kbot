@@ -22,6 +22,7 @@ const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACT_ID = 'e202311201442471';
 const DEFAULT_APP_VERSION = '2.70.1';
 const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
+const DEFAULT_GACHA_REQUEST_INTERVAL_MS = 1_200;
 
 export interface Config {
   bindPagePath?: string;
@@ -34,6 +35,7 @@ export interface Config {
   takumiAppVersion?: string;
   signActId?: string;
   redeemGameVersion?: string;
+  gachaRequestIntervalMs?: number;
   allowedGroups?: string[] | string;
   naturalTriggerEnabled?: boolean;
   naturalTriggerGroups?: string[] | string;
@@ -50,6 +52,7 @@ export const Config: Schema<Config> = Schema.object({
   takumiAppVersion: Schema.string().default(DEFAULT_APP_VERSION).description('米游社请求头 x-rpc-app_version。'),
   signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
   redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
+  gachaRequestIntervalMs: Schema.natural().role('time').default(DEFAULT_GACHA_REQUEST_INTERVAL_MS).description('抽卡记录分页请求间隔，用于控制米游社接口访问频率。'),
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用原神功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用原神功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
@@ -85,6 +88,7 @@ interface RuntimeConfig {
   takumiAppVersion: string;
   signActId: string;
   redeemGameVersion: string;
+  gachaRequestIntervalMs: number;
   allowedGroups: Set<string>;
   naturalTriggerEnabled: boolean;
   naturalTriggerGroups: Set<string>;
@@ -109,7 +113,10 @@ export function apply(ctx: Context, config: Config): void {
     timezone: runtime.timezone,
   });
   const menuService = new GenshinMenuService(genshinCtx.puppeteer);
-  const gachaService = new GenshinGachaService(store, client, kek, runtime.timezone);
+  const gachaService = new GenshinGachaService(store, client, kek, {
+    timezone: runtime.timezone,
+    requestIntervalMs: runtime.gachaRequestIntervalMs,
+  });
 
   registerHostGuard(genshinCtx, runtime);
   registerWebRoutes(genshinCtx, service, runtime);
@@ -141,6 +148,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     takumiAppVersion: requireNonEmptyString(config.takumiAppVersion ?? DEFAULT_APP_VERSION, 'genshin.takumiAppVersion'),
     signActId: requireNonEmptyString(config.signActId ?? DEFAULT_ACT_ID, 'genshin.signActId'),
     redeemGameVersion: requireNonEmptyString(config.redeemGameVersion ?? DEFAULT_REDEEM_GAME_VERSION, 'genshin.redeemGameVersion'),
+    gachaRequestIntervalMs: requirePositiveInteger(config.gachaRequestIntervalMs ?? DEFAULT_GACHA_REQUEST_INTERVAL_MS, 'genshin.gachaRequestIntervalMs'),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'genshin.allowedGroups'),
     naturalTriggerEnabled: config.naturalTriggerEnabled === true,
     naturalTriggerGroups: parseGroupSet(config.naturalTriggerGroups ?? ''),

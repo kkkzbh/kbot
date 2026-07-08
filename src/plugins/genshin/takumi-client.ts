@@ -15,6 +15,7 @@ const API_TAKUMI_BASE_URL = 'https://api-takumi.mihoyo.com';
 const PASSPORT_API_BASE_URL = 'https://passport-api.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
+const GACHA_LOG_BASE_URL = 'https://public-operation-hk4e.mihoyo.com';
 const PASSPORT_QR_APP_ID = 'ddxf5dufpuyo';
 const PASSPORT_QR_CLIENT_TYPE = '3';
 const PASSPORT_QR_USER_AGENT = 'HYPContainer/1.3.3.182';
@@ -343,7 +344,7 @@ export class GenshinTakumiClient {
         diagnostic: `invalid gacha_type=${gachaType}`,
       });
     }
-    const url = new URL('/event/gacha_info/api/getGachaLog', REDEEM_BASE_URL);
+    const url = new URL('/gacha_info/api/getGachaLog', GACHA_LOG_BASE_URL);
     url.searchParams.set('authkey_ver', String(authKey.authkeyVer));
     url.searchParams.set('sign_type', String(authKey.signType));
     url.searchParams.set('auth_appid', GACHA_AUTH_APPID);
@@ -603,7 +604,7 @@ function normalizeGachaLogItem(item: GachaLogPayloadItem): GenshinGachaLogItem {
     rankType: String(item.rank_type ?? '').trim(),
     id: String(item.id ?? '').trim(),
   };
-  if (!normalized.itemId || !normalized.count || !normalized.time || !normalized.name || !normalized.itemType || !normalized.rankType || !normalized.id) {
+  if (!normalized.count || !normalized.time || !normalized.name || !normalized.itemType || !normalized.rankType || !normalized.id) {
     throw new GenshinTakumiError('米游社返回了无效抽卡记录。', {
       retcode: null,
       diagnostic: `invalid gacha log item id=${normalized.id || 'missing'}`,
