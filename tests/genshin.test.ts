@@ -77,6 +77,7 @@ import { GenshinTakumiClient, GenshinTakumiError, type GenshinGachaLogItem } fro
 import { encryptEnvelopeJson, loadOrCreateKek, type CredentialKek } from '../src/plugins/shared/credential-crypto.js';
 import type {
   DatabaseLike,
+  GenshinCookieFields,
   GenshinCredentialPayload,
   GenshinGachaRecord,
   GenshinGameRole,
@@ -158,8 +159,7 @@ function extractToken(link: string): string {
 function createService(options: {
   database?: ReturnType<typeof createDatabase>;
   roles?: GenshinGameRole[];
-  qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed' | 'Expired'; accountId?: string; gameToken?: string }>;
-  exchangeGameToken?: ReturnType<typeof vi.fn>;
+  qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed' | 'Expired'; cookies?: GenshinCookieFields }>;
   signIn?: ReturnType<typeof vi.fn>;
   redeemCode?: ReturnType<typeof vi.fn>;
   createGachaAuthKey?: ReturnType<typeof vi.fn>;
@@ -169,11 +169,11 @@ function createService(options: {
   const dir = createTempDir();
   const database = options.database ?? createDatabase();
   const kek = loadOrCreateKek(join(dir, 'kek.key'));
-  const qrResults = [...(options.qrResults ?? [{ status: 'Confirmed' as const, accountId: '123456', gameToken: 'game_token_secret' }])];
+  const passportCookies = { stoken: 'v2_secret', mid: 'mid_secret', account_id: '123456', login_uid: '123456', stuid: '123456' };
+  const qrResults = [...(options.qrResults ?? [{ status: 'Confirmed' as const, cookies: passportCookies }])];
   const client = {
-    createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=4&ticket=ticket-secret' })),
-    queryQrLogin: vi.fn(async () => qrResults.shift() ?? { status: 'Confirmed', accountId: '123456', gameToken: 'game_token_secret' }),
-    exchangeGameToken: options.exchangeGameToken ?? vi.fn(async () => ({ stoken: 'v2_secret', mid: 'mid_secret', account_id: '123456', stuid: '123456' })),
+    createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/login-platform/mobile.html?tk=ticket-secret#/login/qr' })),
+    queryQrLogin: vi.fn(async () => qrResults.shift() ?? { status: 'Confirmed', cookies: passportCookies }),
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
     redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
@@ -337,7 +337,7 @@ describe('genshin binding service', () => {
     const token = extractToken(started.link);
 
     const page = await service.resolveBindPageChallenge(token);
-    expect(page).toMatchObject({ state: 'qr', qrUrl: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=4&ticket=ticket-secret' });
+    expect(page).toMatchObject({ state: 'qr', qrUrl: 'https://user.mihoyo.com/login-platform/mobile.html?tk=ticket-secret#/login/qr' });
 
     const first = await service.pollQrLogin(token);
 
@@ -345,8 +345,6 @@ describe('genshin binding service', () => {
     const [challenge] = database.tables.get('genshin_bind_challenge') ?? [];
     expect(challenge).toMatchObject({ status: 'role_selecting', pendingRolesJson: JSON.stringify(roles) });
     expect(JSON.stringify(challenge)).not.toContain('v2_secret');
-    expect(JSON.stringify(challenge)).not.toContain('game_token_secret');
-    expect(client.exchangeGameToken).toHaveBeenCalledWith('123456', 'game_token_secret');
 
     const second = await service.selectRole({ token, selectedRoleKey: '100000002:cn_qd01' });
     expect(second).toMatchObject({ kind: 'success', role: roles[1] });
@@ -361,7 +359,6 @@ describe('genshin binding service', () => {
       revokedAt: null,
     });
     expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain('v2_secret');
-    expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain('game_token_secret');
     expect(database.tables.get('genshin_bind_challenge')?.[0]).toMatchObject({
       status: 'confirmed',
       pendingCredentialCipher: null,
@@ -406,7 +403,7 @@ describe('genshin binding service', () => {
       qrResults: [
         { status: 'Init' },
         { status: 'Scanned' },
-        { status: 'Confirmed', accountId: '123456', gameToken: 'game_token_secret' },
+        { status: 'Confirmed', cookies: { stoken: 'v2_secret', mid: 'mid_secret', account_id: '123456', login_uid: '123456', stuid: '123456' } },
       ],
     });
     const started = await service.startBinding(identity());
@@ -633,14 +630,26 @@ describe('genshin takumi client', () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
       calls.push({ url: url.toString(), init });
-      if (url.pathname === '/hk4e_cn/combo/panda/qrcode/fetch') {
-        return jsonResponse({ retcode: 0, message: 'OK', data: { url: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=4&ticket=ticket-secret' } });
+      if (url.pathname === '/account/ma-cn-passport/app/createQRLogin') {
+        return jsonResponse({
+          retcode: 0,
+          message: 'OK',
+          data: {
+            url: 'https://user.mihoyo.com/login-platform/mobile.html?expire=1783513587&tk=ticket-secret&token_types=1#/login/qr',
+            ticket: 'ticket-secret',
+          },
+        });
       }
-      if (url.pathname === '/hk4e_cn/combo/panda/qrcode/query') {
-        return jsonResponse({ retcode: 0, message: 'OK', data: { stat: 'Confirmed', payload: { raw: JSON.stringify({ uid: '123456', token: 'game_token_secret' }) } } });
-      }
-      if (url.pathname === '/account/ma-cn-session/app/getTokenByGameToken') {
-        return jsonResponse({ retcode: 0, message: 'OK', data: { token: { token_type: 2, token: 'v2_secret' }, user_info: { aid: '123456', mid: 'mid_secret' } } });
+      if (url.pathname === '/account/ma-cn-passport/app/queryQRLoginStatus') {
+        return jsonResponse({
+          retcode: 0,
+          message: 'OK',
+          data: {
+            status: 'Confirmed',
+            tokens: [{ token_type: 1, token: 'v2_secret' }],
+            user_info: { aid: '123456', mid: 'mid_secret' },
+          },
+        });
       }
       if (url.pathname === '/binding/api/getUserGameRolesByStoken') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { list: [{ game_biz: 'hk4e_cn', game_uid: '100000001', region: 'cn_gf01', region_name: '天空岛', nickname: '旅行者', level: 60 }] } });
@@ -687,10 +696,10 @@ describe('genshin takumi client', () => {
     });
     const qr = await client.createQrLogin();
     const qrResult = await client.queryQrLogin(qr.ticket);
-    if (qrResult.status !== 'Confirmed' || !qrResult.accountId || !qrResult.gameToken) {
+    if (qrResult.status !== 'Confirmed' || !qrResult.cookies) {
       throw new Error('expected confirmed qr result');
     }
-    const cookies = await client.exchangeGameToken(qrResult.accountId, qrResult.gameToken);
+    const cookies = qrResult.cookies;
     const [selectedRole] = await client.listRoles(cookies);
 
     await client.signIn(cookies, selectedRole);
@@ -699,9 +708,8 @@ describe('genshin takumi client', () => {
     await client.fetchGachaLogPage(cookies, selectedRole, gachaAuthKey, '301', '0');
 
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
-      '/hk4e_cn/combo/panda/qrcode/fetch',
-      '/hk4e_cn/combo/panda/qrcode/query',
-      '/account/ma-cn-session/app/getTokenByGameToken',
+      '/account/ma-cn-passport/app/createQRLogin',
+      '/account/ma-cn-passport/app/queryQRLoginStatus',
       '/binding/api/getUserGameRolesByStoken',
       '/event/luna/info',
       '/device-fp/api/getFp',
@@ -711,35 +719,42 @@ describe('genshin takumi client', () => {
       '/binding/api/genAuthKey',
       '/event/gacha_info/api/getGachaLog',
     ]);
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ app_id: '4' });
-    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ app_id: '4' });
-    expect(calls[0].init.headers).toEqual({ 'content-type': 'application/json;charset=utf-8' });
-    expect(calls[1].init.headers).toEqual({ 'content-type': 'application/json;charset=utf-8' });
-    expect(calls[2].init.headers).toMatchObject({
-      'x-rpc-app_id': 'bll8iq97cem8',
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({});
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ ticket: 'ticket-secret' });
+    expect(calls[0].init.headers).toMatchObject({
+      'x-rpc-app_id': 'ddxf5dufpuyo',
+      'x-rpc-client_type': '3',
+      'x-rpc-device_id': '00000000-0000-4000-8000-000000000001',
+      'content-type': 'application/json',
+    });
+    expect(calls[1].init.headers).toMatchObject({
+      'x-rpc-app_id': 'ddxf5dufpuyo',
+      'x-rpc-client_type': '3',
+      'x-rpc-device_id': '00000000-0000-4000-8000-000000000001',
+      'content-type': 'application/json',
     });
     expect(cookies).toMatchObject({ stoken: 'v2_secret', mid: 'mid_secret', stuid: '123456' });
-    expect(new URL(calls[3].url).hostname).toBe('api-takumi.miyoushe.com');
-    expect(calls[3].url).toContain('game_biz=hk4e_cn');
-    expect(calls[3].init.headers).toMatchObject({
+    expect(new URL(calls[2].url).hostname).toBe('api-takumi.miyoushe.com');
+    expect(calls[2].url).toContain('game_biz=hk4e_cn');
+    expect(calls[2].init.headers).toMatchObject({
       cookie: expect.stringContaining('stoken=v2_secret'),
       'x-rpc-client_type': '2',
       ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
     });
-    expect(calls[6].init.method).toBe('POST');
-    expect(calls[6].init.headers).toMatchObject({
+    expect(calls[5].init.method).toBe('POST');
+    expect(calls[5].init.headers).toMatchObject({
       cookie: expect.stringContaining('stoken=v2_secret'),
       'x-rpc-signgame': 'hk4e',
       ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
     });
-    const redeemUrl = new URL(calls[8].url);
+    const redeemUrl = new URL(calls[7].url);
     expect(redeemUrl.hostname).toBe('hk4e-api.mihoyo.com');
     expect(redeemUrl.searchParams.get('auth_appid')).toBe('apicdkey');
     expect(redeemUrl.searchParams.get('authkey')).toBe('authkey-secret');
     expect(redeemUrl.searchParams.get('game_biz')).toBe('hk4e_cn');
-    expect(JSON.parse(String(calls[7].init.body))).toMatchObject({ auth_appid: 'apicdkey' });
-    expect(JSON.parse(String(calls[9].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
-    const gachaUrl = new URL(calls[10].url);
+    expect(JSON.parse(String(calls[6].init.body))).toMatchObject({ auth_appid: 'apicdkey' });
+    expect(JSON.parse(String(calls[8].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
+    const gachaUrl = new URL(calls[9].url);
     expect(gachaUrl.hostname).toBe('hk4e-api.mihoyo.com');
     expect(gachaUrl.pathname).toBe('/event/gacha_info/api/getGachaLog');
     expect(gachaUrl.searchParams.get('authkey_ver')).toBe('1');
@@ -750,9 +765,9 @@ describe('genshin takumi client', () => {
     expect(gachaUrl.searchParams.get('end_id')).toBe('0');
   });
 
-  it('maps expired game-token qr tickets to an expired status', async () => {
+  it('maps expired passport qr tickets to an expired status', async () => {
     const fetchImpl = vi.fn(async (url: URL) => {
-      if (url.pathname === '/hk4e_cn/combo/panda/qrcode/query') {
+      if (url.pathname === '/account/ma-cn-passport/app/queryQRLoginStatus') {
         return jsonResponse({ retcode: -106, message: 'ExpiredCode', data: null });
       }
       throw new Error(`unexpected URL: ${url}`);
@@ -765,19 +780,19 @@ describe('genshin takumi client', () => {
     await expect(client.queryQrLogin('expired-ticket')).resolves.toEqual({ status: 'Expired' });
   });
 
-  it('rejects game-token qr fetch responses for the wrong app id', async () => {
+  it('rejects confirmed passport qr responses without root tokens', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       retcode: 0,
       message: 'OK',
-      data: { url: 'https://user.mihoyo.com/qr_code_in_game.html?app_id=2&ticket=ticket-secret' },
+      data: { status: 'Confirmed', tokens: [], user_info: { aid: '123456', mid: 'mid_secret' } },
     }));
     const client = new GenshinTakumiClient({
       fetchImpl: fetchImpl as unknown as typeof fetch,
       deviceId: '00000000-0000-4000-8000-000000000001',
     });
 
-    await expect(client.createQrLogin()).rejects.toMatchObject({
-      diagnostic: 'qrcode fetch app_id mismatch expected=4 actual=2',
+    await expect(client.queryQrLogin('ticket-secret')).rejects.toMatchObject({
+      diagnostic: 'passport qrcode confirmed without stoken, mid, or aid',
     });
   });
 });

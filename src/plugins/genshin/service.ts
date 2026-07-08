@@ -194,8 +194,8 @@ export class GenshinService {
   }
 
   private async completeQrLogin(challenge: GenshinBindChallenge, result: GenshinQrLoginResult): Promise<QrBindingStatusResult> {
-    if (!result.accountId || !result.gameToken) {
-      throw new Error('confirmed genshin qr result is missing account id or game token.');
+    if (!result.cookies) {
+      throw new Error('confirmed genshin qr result is missing passport cookies.');
     }
     const now = this.now();
     const verifyAttemptId = createRandomToken(16);
@@ -205,7 +205,7 @@ export class GenshinService {
     }
 
     try {
-      const cookies = await this.client.exchangeGameToken(result.accountId, result.gameToken);
+      const cookies = result.cookies;
       const roles = await this.client.listRoles(cookies);
       if (roles.length === 0) {
         throw new GenshinUserError('该米游社账号没有可绑定的国服原神 UID。');

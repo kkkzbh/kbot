@@ -73,8 +73,7 @@ export interface GenshinQrLoginTicket {
 
 export interface GenshinQrLoginResult {
   status: GenshinQrLoginStatus;
-  accountId?: string;
-  gameToken?: string;
+  cookies?: GenshinCookieFields;
 }
 
 export interface GenshinBindChallenge {

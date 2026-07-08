@@ -22,7 +22,6 @@ const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACT_ID = 'e202311201442471';
 const DEFAULT_APP_VERSION = '2.70.1';
 const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
-const DEFAULT_GAME_TOKEN_QR_APP_ID = '4';
 
 export interface Config {
   bindPagePath?: string;
@@ -33,7 +32,6 @@ export interface Config {
   autoSignCron?: string;
   timezone?: string;
   takumiAppVersion?: string;
-  gameTokenQrAppId?: string;
   signActId?: string;
   redeemGameVersion?: string;
   allowedGroups?: string[] | string;
@@ -50,7 +48,6 @@ export const Config: Schema<Config> = Schema.object({
   autoSignCron: Schema.string().default(DEFAULT_AUTO_SIGN_CRON).description('自动签到 cron 表达式。'),
   timezone: Schema.string().default(DEFAULT_TIMEZONE).description('自动签到时区。'),
   takumiAppVersion: Schema.string().default(DEFAULT_APP_VERSION).description('米游社请求头 x-rpc-app_version。'),
-  gameTokenQrAppId: Schema.string().default(DEFAULT_GAME_TOKEN_QR_APP_ID).description('米游社 Game Token 扫码登录 app_id。'),
   signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
   redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
   allowedGroups: Schema.union([
@@ -86,7 +83,6 @@ interface RuntimeConfig {
   autoSignCron: string;
   timezone: string;
   takumiAppVersion: string;
-  gameTokenQrAppId: string;
   signActId: string;
   redeemGameVersion: string;
   allowedGroups: Set<string>;
@@ -103,7 +99,6 @@ export function apply(ctx: Context, config: Config): void {
   const store = new GenshinStore(genshinCtx.database);
   const client = new GenshinTakumiClient({
     appVersion: runtime.takumiAppVersion,
-    gameTokenQrAppId: runtime.gameTokenQrAppId,
     actId: runtime.signActId,
     redeemGameVersion: runtime.redeemGameVersion,
   });
@@ -144,7 +139,6 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     autoSignCron: requireNonEmptyString(config.autoSignCron ?? DEFAULT_AUTO_SIGN_CRON, 'genshin.autoSignCron'),
     timezone: requireNonEmptyString(config.timezone ?? DEFAULT_TIMEZONE, 'genshin.timezone'),
     takumiAppVersion: requireNonEmptyString(config.takumiAppVersion ?? DEFAULT_APP_VERSION, 'genshin.takumiAppVersion'),
-    gameTokenQrAppId: requireGameTokenQrAppId(config.gameTokenQrAppId ?? DEFAULT_GAME_TOKEN_QR_APP_ID, 'genshin.gameTokenQrAppId'),
     signActId: requireNonEmptyString(config.signActId ?? DEFAULT_ACT_ID, 'genshin.signActId'),
     redeemGameVersion: requireNonEmptyString(config.redeemGameVersion ?? DEFAULT_REDEEM_GAME_VERSION, 'genshin.redeemGameVersion'),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'genshin.allowedGroups'),
@@ -490,14 +484,6 @@ function requireNonEmptyString(value: unknown, key: string): string {
   const parsed = String(value ?? '').trim();
   if (!parsed) {
     throw new Error(`${key} 必须配置。`);
-  }
-  return parsed;
-}
-
-function requireGameTokenQrAppId(value: unknown, key: string): string {
-  const parsed = requireNonEmptyString(value, key);
-  if (!/^\d+$/.test(parsed)) {
-    throw new Error(`${key} 必须是数字字符串。`);
   }
   return parsed;
 }
