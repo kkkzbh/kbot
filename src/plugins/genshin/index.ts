@@ -3,6 +3,7 @@ import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi'
 import QRCode from 'qrcode';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
+import { GenshinGachaService, renderGenshinGachaRecordsImage } from './gacha-records.js';
 import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
 import { GenshinService, type QrBindingStatusResult } from './service.js';
 import { ensureGenshinTables, GenshinStore } from './store.js';
@@ -21,6 +22,7 @@ const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACT_ID = 'e202311201442471';
 const DEFAULT_APP_VERSION = '2.70.1';
 const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
+const DEFAULT_GAME_TOKEN_QR_APP_ID = '2';
 
 export interface Config {
   bindPagePath?: string;
@@ -31,6 +33,7 @@ export interface Config {
   autoSignCron?: string;
   timezone?: string;
   takumiAppVersion?: string;
+  gameTokenQrAppId?: string;
   signActId?: string;
   redeemGameVersion?: string;
   allowedGroups?: string[] | string;
@@ -47,6 +50,7 @@ export const Config: Schema<Config> = Schema.object({
   autoSignCron: Schema.string().default(DEFAULT_AUTO_SIGN_CRON).description('自动签到 cron 表达式。'),
   timezone: Schema.string().default(DEFAULT_TIMEZONE).description('自动签到时区。'),
   takumiAppVersion: Schema.string().default(DEFAULT_APP_VERSION).description('米游社请求头 x-rpc-app_version。'),
+  gameTokenQrAppId: Schema.string().default(DEFAULT_GAME_TOKEN_QR_APP_ID).description('米游社 Game Token 扫码登录 app_id。'),
   signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
   redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
   allowedGroups: Schema.union([
@@ -82,6 +86,7 @@ interface RuntimeConfig {
   autoSignCron: string;
   timezone: string;
   takumiAppVersion: string;
+  gameTokenQrAppId: string;
   signActId: string;
   redeemGameVersion: string;
   allowedGroups: Set<string>;
@@ -98,6 +103,7 @@ export function apply(ctx: Context, config: Config): void {
   const store = new GenshinStore(genshinCtx.database);
   const client = new GenshinTakumiClient({
     appVersion: runtime.takumiAppVersion,
+    gameTokenQrAppId: runtime.gameTokenQrAppId,
     actId: runtime.signActId,
     redeemGameVersion: runtime.redeemGameVersion,
   });
@@ -108,10 +114,11 @@ export function apply(ctx: Context, config: Config): void {
     timezone: runtime.timezone,
   });
   const menuService = new GenshinMenuService(genshinCtx.puppeteer);
+  const gachaService = new GenshinGachaService(store, client, kek, runtime.timezone);
 
   registerHostGuard(genshinCtx, runtime);
   registerWebRoutes(genshinCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, menuService, runtime);
+  registerKeywordMiddleware(ctx, service, menuService, gachaService, genshinCtx.puppeteer, runtime);
   registerAutoSign(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -137,6 +144,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     autoSignCron: requireNonEmptyString(config.autoSignCron ?? DEFAULT_AUTO_SIGN_CRON, 'genshin.autoSignCron'),
     timezone: requireNonEmptyString(config.timezone ?? DEFAULT_TIMEZONE, 'genshin.timezone'),
     takumiAppVersion: requireNonEmptyString(config.takumiAppVersion ?? DEFAULT_APP_VERSION, 'genshin.takumiAppVersion'),
+    gameTokenQrAppId: requireGameTokenQrAppId(config.gameTokenQrAppId ?? DEFAULT_GAME_TOKEN_QR_APP_ID, 'genshin.gameTokenQrAppId'),
     signActId: requireNonEmptyString(config.signActId ?? DEFAULT_ACT_ID, 'genshin.signActId'),
     redeemGameVersion: requireNonEmptyString(config.redeemGameVersion ?? DEFAULT_REDEEM_GAME_VERSION, 'genshin.redeemGameVersion'),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'genshin.allowedGroups'),
@@ -263,13 +271,20 @@ function bindStatusResponse(result: QrBindingStatusResult): Record<string, unkno
   return result;
 }
 
-function registerKeywordMiddleware(ctx: Context, service: GenshinService, menuService: GenshinMenuService, runtime: RuntimeConfig): void {
+function registerKeywordMiddleware(
+  ctx: Context,
+  service: GenshinService,
+  menuService: GenshinMenuService,
+  gachaService: GenshinGachaService,
+  puppeteer: GenshinMenuPuppeteerLike,
+  runtime: RuntimeConfig,
+): void {
   ctx.middleware(async (session, next) => {
     const text = normalizeCommandText(session);
     const command = parseGenshinCommand(text);
     if (!command) return next();
 
-    if (!canInvokeGenshinInSession(session, runtime.naturalTriggerEnabled, runtime.naturalTriggerGroups)) {
+    if (command.kind !== 'gacha_records' && !canInvokeGenshinInSession(session, runtime.naturalTriggerEnabled, runtime.naturalTriggerGroups)) {
       return next();
     }
 
@@ -336,6 +351,21 @@ function registerKeywordMiddleware(ctx: Context, service: GenshinService, menuSe
         const identity = resolveOwnerIdentity(session);
         const result = await service.redeemCode(identity, command.cdkey);
         await session.send(formatRedeemReply(result.role, result.message));
+      } catch (error) {
+        await session.send(toUserMessage(error));
+      }
+      return;
+    }
+
+    if (command.kind === 'gacha_records') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        const view = await gachaService.queryGachaRecords(identity);
+        await session.send([
+          h.at(identity.qqUserId),
+          h.text('\n'),
+          await renderGenshinGachaRecordsImage(puppeteer, view),
+        ]);
       } catch (error) {
         await session.send(toUserMessage(error));
       }
@@ -464,6 +494,14 @@ function requireNonEmptyString(value: unknown, key: string): string {
   return parsed;
 }
 
+function requireGameTokenQrAppId(value: unknown, key: string): string {
+  const parsed = requireNonEmptyString(value, key);
+  if (!/^\d+$/.test(parsed)) {
+    throw new Error(`${key} 必须是数字字符串。`);
+  }
+  return parsed;
+}
+
 function normalizeCommandText(session: Session): string {
   const carrier = session as Session & { stripped?: { content?: unknown }; content?: unknown };
   return String(carrier.stripped?.content ?? carrier.content ?? '').trim();
@@ -477,6 +515,7 @@ type GenshinCommand =
   | { kind: 'sign' }
   | { kind: 'redeem_help' }
   | { kind: 'redeem'; cdkey: string }
+  | { kind: 'gacha_records' }
   | { kind: 'unbind' };
 
 function parseGenshinCommand(text: string): GenshinCommand | null {
@@ -489,6 +528,7 @@ function parseGenshinCommand(text: string): GenshinCommand | null {
   if (/^原神兑换\s*$/.test(text)) return { kind: 'redeem_help' };
   const redeem = text.match(/^原神兑换\s+([A-Za-z0-9]{6,32})$/);
   if (redeem?.[1]) return { kind: 'redeem', cdkey: redeem[1] };
+  if (text === '抽卡记录' || text === '原神抽卡记录') return { kind: 'gacha_records' };
   if (text === '原神解绑') return { kind: 'unbind' };
   return null;
 }

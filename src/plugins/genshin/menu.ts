@@ -31,7 +31,7 @@ export interface GenshinMenuItemView {
 }
 
 export interface GenshinMenuSectionView {
-  title: '账号' | '日常';
+  title: '账号' | '日常' | '记录';
   icon: GenshinMenuIconName;
   items: GenshinMenuItemView[];
 }
@@ -43,6 +43,7 @@ export interface GenshinMenuView {
 }
 
 type GenshinMenuIconName =
+  | 'chart'
   | 'check'
   | 'gift'
   | 'link-off'
@@ -67,6 +68,13 @@ const MENU_SECTIONS: GenshinMenuSectionView[] = [
     items: [
       { keyword: '原神签到', description: '为已绑定 UID 执行每日签到', icon: 'moon' },
       { keyword: '原神兑换 <兑换码>', description: '为已绑定 UID 领取兑换码奖励', icon: 'gift', accent: 'gold' },
+    ],
+  },
+  {
+    title: '记录',
+    icon: 'chart',
+    items: [
+      { keyword: '抽卡记录', description: '同步并查看当前 UID 抽卡统计', icon: 'chart', accent: 'gold' },
     ],
   },
 ];
@@ -256,7 +264,7 @@ export function renderGenshinMenuHtml(view: GenshinMenuView): string {
     }
     .menu-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       gap: 24px;
       padding: 28px;
     }
@@ -406,6 +414,7 @@ function renderIcon(icon: GenshinMenuIconName, className?: string): string {
   const common = `xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"`;
   const paths: Record<GenshinMenuIconName, string> = {
     check: '<circle cx="32" cy="32" r="25" fill="currentColor" stroke="none"/><path d="M20 33l8 8 17-20" stroke="#fff" stroke-width="6"/>',
+    chart: '<path d="M12 52h40"/><rect x="16" y="30" width="8" height="16" rx="2"/><rect x="28" y="18" width="8" height="28" rx="2"/><rect x="40" y="24" width="8" height="22" rx="2"/><path d="M16 22l11-9 9 6 12-11"/>',
     gift: '<rect x="12" y="26" width="40" height="28" rx="4"/><path d="M32 26v28M12 36h40M22 26c-9-8-2-17 10 0M42 26c9-8 2-17-10 0"/>',
     'link-off': '<path d="M24 22l-5 5c-5 5-5 12 0 17s12 5 17 0l4-4"/><path d="M40 42l5-5c5-5 5-12 0-17s-12-5-17 0l-4 4"/><path d="M24 40l16-16M14 14l36 36"/>',
     moon: '<path d="M43 47c-15 5-29-9-24-24 3 8 11 14 20 14 5 0 9-1 13-4-1 6-4 11-9 14z"/>',

@@ -61,16 +61,24 @@ vi.mock('koishi', () => {
 
 import { apply } from '../src/plugins/genshin/index.js';
 import {
+  buildGachaRecordsView,
+  GenshinGachaService,
+  renderGenshinGachaRecordsImage,
+} from '../src/plugins/genshin/gacha-records.js';
+import {
   buildGenshinMenuView,
   GenshinMenuService,
   renderGenshinMenuImage,
 } from '../src/plugins/genshin/menu.js';
 import { GenshinService } from '../src/plugins/genshin/service.js';
-import { GenshinStore } from '../src/plugins/genshin/store.js';
-import { GenshinTakumiClient } from '../src/plugins/genshin/takumi-client.js';
-import { loadOrCreateKek } from '../src/plugins/shared/credential-crypto.js';
+import { credentialAad } from '../src/plugins/genshin/credential.js';
+import { gachaRecordKey, GenshinStore } from '../src/plugins/genshin/store.js';
+import { GenshinTakumiClient, GenshinTakumiError, type GenshinGachaLogItem } from '../src/plugins/genshin/takumi-client.js';
+import { encryptEnvelopeJson, loadOrCreateKek, type CredentialKek } from '../src/plugins/shared/credential-crypto.js';
 import type {
   DatabaseLike,
+  GenshinCredentialPayload,
+  GenshinGachaRecord,
   GenshinGameRole,
   OwnerIdentity,
 } from '../src/plugins/genshin/types.js';
@@ -150,14 +158,17 @@ function extractToken(link: string): string {
 function createService(options: {
   database?: ReturnType<typeof createDatabase>;
   roles?: GenshinGameRole[];
-  qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed'; accountId?: string; gameToken?: string }>;
+  qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed' | 'Expired'; accountId?: string; gameToken?: string }>;
   exchangeGameToken?: ReturnType<typeof vi.fn>;
   signIn?: ReturnType<typeof vi.fn>;
   redeemCode?: ReturnType<typeof vi.fn>;
+  createGachaAuthKey?: ReturnType<typeof vi.fn>;
+  fetchGachaLogPage?: ReturnType<typeof vi.fn>;
   now?: () => number;
 } = {}) {
   const dir = createTempDir();
   const database = options.database ?? createDatabase();
+  const kek = loadOrCreateKek(join(dir, 'kek.key'));
   const qrResults = [...(options.qrResults ?? [{ status: 'Confirmed' as const, accountId: '123456', gameToken: 'game_token_secret' }])];
   const client = {
     createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/login?ticket=ticket-secret' })),
@@ -166,11 +177,13 @@ function createService(options: {
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
     redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
+    createGachaAuthKey: options.createGachaAuthKey ?? vi.fn(async () => ({ signType: 2, authkeyVer: 1, authkey: 'gacha-authkey-secret' })),
+    fetchGachaLogPage: options.fetchGachaLogPage ?? vi.fn(async () => ({ list: [] })),
   };
   const service = new GenshinService(
     new GenshinStore(database as unknown as DatabaseLike),
     client as unknown as GenshinTakumiClient,
-    loadOrCreateKek(join(dir, 'kek.key')),
+    kek,
     {
       bindPagePath: '/genshin/bind',
       publicBaseUrl: 'https://genshin.example',
@@ -179,7 +192,7 @@ function createService(options: {
     },
     options.now ?? (() => 1_000),
   );
-  return { service, database, client };
+  return { service, database, client, kek };
 }
 
 async function completeQrBinding(service: GenshinService, token: string) {
@@ -188,6 +201,84 @@ async function completeQrBinding(service: GenshinService, token: string) {
   if (result.kind !== 'success') throw new Error(`expected successful qr binding, got ${result.kind}`);
   await service.confirmBinding(identity(), result.confirmCode);
   return result;
+}
+
+async function seedCredential(args: {
+  database: ReturnType<typeof createDatabase>;
+  kek: CredentialKek;
+  owner?: OwnerIdentity;
+  role?: GenshinGameRole;
+  payload?: GenshinCredentialPayload;
+}) {
+  const owner = args.owner ?? identity();
+  const selectedRole = args.role ?? role();
+  const row = await args.database.create('genshin_credential', {
+    ownerKey: owner.ownerKey,
+    platform: owner.platform,
+    qqUserId: owner.qqUserId,
+    serviceId: 'genshin',
+    uid: selectedRole.uid,
+    region: selectedRole.region,
+    regionName: selectedRole.regionName,
+    nickname: selectedRole.nickname,
+    level: selectedRole.level,
+    gameBiz: selectedRole.gameBiz,
+    credentialCipher: '',
+    credentialMeta: '',
+    kekId: args.kek.id,
+    alg: 'aes-256-gcm',
+    version: 1,
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    lastUsedAt: null,
+    lastFailureReason: null,
+    revokedAt: null,
+  });
+  const envelope = encryptEnvelopeJson(
+    args.payload ?? { cookies: { stoken: 'v2_secret', mid: 'mid_secret', stuid: '123456' } },
+    credentialAad(owner.ownerKey, Number(row.id)),
+    args.kek,
+  );
+  await args.database.set('genshin_credential', { id: row.id }, {
+    credentialCipher: envelope.cipherText,
+    credentialMeta: envelope.meta,
+  });
+  return row;
+}
+
+function gachaItem(overrides: Partial<GenshinGachaLogItem> = {}): GenshinGachaLogItem {
+  return {
+    gachaType: '301',
+    itemId: '10000002',
+    count: '1',
+    time: '2026-07-08 19:30:00',
+    name: '神里绫华',
+    itemType: '角色',
+    rankType: '5',
+    id: '1000000000000000001',
+    ...overrides,
+  };
+}
+
+function gachaRecord(overrides: Partial<GenshinGachaRecord> = {}): GenshinGachaRecord {
+  const base = {
+    id: 1,
+    recordKey: gachaRecordKey('100000001', 'cn_gf01', '1000000000000000001'),
+    ownerKey: 'onebot:1405359129',
+    uid: '100000001',
+    region: 'cn_gf01',
+    gachaType: '301' as const,
+    uigfGachaType: '301' as const,
+    recordId: '1000000000000000001',
+    itemId: '10000002',
+    name: '神里绫华',
+    itemType: '角色',
+    rankType: '5',
+    count: '1',
+    time: '2026-07-08 19:30:00',
+    createdAt: 1_000,
+  };
+  return { ...base, ...overrides };
 }
 
 function createPuppeteerHarness() {
@@ -329,6 +420,112 @@ describe('genshin binding service', () => {
     await expect(service.pollQrLogin(token)).resolves.toMatchObject({ kind: 'success' });
     expect(client.queryQrLogin).toHaveBeenCalledTimes(3);
   });
+
+  it('expires the binding challenge when the mihoyo qr ticket expires', async () => {
+    const { service, database } = createService({
+      qrResults: [{ status: 'Expired' }],
+    });
+    const started = await service.startBinding(identity());
+    const token = extractToken(started.link);
+    await service.resolveBindPageChallenge(token);
+
+    await expect(service.pollQrLogin(token)).rejects.toThrow('二维码已过期，请重新发送“原神绑定”。');
+    expect(database.tables.get('genshin_bind_challenge')?.[0]).toMatchObject({
+      status: 'expired',
+      qrTicket: null,
+      qrUrl: null,
+    });
+  });
+});
+
+describe('genshin gacha records service', () => {
+  it('syncs gacha records incrementally and stores per-pool sync state', async () => {
+    const fetchGachaLogPage = vi.fn(async (_cookies, _role, _authKey, gachaType: string, endId: string) => {
+      if (gachaType === '301' && endId === '0') {
+        return {
+          list: [
+            gachaItem({ id: '1000000000000000003', name: '琴', time: '2026-07-08 19:32:00' }),
+            gachaItem({ id: '1000000000000000002', name: '祭礼剑', itemType: '武器', rankType: '4', time: '2026-07-08 19:31:00' }),
+            gachaItem({ id: '1000000000000000001', name: '飞天御剑', itemType: '武器', rankType: '3', time: '2026-07-08 19:30:00' }),
+          ],
+        };
+      }
+      return { list: [] };
+    });
+    const { service, database, client, kek } = createService({ fetchGachaLogPage, now: () => 1_000 });
+    const started = await service.startBinding(identity());
+    await completeQrBinding(service, extractToken(started.link));
+    const gachaService = new GenshinGachaService(new GenshinStore(database as unknown as DatabaseLike), client as unknown as GenshinTakumiClient, kek, 'Asia/Shanghai', () => 2_000);
+
+    const first = await gachaService.queryGachaRecords(identity());
+
+    expect(first).toMatchObject({ uid: '100000001', addedCount: 3, totalCount: 3, rank5Count: 1, rank4Count: 1 });
+    expect(database.tables.get('genshin_gacha_record')).toHaveLength(3);
+    expect(database.tables.get('genshin_gacha_sync_state')).toHaveLength(6);
+    expect(database.tables.get('genshin_gacha_record')?.map((row) => row.recordKey)).toContain('100000001:cn_gf01:1000000000000000003');
+
+    fetchGachaLogPage.mockImplementation(async (_cookies, _role, _authKey, gachaType: string, endId: string) => {
+      if (gachaType === '301' && endId === '0') {
+        return {
+          list: [
+            gachaItem({ id: '1000000000000000004', name: '莫娜', time: '2026-07-08 19:33:00' }),
+            gachaItem({ id: '1000000000000000003', name: '琴', time: '2026-07-08 19:32:00' }),
+          ],
+        };
+      }
+      return { list: [] };
+    });
+
+    const second = await gachaService.queryGachaRecords(identity());
+
+    expect(second).toMatchObject({ addedCount: 1, totalCount: 4, rank5Count: 2 });
+    expect(database.tables.get('genshin_gacha_record')).toHaveLength(4);
+    expect(database.tables.get('genshin_gacha_sync_state')?.find((row) => row.gachaType === '301')).toMatchObject({
+      lastFetchedRecordId: '1000000000000000004',
+      lastNewCount: 1,
+    });
+  });
+
+  it('keeps local gacha records when official pages are empty', async () => {
+    const database = createDatabase({
+      genshin_gacha_record: [gachaRecord()],
+    });
+    const fetchGachaLogPage = vi.fn(async () => ({ list: [] }));
+    const { client, kek } = createService({ database, fetchGachaLogPage });
+    await seedCredential({ database, kek });
+    const gachaService = new GenshinGachaService(new GenshinStore(database as unknown as DatabaseLike), client as unknown as GenshinTakumiClient, kek, 'Asia/Shanghai', () => 2_000);
+
+    const view = await gachaService.queryGachaRecords(identity());
+
+    expect(view).toMatchObject({ addedCount: 0, totalCount: 1, rank5Count: 1 });
+    expect(database.tables.get('genshin_gacha_record')).toHaveLength(1);
+  });
+
+  it('reports missing binding and missing advanced cookie capability', async () => {
+    const database = createDatabase();
+    const { client, kek } = createService({ database });
+    const gachaService = new GenshinGachaService(new GenshinStore(database as unknown as DatabaseLike), client as unknown as GenshinTakumiClient, kek, 'Asia/Shanghai');
+
+    await expect(gachaService.queryGachaRecords(identity())).rejects.toThrow('请先发送“原神绑定”完成 UID 绑定。');
+
+    await seedCredential({ database, kek, payload: { cookies: { ltoken: 'ltoken-only' } } });
+    await expect(gachaService.queryGachaRecords(identity())).rejects.toThrow('当前绑定 Cookie 不包含 stoken + mid/stuid，不能读取抽卡记录。请重新发送“原神绑定”完成扫码绑定。');
+  });
+
+  it('surfaces takumi failures without rendering stale gacha records', async () => {
+    const createGachaAuthKey = vi.fn(async () => {
+      throw new GenshinTakumiError('authkey 失效。', { retcode: -100, diagnostic: 'test failure' });
+    });
+    const database = createDatabase({
+      genshin_gacha_record: [gachaRecord()],
+    });
+    const { client, kek } = createService({ database, createGachaAuthKey });
+    await seedCredential({ database, kek });
+    const gachaService = new GenshinGachaService(new GenshinStore(database as unknown as DatabaseLike), client as unknown as GenshinTakumiClient, kek, 'Asia/Shanghai');
+
+    await expect(gachaService.queryGachaRecords(identity())).rejects.toThrow('authkey 失效。');
+    expect(database.tables.get('genshin_credential')?.[0]).toMatchObject({ lastFailureReason: 'authkey 失效。' });
+  });
 });
 
 describe('genshin menu module', () => {
@@ -353,6 +550,12 @@ describe('genshin menu module', () => {
           ['原神兑换 <兑换码>', '为已绑定 UID 领取兑换码奖励'],
         ],
       ],
+      [
+        '记录',
+        [
+          ['抽卡记录', '同步并查看当前 UID 抽卡统计'],
+        ],
+      ],
     ]);
   });
 
@@ -366,11 +569,12 @@ describe('genshin menu module', () => {
     expect(html).toContain('发送 <strong>原神</strong> 查看本菜单');
     expect(html).toContain('class="panel-title">账号');
     expect(html).toContain('class="panel-title">日常');
+    expect(html).toContain('class="panel-title">记录');
     expect(html).toContain('原神绑定');
     expect(html).toContain('原神确认 <span class="param">&lt;确认码&gt;</span>');
     expect(html).toContain('原神兑换 <span class="param">&lt;兑换码&gt;</span>');
+    expect(html).toContain('抽卡记录');
     expect(html).not.toContain('原神资料');
-    expect(html).not.toContain('抽卡记录');
     expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
   });
 
@@ -382,6 +586,45 @@ describe('genshin menu module', () => {
 
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
+  });
+});
+
+describe('genshin gacha records renderer', () => {
+  it('renders the gacha records view as a PNG image', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const view = buildGachaRecordsView([
+      gachaRecord(),
+      gachaRecord({
+        id: 2,
+        recordKey: gachaRecordKey('100000001', 'cn_gf01', '1000000000000000002'),
+        recordId: '1000000000000000002',
+        name: '祭礼剑',
+        itemType: '武器',
+        rankType: '4',
+        time: '2026-07-08 19:29:00',
+      }),
+    ], {
+      uid: '100000001',
+      nickname: '旅行者',
+      regionName: '天空岛',
+      addedCount: 2,
+      syncedAt: 1_788_891_000_000,
+      timezone: 'Asia/Shanghai',
+    });
+
+    const image = await renderGenshinGachaRecordsImage(puppeteer, view);
+    const html = getNavigatedHtml();
+
+    expect(String(image)).toContain('image/png');
+    expect(html).toContain('原神抽卡记录');
+    expect(html).toContain('UID 100****01');
+    expect(html).toContain('本次新增');
+    expect(html).toContain('五星出率');
+    expect(html).toContain('最近五星');
+    expect(html).toContain('最近记录');
+    expect(html).toContain('神里绫华');
+    expect(html).toContain('祭礼剑');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
   });
 });
 
@@ -399,7 +642,7 @@ describe('genshin takumi client', () => {
       if (url.pathname === '/account/ma-cn-session/app/getTokenByGameToken') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { token: { token_type: 2, token: 'v2_secret' }, user_info: { aid: '123456', mid: 'mid_secret' } } });
       }
-      if (url.pathname === '/binding/api/getUserGameRolesByCookie') {
+      if (url.pathname === '/binding/api/getUserGameRolesByStoken') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { list: [{ game_biz: 'hk4e_cn', game_uid: '100000001', region: 'cn_gf01', region_name: '天空岛', nickname: '旅行者', level: 60 }] } });
       }
       if (url.pathname === '/event/luna/info') {
@@ -416,6 +659,24 @@ describe('genshin takumi client', () => {
       }
       if (url.pathname === '/common/apicdkey/api/exchangeCdkey') {
         return jsonResponse({ retcode: 0, message: 'OK', data: {} });
+      }
+      if (url.pathname === '/event/gacha_info/api/getGachaLog') {
+        return jsonResponse({
+          retcode: 0,
+          message: 'OK',
+          data: {
+            list: [{
+              gacha_type: '301',
+              item_id: '10000002',
+              count: '1',
+              time: '2026-07-08 19:30:00',
+              name: '神里绫华',
+              item_type: '角色',
+              rank_type: '5',
+              id: '1000000000000000001',
+            }],
+          },
+        });
       }
       throw new Error(`unexpected URL: ${url}`);
     });
@@ -434,20 +695,35 @@ describe('genshin takumi client', () => {
 
     await client.signIn(cookies, selectedRole);
     await client.redeemCode(cookies, selectedRole, 'GENSHIN2026');
+    const gachaAuthKey = await client.createGachaAuthKey(cookies, selectedRole);
+    await client.fetchGachaLogPage(cookies, selectedRole, gachaAuthKey, '301', '0');
 
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/hk4e_cn/combo/panda/qrcode/fetch',
       '/hk4e_cn/combo/panda/qrcode/query',
       '/account/ma-cn-session/app/getTokenByGameToken',
-      '/binding/api/getUserGameRolesByCookie',
+      '/binding/api/getUserGameRolesByStoken',
       '/event/luna/info',
       '/device-fp/api/getFp',
       '/event/luna/sign',
       '/binding/api/genAuthKey',
       '/common/apicdkey/api/exchangeCdkey',
+      '/binding/api/genAuthKey',
+      '/event/gacha_info/api/getGachaLog',
     ]);
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ app_id: '2' });
+    expect(JSON.parse(String(calls[1].init.body))).toMatchObject({ app_id: '2' });
+    expect(calls[2].init.headers).toMatchObject({
+      'x-rpc-app_id': 'bll8iq97cem8',
+    });
     expect(cookies).toMatchObject({ stoken: 'v2_secret', mid: 'mid_secret', stuid: '123456' });
+    expect(new URL(calls[3].url).hostname).toBe('api-takumi.miyoushe.com');
     expect(calls[3].url).toContain('game_biz=hk4e_cn');
+    expect(calls[3].init.headers).toMatchObject({
+      cookie: expect.stringContaining('stoken=v2_secret'),
+      'x-rpc-client_type': '2',
+      ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
+    });
     expect(calls[6].init.method).toBe('POST');
     expect(calls[6].init.headers).toMatchObject({
       cookie: expect.stringContaining('stoken=v2_secret'),
@@ -459,6 +735,32 @@ describe('genshin takumi client', () => {
     expect(redeemUrl.searchParams.get('auth_appid')).toBe('apicdkey');
     expect(redeemUrl.searchParams.get('authkey')).toBe('authkey-secret');
     expect(redeemUrl.searchParams.get('game_biz')).toBe('hk4e_cn');
+    expect(JSON.parse(String(calls[7].init.body))).toMatchObject({ auth_appid: 'apicdkey' });
+    expect(JSON.parse(String(calls[9].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
+    const gachaUrl = new URL(calls[10].url);
+    expect(gachaUrl.hostname).toBe('hk4e-api.mihoyo.com');
+    expect(gachaUrl.pathname).toBe('/event/gacha_info/api/getGachaLog');
+    expect(gachaUrl.searchParams.get('authkey_ver')).toBe('1');
+    expect(gachaUrl.searchParams.get('sign_type')).toBe('2');
+    expect(gachaUrl.searchParams.get('auth_appid')).toBe('webview_gacha');
+    expect(gachaUrl.searchParams.get('gacha_type')).toBe('301');
+    expect(gachaUrl.searchParams.get('size')).toBe('20');
+    expect(gachaUrl.searchParams.get('end_id')).toBe('0');
+  });
+
+  it('maps expired game-token qr tickets to an expired status', async () => {
+    const fetchImpl = vi.fn(async (url: URL) => {
+      if (url.pathname === '/hk4e_cn/combo/panda/qrcode/query') {
+        return jsonResponse({ retcode: -106, message: 'ExpiredCode', data: null });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const client = new GenshinTakumiClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      deviceId: '00000000-0000-4000-8000-000000000001',
+    });
+
+    await expect(client.queryQrLogin('expired-ticket')).resolves.toEqual({ status: 'Expired' });
   });
 });
 
@@ -492,6 +794,8 @@ describe('genshin plugin routes and middleware', () => {
     });
 
     expect(ctx.model.extend).toHaveBeenCalledWith('genshin_bind_challenge', expect.anything(), expect.anything());
+    expect(ctx.model.extend).toHaveBeenCalledWith('genshin_gacha_record', expect.anything(), expect.anything());
+    expect(ctx.model.extend).toHaveBeenCalledWith('genshin_gacha_sync_state', expect.anything(), expect.anything());
     expect(server.use).toHaveBeenCalledWith(expect.any(Function));
     expect(server.get).toHaveBeenCalledWith('/genshin/bind', expect.any(Function));
     expect(server.get).toHaveBeenCalledWith('/genshin/bind/status', expect.any(Function));
@@ -565,6 +869,108 @@ describe('genshin plugin routes and middleware', () => {
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(getNavigatedHtml()).toContain('原神功能菜单');
     expect(database.tables.get('genshin_bind_challenge') ?? []).toHaveLength(0);
+  });
+
+  it('returns gacha record images for bare and prefixed keywords in allowed groups', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const kek = loadOrCreateKek(join(dir, 'kek.key'));
+    await seedCredential({ database, kek });
+    const createGachaAuthKey = vi.spyOn(GenshinTakumiClient.prototype, 'createGachaAuthKey').mockResolvedValue({
+      signType: 2,
+      authkeyVer: 1,
+      authkey: 'gacha-authkey-secret',
+    });
+    const fetchGachaLogPage = vi.spyOn(GenshinTakumiClient.prototype, 'fetchGachaLogPage').mockImplementation(async (_cookies, _role, _authKey, gachaType, endId) => {
+      if (gachaType === '301' && endId === '0') {
+        return { list: [gachaItem()] };
+      }
+      return { list: [] };
+    });
+    const middleware = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: false,
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '抽卡记录',
+      send,
+    }, vi.fn());
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '原神抽卡记录',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(renderMessageContent(send.mock.calls[0]?.[0])).toContain('image/png');
+    expect(renderMessageContent(send.mock.calls[1]?.[0])).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('原神抽卡记录');
+    expect(getNavigatedHtml()).toContain('神里绫华');
+    expect(createGachaAuthKey).toHaveBeenCalledTimes(2);
+    expect(fetchGachaLogPage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ uid: '100000001' }), expect.anything(), '301', '0');
+  });
+
+  it('blocks bare gacha records outside allowed groups before rendering', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: false,
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:200',
+      guildId: '200',
+      content: '抽卡记录',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('当前群未开启原神功能。');
+    expect(puppeteer.page).not.toHaveBeenCalled();
   });
 
   it('passes bare genshin keywords through outside natural trigger groups', async () => {

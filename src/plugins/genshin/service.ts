@@ -9,10 +9,10 @@ import {
   type CredentialKek,
 } from '../shared/credential-crypto.js';
 import { assertGenshinRedeemCookieCapability } from './cookie.js';
+import { credentialAad, decryptGenshinCredential } from './credential.js';
 import { GenshinStore, signInRecordRow } from './store.js';
 import { GenshinTakumiError, type GenshinSignResult, type GenshinTakumiClient } from './takumi-client.js';
 import {
-  GENSHIN_SERVICE_ID,
   type GenshinBindChallenge,
   type GenshinCredential,
   type GenshinCredentialPayload,
@@ -175,6 +175,12 @@ export class GenshinService {
         await this.audit(challenge.ownerKey, 'qr_scanned', 'ok');
       }
       return { kind: 'scanned', message: '已扫码，请在米游社 App 内确认登录。' };
+    }
+    if (result.status === 'Expired') {
+      const now = this.now();
+      await this.store.clearChallengeSecrets(challenge.id, 'expired', now);
+      await this.audit(challenge.ownerKey, 'qr_expired', 'failed', 'qrcode expired');
+      throw new GenshinUserError('二维码已过期，请重新发送“原神绑定”。');
     }
     return this.completeQrLogin(challenge, result);
   }
@@ -388,15 +394,16 @@ export class GenshinService {
     }
     const now = this.now();
     const confirmCode = createConfirmCode();
+    const confirmCodeHash = hashConfirmCode(challenge, confirmCode);
     const updated = await this.store.completeRoleSelection(challenge.id, {
       status: 'login_succeeded',
       selectedRoleJson: JSON.stringify(selectedRole),
       pendingRolesJson: null,
-      confirmCodeHash: hashConfirmCode(challenge, confirmCode),
+      confirmCodeHash,
       errorMessage: null,
       updatedAt: now,
     });
-    if (!updated || updated.status !== 'login_succeeded') {
+    if (!updated || updated.status !== 'login_succeeded' || updated.confirmCodeHash !== confirmCodeHash) {
       throw new GenshinUserError('该绑定链接状态已变化，请重新发送“原神绑定”。');
     }
     await this.audit(challenge.ownerKey, 'role_selected', 'ok');
@@ -471,16 +478,7 @@ export class GenshinService {
   }
 
   private decryptCredential(credential: GenshinCredential): { payload: GenshinCredentialPayload; role: GenshinGameRole } {
-    const payload = decryptEnvelopeJson<GenshinCredentialPayload>(
-      credential.credentialCipher,
-      credential.credentialMeta,
-      credentialAad(credential.ownerKey, credential.id),
-      this.kek,
-    );
-    return {
-      payload,
-      role: credentialRole(credential),
-    };
+    return decryptGenshinCredential(credential, this.kek);
   }
 
   private async audit(ownerKey: string, eventType: string, status: string, reason: string | null = null): Promise<void> {
@@ -500,10 +498,6 @@ function hashConfirmCode(challenge: GenshinBindChallenge, confirmCode: string): 
 
 function pendingCredentialAad(challenge: GenshinBindChallenge): string {
   return `genshin:pending-credential:v1:${challenge.ownerKey}:${challenge.id}`;
-}
-
-function credentialAad(ownerKey: string, credentialId: number): string {
-  return `genshin:credential:v1:${ownerKey}:${GENSHIN_SERVICE_ID}:${credentialId}`;
 }
 
 function roleKey(role: GenshinGameRole): string {
@@ -532,17 +526,6 @@ function parseRolesJson(value: string): GenshinGameRole[] {
     throw new Error('genshin pending roles json is invalid.');
   }
   return parsed;
-}
-
-function credentialRole(credential: GenshinCredential): GenshinGameRole {
-  return {
-    uid: credential.uid,
-    region: credential.region,
-    regionName: credential.regionName,
-    nickname: credential.nickname,
-    level: credential.level ?? null,
-    gameBiz: 'hk4e_cn',
-  };
 }
 
 function normalizeCdkey(input: string): string {

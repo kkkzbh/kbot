@@ -1,8 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { buildGenshinCookieHeader } from './cookie.js';
 import {
+  GENSHIN_GACHA_TYPES,
   GENSHIN_GAME_BIZ,
   type GenshinCookieFields,
+  type GenshinGachaType,
   type GenshinGameRole,
   type GenshinQrLoginResult,
   type GenshinQrLoginStatus,
@@ -10,13 +12,17 @@ import {
 } from './types.js';
 
 const API_TAKUMI_BASE_URL = 'https://api-takumi.mihoyo.com';
+const API_TAKUMI_MIYOUSHE_BASE_URL = 'https://api-takumi.miyoushe.com';
 const HK4E_SDK_BASE_URL = 'https://hk4e-sdk.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
 const MIYOUSHE_APP_ID = 'bll8iq97cem8';
-const GENSHIN_QR_APP_ID = '4';
+const DEFAULT_GAME_TOKEN_QR_APP_ID = '2';
+const REDEEM_AUTH_APPID = 'apicdkey';
+const GACHA_AUTH_APPID = 'webview_gacha';
 const DS1_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
 const DS2_SALT = '9nQiU3AV0rJSIBWgdynfoGMGKaklfbM7';
+const K2_SALT = 'BIPaooxbWZW02fGHZL1If26mYCljPgst';
 
 export interface GenshinTakumiClientOptions {
   fetchImpl?: typeof fetch;
@@ -26,6 +32,7 @@ export interface GenshinTakumiClientOptions {
   redeemGameVersion?: string;
   userAgent?: string;
   deviceId?: string;
+  gameTokenQrAppId?: string;
 }
 
 export interface GenshinSignResult {
@@ -38,6 +45,27 @@ export interface GenshinSignResult {
 export interface GenshinRedeemResult {
   retcode: number;
   message: string;
+}
+
+export interface GenshinAuthKey {
+  signType: number;
+  authkeyVer: number;
+  authkey: string;
+}
+
+export interface GenshinGachaLogItem {
+  gachaType: GenshinGachaType;
+  itemId: string;
+  count: string;
+  time: string;
+  name: string;
+  itemType: string;
+  rankType: string;
+  id: string;
+}
+
+export interface GenshinGachaLogPage {
+  list: GenshinGachaLogItem[];
 }
 
 interface TakumiResponse<T> {
@@ -66,6 +94,21 @@ interface AuthKeyPayload {
   sign_type?: number;
   authkey_ver?: number;
   authkey?: string;
+}
+
+interface GachaLogPayload {
+  list?: GachaLogPayloadItem[];
+}
+
+interface GachaLogPayloadItem {
+  gacha_type?: string | number;
+  item_id?: string | number;
+  count?: string | number;
+  time?: string;
+  name?: string;
+  item_type?: string;
+  rank_type?: string | number;
+  id?: string | number;
 }
 
 interface QrFetchPayload {
@@ -121,6 +164,7 @@ export class GenshinTakumiClient {
   private readonly redeemGameVersion: string;
   private readonly userAgent: string;
   private readonly deviceId: string;
+  private readonly gameTokenQrAppId: string;
 
   constructor(options: GenshinTakumiClientOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -130,12 +174,22 @@ export class GenshinTakumiClient {
     this.redeemGameVersion = options.redeemGameVersion ?? 'CNRELWin6.0.0';
     this.userAgent = options.userAgent ?? `Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/${this.appVersion}`;
     this.deviceId = (options.deviceId ?? randomUUID()).toUpperCase();
+    this.gameTokenQrAppId = options.gameTokenQrAppId ?? DEFAULT_GAME_TOKEN_QR_APP_ID;
   }
 
   async listRoles(cookies: GenshinCookieFields): Promise<GenshinGameRole[]> {
-    const url = new URL('/binding/api/getUserGameRolesByCookie', API_TAKUMI_BASE_URL);
+    if (!cookies.stoken || !cookies.mid) {
+      throw new GenshinTakumiError('当前登录凭据缺少 stoken + mid，无法读取原神 UID。', {
+        retcode: null,
+        diagnostic: 'listRoles missing stoken or mid',
+      });
+    }
+    const url = new URL('/binding/api/getUserGameRolesByStoken', API_TAKUMI_MIYOUSHE_BASE_URL);
     url.searchParams.set('game_biz', GENSHIN_GAME_BIZ);
-    const payload = await this.getTakumi<RoleListPayload>(url, cookies);
+    const payload = await this.requestJson<RoleListPayload>(url, {
+      method: 'GET',
+      headers: this.stokenRoleHeaders(cookies),
+    });
     const list = payload.data?.list ?? [];
     return list
       .filter((role) => role.game_biz === GENSHIN_GAME_BIZ)
@@ -152,7 +206,7 @@ export class GenshinTakumiClient {
 
   async createQrLogin(): Promise<GenshinQrLoginTicket> {
     const body = JSON.stringify({
-      app_id: GENSHIN_QR_APP_ID,
+      app_id: this.gameTokenQrAppId,
       device: this.deviceId,
     });
     const payload = await this.postApp<QrFetchPayload>(new URL('/hk4e_cn/combo/panda/qrcode/fetch', HK4E_SDK_BASE_URL), body);
@@ -169,11 +223,30 @@ export class GenshinTakumiClient {
 
   async queryQrLogin(ticket: string): Promise<GenshinQrLoginResult> {
     const body = JSON.stringify({
-      app_id: GENSHIN_QR_APP_ID,
+      app_id: this.gameTokenQrAppId,
       device: this.deviceId,
       ticket,
     });
-    const payload = await this.postApp<QrQueryPayload>(new URL('/hk4e_cn/combo/panda/qrcode/query', HK4E_SDK_BASE_URL), body);
+    const payload = await this.requestRawJson<TakumiResponse<QrQueryPayload>>(new URL('/hk4e_cn/combo/panda/qrcode/query', HK4E_SDK_BASE_URL), {
+      method: 'POST',
+      headers: this.baseHeaders(undefined, {
+        'content-type': 'application/json;charset=utf-8',
+        referer: 'https://app.mihoyo.com',
+        'x-rpc-app_id': MIYOUSHE_APP_ID,
+        'x-rpc-verify_key': MIYOUSHE_APP_ID,
+        ds: createDs1('', body),
+      }),
+      body,
+    });
+    if (payload.retcode === -106) {
+      return { status: 'Expired' };
+    }
+    if (payload.retcode !== 0) {
+      throw new GenshinTakumiError(payload.message || '米游社接口返回失败。', {
+        retcode: payload.retcode,
+        diagnostic: `POST /hk4e_cn/combo/panda/qrcode/query retcode=${payload.retcode}`,
+      });
+    }
     const status = normalizeQrLoginStatus(payload.data?.stat);
     if (status !== 'Confirmed') {
       return { status };
@@ -204,7 +277,14 @@ export class GenshinTakumiClient {
       account_id: numericAccountId,
       game_token: gameToken,
     });
-    const payload = await this.postApp<GameTokenPayload>(new URL('/account/ma-cn-session/app/getTokenByGameToken', API_TAKUMI_BASE_URL), body);
+    const payload = await this.requestJson<GameTokenPayload>(new URL('/account/ma-cn-session/app/getTokenByGameToken', API_TAKUMI_BASE_URL), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json;charset=utf-8',
+        'x-rpc-app_id': MIYOUSHE_APP_ID,
+      },
+      body,
+    });
     const stoken = String(payload.data?.token?.token ?? '').trim();
     const mid = String(payload.data?.user_info?.mid ?? '').trim();
     const aid = String(payload.data?.user_info?.aid ?? accountId).trim();
@@ -256,10 +336,10 @@ export class GenshinTakumiClient {
   }
 
   async redeemCode(cookies: GenshinCookieFields, role: GenshinGameRole, cdkey: string): Promise<GenshinRedeemResult> {
-    const authKey = await this.genAuthKey(cookies, role);
+    const authKey = await this.genAuthKey(cookies, role, REDEEM_AUTH_APPID);
     const url = new URL('/common/apicdkey/api/exchangeCdkey', REDEEM_BASE_URL);
     url.searchParams.set('sign_type', String(authKey.signType));
-    url.searchParams.set('auth_appid', 'apicdkey');
+    url.searchParams.set('auth_appid', REDEEM_AUTH_APPID);
     url.searchParams.set('authkey_ver', String(authKey.authkeyVer));
     url.searchParams.set('cdkey', cdkey);
     url.searchParams.set('lang', 'zh-cn');
@@ -278,6 +358,51 @@ export class GenshinTakumiClient {
     };
   }
 
+  async createGachaAuthKey(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinAuthKey> {
+    return this.genAuthKey(cookies, role, GACHA_AUTH_APPID);
+  }
+
+  async fetchGachaLogPage(
+    cookies: GenshinCookieFields,
+    role: GenshinGameRole,
+    authKey: GenshinAuthKey,
+    gachaType: GenshinGachaType,
+    endId: string,
+  ): Promise<GenshinGachaLogPage> {
+    if (!GENSHIN_GACHA_TYPES.includes(gachaType)) {
+      throw new GenshinTakumiError('抽卡记录卡池类型无效。', {
+        retcode: null,
+        diagnostic: `invalid gacha_type=${gachaType}`,
+      });
+    }
+    const url = new URL('/event/gacha_info/api/getGachaLog', REDEEM_BASE_URL);
+    url.searchParams.set('authkey_ver', String(authKey.authkeyVer));
+    url.searchParams.set('sign_type', String(authKey.signType));
+    url.searchParams.set('auth_appid', GACHA_AUTH_APPID);
+    url.searchParams.set('init_type', gachaType);
+    url.searchParams.set('gacha_type', gachaType);
+    url.searchParams.set('page', '1');
+    url.searchParams.set('size', '20');
+    url.searchParams.set('end_id', endId);
+    url.searchParams.set('lang', 'zh-cn');
+    url.searchParams.set('authkey', authKey.authkey);
+    url.searchParams.set('game_biz', GENSHIN_GAME_BIZ);
+    url.searchParams.set('region', role.region);
+    const payload = await this.requestJson<GachaLogPayload>(url, {
+      method: 'GET',
+      headers: this.baseHeaders(cookies),
+    });
+    if (!Array.isArray(payload.data?.list)) {
+      throw new GenshinTakumiError('米游社未返回有效抽卡记录列表。', {
+        retcode: payload.retcode,
+        diagnostic: 'getGachaLog missing list',
+      });
+    }
+    return {
+      list: payload.data.list.map(normalizeGachaLogItem),
+    };
+  }
+
   private async getSignInfo(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<{ isSigned: boolean; totalSignDay: number | null }> {
     const url = new URL('/event/luna/info', API_TAKUMI_BASE_URL);
     url.searchParams.set('lang', 'zh-cn');
@@ -291,9 +416,9 @@ export class GenshinTakumiClient {
     };
   }
 
-  private async genAuthKey(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<{ signType: number; authkeyVer: number; authkey: string }> {
+  private async genAuthKey(cookies: GenshinCookieFields, role: GenshinGameRole, authAppId: string): Promise<GenshinAuthKey> {
     const body = JSON.stringify({
-      auth_appid: 'apicdkey',
+      auth_appid: authAppId,
       game_biz: GENSHIN_GAME_BIZ,
       game_uid: Number(role.uid),
       region: role.region,
@@ -446,6 +571,15 @@ export class GenshinTakumiClient {
       ...extra,
     };
   }
+
+  private stokenRoleHeaders(cookies: GenshinCookieFields): Record<string, string> {
+    return this.baseHeaders(cookies, {
+      referer: 'https://app.mihoyo.com',
+      origin: 'https://app.mihoyo.com',
+      'x-rpc-client_type': '2',
+      ds: createSimpleDs(K2_SALT),
+    });
+  }
 }
 
 function createDs1(query: string, body: string): string {
@@ -459,6 +593,13 @@ function createDs2(): string {
   const timestamp = Math.floor(Date.now() / 1000);
   const random = randomAlphaNum(6);
   const digest = md5(`salt=${DS2_SALT}&t=${timestamp}&r=${random}`);
+  return `${timestamp},${random},${digest}`;
+}
+
+function createSimpleDs(salt: string): string {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const random = randomAlphaNum(6);
+  const digest = md5(`salt=${salt}&t=${timestamp}&r=${random}`);
   return `${timestamp},${random},${digest}`;
 }
 
@@ -481,6 +622,38 @@ function normalizeLevel(value: unknown): number | null {
   if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeGachaLogItem(item: GachaLogPayloadItem): GenshinGachaLogItem {
+  const gachaType = normalizeGachaType(item.gacha_type);
+  const normalized = {
+    gachaType,
+    itemId: String(item.item_id ?? '').trim(),
+    count: String(item.count ?? '').trim(),
+    time: String(item.time ?? '').trim(),
+    name: String(item.name ?? '').trim(),
+    itemType: String(item.item_type ?? '').trim(),
+    rankType: String(item.rank_type ?? '').trim(),
+    id: String(item.id ?? '').trim(),
+  };
+  if (!normalized.itemId || !normalized.count || !normalized.time || !normalized.name || !normalized.itemType || !normalized.rankType || !normalized.id) {
+    throw new GenshinTakumiError('米游社返回了无效抽卡记录。', {
+      retcode: null,
+      diagnostic: `invalid gacha log item id=${normalized.id || 'missing'}`,
+    });
+  }
+  return normalized;
+}
+
+function normalizeGachaType(value: unknown): GenshinGachaType {
+  const gachaType = String(value ?? '').trim();
+  if (GENSHIN_GACHA_TYPES.includes(gachaType as GenshinGachaType)) {
+    return gachaType as GenshinGachaType;
+  }
+  throw new GenshinTakumiError('米游社返回了未知抽卡记录卡池类型。', {
+    retcode: null,
+    diagnostic: `unknown gacha_type=${gachaType || 'missing'}`,
+  });
 }
 
 function readQrTicket(rawUrl: string): string {

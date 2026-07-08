@@ -5,6 +5,9 @@ import type {
   GenshinBindChallenge,
   GenshinBindChallengeStatus,
   GenshinCredential,
+  GenshinGachaRecord,
+  GenshinGachaSyncState,
+  GenshinGachaType,
   GenshinGameRole,
   GenshinOperationStatus,
   GenshinRedeemRecord,
@@ -115,6 +118,53 @@ export function ensureGenshinTables(ctx: Context): void {
     {
       autoInc: true,
       indexes: [['ownerKey'], ['uid'], ['cdkeyHash'], ['createdAt']],
+    },
+  );
+
+  ctx.model.extend(
+    'genshin_gacha_record',
+    {
+      id: 'unsigned',
+      recordKey: 'string',
+      ownerKey: 'string',
+      uid: 'string',
+      region: 'string',
+      gachaType: 'string',
+      uigfGachaType: 'string',
+      recordId: 'string',
+      itemId: 'string',
+      name: 'string',
+      itemType: 'string',
+      rankType: 'string',
+      count: 'string',
+      time: 'string',
+      createdAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: ['recordKey'],
+      indexes: [['ownerKey', 'uid', 'region'], ['uid', 'region', 'gachaType'], ['time'], ['recordId']],
+    },
+  );
+
+  ctx.model.extend(
+    'genshin_gacha_sync_state',
+    {
+      id: 'unsigned',
+      syncKey: 'string',
+      ownerKey: 'string',
+      uid: 'string',
+      region: 'string',
+      gachaType: 'string',
+      lastSyncedAt: 'double',
+      lastFetchedRecordId: 'string',
+      lastNewCount: 'integer',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: ['syncKey'],
+      indexes: [['ownerKey', 'uid', 'region'], ['uid', 'region', 'gachaType'], ['updatedAt']],
     },
   );
 
@@ -401,9 +451,50 @@ export class GenshinStore {
     await this.database.create('genshin_redeem_record', row);
   }
 
+  async findGachaRecord(recordKey: string): Promise<GenshinGachaRecord | null> {
+    const [row] = await this.database.get<GenshinGachaRecord>('genshin_gacha_record', { recordKey });
+    return row ?? null;
+  }
+
+  async createGachaRecord(row: Omit<GenshinGachaRecord, 'id'>): Promise<void> {
+    await this.database.create('genshin_gacha_record', row as unknown as Record<string, unknown>);
+  }
+
+  async listGachaRecords(uid: string, region: string): Promise<GenshinGachaRecord[]> {
+    return this.database.get<GenshinGachaRecord>('genshin_gacha_record', {
+      uid,
+      region,
+    });
+  }
+
+  async upsertGachaSyncState(row: Omit<GenshinGachaSyncState, 'id'>): Promise<void> {
+    const [existing] = await this.database.get<GenshinGachaSyncState>('genshin_gacha_sync_state', { syncKey: row.syncKey });
+    if (existing) {
+      await this.database.set('genshin_gacha_sync_state', { id: existing.id }, row as unknown as Record<string, unknown>);
+      return;
+    }
+    await this.database.create('genshin_gacha_sync_state', row as unknown as Record<string, unknown>);
+  }
+
+  async listGachaSyncStates(ownerKey: string, uid: string, region: string): Promise<GenshinGachaSyncState[]> {
+    return this.database.get<GenshinGachaSyncState>('genshin_gacha_sync_state', {
+      ownerKey,
+      uid,
+      region,
+    });
+  }
+
   async audit(row: Omit<GenshinAuthAudit, 'id'>): Promise<void> {
     await this.database.create('genshin_auth_audit', row);
   }
+}
+
+export function gachaRecordKey(uid: string, region: string, recordId: string): string {
+  return `${uid}:${region}:${recordId}`;
+}
+
+export function gachaSyncKey(ownerKey: string, uid: string, region: string, gachaType: GenshinGachaType): string {
+  return `${ownerKey}:${uid}:${region}:${gachaType}`;
 }
 
 function clearedChallengePatch(status: GenshinBindChallengeStatus, now: number): Record<string, unknown> {

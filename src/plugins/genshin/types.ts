@@ -1,6 +1,10 @@
 export const GENSHIN_SERVICE_ID = 'genshin';
 export const GENSHIN_GAME_BIZ = 'hk4e_cn';
 
+export const GENSHIN_GACHA_TYPES = ['100', '200', '301', '400', '302', '500'] as const;
+export type GenshinGachaType = typeof GENSHIN_GACHA_TYPES[number];
+export type GenshinUigfGachaType = '100' | '200' | '301' | '302' | '500';
+
 export type GenshinBindChallengeStatus =
   | 'created'
   | 'qr_pending'
@@ -60,7 +64,7 @@ export interface GenshinCredentialPayload {
   cookies: GenshinCookieFields;
 }
 
-export type GenshinQrLoginStatus = 'Init' | 'Scanned' | 'Confirmed';
+export type GenshinQrLoginStatus = 'Init' | 'Scanned' | 'Confirmed' | 'Expired';
 
 export interface GenshinQrLoginTicket {
   url: string;
@@ -145,6 +149,37 @@ export interface GenshinRedeemRecord {
   retcode: number;
   message: string;
   createdAt: number;
+}
+
+export interface GenshinGachaRecord {
+  id: number;
+  recordKey: string;
+  ownerKey: string;
+  uid: string;
+  region: string;
+  gachaType: GenshinGachaType;
+  uigfGachaType: GenshinUigfGachaType;
+  recordId: string;
+  itemId: string;
+  name: string;
+  itemType: string;
+  rankType: string;
+  count: string;
+  time: string;
+  createdAt: number;
+}
+
+export interface GenshinGachaSyncState {
+  id: number;
+  syncKey: string;
+  ownerKey: string;
+  uid: string;
+  region: string;
+  gachaType: GenshinGachaType;
+  lastSyncedAt: number;
+  lastFetchedRecordId: string;
+  lastNewCount: number;
+  updatedAt: number;
 }
 
 export interface GenshinAuthAudit {
