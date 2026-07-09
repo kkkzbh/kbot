@@ -27,6 +27,7 @@ import {
 
 const COURSE_QUERY_WIDTH = 1280;
 const COURSE_QUERY_PAGE_SIZE = 100;
+const COURSE_QUERY_SCORE_FIELDS = ['pscj', 'qzcj', 'qmcj', 'zcj'] as const;
 
 export interface HbuJwCourseQueryAuthServiceLike {
   ensureAuthenticated(identity: OwnerIdentity): Promise<
@@ -75,11 +76,13 @@ export interface HbuJwCourseQueryResultView {
   totalRows: number;
   pageNumber: number;
   pageCount: number;
+  emptyMessage: string;
   rows: HbuJwCourseQueryDetailView[];
 }
 
 export interface HbuJwCourseQueryDetailView {
   studentNumber: string;
+  scoreTypeText: string;
   regularScore: string;
   midtermScore: string;
   finalScore: string;
@@ -244,18 +247,20 @@ export function buildHbuJwCourseQueryResultViews(
   course: HbuJwCourseQueryCourseCandidate,
   rows: HbuJwSubitemScoreDetailRow[],
 ): HbuJwCourseQueryResultView[] {
-  const visibleRows = rows.filter(isPrimaryScoreType);
+  const visibleRows = selectRowsWithRecordedScoreTypes(rows);
+  const scoreTypeCodes = uniqueScoreTypeCodes(visibleRows);
   const pageCount = Math.max(1, Math.ceil(visibleRows.length / COURSE_QUERY_PAGE_SIZE));
   const pages: HbuJwCourseQueryResultView[] = [];
   for (let index = 0; index < pageCount; index += 1) {
     const pageRows = visibleRows.slice(index * COURSE_QUERY_PAGE_SIZE, (index + 1) * COURSE_QUERY_PAGE_SIZE);
     pages.push({
       title: '课程查询',
-      subtitle: `${course.termLabel} · ${course.courseName} · ${visibleRows.length} 条 01 返回`,
+      subtitle: formatCourseQuerySubtitle(course, visibleRows.length, rows.length, scoreTypeCodes),
       course,
       totalRows: visibleRows.length,
       pageNumber: index + 1,
       pageCount,
+      emptyMessage: formatCourseQueryEmptyMessage(rows.length),
       rows: pageRows.map(toDetailView),
     });
   }
@@ -352,6 +357,7 @@ export function renderHbuJwCourseQueryResultHtml(view: HbuJwCourseQueryResultVie
           <thead>
             <tr>
               <th class="student-col">学生</th>
+              <th class="type-col">类型</th>
               <th>平时</th>
               <th>期中</th>
               <th>期末</th>
@@ -360,7 +366,7 @@ export function renderHbuJwCourseQueryResultHtml(view: HbuJwCourseQueryResultVie
             </tr>
           </thead>
           <tbody>
-            ${view.rows.length === 0 ? '<tr><td class="empty" colspan="6">接口返回 0 条 01 分项成绩</td></tr>' : view.rows.map(renderDetailRow).join('')}
+            ${view.rows.length === 0 ? `<tr><td class="empty" colspan="7">${escapeHtml(view.emptyMessage)}</td></tr>` : view.rows.map(renderDetailRow).join('')}
           </tbody>
         </table>
       </section>
@@ -456,6 +462,7 @@ function interleaveImages(images: ReturnType<typeof h.image>[]): Array<ReturnTyp
 function toDetailView(row: HbuJwSubitemScoreDetailRow): HbuJwCourseQueryDetailView {
   return {
     studentNumber: readText(row.id?.studentNumber) || '—',
+    scoreTypeText: formatScoreTypeCode(row),
     regularScore: formatScoreCell(row.pscj),
     midtermScore: formatScoreCell(row.qzcj),
     finalScore: formatScoreCell(row.qmcj),
@@ -467,6 +474,7 @@ function toDetailView(row: HbuJwSubitemScoreDetailRow): HbuJwCourseQueryDetailVi
 function renderDetailRow(row: HbuJwCourseQueryDetailView): string {
   return `<tr>
     <td class="student-col num">${escapeHtml(row.studentNumber)}</td>
+    <td class="type-col num">${escapeHtml(row.scoreTypeText)}</td>
     <td class="num">${escapeHtml(row.regularScore)}</td>
     <td class="num">${escapeHtml(row.midtermScore)}</td>
     <td class="num">${escapeHtml(row.finalScore)}</td>
@@ -622,7 +630,8 @@ function courseQueryBaseStyle(): string {
       vertical-align: middle;
     }
     tbody tr:last-child td { border-bottom: 0; }
-    .student-col { width: 250px; }
+    .student-col { width: 230px; }
+    .type-col { width: 90px; }
     .date-col { width: 170px; }
     .num {
       font-variant-numeric: tabular-nums;
@@ -647,8 +656,55 @@ function formatScoreCell(value: unknown): string {
   return text || '—';
 }
 
-function isPrimaryScoreType(row: HbuJwSubitemScoreDetailRow): boolean {
-  return readText(row.id?.scoreTypeCode) === '001';
+function selectRowsWithRecordedScoreTypes(rows: HbuJwSubitemScoreDetailRow[]): HbuJwSubitemScoreDetailRow[] {
+  const scoreTypesWithValues = new Set(
+    rows
+      .filter(hasRecordedScoreValue)
+      .map(readScoreTypeCode),
+  );
+  return rows.filter((row) => scoreTypesWithValues.has(readScoreTypeCode(row)));
+}
+
+function hasRecordedScoreValue(row: HbuJwSubitemScoreDetailRow): boolean {
+  return COURSE_QUERY_SCORE_FIELDS.some((field) => readText(row[field]) !== '');
+}
+
+function uniqueScoreTypeCodes(rows: HbuJwSubitemScoreDetailRow[]): string[] {
+  const codes: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const code = readScoreTypeCode(row);
+    if (seen.has(code)) continue;
+    seen.add(code);
+    codes.push(formatScoreTypeCode(row));
+  }
+  return codes;
+}
+
+function formatCourseQuerySubtitle(
+  course: HbuJwCourseQueryCourseCandidate,
+  visibleRowCount: number,
+  rawRowCount: number,
+  scoreTypeCodes: string[],
+): string {
+  const suffix = scoreTypeCodes.length > 0
+    ? `类型 ${scoreTypeCodes.join('/')}`
+    : `接口返回 ${rawRowCount} 条记录`;
+  return `${course.termLabel} · ${course.courseName} · ${visibleRowCount} 条有效分项成绩 · ${suffix}`;
+}
+
+function formatCourseQueryEmptyMessage(rawRowCount: number): string {
+  return rawRowCount === 0 ? '接口返回 0 条分项成绩' : `接口返回 ${rawRowCount} 条记录，但成绩字段为空`;
+}
+
+function formatScoreTypeCode(row: HbuJwSubitemScoreDetailRow): string {
+  return readScoreTypeCode(row) || '未标注';
+}
+
+function readScoreTypeCode(row: HbuJwSubitemScoreDetailRow): string {
+  const code = readText(row.id?.scoreTypeCode);
+  if (!/^\d+$/.test(code)) return code;
+  return code.padStart(3, '0');
 }
 
 function normalizeQuery(value: string): string {

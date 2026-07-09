@@ -2123,9 +2123,57 @@ describe('hbu-jw course query module', () => {
     expect(getNavigatedHtml()).toContain('模式识别与机器学习');
     expect(getNavigatedHtml()).toContain('20221202009');
     expect(getNavigatedHtml()).toContain('27.2');
-    expect(getNavigatedHtml()).not.toContain('<th class="type-col">类型</th>');
+    expect(getNavigatedHtml()).toContain('<th class="type-col">类型</th>');
+    expect(getNavigatedHtml()).toContain('001');
     expect(getNavigatedHtml()).not.toContain('20221202010');
     expect(getNavigatedHtml()).not.toContain('20221202011');
+  });
+
+  it('renders the score type that contains recorded score values', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    }));
+    const getSubitemScoreTerms = vi.fn(async () => terms);
+    const getThisTermScores = vi.fn(async () => [
+      thisTermScoreRow({
+        id: {
+          courseNumber: '2023S01006',
+          executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
+          studentNumber: '20231202051',
+        },
+        coureSequenceNumber: '01',
+        courseName: '硬件系统开发实训',
+        coursePropertyCode: '001',
+        coursePropertyName: '必修',
+      }),
+    ]);
+    const getAllPassingScores = vi.fn(async () => []);
+    const getSubitemScoreDetails = vi.fn(async () => ({
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01006', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+      message: '',
+      rows: [
+        { id: { studentNumber: '20231202009', scoreTypeCode: '001' }, pscj: null, qzcj: null, qmcj: null, zcj: null, remark: '2026-04-28' },
+        { id: { studentNumber: '20231202010', scoreTypeCode: '002' }, pscj: 94, qzcj: null, qmcj: null, zcj: 94, remark: '2026-04-28' },
+        { id: { studentNumber: '20231202011', scoreTypeCode: '003' }, pscj: null, qzcj: null, qmcj: null, zcj: null, remark: '2026-04-28' },
+      ],
+    }));
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwCourseQueryService(
+      { ensureAuthenticated },
+      { getSubitemScoreTerms, getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      puppeteer,
+    );
+
+    await service.queryCourse(identity(), { courseQuery: '硬件系统开发实训' });
+
+    expect(getNavigatedHtml()).toContain('硬件系统开发实训');
+    expect(getNavigatedHtml()).toContain('类型 002');
+    expect(getNavigatedHtml()).toContain('20231202010');
+    expect(getNavigatedHtml()).toContain('94');
+    expect(getNavigatedHtml()).not.toContain('20231202009');
+    expect(getNavigatedHtml()).not.toContain('20231202011');
   });
 
   it('loads historical candidates from all passing scores when a previous term is selected', async () => {
@@ -2170,7 +2218,24 @@ describe('hbu-jw course query module', () => {
       { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
       { zxjxjhh: '2025-2026-1-2', kch: '2023D00003', kxh: '01', kssj: '20260105', kcsxdm: '001' },
     );
-    expect(getNavigatedHtml()).toContain('接口返回 0 条 01 分项成绩');
+    expect(getNavigatedHtml()).toContain('接口返回 0 条分项成绩');
+  });
+
+  it('renders a clear empty-score message when detail rows have no score values', () => {
+    const pages = buildHbuJwCourseQueryResultViews({
+      courseName: '硬件系统开发实训',
+      courseNumber: '2023S01006',
+      sequenceNumber: '01',
+      propertyName: '必修',
+      termCode: '2025-2026-2-2',
+      termLabel: '2025-2026学年春(三学期)',
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01006', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+    }, [
+      { id: { studentNumber: '20231202009', scoreTypeCode: '001' }, pscj: null, qzcj: null, qmcj: null, zcj: null },
+      { id: { studentNumber: '20231202010', scoreTypeCode: '002' }, pscj: null, qzcj: null, qmcj: null, zcj: null },
+    ]);
+
+    expect(renderHbuJwCourseQueryResultHtml(pages[0]!)).toContain('接口返回 2 条记录，但成绩字段为空');
   });
 
   it('renders course query result pages with at most one hundred rows each', () => {
