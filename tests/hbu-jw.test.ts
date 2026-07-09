@@ -2739,7 +2739,7 @@ describe('hbu-jw plugin integration', () => {
 
     const postHandler = server.post.mock.calls.find(([path]) => path === '/jw/bind/submit')?.[1];
     const postHeaders = new Map<string, string>();
-    const postCtx = {
+    const postCtx: any = {
       request: {
         body: {
           token,
@@ -2757,7 +2757,7 @@ describe('hbu-jw plugin integration', () => {
     expect(postCtx.body).toBe('');
 
     const getHandler = server.get.mock.calls.find(([path]) => path === '/jw/bind')?.[1];
-    const getCtx = {
+    const getCtx: any = {
       query: { token },
       set: vi.fn(),
     };
