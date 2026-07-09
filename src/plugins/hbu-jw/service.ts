@@ -40,10 +40,16 @@ export interface StartBindingResult {
 export interface BindPageChallenge {
   token: string;
   qqUserId: string;
+  state: 'form' | 'success';
+  confirmCode?: string;
 }
 
 export interface SubmitCredentialsResult {
   qqUserId: string;
+  confirmCode: string;
+}
+
+interface PendingConfirmCodePayload {
   confirmCode: string;
 }
 
@@ -78,9 +84,27 @@ export class HbuJwService {
 
   async resolveBindPageChallenge(token: string): Promise<BindPageChallenge> {
     const challenge = await this.requireUsableChallenge(token);
+    if (challenge.status === 'login_succeeded') {
+      if (!challenge.pendingConfirmCodeCipher || !challenge.pendingConfirmCodeMeta) {
+        throw new Error('hbu-jw login_succeeded challenge is missing pending confirm code.');
+      }
+      const payload = decryptEnvelopeJson<PendingConfirmCodePayload>(
+        challenge.pendingConfirmCodeCipher,
+        challenge.pendingConfirmCodeMeta,
+        pendingConfirmCodeAad(challenge),
+        this.kek,
+      );
+      return {
+        token,
+        qqUserId: challenge.qqUserId,
+        state: 'success',
+        confirmCode: payload.confirmCode,
+      };
+    }
     return {
       token,
       qqUserId: challenge.qqUserId,
+      state: 'form',
     };
   }
 
@@ -118,9 +142,16 @@ export class HbuJwService {
         this.kek,
       );
       const confirmCode = createConfirmCode();
+      const pendingConfirmCode = encryptEnvelopeJson(
+        { confirmCode } satisfies PendingConfirmCodePayload,
+        pendingConfirmCodeAad(claimedChallenge),
+        this.kek,
+      );
       const completed = await this.store.completeChallengeLogin(claimedChallenge.id, loginAttemptId, {
         status: 'login_succeeded',
         confirmCodeHash: hashConfirmCode(claimedChallenge, confirmCode),
+        pendingConfirmCodeCipher: pendingConfirmCode.cipherText,
+        pendingConfirmCodeMeta: pendingConfirmCode.meta,
         pendingCookieJarCipher: cookieJarCipher,
         pendingCredentialCipher: credential.cipherText,
         pendingCredentialMeta: credential.meta,
@@ -312,6 +343,10 @@ function hashConfirmCode(challenge: HbuJwBindChallenge, confirmCode: string): st
 
 function pendingCredentialAad(challenge: HbuJwBindChallenge): string {
   return `hbu-jw:pending-credential:v1:${challenge.ownerKey}:${challenge.id}`;
+}
+
+function pendingConfirmCodeAad(challenge: HbuJwBindChallenge): string {
+  return `hbu-jw:pending-confirm-code:v1:${challenge.ownerKey}:${challenge.id}`;
 }
 
 function formatLoginFailureReason(error: unknown): string {

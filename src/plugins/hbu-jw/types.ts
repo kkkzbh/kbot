@@ -13,6 +13,8 @@ export interface HbuJwBindChallenge {
   status: BindChallengeStatus;
   loginAttemptId?: string | null;
   confirmCodeHash?: string | null;
+  pendingConfirmCodeCipher?: string | null;
+  pendingConfirmCodeMeta?: string | null;
   pendingCookieJarCipher?: string | null;
   pendingCredentialCipher?: string | null;
   pendingCredentialMeta?: string | null;

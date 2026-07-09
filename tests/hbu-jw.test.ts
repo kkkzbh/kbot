@@ -686,6 +686,30 @@ describe('hbu-jw binding service', () => {
     expect(login).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves a submitted challenge as a reusable GET success page', async () => {
+    const { service, database } = createService();
+    const started = await service.startBinding(identity());
+    const token = extractToken(started.link);
+
+    const result = await service.submitCredentials({
+      token,
+      username: 'student-1',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+
+    const challenge = await service.resolveBindPageChallenge(token);
+    expect(challenge).toMatchObject({
+      qqUserId: '1405359129',
+      state: 'success',
+      confirmCode: result.confirmCode,
+    });
+    const [row] = database.tables.get('hbu_jw_bind_challenge') ?? [];
+    expect(row.pendingConfirmCodeCipher).toEqual(expect.any(String));
+    expect(row.pendingConfirmCodeMeta).toEqual(expect.any(String));
+    expect(JSON.stringify(row)).not.toContain(result.confirmCode);
+  });
+
   it('clears pending encrypted state when a newer binding cancels an old challenge', async () => {
     const { service, database } = createService();
     const started = await service.startBinding(identity());
@@ -701,6 +725,8 @@ describe('hbu-jw binding service', () => {
     expect(database.tables.get('hbu_jw_bind_challenge')?.[0]).toMatchObject({
       status: 'cancelled',
       confirmCodeHash: null,
+      pendingConfirmCodeCipher: null,
+      pendingConfirmCodeMeta: null,
       pendingCookieJarCipher: null,
       pendingCredentialCipher: null,
       pendingCredentialMeta: null,
@@ -757,6 +783,8 @@ describe('hbu-jw binding service', () => {
     expect(database.tables.get('hbu_jw_bind_challenge')?.[0]).toMatchObject({
       status: 'confirmed',
       confirmCodeHash: null,
+      pendingConfirmCodeCipher: null,
+      pendingConfirmCodeMeta: null,
       pendingCookieJarCipher: null,
       pendingCredentialCipher: null,
       pendingCredentialMeta: null,
@@ -2600,6 +2628,80 @@ describe('hbu-jw plugin integration', () => {
       channelId: 'group:100',
       status: 'created',
     });
+  });
+
+  it('redirects successful credential submissions to the GET bind success page', async () => {
+    vi.spyOn(HbuJwHttpClient.prototype, 'login').mockResolvedValue({
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    });
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const server = {
+      get: vi.fn(),
+      post: vi.fn(),
+    };
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server,
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
+    });
+
+    const keywordHandler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await keywordHandler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '教务绑定',
+      send,
+    }, vi.fn());
+    const token = new URL(renderMessageContent(send.mock.calls[0]?.[0]).match(/https:\/\/bot\.example\S+/)?.[0] ?? '').searchParams.get('token') ?? '';
+    expect(token).toMatch(/\S/);
+
+    const postHandler = server.post.mock.calls.find(([path]) => path === '/jw/bind/submit')?.[1];
+    const postHeaders = new Map<string, string>();
+    const postCtx = {
+      request: {
+        body: {
+          token,
+          username: 'student-1',
+          password: 'secret-password',
+          persistCredentialConsent: 'yes',
+        },
+      },
+      set: vi.fn((name: string, value: string) => postHeaders.set(name.toLowerCase(), value)),
+    };
+    await postHandler(postCtx);
+
+    expect(postCtx.status).toBe(303);
+    expect(postHeaders.get('location')).toBe(`/jw/bind?token=${encodeURIComponent(token)}`);
+    expect(postCtx.body).toBe('');
+
+    const getHandler = server.get.mock.calls.find(([path]) => path === '/jw/bind')?.[1];
+    const getCtx = {
+      query: { token },
+      set: vi.fn(),
+    };
+    await getHandler(getCtx);
+
+    expect(getCtx.status).toBe(200);
+    expect(String(getCtx.body)).toContain('教务登录验证成功');
+    expect(String(getCtx.body)).toMatch(/教务确认 \d{6}/);
+    expect(String(getCtx.body)).not.toContain('<form class="form"');
   });
 
   it('explains the confirm command when the confirmation code is missing', async () => {

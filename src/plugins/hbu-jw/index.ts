@@ -154,6 +154,8 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
         qq: challenge.qqUserId,
         token: challenge.token,
         submitPath: runtime.bindSubmitPath,
+        state: challenge.state === 'success' ? 'success' : 'form',
+        confirmCode: challenge.confirmCode,
       }));
     } catch (error) {
       writeHtml(koaCtx, 400, renderBindPage({
@@ -174,18 +176,13 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
     try {
       const challenge = await service.resolveBindPageChallenge(token);
       qq = challenge.qqUserId;
-      const result = await service.submitCredentials({
+      await service.submitCredentials({
         token,
         username,
         password: String(body.password ?? ''),
         persistCredentialConsent,
       });
-      writeHtml(koaCtx, 200, renderBindPage({
-        backgroundImagePath: runtime.campusBackgroundPath,
-        qq: result.qqUserId,
-        state: 'success',
-        confirmCode: result.confirmCode,
-      }));
+      writeRedirect(koaCtx, `${runtime.bindPagePath}?token=${encodeURIComponent(token)}`);
     } catch (error) {
       writeHtml(koaCtx, 400, renderBindPage({
         backgroundImagePath: runtime.campusBackgroundPath,
@@ -502,6 +499,12 @@ function writeHtml(koaCtx: any, status: number, html: string): void {
   koaCtx.status = status;
   koaCtx.set('content-type', 'text/html; charset=utf-8');
   koaCtx.body = html;
+}
+
+function writeRedirect(koaCtx: any, location: string): void {
+  koaCtx.status = 303;
+  koaCtx.set('location', location);
+  koaCtx.body = '';
 }
 
 async function readRequestBody(koaCtx: any): Promise<Record<string, unknown>> {
