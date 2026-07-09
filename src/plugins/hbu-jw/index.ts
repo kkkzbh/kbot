@@ -10,7 +10,7 @@ import { HbuJwGpaService } from './gpa.js';
 import { HbuJwHttpClient } from './jw-client.js';
 import { HbuJwMenuService } from './menu.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
-import { HbuJwService } from './service.js';
+import { HbuJwBindSubmissionPendingError, HbuJwService } from './service.js';
 import { ensureHbuJwTables, HbuJwStore } from './store.js';
 import { HbuJwTermScoresService, type HbuJwTermScoresMode } from './term-scores.js';
 import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.js';
@@ -154,7 +154,7 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
         qq: challenge.qqUserId,
         token: challenge.token,
         submitPath: runtime.bindSubmitPath,
-        state: challenge.state === 'success' ? 'success' : 'form',
+        state: challenge.state,
         confirmCode: challenge.confirmCode,
       }));
     } catch (error) {
@@ -176,14 +176,22 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
     try {
       const challenge = await service.resolveBindPageChallenge(token);
       qq = challenge.qqUserId;
+      if (challenge.state !== 'form') {
+        writeRedirect(koaCtx, bindPageLocation(runtime, token));
+        return;
+      }
       await service.submitCredentials({
         token,
         username,
         password: String(body.password ?? ''),
         persistCredentialConsent,
       });
-      writeRedirect(koaCtx, `${runtime.bindPagePath}?token=${encodeURIComponent(token)}`);
+      writeRedirect(koaCtx, bindPageLocation(runtime, token));
     } catch (error) {
+      if (error instanceof HbuJwBindSubmissionPendingError) {
+        writeRedirect(koaCtx, bindPageLocation(runtime, token));
+        return;
+      }
       writeHtml(koaCtx, 400, renderBindPage({
         backgroundImagePath: runtime.campusBackgroundPath,
         qq,
@@ -498,13 +506,23 @@ function resolveOwnerIdentity(session: Session): OwnerIdentity {
 function writeHtml(koaCtx: any, status: number, html: string): void {
   koaCtx.status = status;
   koaCtx.set('content-type', 'text/html; charset=utf-8');
+  setNoStore(koaCtx);
   koaCtx.body = html;
 }
 
 function writeRedirect(koaCtx: any, location: string): void {
   koaCtx.status = 303;
   koaCtx.set('location', location);
+  setNoStore(koaCtx);
   koaCtx.body = '';
+}
+
+function bindPageLocation(runtime: RuntimeConfig, token: string): string {
+  return `${runtime.bindPagePath}?token=${encodeURIComponent(token)}`;
+}
+
+function setNoStore(koaCtx: any): void {
+  koaCtx.set('cache-control', 'no-store');
 }
 
 async function readRequestBody(koaCtx: any): Promise<Record<string, unknown>> {

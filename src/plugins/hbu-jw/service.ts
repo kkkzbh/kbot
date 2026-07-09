@@ -40,7 +40,7 @@ export interface StartBindingResult {
 export interface BindPageChallenge {
   token: string;
   qqUserId: string;
-  state: 'form' | 'success';
+  state: 'form' | 'pending' | 'success';
   confirmCode?: string;
 }
 
@@ -51,6 +51,13 @@ export interface SubmitCredentialsResult {
 
 interface PendingConfirmCodePayload {
   confirmCode: string;
+}
+
+export class HbuJwBindSubmissionPendingError extends HbuJwUserError {
+  constructor() {
+    super('教务账号密码正在验证，请稍候。');
+    this.name = 'HbuJwBindSubmissionPendingError';
+  }
 }
 
 export type AuthenticatedSessionResult =
@@ -85,20 +92,19 @@ export class HbuJwService {
   async resolveBindPageChallenge(token: string): Promise<BindPageChallenge> {
     const challenge = await this.requireUsableChallenge(token);
     if (challenge.status === 'login_succeeded') {
-      if (!challenge.pendingConfirmCodeCipher || !challenge.pendingConfirmCodeMeta) {
-        throw new Error('hbu-jw login_succeeded challenge is missing pending confirm code.');
-      }
-      const payload = decryptEnvelopeJson<PendingConfirmCodePayload>(
-        challenge.pendingConfirmCodeCipher,
-        challenge.pendingConfirmCodeMeta,
-        pendingConfirmCodeAad(challenge),
-        this.kek,
-      );
+      const payload = this.decryptPendingConfirmCode(challenge);
       return {
         token,
         qqUserId: challenge.qqUserId,
         state: 'success',
         confirmCode: payload.confirmCode,
+      };
+    }
+    if (challenge.status === 'login_pending') {
+      return {
+        token,
+        qqUserId: challenge.qqUserId,
+        state: 'pending',
       };
     }
     return {
@@ -115,6 +121,12 @@ export class HbuJwService {
     persistCredentialConsent: boolean;
   }): Promise<SubmitCredentialsResult> {
     const challenge = await this.requireUsableChallenge(args.token);
+    if (challenge.status === 'login_succeeded') {
+      return this.completedSubmitResult(challenge);
+    }
+    if (challenge.status === 'login_pending') {
+      throw new HbuJwBindSubmissionPendingError();
+    }
     if (challenge.status !== 'created') {
       throw new HbuJwUserError('该绑定链接已经提交过账号密码，请重新发送“教务绑定”生成新链接。');
     }
@@ -130,6 +142,13 @@ export class HbuJwService {
     const loginAttemptId = createRandomToken(16);
     const claimedChallenge = await this.store.claimChallengeForLogin(challenge.id, loginAttemptId, now);
     if (!claimedChallenge) {
+      const currentChallenge = await this.requireUsableChallenge(args.token);
+      if (currentChallenge.status === 'login_succeeded') {
+        return this.completedSubmitResult(currentChallenge);
+      }
+      if (currentChallenge.status === 'login_pending') {
+        throw new HbuJwBindSubmissionPendingError();
+      }
       throw new HbuJwUserError('该绑定链接已经提交过账号密码，请重新发送“教务绑定”生成新链接。');
     }
 
@@ -324,6 +343,25 @@ export class HbuJwService {
 
   private decryptCookieJar(ownerKey: string, cookieJarCipher: string): SerializedCookieJar {
     return decryptSelfContainedJson<SerializedCookieJar>(cookieJarCipher, cookieAad(ownerKey), this.kek);
+  }
+
+  private completedSubmitResult(challenge: HbuJwBindChallenge): SubmitCredentialsResult {
+    return {
+      qqUserId: challenge.qqUserId,
+      confirmCode: this.decryptPendingConfirmCode(challenge).confirmCode,
+    };
+  }
+
+  private decryptPendingConfirmCode(challenge: HbuJwBindChallenge): PendingConfirmCodePayload {
+    if (!challenge.pendingConfirmCodeCipher || !challenge.pendingConfirmCodeMeta) {
+      throw new Error('hbu-jw login_succeeded challenge is missing pending confirm code.');
+    }
+    return decryptEnvelopeJson<PendingConfirmCodePayload>(
+      challenge.pendingConfirmCodeCipher,
+      challenge.pendingConfirmCodeMeta,
+      pendingConfirmCodeAad(challenge),
+      this.kek,
+    );
   }
 
   private async audit(ownerKey: string, eventType: string, status: string, reason: string | null = null): Promise<void> {

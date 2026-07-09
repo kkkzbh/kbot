@@ -5,7 +5,7 @@ export interface BindPageOptions {
   submitPath?: string;
   username?: string;
   persistCredentialConsent?: boolean;
-  state?: 'form' | 'error' | 'invalid' | 'success';
+  state?: 'form' | 'error' | 'invalid' | 'pending' | 'success';
   message?: string;
   confirmCode?: string;
 }
@@ -506,7 +506,7 @@ export function renderBindPage(options: BindPageOptions): string {
           </header>
 
           ${renderStateBlock(state, message, qq, confirmCommand)}
-          ${state === 'success' || state === 'invalid' ? '' : renderForm({ qq, token, submitPath, username, persistCredentialConsent: options.persistCredentialConsent ?? false })}
+          ${state === 'success' || state === 'invalid' || state === 'pending' ? '' : renderForm({ qq, token, submitPath, username, persistCredentialConsent: options.persistCredentialConsent ?? false })}
 
           <section class="security" aria-label="安全说明">
             <span class="security-icon" aria-hidden="true">
@@ -527,7 +527,11 @@ export function renderBindPage(options: BindPageOptions): string {
 </html>`;
 }
 
-function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'success', message: string, qq: string, confirmCommand: string): string {
+function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'pending' | 'success', message: string, qq: string, confirmCommand: string): string {
+  if (state === 'pending') {
+    return `<p class="notice">正在验证教务账号密码，请稍候。</p>
+            ${renderPendingRefreshScript()}`;
+  }
   if (state === 'success') {
     return `<section class="success-card" aria-live="polite">
               <div class="success-heading">
@@ -556,6 +560,14 @@ function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'success', messa
     return `<p class="notice is-error">${message}</p>`;
   }
   return '';
+}
+
+function renderPendingRefreshScript(): string {
+  return `<script>
+            window.setTimeout(() => {
+              window.location.reload();
+            }, 2000);
+          </script>`;
 }
 
 function renderCopyConfirmCommandScript(): string {

@@ -661,7 +661,7 @@ describe('hbu-jw binding service', () => {
     ]);
   });
 
-  it('submits credentials once, stores encrypted pending state, and rejects resubmission', async () => {
+  it('submits credentials once, stores encrypted pending state, and reuses the completed result', async () => {
     const { service, database, login } = createService();
     const started = await service.startBinding(identity());
     const token = extractToken(started.link);
@@ -677,12 +677,13 @@ describe('hbu-jw binding service', () => {
     const [challenge] = database.tables.get('hbu_jw_bind_challenge') ?? [];
     expect(challenge).toMatchObject({ status: 'login_succeeded' });
     expect(JSON.stringify(challenge)).not.toContain('secret-password');
-    await expect(service.submitCredentials({
+    const repeated = await service.submitCredentials({
       token,
       username: 'student-2',
       password: 'other-password',
       persistCredentialConsent: true,
-    })).rejects.toThrow('已经提交过账号密码');
+    });
+    expect(repeated).toEqual(result);
     expect(login).toHaveBeenCalledTimes(1);
   });
 
@@ -708,6 +709,41 @@ describe('hbu-jw binding service', () => {
     expect(row.pendingConfirmCodeCipher).toEqual(expect.any(String));
     expect(row.pendingConfirmCodeMeta).toEqual(expect.any(String));
     expect(JSON.stringify(row)).not.toContain(result.confirmCode);
+  });
+
+  it('resolves an in-flight submission as a pending GET page', async () => {
+    let markLoginStarted!: () => void;
+    const loginStarted = new Promise<void>((resolve) => {
+      markLoginStarted = resolve;
+    });
+    let resolveLogin!: (value: { cookieJar: SerializedCookieJar }) => void;
+    const loginResult = new Promise<{ cookieJar: SerializedCookieJar }>((resolve) => {
+      resolveLogin = resolve;
+    });
+    const { service } = createService({
+      login: async () => {
+        markLoginStarted();
+        return loginResult;
+      },
+    });
+    const started = await service.startBinding(identity());
+    const token = extractToken(started.link);
+
+    const submit = service.submitCredentials({
+      token,
+      username: 'student-1',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    await loginStarted;
+
+    await expect(service.resolveBindPageChallenge(token)).resolves.toMatchObject({
+      qqUserId: '1405359129',
+      state: 'pending',
+    });
+
+    resolveLogin({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] } });
+    await submit;
   });
 
   it('clears pending encrypted state when a newer binding cancels an old challenge', async () => {
@@ -2594,6 +2630,21 @@ describe('hbu-jw bind page rendering', () => {
     expect(html).toContain('aria-label="显示密码"');
     expect(html).not.toContain('name="password" value=');
   });
+
+  it('renders a pending page without the credential form', () => {
+    const html = renderBindPage({
+      backgroundImagePath: '/jw/bind/assets/campus-bg.jpg',
+      qq: '1405359129',
+      token: 'bind-token',
+      submitPath: '/jw/bind/submit',
+      state: 'pending',
+    });
+
+    expect(html).toContain('正在验证教务账号密码');
+    expect(html).toContain('window.location.reload');
+    expect(html).not.toContain('<form class="form"');
+    expect(html).not.toContain('请输入教务系统密码');
+  });
 });
 
 describe('hbu-jw plugin integration', () => {
@@ -2754,19 +2805,137 @@ describe('hbu-jw plugin integration', () => {
 
     expect(postCtx.status).toBe(303);
     expect(postHeaders.get('location')).toBe(`/jw/bind?token=${encodeURIComponent(token)}`);
+    expect(postHeaders.get('cache-control')).toBe('no-store');
     expect(postCtx.body).toBe('');
 
+    const repeatedPostHeaders = new Map<string, string>();
+    const repeatedPostCtx: any = {
+      request: {
+        body: {
+          token,
+          username: 'student-1',
+          password: 'secret-password',
+          persistCredentialConsent: 'yes',
+        },
+      },
+      set: vi.fn((name: string, value: string) => repeatedPostHeaders.set(name.toLowerCase(), value)),
+    };
+    await postHandler(repeatedPostCtx);
+
+    expect(repeatedPostCtx.status).toBe(303);
+    expect(repeatedPostHeaders.get('location')).toBe(`/jw/bind?token=${encodeURIComponent(token)}`);
+    expect(repeatedPostHeaders.get('cache-control')).toBe('no-store');
+    expect(String(repeatedPostCtx.body ?? '')).not.toContain('已经提交过账号密码');
+
     const getHandler = server.get.mock.calls.find(([path]) => path === '/jw/bind')?.[1];
+    const getHeaders = new Map<string, string>();
     const getCtx: any = {
       query: { token },
-      set: vi.fn(),
+      set: vi.fn((name: string, value: string) => getHeaders.set(name.toLowerCase(), value)),
     };
     await getHandler(getCtx);
 
     expect(getCtx.status).toBe(200);
+    expect(getHeaders.get('cache-control')).toBe('no-store');
     expect(String(getCtx.body)).toContain('教务登录验证成功');
     expect(String(getCtx.body)).toMatch(/教务确认 \d{6}/);
     expect(String(getCtx.body)).not.toContain('<form class="form"');
+  });
+
+  it('redirects duplicate submissions while credential validation is pending', async () => {
+    let markLoginStarted!: () => void;
+    const loginStarted = new Promise<void>((resolve) => {
+      markLoginStarted = resolve;
+    });
+    let resolveLogin!: (value: { cookieJar: SerializedCookieJar }) => void;
+    const loginResult = new Promise<{ cookieJar: SerializedCookieJar }>((resolve) => {
+      resolveLogin = resolve;
+    });
+    vi.spyOn(HbuJwHttpClient.prototype, 'login').mockImplementation(async () => {
+      markLoginStarted();
+      return loginResult;
+    });
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const server = {
+      get: vi.fn(),
+      post: vi.fn(),
+    };
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server,
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
+    });
+
+    const keywordHandler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await keywordHandler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '教务绑定',
+      send,
+    }, vi.fn());
+    const token = new URL(renderMessageContent(send.mock.calls[0]?.[0]).match(/https:\/\/bot\.example\S+/)?.[0] ?? '').searchParams.get('token') ?? '';
+    expect(token).toMatch(/\S/);
+
+    const postHandler = server.post.mock.calls.find(([path]) => path === '/jw/bind/submit')?.[1];
+    const requestBody = {
+      token,
+      username: 'student-1',
+      password: 'secret-password',
+      persistCredentialConsent: 'yes',
+    };
+    const firstPostHeaders = new Map<string, string>();
+    const firstPostCtx: any = {
+      request: { body: requestBody },
+      set: vi.fn((name: string, value: string) => firstPostHeaders.set(name.toLowerCase(), value)),
+    };
+    const firstPost = postHandler(firstPostCtx);
+    await loginStarted;
+
+    const repeatedPostHeaders = new Map<string, string>();
+    const repeatedPostCtx: any = {
+      request: { body: requestBody },
+      set: vi.fn((name: string, value: string) => repeatedPostHeaders.set(name.toLowerCase(), value)),
+    };
+    await postHandler(repeatedPostCtx);
+
+    expect(repeatedPostCtx.status).toBe(303);
+    expect(repeatedPostHeaders.get('location')).toBe(`/jw/bind?token=${encodeURIComponent(token)}`);
+    expect(repeatedPostHeaders.get('cache-control')).toBe('no-store');
+    expect(String(repeatedPostCtx.body ?? '')).not.toContain('已经提交过账号密码');
+
+    const getHandler = server.get.mock.calls.find(([path]) => path === '/jw/bind')?.[1];
+    const pendingGetHeaders = new Map<string, string>();
+    const pendingGetCtx: any = {
+      query: { token },
+      set: vi.fn((name: string, value: string) => pendingGetHeaders.set(name.toLowerCase(), value)),
+    };
+    await getHandler(pendingGetCtx);
+    expect(pendingGetCtx.status).toBe(200);
+    expect(pendingGetHeaders.get('cache-control')).toBe('no-store');
+    expect(String(pendingGetCtx.body)).toContain('正在验证教务账号密码');
+    expect(String(pendingGetCtx.body)).not.toContain('<form class="form"');
+
+    resolveLogin({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] } });
+    await firstPost;
+    expect(firstPostCtx.status).toBe(303);
+    expect(firstPostHeaders.get('cache-control')).toBe('no-store');
   });
 
   it('explains the confirm command when the confirmation code is missing', async () => {
