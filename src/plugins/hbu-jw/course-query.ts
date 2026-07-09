@@ -247,7 +247,7 @@ export function buildHbuJwCourseQueryResultViews(
   course: HbuJwCourseQueryCourseCandidate,
   rows: HbuJwSubitemScoreDetailRow[],
 ): HbuJwCourseQueryResultView[] {
-  const visibleRows = selectRowsWithRecordedScoreTypes(rows);
+  const visibleRows = sortCourseQueryRows(selectRowsWithRecordedScoreTypes(rows));
   const scoreTypeCodes = uniqueScoreTypeCodes(visibleRows);
   const pageCount = Math.max(1, Math.ceil(visibleRows.length / COURSE_QUERY_PAGE_SIZE));
   const pages: HbuJwCourseQueryResultView[] = [];
@@ -663,6 +663,30 @@ function selectRowsWithRecordedScoreTypes(rows: HbuJwSubitemScoreDetailRow[]): H
       .map(readScoreTypeCode),
   );
   return rows.filter((row) => scoreTypesWithValues.has(readScoreTypeCode(row)));
+}
+
+function sortCourseQueryRows(rows: HbuJwSubitemScoreDetailRow[]): HbuJwSubitemScoreDetailRow[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => (
+      compareStudentNumber(left.row, right.row)
+      || compareScoreTypeCode(left.row, right.row)
+      || left.index - right.index
+    ))
+    .map(({ row }) => row);
+}
+
+function compareStudentNumber(left: HbuJwSubitemScoreDetailRow, right: HbuJwSubitemScoreDetailRow): number {
+  const leftNumber = readText(left.id?.studentNumber);
+  const rightNumber = readText(right.id?.studentNumber);
+  if (leftNumber && rightNumber) return leftNumber.localeCompare(rightNumber, 'zh-CN', { numeric: true });
+  if (leftNumber) return -1;
+  if (rightNumber) return 1;
+  return 0;
+}
+
+function compareScoreTypeCode(left: HbuJwSubitemScoreDetailRow, right: HbuJwSubitemScoreDetailRow): number {
+  return readScoreTypeCode(left).localeCompare(readScoreTypeCode(right), 'zh-CN', { numeric: true });
 }
 
 function hasRecordedScoreValue(row: HbuJwSubitemScoreDetailRow): boolean {

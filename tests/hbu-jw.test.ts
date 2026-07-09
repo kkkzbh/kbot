@@ -2274,6 +2274,30 @@ describe('hbu-jw course query module', () => {
     expect(renderHbuJwCourseQueryResultHtml(pages[0]!)).toContain('接口返回 2 条记录，但成绩字段为空');
   });
 
+  it('sorts course query detail rows by student number before rendering', () => {
+    const pages = buildHbuJwCourseQueryResultViews({
+      courseName: '硬件系统开发实训',
+      courseNumber: '2023S01006',
+      sequenceNumber: '01',
+      propertyName: '必修',
+      termCode: '2025-2026-2-2',
+      termLabel: '2025-2026学年春(三学期)',
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01006', kxh: '01', kssj: '20260620', kcsxdm: '001' },
+    }, [
+      { id: { studentNumber: '20231202012', scoreTypeCode: '002' }, pscj: 93, qzcj: null, qmcj: null, zcj: 93 },
+      { id: { studentNumber: '20231202010', scoreTypeCode: '002' }, pscj: 94, qzcj: null, qmcj: null, zcj: 94 },
+      { id: { studentNumber: '', scoreTypeCode: '002' }, pscj: 91, qzcj: null, qmcj: null, zcj: 91 },
+      { id: { studentNumber: '20231202011', scoreTypeCode: '002' }, pscj: 92, qzcj: null, qmcj: null, zcj: 92 },
+    ]);
+
+    expect(pages[0]?.rows.map((row) => row.studentNumber)).toEqual([
+      '20231202010',
+      '20231202011',
+      '20231202012',
+      '—',
+    ]);
+  });
+
   it('renders course query result pages with at most one hundred rows each', () => {
     const rows = Array.from({ length: 101 }, (_, index) => ({
       id: { studentNumber: `20231202${String(index).padStart(3, '0')}`, scoreTypeCode: '001' },
