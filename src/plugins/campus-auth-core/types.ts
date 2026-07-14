@@ -13,7 +13,7 @@ export type CampusAuthMethod =
   | 'managed_credentials'
   | 'session_credentials'
   | 'session_import'
-  | 'zyh_sso'
+  | 'zyh_app_sso'
   | 'direct_credentials'
   | 'token_import';
 
@@ -133,6 +133,18 @@ export interface CampusAuthProviderAuthenticateInput {
   fields: Readonly<Record<string, string>>;
 }
 
+export interface CampusAuthAppBridgeDefinition {
+  kind: 'zyh_temp_user_code';
+  method: CampusAuthMethod;
+  label: string;
+  description: string;
+}
+
+export interface CampusAuthProviderAppBridgeInput {
+  identity: CampusOwnerIdentity;
+  code: string;
+}
+
 export interface CampusAuthPendingResult {
   method: CampusAuthMethod;
   sessionPayload: unknown;
@@ -147,8 +159,10 @@ export interface CampusAuthProvider {
   id: CampusAuthProviderId;
   label: string;
   confirmCommandPrefix: string;
+  appBridge?: CampusAuthAppBridgeDefinition;
   getBindingMethods(): Promise<CampusAuthMethodView[]>;
   authenticate(input: CampusAuthProviderAuthenticateInput): Promise<CampusAuthPendingResult>;
+  authenticateAppBridge?(input: CampusAuthProviderAppBridgeInput): Promise<CampusAuthPendingResult>;
 }
 
 export interface CampusAuthActiveSession<T = unknown> {

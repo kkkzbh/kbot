@@ -50,7 +50,6 @@ export class ZyhAuthProvider implements CampusAuthProvider {
           { name: 'authorization', label: 'Authorization', type: 'password', required: true, autocomplete: 'off' },
           { name: 'userId', label: 'User-Id', type: 'text', required: true, autocomplete: 'off' },
           { name: 'platformId', label: 'Platform-Id', type: 'text', required: true, value: '3', autocomplete: 'off' },
-          { name: 'secondClassSsoCode', label: '二课临时授权码（可选）', type: 'password', autocomplete: 'off', help: '仅在需要志愿汇 SSO 登录二课时填写，由志愿汇 App 的 getTempUserCode 能力生成。' },
         ],
       },
     ];
@@ -72,7 +71,6 @@ export class ZyhAuthProvider implements CampusAuthProvider {
         authorization: input.fields.authorization.trim(),
         userId: input.fields.userId.trim(),
         platformId: input.fields.platformId.trim(),
-        secondClassSsoCode: input.fields.secondClassSsoCode?.trim() || undefined,
       };
     } else {
       throw new CampusAuthUserError('该绑定方式不属于志愿汇。');
@@ -161,15 +159,6 @@ export class ZyhService {
       const auth = await this.ensureAuthenticated(identity);
       return this.client.listMyActivities(auth.session, { page, rows: 10, type: 3 });
     });
-  }
-
-  async getSecondClassSsoSource(identity: CampusOwnerIdentity): Promise<{ code: string; credentialId: number | null }> {
-    const session = (await this.ensureAuthenticated(identity)).session;
-    if (!session.secondClassSsoCode) {
-      throw new CampusAuthUserError('当前志愿汇会话没有二课临时授权码。请在授权测试确认兑换接口后重新绑定，或通过导入现有会话提供 getTempUserCode 结果。');
-    }
-    const credential = await this.campusAuth.getActiveCredential(identity.ownerKey, CAMPUS_AUTH_PROVIDER_ZYH);
-    return { code: session.secondClassSsoCode, credentialId: credential?.row.id ?? null };
   }
 
   private async requireActiveSession(identity: CampusOwnerIdentity) {

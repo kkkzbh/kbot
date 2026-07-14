@@ -30,6 +30,7 @@ import {
   type CampusOwnerIdentity,
 } from '../src/plugins/campus-auth-core/types.js';
 import { renderCampusBindPage } from '../src/plugins/campus-auth-core/bind-page.js';
+import { renderCampusAppBridgePage } from '../src/plugins/campus-auth-core/app-bridge-page.js';
 import { SecondClassHttpClient } from '../src/plugins/hbu-second-class/client.js';
 import { SecondClassCache } from '../src/plugins/hbu-second-class/cache.js';
 import { HbuSecondClassService } from '../src/plugins/hbu-second-class/service.js';
@@ -96,7 +97,7 @@ function provider(id: typeof CAMPUS_AUTH_PROVIDER_ZYH | typeof CAMPUS_AUTH_PROVI
       method: input.method,
       sessionPayload: { token: `${input.method}-session-token` },
       credentialPayload: input.method === 'managed_credentials' ? { username: 'fixture-user', password: 'fixture-password' } : undefined,
-      sourceProviderId: input.method === 'zyh_sso' ? CAMPUS_AUTH_PROVIDER_ZYH : null,
+      sourceProviderId: null,
       accountLabel: 'fixture-account',
     }),
   };
@@ -117,13 +118,12 @@ describe('campus auth core contracts', () => {
     ['managed_credentials', CAMPUS_AUTH_PROVIDER_ZYH],
     ['session_credentials', CAMPUS_AUTH_PROVIDER_ZYH],
     ['session_import', CAMPUS_AUTH_PROVIDER_ZYH],
-    ['zyh_sso', CAMPUS_AUTH_PROVIDER_SECOND_CLASS],
     ['direct_credentials', CAMPUS_AUTH_PROVIDER_SECOND_CLASS],
     ['token_import', CAMPUS_AUTH_PROVIDER_SECOND_CLASS],
   ] as const)('persists %s only after the six-digit confirmation', async (method, providerId) => {
     const { service, database } = createAuthService();
     service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_ZYH, ['managed_credentials', 'session_credentials', 'session_import']));
-    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['zyh_sso', 'direct_credentials', 'token_import']));
+    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['direct_credentials', 'token_import']));
     const identity = owner(method);
     const started = await service.startBinding(identity, providerId);
     const token = new URL(started.link).searchParams.get('token')!;
@@ -178,32 +178,133 @@ describe('campus auth core contracts', () => {
     await expect(service.submitBinding(token, 'session_import', {})).rejects.toThrow('尝试次数已用完');
   });
 
-  it('cascades only sessions that originate from the志愿汇 provider', async () => {
-    const { service } = createAuthService();
-    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_ZYH, ['session_import']));
-    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['zyh_sso', 'token_import']));
-    const first = owner('1');
-    await bind(service, first, CAMPUS_AUTH_PROVIDER_ZYH, 'session_import');
-    await bind(service, first, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'zyh_sso');
-    await service.unbind(first, CAMPUS_AUTH_PROVIDER_ZYH);
-    expect(await service.getActiveSession(first.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS)).toBeNull();
-
-    const second = owner('2');
-    await bind(service, second, CAMPUS_AUTH_PROVIDER_ZYH, 'session_import');
-    await bind(service, second, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'token_import');
-    await service.unbind(second, CAMPUS_AUTH_PROVIDER_ZYH);
-    expect(await service.getActiveSession(second.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS)).not.toBeNull();
+  it('accepts an App Bridge code through the provider boundary without persisting it', async () => {
+    const { service, database } = createAuthService();
+    const authenticateAppBridge = vi.fn(async ({ code }: { code: string }) => ({
+      method: 'zyh_app_sso' as const,
+      sessionPayload: { token: 'second-class-session' },
+      accountLabel: 'fixture-account',
+    }));
+    service.registerProvider({
+      ...provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['direct_credentials']),
+      appBridge: {
+        kind: 'zyh_temp_user_code',
+        method: 'zyh_app_sso',
+        label: '志愿汇 App 扫码授权',
+        description: '测试 Bridge',
+      },
+      authenticateAppBridge,
+    });
+    const identity = owner();
+    const started = await service.startBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
+    const token = new URL(started.link).searchParams.get('token')!;
+    await service.submitAppBridgeBinding(token, 'fixture-app-code');
+    const page = await service.resolveBindPage(token);
+    expect(page.state).toBe('verified');
+    await service.confirmBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, page.confirmCode!);
+    expect(authenticateAppBridge).toHaveBeenCalledWith(expect.objectContaining({ code: 'fixture-app-code' }));
+    expect((await service.getActiveSession(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS))?.row.method).toBe('zyh_app_sso');
+    expect(JSON.stringify([...database.tables.values()])).not.toContain('fixture-app-code');
   });
 
-  it('renders errors in a retryable form without reflecting secret values', () => {
+  it('redacts an App Bridge code from failed challenge state and user errors', async () => {
+    const { service, database } = createAuthService();
+    service.registerProvider({
+      ...provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['direct_credentials']),
+      appBridge: {
+        kind: 'zyh_temp_user_code', method: 'zyh_app_sso', label: '扫码授权', description: '测试 Bridge',
+      },
+      authenticateAppBridge: async ({ code }) => {
+        throw new CampusAuthUserError(`远端拒绝临时码 ${code}`);
+      },
+    });
+    const started = await service.startBinding(owner(), CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
+    const token = new URL(started.link).searchParams.get('token')!;
+    await expect(service.submitAppBridgeBinding(token, 'fixture-app-code')).rejects.toThrow('远端拒绝临时码 <redacted>');
+    expect(JSON.stringify([...database.tables.values()])).not.toContain('fixture-app-code');
+  });
+
+  it('keeps independent 二课 sessions when 志愿汇 is unbound', async () => {
+    const { service } = createAuthService();
+    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_ZYH, ['session_import']));
+    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['token_import']));
+    const identity = owner('2');
+    await bind(service, identity, CAMPUS_AUTH_PROVIDER_ZYH, 'session_import');
+    await bind(service, identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'token_import');
+    await service.unbind(identity, CAMPUS_AUTH_PROVIDER_ZYH);
+    expect(await service.getActiveSession(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS)).not.toBeNull();
+  });
+
+  it('keeps account state after failure while clearing secrets and stale captcha values', () => {
     const html = renderCampusBindPage({
       providerLabel: '志愿汇', qqUserId: '10001', token: 'one-time-token', submitPath: '/campus/bind/submit', state: 'form',
       message: '<账号验证失败>',
-      methods: [{ id: 'managed_credentials', label: '托管', description: '描述', fields: [{ name: 'password', label: '密码', type: 'password', required: true }] }],
+      selectedMethod: 'managed_credentials',
+      submittedFields: {
+        username: 'student<123>',
+        password: 'fixture-password',
+        captchaCode: 'expired-captcha',
+        captchaUuid: 'tampered-uuid',
+        persistConsent: 'yes',
+      },
+      methods: [
+        {
+          id: 'managed_credentials', label: '托管', description: '描述', fields: [
+            { name: 'username', label: '账号', type: 'text', required: true },
+            { name: 'password', label: '密码', type: 'password', required: true },
+            { name: 'captchaCode', label: '验证码', type: 'captcha', required: true },
+            { name: 'captchaUuid', label: '', type: 'hidden', value: 'fresh-server-uuid' },
+            { name: 'persistConsent', label: '保存密码', type: 'checkbox', required: true },
+          ],
+        },
+        { id: 'session_credentials', label: '单次登录', description: '描述', fields: [] },
+      ],
     });
     expect(html).toContain('&lt;账号验证失败&gt;');
-    expect(html).toContain('type="password"');
+    expect(html).toContain('name="username" type="text" value="student&lt;123&gt;"');
+    expect(html).toContain('name="method" value="managed_credentials" checked');
+    expect(html).toContain('name="persistConsent" value="yes" required checked');
+    expect(html).toContain('name="captchaUuid" value="fresh-server-uuid"');
     expect(html).not.toContain('fixture-password');
+    expect(html).not.toContain('expired-captcha');
+    expect(html).not.toContain('tampered-uuid');
+  });
+
+  it('renders a copy button on the verified binding page', () => {
+    const html = renderCampusBindPage({
+      providerLabel: '志愿汇', qqUserId: '10001', state: 'verified', confirmCommand: '志愿汇确认 123456',
+    });
+    expect(html).toContain('data-copy-confirm-command');
+    expect(html).toContain('data-copy-text="志愿汇确认 123456"');
+    expect(html).toContain('复制确认消息');
+    expect(html).toContain('navigator.clipboard.writeText');
+  });
+
+  it('renders the one-time App authorization QR card only from explicit page data', () => {
+    const html = renderCampusBindPage({
+      providerLabel: '河北大学二课', qqUserId: '10001', state: 'form',
+      appBridge: {
+        label: '使用志愿汇 App 扫码授权',
+        description: '验证 App Bridge',
+        qrImageDataUrl: 'data:image/png;base64,fixture-qr',
+      },
+    });
+    expect(html).toContain('使用志愿汇 App 扫码授权');
+    expect(html).toContain('data:image/png;base64,fixture-qr');
+    expect(html).toContain('志愿汇 App 首页“扫一扫”');
+  });
+
+  it('renders a Bridge probe that submits the code without exposing it in the page', () => {
+    const html = renderCampusAppBridgePage({
+      providerLabel: '河北大学二课', token: 'one-time-token',
+      submitPath: '/campus/bind/app-bridge/submit', returnPath: '/campus/bind?token=one-time-token',
+    });
+    expect(html).toContain('window.getTempUserCodeCallback');
+    expect(html).toContain('window.android.getTempUserCode()');
+    expect(html).toContain("window.webkit.messageHandlers.getTempUserCode.postMessage('')");
+    expect(html).toContain("new URLSearchParams({ token, code })");
+    expect(html).toContain('8 秒内未收到 getTempUserCodeCallback');
+    expect(html).not.toContain('fixture-app-code');
   });
 
   it('redacts credential, token, captcha, and bearer values from diagnostics', () => {
@@ -272,22 +373,22 @@ describe('河北大学二课 protocol client', () => {
     await expect(client.importToken('other-token')).rejects.toThrow('不属于河北大学');
   });
 
-  it('uses the native zyh temporary-code header for linked SSO sessions', async () => {
+  it('uses one fresh App Bridge code only for the SSO login request', async () => {
     const requests: Array<{ path: string; headers: Record<string, string> }> = [];
     const client = new SecondClassHttpClient(async (request) => {
       const path = new URL(request.url).pathname;
       requests.push({ path, headers: request.headers });
-      if (path === '/auth/getUserByZyhToken') return { status: 200, text: JSON.stringify({ code: 200, data: { userName: 'fixture' } }) };
       if (path === '/auth/h5/auth/login') return { status: 200, text: fixture('second-class-login-success.json') };
       if (path === '/app/h5/info') return { status: 200, text: fixture('second-class-info-success.json') };
       if (path === '/app/h5/school/info') return { status: 200, text: fixture('second-class-school-success.json') };
       throw new Error(`unexpected path ${path}`);
     });
-    await client.loginWithZyh({ zyhCode: 'fixture-temp-code', studentSuffix: '001' });
-    expect(requests.slice(0, 2).every((request) => request.headers.token === 'fixture-temp-code')).toBe(true);
+    await client.loginWithZyhAppCode('fresh-app-code');
     expect(requests.map((request) => request.path)).toEqual([
-      '/auth/getUserByZyhToken', '/auth/h5/auth/login', '/app/h5/info', '/app/h5/school/info',
+      '/auth/h5/auth/login', '/app/h5/info', '/app/h5/school/info',
     ]);
+    expect(requests[0]?.headers.token).toBe('fresh-app-code');
+    expect(requests.slice(1).every((request) => request.headers.token == null)).toBe(true);
   });
 
   it('treats HTTP and envelope 401 responses as expired sessions', async () => {
@@ -378,28 +479,20 @@ describe('session renewal contracts', () => {
     expect(campusAuth.markSessionInvalid).toHaveBeenCalled();
   });
 
-  it('renews 二课 SSO from 志愿汇 and keeps direct sessions explicit on expiry', async () => {
+  it('requires a fresh App scan when the App-authorized 二课 session expires', async () => {
     const database = createDatabase();
     const oldSession = { token: 'expired', schoolId: '1101092545313637006', schoolName: '河北大学', studentNo: '2026000001', accountName: '学生' };
-    const newSession = { ...oldSession, token: 'fresh' };
     const campusAuth = {
-      getActiveSession: vi.fn(async () => ({ row: { method: 'zyh_sso', version: 4 }, payload: oldSession })),
+      getActiveSession: vi.fn(async () => ({ row: { method: 'zyh_app_sso', version: 4 }, payload: oldSession })),
       markSessionValidated: vi.fn(async () => undefined),
       markSessionInvalid: vi.fn(async () => undefined),
-      replaceSession: vi.fn(async () => ({ row: { method: 'zyh_sso', version: 4 }, payload: newSession })),
     };
-    const zyh = { getSecondClassSsoSource: vi.fn(async () => ({ code: 'zyh-temp-code', credentialId: 9 })) };
     const client = {
       getUserInfo: vi.fn(async () => { throw new SecondClassSessionExpiredError(); }),
-      refreshZyhSso: vi.fn(async () => newSession),
     };
-    const service = new HbuSecondClassService(campusAuth as never, zyh as never, client as never, new SecondClassCache(database as never));
-    await expect(service.ensureAuthenticated(owner())).resolves.toEqual({ session: newSession, sessionVersion: 4 });
-    expect(campusAuth.replaceSession).toHaveBeenCalledWith(owner(), CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'zyh_sso', newSession, {
-      sourceProviderId: CAMPUS_AUTH_PROVIDER_ZYH,
-      sourceCredentialId: 9,
-      rotateVersion: false,
-    });
+    const service = new HbuSecondClassService(campusAuth as never, client as never, new SecondClassCache(database as never));
+    await expect(service.ensureAuthenticated(owner())).rejects.toThrow('重新使用志愿汇 App 扫码绑定');
+    expect(campusAuth.markSessionInvalid).toHaveBeenCalledWith(owner().ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'session_expired');
 
     campusAuth.getActiveSession.mockResolvedValueOnce({ row: { method: 'token_import', version: 5 }, payload: oldSession });
     await expect(service.ensureAuthenticated(owner())).rejects.toThrow('重新绑定');

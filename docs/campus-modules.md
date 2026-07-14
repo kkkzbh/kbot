@@ -35,9 +35,13 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 
 志愿汇支持托管账号登录、单次账号登录和导入 `Authorization` / `User-Id` / `Platform-Id`。托管登录会加密保存账号密码并在会话失效时重新登录，另外两种方式失效后要求重新绑定。
 
-二课支持志愿汇 SSO、账号密码与验证码登录、Token 导入。密码按当前 Web 端协议使用 SM2 加密后提交，服务端只持久化二课 Token。所有二课绑定均校验学校名称和河北大学租户 ID。
+二课支持志愿汇 App 扫码授权、账号密码与验证码登录、Token 导入。密码按当前 Web 端协议使用 SM2 加密后提交，服务端只持久化二课 Token。所有二课绑定均校验学校名称和河北大学租户 ID。
 
-当前中青二课 Web 协议通过志愿汇 App 原生桥接 `getTempUserCode()` 获取 SSO 临时授权码。普通志愿汇 Web 登录响应没有该字段，代码不会把 `Authorization` 当作临时授权码。导入志愿汇现有会话时可以同时导入已捕获的 `getTempUserCode` 结果；生产开放自动 SSO 前必须用授权测试账号确认临时码与志愿汇登录态之间的兑换接口。首次关联还会执行一次二课验证码登录、授权确认和学号或工号后 3 位核验；已关联账号可直接一键登录。
+2026-07-15 核对的中青二课前端会在 `/auth/getUserByZyhToken`、`/auth/bind`、`/auth/h5/auth/login`、`/auth/h5/auth/check` 每次请求前调用志愿汇 App 原生桥接 `getTempUserCode()`，并把回调结果放入请求头 `token`。Android、iOS、Harmony 分别使用 `window.android.getTempUserCode()`、`window.webkit.messageHandlers.getTempUserCode.postMessage("")`、`window.harmony.getTempUserCode()`。
+
+普通志愿汇账号密码登录只返回 `Authorization`、`User-Id`、`Platform-Id`，无法生成 App 临时码。QQBot 不再复用已捕获的临时码，也不提供基于志愿汇密码会话的二课自动续期。绑定页会生成一次性二维码；已在官方二课关联志愿汇的用户使用志愿汇“扫一扫”打开页面并调用 Bridge，QQBot 只用本次临时码请求一次 `/auth/h5/auth/login`。页面不会显示或保存临时码。二课 Token 失效后需要重新扫码。
+
+扫码页是否能在 QQBot 域名调用 Bridge 需要实机验证。若志愿汇对域名设置白名单，页面会提示未检测到 Bridge 或未收到回调；后续需通过受控实机抓包或运行时分析确认 App 生成临时码的原生请求。当前 APK 使用 360 加固，静态反编译无法获得该实现。
 
 ## 运行配置
 
@@ -64,14 +68,14 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 
 统一认证表为 `campus_auth_challenge`、`campus_auth_credential`、`campus_auth_session`、`campus_auth_audit`。业务缓存分别使用 `zyh_sync_state` / `zyh_data_item` 和 `hbu_second_class_sync_state` / `hbu_second_class_data_item`。
 
-缓存按会话凭据版本隔离。远端临时网络故障时，模块只返回同一版本的历史数据并明确标注抓取时间。重新绑定和解绑会清理对应缓存。志愿汇重新绑定或解绑会撤销来源为志愿汇的二课 SSO 会话并清理二课缓存；二课直接登录和 Token 导入会话不依赖志愿汇。
+缓存按会话凭据版本隔离。远端临时网络故障时，模块只返回同一版本的历史数据并明确标注抓取时间。重新绑定和解绑会清理对应缓存。二课运行时不依赖 QQBot 的志愿汇账号会话；扫码授权、二课直接登录和 Token 导入生成的二课会话均独立保存。
 
 ## 生产灰度
 
 生产服务操作只在 `km6` 执行。灰度前完成：
 
 1. 使用授权测试账号验证志愿汇登录响应头、个人信息、活动与记录。
-2. 验证二课验证码、SM2 登录、河北大学两个租户 ID、首次 SSO 关联和后续 SSO 续期。
+2. 验证二课验证码、SM2 登录、河北大学两个租户 ID、志愿汇 App Bridge 域名权限和已关联账号扫码登录。
 3. 将脱敏后的成功响应固化为 fixtures，清除抓包、临时授权码、测试 Token 和临时绑定挑战。
 4. 执行 `pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm runtime:check`。
-5. 先开放测试群，验证重启后解密、Token 续期、解绑级联和聊天历史脱敏，再扩大白名单。
+5. 先开放测试群，验证重启后解密、扫码重新授权、解绑和聊天历史脱敏，再扩大白名单。

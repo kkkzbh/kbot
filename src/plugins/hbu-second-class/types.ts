@@ -27,12 +27,6 @@ export interface SecondClassLoginInput {
   captchaUuid: string;
 }
 
-export interface SecondClassSsoLoginInput {
-  zyhCode: string;
-  studentSuffix: string;
-  directLogin?: SecondClassLoginInput;
-}
-
 export interface SecondClassPage {
   rows: Record<string, unknown>[];
   total: number | null;
@@ -61,12 +55,5 @@ export class SecondClassSessionExpiredError extends SecondClassApiError {
   constructor(message = '二课登录态已失效。') {
     super(message, 401, 401);
     this.name = 'SecondClassSessionExpiredError';
-  }
-}
-
-export class SecondClassSsoLinkRequiredError extends SecondClassApiError {
-  constructor(message = '该志愿汇账号尚未关联二课账号。') {
-    super(message, 50001, 200);
-    this.name = 'SecondClassSsoLinkRequiredError';
   }
 }

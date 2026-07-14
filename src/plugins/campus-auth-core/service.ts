@@ -106,16 +106,8 @@ export class CampusAuthService {
   }
 
   async submitBinding(token: string, method: CampusAuthMethod, fields: Readonly<Record<string, string>>): Promise<void> {
-    const challenge = await this.requireUsableChallenge(token);
-    if (challenge.status === 'verified') return;
-    if (challenge.status === 'authenticating') throw new CampusAuthUserError('账号正在验证，请稍候。');
-    if (!['created', 'failed', 'user_action_required'].includes(challenge.status)) {
-      throw new CampusAuthUserError('当前绑定链接无法再次提交，请重新发起绑定。');
-    }
-    if (challenge.attemptCount >= this.config.maxBindingAttempts) {
-      await this.store.clearChallengeSecrets(challenge.id, 'failed', this.now());
-      throw new CampusAuthUserError('该绑定链接尝试次数已用完，请重新发起绑定。');
-    }
+    const challenge = await this.requireSubmittableChallenge(token);
+    if (!challenge) return;
 
     const provider = this.getProvider(challenge.providerId);
     const methodDefinition = (await provider.getBindingMethods()).find((candidate) => candidate.id === method);
@@ -125,22 +117,70 @@ export class CampusAuthService {
         throw new CampusAuthUserError(`请填写${field.label}。`);
       }
     }
+    const sensitiveValues = methodDefinition.fields
+      .filter((field) => field.type === 'password' || field.type === 'captcha' || field.type === 'hidden')
+      .map((field) => fields[field.name] ?? '')
+      .filter(Boolean);
 
+    await this.authenticateChallenge(challenge, method, () => provider.authenticate({
+      identity: {
+        ownerKey: challenge.ownerKey,
+        platform: challenge.platform,
+        qqUserId: challenge.qqUserId,
+        channelId: challenge.channelId,
+      },
+      method,
+      fields,
+    }), sensitiveValues);
+  }
+
+  async submitAppBridgeBinding(token: string, code: string): Promise<void> {
+    const challenge = await this.requireSubmittableChallenge(token);
+    if (!challenge) return;
+    const provider = this.getProvider(challenge.providerId);
+    if (!provider.appBridge || !provider.authenticateAppBridge) {
+      throw new CampusAuthUserError('当前模块不支持 App 扫码授权。');
+    }
+    const normalizedCode = code.trim();
+    if (!normalizedCode) throw new CampusAuthUserError('志愿汇 App 没有返回临时授权码。');
+    const method = provider.appBridge.method;
+    await this.authenticateChallenge(challenge, method, () => provider.authenticateAppBridge!({
+      identity: {
+        ownerKey: challenge.ownerKey,
+        platform: challenge.platform,
+        qqUserId: challenge.qqUserId,
+        channelId: challenge.channelId,
+      },
+      code: normalizedCode,
+    }), [normalizedCode]);
+  }
+
+  private async requireSubmittableChallenge(token: string): Promise<CampusAuthChallenge | null> {
+    const challenge = await this.requireUsableChallenge(token);
+    if (challenge.status === 'verified') return null;
+    if (challenge.status === 'authenticating') throw new CampusAuthUserError('账号正在验证，请稍候。');
+    if (!['created', 'failed', 'user_action_required'].includes(challenge.status)) {
+      throw new CampusAuthUserError('当前绑定链接无法再次提交，请重新发起绑定。');
+    }
+    if (challenge.attemptCount >= this.config.maxBindingAttempts) {
+      await this.store.clearChallengeSecrets(challenge.id, 'failed', this.now());
+      throw new CampusAuthUserError('该绑定链接尝试次数已用完，请重新发起绑定。');
+    }
+    return challenge;
+  }
+
+  private async authenticateChallenge(
+    challenge: CampusAuthChallenge,
+    method: CampusAuthMethod,
+    authenticate: () => Promise<CampusAuthPendingResult>,
+    sensitiveValues: readonly string[] = [],
+  ): Promise<void> {
     const attemptId = createRandomToken(16);
     const claimed = await this.store.claimChallenge(challenge.id, challenge.status, attemptId, this.now());
     if (!claimed) throw new CampusAuthUserError('绑定状态已经变化，请刷新页面。');
 
     try {
-      const result = await provider.authenticate({
-        identity: {
-          ownerKey: claimed.ownerKey,
-          platform: claimed.platform,
-          qqUserId: claimed.qqUserId,
-          channelId: claimed.channelId,
-        },
-        method,
-        fields,
-      });
+      const result = await authenticate();
       if (result.method !== method) throw new Error('campus auth provider returned a mismatched auth method.');
       const pending = encryptEnvelopeJson(result, pendingAad(claimed), this.kek);
       const confirmCode = createConfirmCode();
@@ -159,10 +199,10 @@ export class CampusAuthService {
       if (!completed) throw new CampusAuthUserError('绑定状态已经变化，请重新发起绑定。');
       await this.audit(claimed.ownerKey, claimed.providerId, 'provider_login_succeeded', 'ok');
     } catch (error) {
-      const reason = diagnostic(error);
+      const reason = diagnostic(error, sensitiveValues);
       await this.store.failChallenge(claimed.id, attemptId, reason, this.now());
       await this.audit(claimed.ownerKey, claimed.providerId, 'provider_login_failed', 'failed', reason);
-      if (error instanceof CampusAuthUserError) throw error;
+      if (error instanceof CampusAuthUserError) throw new CampusAuthUserError(redactSensitiveText(error.message, sensitiveValues));
       logger.warn('campus auth provider login failed: provider=%s owner=%s reason=%s', claimed.providerId, claimed.ownerKey, reason);
       throw new CampusAuthUserError('账号验证失败，请检查输入后重试。');
     }
@@ -386,12 +426,18 @@ function hashConfirmCode(challenge: Pick<CampusAuthChallenge, 'id' | 'ownerKey' 
   return sha256Hex(`${challengeNamespace(challenge)}:${code}`);
 }
 
-export function diagnostic(value: unknown): string {
+export function diagnostic(value: unknown, sensitiveValues: readonly string[] = []): string {
   const text = value instanceof Error ? `${value.name}: ${value.message}` : String(value);
-  return text
+  return redactSensitiveText(text, sensitiveValues)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>')
     .replace(/\b(password|authorization|token|cookie|captcha|confirmCode)(["']?\s*[:=]\s*["']?)([^\s,"'}&]+)/gi, '$1$2<redacted>')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 500);
+}
+
+function redactSensitiveText(value: string, sensitiveValues: readonly string[]): string {
+  return [...new Set(sensitiveValues.filter((item) => item.length > 0))]
+    .sort((left, right) => right.length - left.length)
+    .reduce((text, secret) => text.replaceAll(secret, '<redacted>'), value);
 }

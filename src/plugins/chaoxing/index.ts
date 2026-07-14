@@ -337,17 +337,20 @@ function registerWebRoutes(ctx: ChaoxingServicesContext, auth: ChaoxingAuthServi
   ctx.server.post(runtime.passwordSubmitPath, async (koaCtx: any) => {
     const body = await readRequestBody(koaCtx);
     const token = String(body.token ?? '').trim();
+    const username = String(body.username ?? '');
+    const persistCredentialConsent = body.persistCredentialConsent === 'yes' || body.persistCredentialConsent === true;
     try {
       const result = await auth.submitPassword({
         token,
-        username: String(body.username ?? ''),
+        username,
         password: String(body.password ?? ''),
-        persistCredentialConsent: body.persistCredentialConsent === 'yes' || body.persistCredentialConsent === true,
+        persistCredentialConsent,
       });
       writeHtml(koaCtx, 200, renderChaoxingBindPage({ qq: '', token, state: 'success', confirmCode: result.confirmCode }));
     } catch (error) {
       writeHtml(koaCtx, 400, renderChaoxingBindPage({
-        qq: '', token, state: 'error', passwordSubmitPath: runtime.passwordSubmitPath, message: toUserMessage(error),
+        qq: '', token, state: 'error', passwordSubmitPath: runtime.passwordSubmitPath,
+        username, persistCredentialConsent, message: toUserMessage(error),
       }));
     }
   });

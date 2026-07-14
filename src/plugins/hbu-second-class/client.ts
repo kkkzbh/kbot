@@ -5,13 +5,11 @@ import type {
   SecondClassLoginInput,
   SecondClassPage,
   SecondClassSessionPayload,
-  SecondClassSsoLoginInput,
   SecondClassUserInfo,
 } from './types.js';
 import {
   SecondClassApiError,
   SecondClassSessionExpiredError,
-  SecondClassSsoLinkRequiredError,
 } from './types.js';
 import {
   secondClassCaptchaDataSchema,
@@ -84,42 +82,10 @@ export class SecondClassHttpClient {
     return this.buildSession(normalized, await this.getUserInfo(normalized));
   }
 
-  async loginWithZyh(input: SecondClassSsoLoginInput): Promise<SecondClassSessionPayload> {
-    const zyhCode = input.zyhCode.trim();
-    if (!zyhCode) throw new CampusAuthUserError('志愿汇登录态缺少二课临时授权码。');
-    const linked = await this.request('/auth/getUserByZyhToken', { zyhCode });
-    if (linked.data == null) {
-      if (!input.directLogin) throw new SecondClassSsoLinkRequiredError();
-      const directSession = await this.directLogin(input.directLogin);
-      const check = await this.request('/auth/h5/auth/check', {
-        method: 'POST',
-        token: directSession.token,
-        zyhCode,
-        acceptedCodes: [200, 50001],
-      });
-      if (check.code === 50001) throw new SecondClassSsoLinkRequiredError(check.message);
-      const suffix = input.studentSuffix.trim();
-      if (!/^\d{3}$/.test(suffix)) throw new CampusAuthUserError('请输入学号或工号后 3 位。');
-      const prefix = directSession.studentNo.slice(0, -3);
-      const info = await this.getUserInfo(directSession.token);
-      await this.request('/auth/bind', {
-        method: 'POST',
-        token: directSession.token,
-        zyhCode,
-        body: { studentNo: `${prefix}${suffix}`, phone: info.phone },
-      });
-      return directSession;
-    }
-
-    const login = await this.request('/auth/h5/auth/login', { method: 'POST', zyhCode });
-    const token = requireToken(login.data);
-    return this.buildSession(token, await this.getUserInfo(token));
-  }
-
-  async refreshZyhSso(zyhCode: string): Promise<SecondClassSessionPayload> {
-    const linked = await this.request('/auth/getUserByZyhToken', { zyhCode: zyhCode.trim() });
-    if (linked.data == null) throw new SecondClassSsoLinkRequiredError('志愿汇与二课的关联已失效。');
-    const login = await this.request('/auth/h5/auth/login', { method: 'POST', zyhCode: zyhCode.trim() });
+  async loginWithZyhAppCode(zyhCode: string): Promise<SecondClassSessionPayload> {
+    const normalized = zyhCode.trim();
+    if (!normalized) throw new CampusAuthUserError('志愿汇 App 没有返回临时授权码。');
+    const login = await this.request('/auth/h5/auth/login', { method: 'POST', zyhCode: normalized });
     const token = requireToken(login.data);
     return this.buildSession(token, await this.getUserInfo(token));
   }

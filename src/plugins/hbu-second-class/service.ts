@@ -1,9 +1,7 @@
 import type { CampusAuthServiceLike } from '../../types/campus-auth.js';
-import type { ZyhService } from '../zyh/index.js';
 import type { VersionedQueryResult } from '../shared/versioned-json-cache.js';
 import {
   CAMPUS_AUTH_PROVIDER_SECOND_CLASS,
-  CAMPUS_AUTH_PROVIDER_ZYH,
   CampusAuthUserError,
   type CampusAuthMethodView,
   type CampusAuthProvider,
@@ -13,35 +11,25 @@ import {
 } from '../campus-auth-core/index.js';
 import { SecondClassCache } from './cache.js';
 import { SecondClassHttpClient } from './client.js';
-import type { SecondClassLoginInput, SecondClassPage, SecondClassSessionPayload } from './types.js';
+import type { SecondClassPage, SecondClassSessionPayload } from './types.js';
 import { SecondClassApiError, SecondClassSessionExpiredError } from './types.js';
 
 export class HbuSecondClassAuthProvider implements CampusAuthProvider {
   readonly id = CAMPUS_AUTH_PROVIDER_SECOND_CLASS;
   readonly label = '河北大学二课';
   readonly confirmCommandPrefix = '二课确认';
+  readonly appBridge = {
+    kind: 'zyh_temp_user_code',
+    method: 'zyh_app_sso',
+    label: '使用志愿汇 App 扫码授权',
+    description: '实验功能：用志愿汇“扫一扫”打开一次性页面，验证 App Bridge 和 QQBot 域名授权。',
+  } as const;
 
-  constructor(
-    private readonly client: SecondClassHttpClient,
-    private readonly zyh: ZyhService,
-  ) {}
+  constructor(private readonly client: SecondClassHttpClient) {}
 
   async getBindingMethods(): Promise<CampusAuthMethodView[]> {
-    const [ssoCaptcha, directCaptcha] = await Promise.all([this.client.getCaptcha(), this.client.getCaptcha()]);
+    const directCaptcha = await this.client.getCaptcha();
     return [
-      {
-        id: 'zyh_sso',
-        label: '志愿汇 SSO',
-        description: '已关联账号直接登录；首次关联需同时验证已有二课账号并核验学号或工号后 3 位。',
-        fields: [
-          { name: 'studentSuffix', label: '学号或工号后 3 位', type: 'text', required: true, autocomplete: 'off' },
-          { name: 'ssoLoginName', label: '二课账号（首次关联填写）', type: 'text', autocomplete: 'username' },
-          { name: 'ssoPassword', label: '二课密码（首次关联填写）', type: 'password', autocomplete: 'current-password' },
-          { name: 'ssoCaptchaCode', label: '图形验证码（首次关联填写）', type: 'captcha', imageDataUrl: ssoCaptcha.imageDataUrl, autocomplete: 'off' },
-          { name: 'ssoCaptchaUuid', label: '', type: 'hidden', value: ssoCaptcha.uuid },
-          { name: 'ssoConsent', label: '我确认授权志愿汇身份关联到该二课账号。', type: 'checkbox', required: true },
-        ],
-      },
       {
         id: 'direct_credentials',
         label: '二课账号登录',
@@ -66,35 +54,39 @@ export class HbuSecondClassAuthProvider implements CampusAuthProvider {
 
   async authenticate(input: CampusAuthProviderAuthenticateInput): Promise<CampusAuthPendingResult> {
     let session: SecondClassSessionPayload;
-    let sourceCredentialId: number | null = null;
     if (input.method === 'direct_credentials') {
-      session = await this.client.directLogin(directLoginFields(input.fields));
+      session = await this.client.directLogin({
+        loginName: input.fields.loginName.trim(),
+        password: input.fields.password,
+        captchaCode: input.fields.captchaCode.trim(),
+        captchaUuid: input.fields.captchaUuid.trim(),
+      });
     } else if (input.method === 'token_import') {
       session = await this.client.importToken(input.fields.token);
-    } else if (input.method === 'zyh_sso') {
-      if (input.fields.ssoConsent !== 'yes') throw new CampusAuthUserError('请先确认志愿汇关联授权。');
-      const zyhSource = await this.zyh.getSecondClassSsoSource(input.identity);
-      sourceCredentialId = zyhSource.credentialId;
-      const supplied = [input.fields.ssoLoginName, input.fields.ssoPassword, input.fields.ssoCaptchaCode].some((value) => value?.trim());
-      const directLogin = supplied ? directLoginFields({
-        loginName: input.fields.ssoLoginName,
-        password: input.fields.ssoPassword,
-        captchaCode: input.fields.ssoCaptchaCode,
-        captchaUuid: input.fields.ssoCaptchaUuid,
-      }) : undefined;
-      session = await this.client.loginWithZyh({
-        zyhCode: zyhSource.code,
-        studentSuffix: input.fields.studentSuffix,
-        directLogin,
-      });
     } else {
       throw new CampusAuthUserError('该绑定方式不属于二课。');
     }
     return {
       method: input.method,
       sessionPayload: session,
-      sourceProviderId: input.method === 'zyh_sso' ? CAMPUS_AUTH_PROVIDER_ZYH : null,
-      sourceCredentialId,
+      sourceProviderId: null,
+      sourceCredentialId: null,
+      accountLabel: session.accountName || maskStudentNo(session.studentNo),
+    };
+  }
+
+  async authenticateAppBridge(input: { code: string }): Promise<CampusAuthPendingResult> {
+    let session: SecondClassSessionPayload;
+    try {
+      session = await this.client.loginWithZyhAppCode(input.code);
+    } catch (error) {
+      throw toUserError(error, '志愿汇 App 授权未能登录二课。');
+    }
+    return {
+      method: this.appBridge.method,
+      sessionPayload: session,
+      sourceProviderId: null,
+      sourceCredentialId: null,
       accountLabel: session.accountName || maskStudentNo(session.studentNo),
     };
   }
@@ -108,7 +100,6 @@ export interface SecondClassAuthenticatedContext {
 export class HbuSecondClassService {
   constructor(
     private readonly campusAuth: CampusAuthServiceLike,
-    private readonly zyh: ZyhService,
     private readonly client: SecondClassHttpClient,
     private readonly cache: SecondClassCache,
   ) {}
@@ -123,25 +114,9 @@ export class HbuSecondClassService {
     } catch (error) {
       if (!(error instanceof SecondClassSessionExpiredError)) throw error;
     }
-    if (active.row.method !== 'zyh_sso') {
-      await this.campusAuth.markSessionInvalid(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'session_expired');
-      throw new CampusAuthUserError('二课登录态已失效，请重新绑定。');
-    }
-    try {
-      const zyhSource = await this.zyh.getSecondClassSsoSource(identity);
-      const refreshed = await this.client.refreshZyhSso(zyhSource.code);
-      await this.campusAuth.replaceSession(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'zyh_sso', refreshed, {
-        sourceProviderId: CAMPUS_AUTH_PROVIDER_ZYH,
-        sourceCredentialId: zyhSource.credentialId,
-        rotateVersion: false,
-      });
-      return { session: refreshed, sessionVersion: active.row.version };
-    } catch (error) {
-      if (error instanceof SecondClassApiError && error.code === 401) {
-        await this.campusAuth.markSessionInvalid(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'zyh_sso_refresh_failed');
-      }
-      throw toUserError(error, '二课 SSO 续期失败，请重新绑定。');
-    }
+    await this.campusAuth.markSessionInvalid(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'session_expired');
+    const instruction = active.row.method === 'zyh_app_sso' ? '请重新使用志愿汇 App 扫码绑定。' : '请重新绑定。';
+    throw new CampusAuthUserError(`二课登录态已失效，${instruction}`);
   }
 
   queryCredits(identity: CampusOwnerIdentity): Promise<VersionedQueryResult<unknown>> {
@@ -178,17 +153,6 @@ export class HbuSecondClassService {
       return loader(auth.session.token);
     });
   }
-}
-
-function directLoginFields(fields: Readonly<Record<string, string>>): SecondClassLoginInput {
-  const loginName = fields.loginName?.trim();
-  const password = fields.password;
-  const captchaCode = fields.captchaCode?.trim();
-  const captchaUuid = fields.captchaUuid?.trim();
-  if (!loginName || !password || !captchaCode || !captchaUuid) {
-    throw new CampusAuthUserError('首次关联需要填写二课账号、密码和图形验证码。');
-  }
-  return { loginName, password, captchaCode, captchaUuid };
 }
 
 function toUserError(error: unknown, fallback: string): CampusAuthUserError {

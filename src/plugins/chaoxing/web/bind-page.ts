@@ -5,6 +5,8 @@ export interface ChaoxingBindPageOptions {
   imageDataUrl?: string;
   statusPath?: string;
   passwordSubmitPath?: string;
+  username?: string;
+  persistCredentialConsent?: boolean;
   confirmCode?: string;
   message?: string;
 }
@@ -17,6 +19,7 @@ export function renderChaoxingBindPage(options: ChaoxingBindPageOptions): string
   const submitPath = escapeHtml(options.passwordSubmitPath ?? '');
   const image = escapeHtml(options.imageDataUrl ?? '');
   const message = escapeHtml(options.message ?? '');
+  const username = escapeHtml(options.username ?? '');
   const confirmCommand = escapeHtml(options.confirmCode ? `学习通确认 ${options.confirmCode}` : '');
 
   return `<!doctype html>
@@ -38,6 +41,9 @@ export function renderChaoxingBindPage(options: ChaoxingBindPageOptions): string
     .success { background:#eaf8f0; color:#17623b; }
     .error { background:#fff0ef; color:#a52a22; }
     code { display:block; margin-top:16px; padding:15px; border-radius:10px; background:#132039; color:#fff; font-size:17px; overflow-wrap:anywhere; }
+    .copy-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; }
+    .copy-row button { padding:11px 16px; }
+    .copy-status { min-height:24px; color:var(--muted); line-height:1.5; }
     form { display:grid; gap:15px; margin-top:22px; }
     label { display:grid; gap:7px; font-weight:700; }
     input[type=text],input[type=password] { width:100%; border:1px solid var(--line); border-radius:10px; padding:12px 13px; font:inherit; outline:none; }
@@ -60,24 +66,43 @@ export function renderChaoxingBindPage(options: ChaoxingBindPageOptions): string
     ${state === 'success' ? '<p class="muted">本次登录已经完成，请回到 QQ 确认绑定。</p>' : `
     <form method="post" action="${submitPath}">
       <input type="hidden" name="token" value="${token}">
-      <label>账号<input type="text" name="username" autocomplete="username" required></label>
+      <label>账号<input type="text" name="username" value="${username}" autocomplete="username" required></label>
       <label>密码<input type="password" name="password" autocomplete="current-password" required></label>
-      <label class="consent"><input type="checkbox" name="persistCredentialConsent" value="yes"><span>可选：我授权机器人加密保存学习通账号密码，仅用于登录态自动续期。未勾选时只保存本次登录 Cookie。</span></label>
+      <label class="consent"><input type="checkbox" name="persistCredentialConsent" value="yes"${options.persistCredentialConsent ? ' checked' : ''}><span>可选：我授权机器人加密保存学习通账号密码，仅用于登录态自动续期。未勾选时只保存本次登录 Cookie。</span></label>
       <button type="submit">使用密码登录</button>
     </form>`}
   </section>
 </main>
 ${renderPollingScript(state, statusPath)}
+${renderCopyScript(state)}
 </body>
 </html>`;
 }
 
 function renderPrimaryState(state: ChaoxingBindPageOptions['state'], image: string, message: string, confirmCommand: string): string {
-  if (state === 'success') return `<div class="status success">登录成功。回到发起绑定的 QQ 会话发送：</div><code>${confirmCommand}</code>`;
+  if (state === 'success') return `<div class="status success">登录成功。回到发起绑定的 QQ 会话发送：</div><code data-confirm-command>${confirmCommand}</code><div class="copy-row"><button type="button" data-copy-confirm-command data-copy-text="${confirmCommand}">复制确认消息</button><span class="copy-status" data-copy-status aria-live="polite"></span></div>`;
   if (state === 'invalid') return `<div class="status error">${message || '绑定链接无效或已经过期。'}</div>`;
   if (state === 'error') return `<div class="status error">${message || '登录失败，请重试。'}</div>`;
   const text = state === 'scanned' ? '已扫码，请在学习通 App 内确认登录。' : state === 'pending' ? '正在验证登录，请稍候。' : '使用学习通 App 扫描二维码。';
   return `${image ? `<img class="qr" src="${image}" alt="学习通登录二维码">` : ''}<div class="status" id="bind-status">${message || text}</div>`;
+}
+
+function renderCopyScript(state: ChaoxingBindPageOptions['state']): string {
+  if (state !== 'success') return '';
+  return `<script>
+  const copyButton = document.querySelector('[data-copy-confirm-command]');
+  const copyStatus = document.querySelector('[data-copy-status]');
+  copyButton?.addEventListener('click', async () => {
+    try {
+      const text = copyButton.getAttribute('data-copy-text') || '';
+      if (!text || !navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      if (copyStatus) copyStatus.textContent = '已复制确认消息';
+    } catch {
+      if (copyStatus) copyStatus.textContent = '复制失败，请手动选择上方命令';
+    }
+  });
+  </script>`;
 }
 
 function renderPollingScript(state: ChaoxingBindPageOptions['state'], statusPath: string): string {

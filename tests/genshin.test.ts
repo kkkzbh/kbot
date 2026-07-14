@@ -1486,6 +1486,19 @@ describe('genshin plugin routes and middleware', () => {
     expect(html).toContain('data:image/png;base64,qr');
     expect(html).not.toContain('Cookie-Editor');
   });
+
+  it('renders a copy button on the successful binding page', () => {
+    const html = renderGenshinBindPage({
+      qq: '1405359129',
+      state: 'success',
+      confirmCode: '123456',
+      role: role(),
+    });
+
+    expect(html).toContain('data-copy-command="原神确认 123456"');
+    expect(html).toContain('复制确认命令');
+    expect(html).toContain('navigator.clipboard.writeText');
+  });
 });
 
 function jsonResponse(payload: unknown): Response {

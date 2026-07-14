@@ -12,6 +12,7 @@ import {
 import { parseChaoxingCommand } from '../src/plugins/chaoxing/commands.js';
 import { ChaoxingOwnerCoordinator } from '../src/plugins/chaoxing/owner-coordinator.js';
 import type { ChaoxingQuestion } from '../src/plugins/chaoxing/types.js';
+import { renderChaoxingBindPage } from '../src/plugins/chaoxing/web/bind-page.js';
 
 describe('chaoxing protocol parsers', () => {
   it('normalizes remote course class identifiers at the client boundary', () => {
@@ -116,6 +117,25 @@ describe('chaoxing protocol parsers', () => {
 });
 
 describe('chaoxing local contracts', () => {
+  it('keeps the account after login failure while clearing the password', () => {
+    const html = renderChaoxingBindPage({
+      qq: '10001', token: 'bind-token', state: 'error', passwordSubmitPath: '/chaoxing/bind/password',
+      username: 'student<123>', persistCredentialConsent: true, message: '账号验证失败',
+    });
+    expect(html).toContain('value="student&lt;123&gt;"');
+    expect(html).toContain('name="persistCredentialConsent" value="yes" checked');
+    expect(html).toContain('name="password" autocomplete="current-password" required');
+    expect(html).not.toContain('fixture-password');
+  });
+
+  it('renders a copy button on the successful binding page', () => {
+    const html = renderChaoxingBindPage({ qq: '10001', state: 'success', confirmCode: '123456' });
+    expect(html).toContain('data-copy-confirm-command');
+    expect(html).toContain('data-copy-text="学习通确认 123456"');
+    expect(html).toContain('复制确认消息');
+    expect(html).toContain('navigator.clipboard.writeText');
+  });
+
   it('enforces cookie domain, path, secure, and expiry boundaries', () => {
     const now = Date.UTC(2026, 6, 15);
     const cookie = parseSetCookie('UID=abc; Domain=.chaoxing.com; Path=/mooc; Secure; HttpOnly; Max-Age=60', new URL('https://mooc1.chaoxing.com/mooc/login'), now);

@@ -1,14 +1,11 @@
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import type { CampusAuthServiceLike } from '../../types/campus-auth.js';
 import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
-import type { ZyhService } from '../zyh/index.js';
 import '../../types/campus-auth.js';
 import '../../types/hbu-second-class.js';
 import '../../types/native-feature-chat.js';
-import '../../types/zyh.js';
 import {
   CAMPUS_AUTH_PROVIDER_SECOND_CLASS,
-  CAMPUS_AUTH_PROVIDER_ZYH,
   CampusAuthUserError,
 } from '../campus-auth-core/index.js';
 import { CampusOwnerError, resolveCampusOwnerIdentity } from '../shared/campus-owner.js';
@@ -21,7 +18,7 @@ import { HbuSecondClassAuthProvider, HbuSecondClassService } from './service.js'
 import type { SecondClassPage } from './types.js';
 
 export const name = 'hbu-second-class';
-export const inject = ['campusAuth', 'database', 'nativeFeatureChat', 'zyh', 'puppeteer'] as const;
+export const inject = ['campusAuth', 'database', 'nativeFeatureChat', 'puppeteer'] as const;
 
 const logger = new Logger(name);
 
@@ -44,7 +41,6 @@ interface SecondClassContext {
   campusAuth: CampusAuthServiceLike;
   database: import('../campus-auth-core/index.js').CampusAuthDatabase;
   nativeFeatureChat: NativeFeatureChatServiceLike;
-  zyh: ZyhService;
   puppeteer: SecondClassPuppeteerLike & HbuSecondClassMenuPuppeteerLike;
 }
 
@@ -64,9 +60,9 @@ export function apply(ctx: Context, config: Config): void {
   ensureSecondClassCacheTables(ctx);
   const cache = new SecondClassCache(services.database);
   const client = new SecondClassHttpClient();
-  const service = new HbuSecondClassService(services.campusAuth, services.zyh, client, cache);
+  const service = new HbuSecondClassService(services.campusAuth, client, cache);
   const menuService = new HbuSecondClassMenuService(services.puppeteer);
-  const unregisterProvider = services.campusAuth.registerProvider(new HbuSecondClassAuthProvider(client, services.zyh));
+  const unregisterProvider = services.campusAuth.registerProvider(new HbuSecondClassAuthProvider(client));
   const unregisterCapability = services.nativeFeatureChat.registerCapability({
     id: 'hbu-second-class',
     isRelevant: shouldExposeSecondClassCapabilityReference,
@@ -223,7 +219,7 @@ function cacheNotice(result: { source: string; fetchedAt: number }): string {
 
 function methodLabel(method: string): string {
   return ({
-    zyh_sso: '志愿汇 SSO（支持自动续期）',
+    zyh_app_sso: '志愿汇 App 扫码授权（登录态过期后需重新扫码）',
     direct_credentials: '二课账号登录',
     token_import: '导入二课 Token',
   } as Record<string, string>)[method] ?? method;

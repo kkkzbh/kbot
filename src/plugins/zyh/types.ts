@@ -2,7 +2,6 @@ export interface ZyhSessionPayload {
   authorization: string;
   userId: string;
   platformId: string;
-  secondClassSsoCode?: string;
 }
 
 export interface ZyhCredentialPayload {
