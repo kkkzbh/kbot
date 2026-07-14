@@ -1253,6 +1253,9 @@ describe('hbu-jw GPA calculation', () => {
     expect(html).toContain('专业课 GPA');
     expect(html).toContain('公共基础 GPA');
     expect(html).toContain('累计 GPA 走势');
+    expect(html).toContain('class="chart-grid" x1="68"');
+    expect(html).toContain('class="chart-value-label" x="94"');
+    expect(html).toContain('class="chart-term-label" x="94"');
     expect(html).not.toContain('当前所有已返回成绩');
     expect(html).not.toContain('必修课口径');
     expect(html).not.toContain('结果仅供参考');

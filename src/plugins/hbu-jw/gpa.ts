@@ -674,8 +674,10 @@ function parseHbuJwGpaTerm(row: HbuJwScoreRow, courseName: string): HbuJwGpaTerm
 function renderHbuJwGpaTrendSvg(points: HbuJwGpaTermPoint[]): string {
   const chartWidth = 960;
   const chartHeight = 274;
-  const plotLeft = 68;
-  const plotRight = 922;
+  const gridLeft = 68;
+  const gridRight = 922;
+  const pointLeft = 94;
+  const pointRight = 894;
   const plotTop = 50;
   const plotBottom = 194;
   const values = points.map(({ cumulativeGpa }) => cumulativeGpa);
@@ -690,8 +692,8 @@ function renderHbuJwGpaTrendSvg(points: HbuJwGpaTermPoint[]): string {
   }
 
   const xForIndex = (index: number): number => points.length === 1
-    ? (plotLeft + plotRight) / 2
-    : plotLeft + (plotRight - plotLeft) * index / (points.length - 1);
+    ? (pointLeft + pointRight) / 2
+    : pointLeft + (pointRight - pointLeft) * index / (points.length - 1);
   const yForValue = (value: number): number => plotBottom
     - (value - scaleMin) / (scaleMax - scaleMin) * (plotBottom - plotTop);
   const coordinates = points.map((point, index) => ({
@@ -710,7 +712,7 @@ function renderHbuJwGpaTrendSvg(points: HbuJwGpaTermPoint[]): string {
           <desc id="gpa-trend-desc">累计 GPA 从 ${escapeHtml(points[0].label)} 的 ${escapeHtml(points[0].cumulativeGpaRounded)} 变化到 ${escapeHtml(points[points.length - 1].label)} 的 ${escapeHtml(points[points.length - 1].cumulativeGpaRounded)}。</desc>
           ${ticks.map((tick) => {
             const y = yForValue(tick);
-            return `<line class="chart-grid" x1="${plotLeft}" y1="${svgNumber(y)}" x2="${plotRight}" y2="${svgNumber(y)}"></line>
+            return `<line class="chart-grid" x1="${gridLeft}" y1="${svgNumber(y)}" x2="${gridRight}" y2="${svgNumber(y)}"></line>
           <text class="chart-axis-label" x="54" y="${svgNumber(y + 5)}">${tick.toFixed(1)}</text>`;
           }).join('\n          ')}
           <path class="chart-area" d="${areaPath}"></path>
