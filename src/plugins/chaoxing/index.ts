@@ -9,6 +9,7 @@ import { ChaoxingClient } from './client.js';
 import { parseChaoxingCommand, type ChaoxingCommand } from './commands.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { ChaoxingDeadlineService, formatTaskList } from './deadline-service.js';
+import { ChaoxingMenuService, type ChaoxingMenuPuppeteerLike } from './menu.js';
 import { ChaoxingSignService, formatDetectedSigns } from './sign-service.js';
 import { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
 import { ChaoxingTaskStore, ensureChaoxingTables } from './store.js';
@@ -18,7 +19,7 @@ import { renderChaoxingBindPage } from './web/bind-page.js';
 import { ChaoxingWorker, formatJobStatus, parseAnswerJobProgress, type ChaoxingNotifier } from './worker.js';
 
 export const name = 'chaoxing';
-export const inject = { required: ['server', 'database', 'nativeFeatureChat'] } as const;
+export const inject = { required: ['server', 'database', 'nativeFeatureChat', 'puppeteer'] } as const;
 
 const logger = new Logger(name);
 const DEFAULT_BIND_PAGE_PATH = '/chaoxing/bind';
@@ -76,6 +77,7 @@ export const Config: Schema<Config> = Schema.object({
 interface ChaoxingServicesContext {
   database: DatabaseLike;
   nativeFeatureChat: NativeFeatureChatServiceLike;
+  puppeteer: ChaoxingMenuPuppeteerLike;
   server: {
     get(path: string, handler: (koaCtx: any) => unknown): void;
     post(path: string, handler: (koaCtx: any) => unknown): void;
@@ -119,6 +121,7 @@ interface Services {
   store: ChaoxingTaskStore;
   worker: ChaoxingWorker;
   coordinator: ChaoxingOwnerCoordinator;
+  menu: ChaoxingMenuService;
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -156,7 +159,8 @@ export function apply(ctx: Context, config: Config): void {
     pollIntervalMs: runtime.workerPollIntervalMs,
     signWatchIntervalMs: runtime.signWatchIntervalMs,
   });
-  const services: Services = { auth, catalog, deadline, sign, answer, store, worker, coordinator };
+  const menu = new ChaoxingMenuService(serviceCtx.puppeteer);
+  const services: Services = { auth, catalog, deadline, sign, answer, store, worker, coordinator, menu };
 
   registerWebRoutes(serviceCtx, auth, runtime);
   registerCommands(ctx, serviceCtx.nativeFeatureChat, services, runtime);
@@ -206,8 +210,8 @@ function registerCommands(ctx: Context, nativeFeatureChat: NativeFeatureChatServ
   });
 }
 
-async function executeCommand(command: ChaoxingCommand, identity: OwnerIdentity, services: Services): Promise<string> {
-  if (command.kind === 'menu') return menuText();
+async function executeCommand(command: ChaoxingCommand, identity: OwnerIdentity, services: Services): Promise<Fragment> {
+  if (command.kind === 'menu') return services.menu.queryMenu(identity.qqUserId);
   if (command.kind === 'bind') {
     const result = await services.auth.startBinding(identity);
     const validMinutes = Math.max(1, Math.ceil((result.expiresAt - Date.now()) / 60_000));
@@ -399,18 +403,6 @@ export function shouldExposeChaoxingCapabilityReference(session: Session): boole
   if (/^学习通确认\d{6}$/.test(text)) return true;
   if (/^学习通(?:章节|签到监听|签到|刷课|答题(?:补充|保存|提交)?)\S+/.test(text)) return true;
   return text.includes('学习通') && CHAOXING_USAGE_INTENT_PATTERN.test(text);
-}
-
-function menuText(): string {
-  return [
-    '学习通功能',
-    '账号：学习通绑定 / 状态 / 解绑',
-    '课程：学习通课程 / 学习通章节 <课程>',
-    '待办：学习通待办 / 作业 / 考试',
-    '签到：学习通签到 / 学习通签到监听 [课程] / 学习通停止签到',
-    '刷课：学习通刷课 <课程> / 学习通刷课状态 / 学习通停止刷课',
-    '答题：学习通答题 <课程>，准备后按提示预览、补充、保存或提交；学习通错题 / 学习通停止答题',
-  ].join('\n');
 }
 
 function createNotifier(ctx: ChaoxingServicesContext): ChaoxingNotifier {

@@ -9,11 +9,12 @@ import { CampusOwnerError, resolveCampusOwnerIdentity } from '../shared/campus-o
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { ZyhHttpClient } from './client.js';
 import { ensureZyhCacheTables, ZyhCache } from './cache.js';
+import { ZyhMenuService, type ZyhMenuPuppeteerLike } from './menu.js';
 import { ZyhAuthProvider, ZyhService } from './service.js';
 import type { ZyhActivity } from './types.js';
 
 export const name = 'zyh';
-export const inject = ['campusAuth', 'database', 'nativeFeatureChat'] as const;
+export const inject = ['campusAuth', 'database', 'nativeFeatureChat', 'puppeteer'] as const;
 
 const logger = new Logger(name);
 
@@ -39,6 +40,7 @@ interface ZyhContext {
   campusAuth: CampusAuthServiceLike;
   database: import('../campus-auth-core/index.js').CampusAuthDatabase;
   nativeFeatureChat: NativeFeatureChatServiceLike;
+  puppeteer: ZyhMenuPuppeteerLike;
 }
 
 interface RuntimeConfig {
@@ -58,6 +60,7 @@ export function apply(ctx: Context, config: Config): void {
   ensureZyhCacheTables(ctx);
   const cache = new ZyhCache(serviceCtx.database);
   const service = new ZyhService(serviceCtx.campusAuth, client, cache);
+  const menuService = new ZyhMenuService(serviceCtx.puppeteer);
   const unregisterProvider = serviceCtx.campusAuth.registerProvider(new ZyhAuthProvider(client));
   const unregisterCapability = serviceCtx.nativeFeatureChat.registerCapability({
     id: 'zyh',
@@ -68,7 +71,7 @@ export function apply(ctx: Context, config: Config): void {
     if (event.providerId === CAMPUS_AUTH_PROVIDER_ZYH) await cache.clearOwner(event.ownerKey);
   });
   provideZyhService(ctx, service);
-  registerMiddleware(ctx, serviceCtx, service, runtime);
+  registerMiddleware(ctx, serviceCtx, service, menuService, runtime);
   ctx.on?.('dispose', () => {
     unregisterProvider();
     unregisterCapability();
@@ -86,7 +89,7 @@ function provideZyhService(ctx: Context, service: ZyhService): void {
   }
 }
 
-function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhService, runtime: RuntimeConfig): void {
+function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhService, menuService: ZyhMenuService, runtime: RuntimeConfig): void {
   ctx.middleware(async (session, next) => {
     const text = String((session as Session & { stripped?: { content?: unknown } }).stripped?.content ?? session.content ?? '').trim();
     const command = parseZyhCommand(text);
@@ -99,7 +102,7 @@ function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhServ
     try {
       const identity = resolveCampusOwnerIdentity(session);
       if (command.kind === 'menu') {
-        await reply(services.nativeFeatureChat, session, command, text, zyhMenu(), '机器人返回了志愿汇功能菜单。');
+        await reply(services.nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), '机器人返回了志愿汇功能菜单图片。');
       } else if (command.kind === 'bind') {
         const result = await services.campusAuth.startBinding(identity, CAMPUS_AUTH_PROVIDER_ZYH);
         await reply(services.nativeFeatureChat, session, command, text, [
@@ -181,14 +184,6 @@ export function parseZyhCommand(text: string): ZyhCommand | null {
   const activities = text.match(/^志愿活动(?:\s+(.+))?$/);
   if (activities) return { kind: 'activities', keyword: activities[1]?.trim() || undefined };
   return null;
-}
-
-function zyhMenu(): string {
-  return [
-    '志愿汇功能',
-    '账号：志愿汇绑定｜志愿汇状态｜志愿汇解绑',
-    '查询：志愿时长｜志愿记录 [页码]｜志愿活动 [关键词]｜我的志愿活动 [页码]',
-  ].join('\n');
 }
 
 function formatActivities(title: string, rows: ZyhActivity[]): string {

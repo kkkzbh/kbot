@@ -15,6 +15,7 @@ import { CampusOwnerError, resolveCampusOwnerIdentity } from '../shared/campus-o
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { ensureSecondClassCacheTables, SecondClassCache } from './cache.js';
 import { SecondClassHttpClient } from './client.js';
+import { HbuSecondClassMenuService, type HbuSecondClassMenuPuppeteerLike } from './menu.js';
 import { renderSecondClassRadar, renderSecondClassTranscript, type SecondClassPuppeteerLike } from './render.js';
 import { HbuSecondClassAuthProvider, HbuSecondClassService } from './service.js';
 import type { SecondClassPage } from './types.js';
@@ -44,7 +45,7 @@ interface SecondClassContext {
   database: import('../campus-auth-core/index.js').CampusAuthDatabase;
   nativeFeatureChat: NativeFeatureChatServiceLike;
   zyh: ZyhService;
-  puppeteer: SecondClassPuppeteerLike;
+  puppeteer: SecondClassPuppeteerLike & HbuSecondClassMenuPuppeteerLike;
 }
 
 interface RuntimeConfig {
@@ -64,6 +65,7 @@ export function apply(ctx: Context, config: Config): void {
   const cache = new SecondClassCache(services.database);
   const client = new SecondClassHttpClient();
   const service = new HbuSecondClassService(services.campusAuth, services.zyh, client, cache);
+  const menuService = new HbuSecondClassMenuService(services.puppeteer);
   const unregisterProvider = services.campusAuth.registerProvider(new HbuSecondClassAuthProvider(client, services.zyh));
   const unregisterCapability = services.nativeFeatureChat.registerCapability({
     id: 'hbu-second-class',
@@ -76,7 +78,7 @@ export function apply(ctx: Context, config: Config): void {
     }
   });
   provideService(ctx, service);
-  registerMiddleware(ctx, services, service, runtime);
+  registerMiddleware(ctx, services, service, menuService, runtime);
   ctx.on?.('dispose', () => {
     unregisterProvider();
     unregisterCapability();
@@ -94,7 +96,7 @@ function provideService(ctx: Context, service: HbuSecondClassService): void {
   }
 }
 
-function registerMiddleware(ctx: Context, services: SecondClassContext, service: HbuSecondClassService, runtime: RuntimeConfig): void {
+function registerMiddleware(ctx: Context, services: SecondClassContext, service: HbuSecondClassService, menuService: HbuSecondClassMenuService, runtime: RuntimeConfig): void {
   ctx.middleware(async (session, next) => {
     const text = String((session as Session & { stripped?: { content?: unknown } }).stripped?.content ?? session.content ?? '').trim();
     const command = parseSecondClassCommand(text);
@@ -107,7 +109,7 @@ function registerMiddleware(ctx: Context, services: SecondClassContext, service:
     try {
       const identity = resolveCampusOwnerIdentity(session);
       if (command.kind === 'menu') {
-        await reply(services.nativeFeatureChat, session, command, text, secondClassMenu(), '机器人返回了二课功能菜单。');
+        await reply(services.nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), '机器人返回了二课功能菜单图片。');
       } else if (command.kind === 'bind') {
         const result = await services.campusAuth.startBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
         await reply(services.nativeFeatureChat, session, command, text, [
@@ -180,15 +182,6 @@ export function parseSecondClassCommand(text: string): SecondClassCommand | null
   if (text === '二课活动') return { kind: 'activities' };
   if (text === '二课记录') return { kind: 'records' };
   return null;
-}
-
-function secondClassMenu(): string {
-  return [
-    '河北大学二课功能',
-    '账号：二课绑定｜二课状态｜二课解绑',
-    '查询：二课学分｜二课成绩单 [学期]｜二课雷达｜二课活动｜二课记录',
-    '当前版本仅执行查询，不报名、取消、签到或签退。',
-  ].join('\n');
 }
 
 function formatCredits(data: unknown): string {
