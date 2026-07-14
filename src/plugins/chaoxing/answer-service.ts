@@ -76,7 +76,7 @@ export class ChaoxingAnswerService {
       knowledgeid: args.chapterId, ktoken: args.defaults.ktoken, cpi: args.defaults.cpi, ut: 's', clazzId: args.course.classId,
       type: '', enc: args.attachment.enc, mooc2: '1', courseid: args.course.courseId,
     })) workUrl.searchParams.set(key, value);
-    const page = await this.client.requestText(auth.cookieJar, workUrl.href);
+    const page = await this.client.requestText(auth.cookieJar, workUrl.href, { headers: { referer: args.attachment.refererUrl } });
     await this.authService.persistCookies(auth, page.cookieJar);
     const parsed = parseWorkPage(page.text, page.url, workId);
     const entries: ChaoxingAnswerDraftEntry[] = [];

@@ -59,7 +59,7 @@ export class ChaoxingStudyRunner {
     for (let chapterIndex = progress.chapterIndex; chapterIndex < chapterResult.chapters.length; chapterIndex += 1) {
       await this.assertRunning(job.id);
       const chapter = chapterResult.chapters[chapterIndex]!;
-      const cardResult = await this.client.getTaskCard(auth.cookieJar, course, chapter.chapterId);
+      const cardResult = await this.client.getChapterTasks(auth.cookieJar, course, chapter);
       auth = await this.authService.persistCookies(auth, cardResult.cookieJar);
       if (cardResult.card.notOpen) {
         progress = await this.skipChapter(job, progress, chapterIndex, chapter, '章节尚未开放');
@@ -113,7 +113,7 @@ export class ChaoxingStudyRunner {
     let auth = await this.authService.getAuthenticatedSession(identity);
     for (const chapter of chapters) {
       await this.assertRunning(job.id);
-      const cardResult = await this.client.getTaskCard(auth.cookieJar, course, chapter.chapterId);
+      const cardResult = await this.client.getChapterTasks(auth.cookieJar, course, chapter);
       auth = await this.authService.persistCookies(auth, cardResult.cookieJar);
       if (cardResult.card.notOpen || cardResult.card.faceRequired) continue;
       const work = cardResult.card.attachments.find((attachment) => attachment.job && !attachment.isPassed && attachment.type === 'workid');
@@ -151,7 +151,11 @@ export class ChaoxingStudyRunner {
       throw new ChaoxingProtocolError('video_attachment_fields', `${chapter.title} 的视频任务缺少上报字段。`);
     }
     let auth = initialAuth;
-    const statusResult = await this.client.getVideoStatus(auth.cookieJar, attachment.objectId, defaults.fid);
+    const statusResult = await this.client.getVideoStatus(auth.cookieJar, {
+      objectId: attachment.objectId,
+      fid: defaults.fid,
+      refererUrl: attachment.refererUrl,
+    });
     auth = await this.authService.persistCookies(auth, statusResult.cookieJar);
     const duration = statusResult.status.duration;
     let playingTime = Math.max(0, Math.min(duration, Math.floor(attachment.playTime)));
@@ -170,10 +174,8 @@ export class ChaoxingStudyRunner {
       }
       const report = await this.client.reportVideoProgress(auth.cookieJar, {
         reportUrl: defaults.reportUrl,
-        cpi: defaults.cpi,
         dtoken: statusResult.status.dtoken,
         classId: course.classId,
-        courseId: course.courseId,
         userId: defaults.userid,
         jobId: attachment.jobid,
         objectId: attachment.objectId,
@@ -181,6 +183,10 @@ export class ChaoxingStudyRunner {
         playingTime,
         duration,
         rt,
+        startTime: attachment.startTime,
+        endTime: attachment.endTime,
+        refererUrl: attachment.refererUrl,
+        courseEngineInfo: defaults.courseEngineInfo,
         attDuration: attachment.attDuration,
         attDurationEnc: attachment.attDurationEnc,
         videoFaceCaptureEnc: attachment.videoFaceCaptureEnc,
@@ -195,7 +201,7 @@ export class ChaoxingStudyRunner {
       if (playingTime >= duration && !passed) break;
     }
     if (!passed) {
-      const verification = await this.client.getTaskCard(auth.cookieJar, course, chapter.chapterId);
+      const verification = await this.client.getChapterTasks(auth.cookieJar, course, chapter);
       auth = await this.authService.persistCookies(auth, verification.cookieJar);
       const verified = verification.card.attachments.find((item) => item.jobid === attachment.jobid)?.isPassed === true;
       if (!verified) throw new ChaoxingProtocolError('video_not_passed', `${chapter.title} 的视频已上报到结尾，学习通仍未标记完成。`);
@@ -207,6 +213,7 @@ export class ChaoxingStudyRunner {
     if (!attachment.jobid || !attachment.jtoken) throw new ChaoxingProtocolError('document_attachment_fields', `${chapter.title} 的文档任务缺少令牌。`);
     const cookies = await this.client.completeDocument(auth.cookieJar, {
       origin: chapter.courseOrigin, course, chapterId: chapter.chapterId, jobId: attachment.jobid, jtoken: attachment.jtoken,
+      refererUrl: attachment.refererUrl,
     });
     return this.authService.persistCookies(auth, cookies);
   }
@@ -215,12 +222,13 @@ export class ChaoxingStudyRunner {
     if (!attachment.jobid || !attachment.jtoken) throw new ChaoxingProtocolError('read_attachment_fields', `${chapter.title} 的阅读任务缺少令牌。`);
     const cookies = await this.client.completeRead(auth.cookieJar, {
       origin: chapter.courseOrigin, course, chapterId: chapter.chapterId, jobId: attachment.jobid, jtoken: attachment.jtoken,
+      refererUrl: attachment.refererUrl,
     });
     return this.authService.persistCookies(auth, cookies);
   }
 
   private async verifyPassed(auth: ChaoxingAuthenticatedSession, course: ChaoxingCourse, chapter: ChaoxingChapter, attachment: ChaoxingTaskAttachment): Promise<ChaoxingAuthenticatedSession> {
-    const result = await this.client.getTaskCard(auth.cookieJar, course, chapter.chapterId);
+    const result = await this.client.getChapterTasks(auth.cookieJar, course, chapter);
     const updated = await this.authService.persistCookies(auth, result.cookieJar);
     const current = result.card.attachments.find((item) => item.jobid === attachment.jobid);
     if (!current?.isPassed) {

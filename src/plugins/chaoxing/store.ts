@@ -301,11 +301,12 @@ export class ChaoxingTaskStore {
   async replaceTaskSnapshot(ownerKey: string, credentialVersion: number, items: ChaoxingDeadlineItem[], sourceHash: (value: string) => string, now: number): Promise<ChaoxingTaskRow[]> {
     const created: ChaoxingTaskRow[] = [];
     for (const item of items) {
+      const recordKey = `${ownerKey}:${credentialVersion}:${item.recordKey}`;
       const sourceJson = JSON.stringify(item.source);
       const hash = sourceHash(sourceJson);
-      const { source: _source, ...persistedItem } = item;
-      const [existing] = await this.database.get<ChaoxingTaskRow>('chaoxing_task_item', { recordKey: item.recordKey });
-      const data = { ...persistedItem, sourceJson, sourceHash: hash, lastSeenAt: now, updatedAt: now };
+      const { source: _source, recordKey: _remoteRecordKey, ...persistedItem } = item;
+      const [existing] = await this.database.get<ChaoxingTaskRow>('chaoxing_task_item', { recordKey });
+      const data = { ...persistedItem, recordKey, sourceJson, sourceHash: hash, lastSeenAt: now, updatedAt: now };
       if (existing) {
         await this.database.set('chaoxing_task_item', { id: existing.id }, data);
       } else {
@@ -322,8 +323,9 @@ export class ChaoxingTaskStore {
     return this.database.get<ChaoxingTaskRow>('chaoxing_task_item', kind ? { ownerKey, kind } : { ownerKey });
   }
 
-  async pruneTasks(ownerKey: string, syncStartedAt: number): Promise<void> {
-    await this.database.remove('chaoxing_task_item', { ownerKey, lastSeenAt: { $lt: syncStartedAt } });
+  async pruneTasks(ownerKey: string, kinds: readonly ChaoxingTaskKind[], syncStartedAt: number): Promise<void> {
+    if (kinds.length === 0) return;
+    await this.database.remove('chaoxing_task_item', { ownerKey, kind: { $in: [...kinds] }, lastSeenAt: { $lt: syncStartedAt } });
   }
 
   async markTaskNotified(id: number, now: number): Promise<void> {

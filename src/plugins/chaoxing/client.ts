@@ -6,6 +6,7 @@ import {
   ChaoxingCaptchaRequiredError,
   ChaoxingProtocolError,
   type ChaoxingActivity,
+  type ChaoxingChapter,
   type ChaoxingCourse,
   type ChaoxingDeadlineItem,
   type ChaoxingProfile,
@@ -15,6 +16,7 @@ import {
 const LOGIN_AES_KEY = Buffer.from('u2oh6Vu^HWe4_AES', 'utf8');
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0 Safari/537.36';
 const PASSPORT_ORIGIN = 'https://passport2.chaoxing.com';
+const MOOC1_ORIGIN = 'https://mooc1.chaoxing.com';
 const COURSE_API_ORIGIN = 'https://mooc1-api.chaoxing.com';
 const MOBILE_LEARN_ORIGIN = 'https://mobilelearn.chaoxing.com';
 
@@ -45,11 +47,15 @@ export interface ChaoxingLoginResult {
 }
 
 export interface ChaoxingCourseContext {
-  origin: string;
   enc: string;
   openc: string;
+  t: string;
+  workEnc: string;
+  examEnc: string;
+  chapterUrl: string | null;
+  workUrl: string | null;
+  examUrl: string | null;
   pageUrl: string;
-  pageHtml: string;
 }
 
 export interface ChaoxingTaskCardDefaults {
@@ -60,6 +66,7 @@ export interface ChaoxingTaskCardDefaults {
   ktoken: string;
   reportUrl: string;
   reportTimeInterval: number;
+  courseEngineInfo: string;
 }
 
 export interface ChaoxingTaskAttachment {
@@ -68,6 +75,9 @@ export interface ChaoxingTaskAttachment {
   jobid: string;
   objectId: string;
   otherInfo: string;
+  startTime: string;
+  endTime: string;
+  refererUrl: string;
   jtoken: string;
   enc: string;
   isPassed: boolean;
@@ -247,27 +257,36 @@ export class ChaoxingClient {
   async getChapters(serialized: SerializedChaoxingCookieJar, course: ChaoxingCourse): Promise<{ chapters: ReturnType<typeof parseChapters>; cookieJar: SerializedChaoxingCookieJar }> {
     const jar = ChaoxingCookieJar.from(serialized);
     const context = await this.enterCourse(jar, course);
-    return { chapters: parseChapters(context.pageHtml, course, context), cookieJar: jar.serialize() };
+    if (!context.chapterUrl) return { chapters: [], cookieJar: jar.serialize() };
+    const url = courseNavigationUrl(context.chapterUrl, course, context, 'chapter');
+    const response = await this.request(url.href, { jar, headers: { referer: context.pageUrl } });
+    assertAuthenticatedPage(response, 'chapters');
+    return { chapters: parseChapters(response.text, course), cookieJar: jar.serialize() };
   }
 
-  async getAssignments(serialized: SerializedChaoxingCookieJar, course: ChaoxingCourse): Promise<{ items: ChaoxingDeadlineItem[]; cookieJar: SerializedChaoxingCookieJar }> {
+  async getAcademicTasks(
+    serialized: SerializedChaoxingCookieJar,
+    course: ChaoxingCourse,
+    kinds: readonly ('work' | 'exam')[],
+  ): Promise<{ items: ChaoxingDeadlineItem[]; cookieJar: SerializedChaoxingCookieJar }> {
     const jar = ChaoxingCookieJar.from(serialized);
     const context = await this.enterCourse(jar, course);
-    const url = new URL('/mooc-ans/work/getAllWork', context.origin);
-    addCoursePageParams(url, course, context, { isdisplaytable: '2', mooc: '1' });
-    const response = await this.request(url.href, { jar, headers: { referer: context.pageUrl } });
-    assertAuthenticatedPage(response, 'assignments');
-    return { items: parseAssignments(response.text, course), cookieJar: jar.serialize() };
-  }
-
-  async getExams(serialized: SerializedChaoxingCookieJar, course: ChaoxingCourse): Promise<{ items: ChaoxingDeadlineItem[]; cookieJar: SerializedChaoxingCookieJar }> {
-    const jar = ChaoxingCookieJar.from(serialized);
-    const context = await this.enterCourse(jar, course);
-    const url = new URL('/exam-ans/exam/test', context.origin);
-    addCoursePageParams(url, course, context);
-    const response = await this.request(url.href, { jar, headers: { referer: context.pageUrl } });
-    assertAuthenticatedPage(response, 'exams');
-    return { items: parseExams(response.text, course), cookieJar: jar.serialize() };
+    const items: ChaoxingDeadlineItem[] = [];
+    if (kinds.includes('work') && context.workUrl) {
+      if (!context.workEnc) throw new ChaoxingProtocolError('course_work_enc_missing', '课程页面缺少作业访问参数。');
+      const url = courseNavigationUrl(context.workUrl, course, context, 'work');
+      const response = await this.request(url.href, { jar, headers: { referer: context.pageUrl } });
+      assertAuthenticatedPage(response, 'assignments');
+      items.push(...parseAssignments(response.text, course));
+    }
+    if (kinds.includes('exam') && context.examUrl) {
+      if (!context.examEnc || !context.openc) throw new ChaoxingProtocolError('course_exam_fields_missing', '课程页面缺少考试访问参数。');
+      const url = courseNavigationUrl(context.examUrl, course, context, 'exam');
+      const response = await this.request(url.href, { jar, headers: { referer: context.pageUrl } });
+      assertAuthenticatedPage(response, 'exams');
+      items.push(...parseExams(response.text, course));
+    }
+    return { items, cookieJar: jar.serialize() };
   }
 
   async getActivities(serialized: SerializedChaoxingCookieJar, course: ChaoxingCourse): Promise<{ activities: ChaoxingActivity[]; cookieJar: SerializedChaoxingCookieJar }> {
@@ -282,32 +301,65 @@ export class ChaoxingClient {
     return { activities: parseActivities(response.text, course), cookieJar: jar.serialize() };
   }
 
-  async getTaskCard(serialized: SerializedChaoxingCookieJar, course: ChaoxingCourse, chapterId: string): Promise<{ card: ChaoxingTaskCard; cookieJar: SerializedChaoxingCookieJar }> {
+  async getChapterTasks(
+    serialized: SerializedChaoxingCookieJar,
+    course: ChaoxingCourse,
+    chapter: Pick<ChaoxingChapter, 'chapterId' | 'enc'>,
+  ): Promise<{ card: ChaoxingTaskCard; cookieJar: SerializedChaoxingCookieJar }> {
     const jar = ChaoxingCookieJar.from(serialized);
-    const context = await this.enterCourse(jar, course);
-    const url = new URL('/mooc-ans/knowledge/cards', context.origin);
-    url.searchParams.set('clazzid', course.classId);
-    url.searchParams.set('courseid', course.courseId);
-    url.searchParams.set('knowledgeid', chapterId);
-    url.searchParams.set('num', '0');
-    url.searchParams.set('ut', 's');
-    url.searchParams.set('cpi', course.cpi);
-    url.searchParams.set('v', '2025-0424-1038-3');
-    url.searchParams.set('mooc2', '1');
-    url.searchParams.set('isMicroCourse', 'false');
-    url.searchParams.set('editorPreview', '0');
-    const response = await this.request(url.href, { jar, headers: { referer: context.pageUrl } });
-    assertAuthenticatedPage(response, 'task_card');
-    if (/请输入(?:图片中的)?验证码/u.test(response.text)) throw new ChaoxingCaptchaRequiredError(undefined, excerpt(response.text));
-    return { card: parseTaskCard(response.text), cookieJar: jar.serialize() };
+    const studyUrl = new URL('/mycourse/studentstudy', MOOC1_ORIGIN);
+    for (const [key, value] of Object.entries({
+      chapterId: chapter.chapterId,
+      courseId: course.courseId,
+      clazzid: course.classId,
+      cpi: course.cpi,
+      enc: chapter.enc,
+      mooc2: '1',
+      hidetype: '0',
+    })) studyUrl.searchParams.set(key, value);
+    const studyPage = await this.request(studyUrl.href, { jar });
+    assertAuthenticatedPage(studyPage, 'chapter_page');
+    if (/章节未开放/u.test(studyPage.text)) {
+      return { card: { defaults: emptyTaskDefaults(), attachments: [], notOpen: true, faceRequired: false }, cookieJar: jar.serialize() };
+    }
+    const cardCount = parseTaskCardCount(studyPage.text);
+    if (cardCount === 0) {
+      return { card: { defaults: emptyTaskDefaults(), attachments: [], notOpen: false, faceRequired: false }, cookieJar: jar.serialize() };
+    }
+    const cards: ChaoxingTaskCard[] = [];
+    for (let cardIndex = 0; cardIndex < cardCount; cardIndex += 1) {
+      const url = new URL('/mooc-ans/knowledge/cards', MOOC1_ORIGIN);
+      url.searchParams.set('clazzid', course.classId);
+      url.searchParams.set('courseid', course.courseId);
+      url.searchParams.set('knowledgeid', chapter.chapterId);
+      url.searchParams.set('num', String(cardIndex));
+      url.searchParams.set('ut', 's');
+      url.searchParams.set('cpi', course.cpi);
+      url.searchParams.set('v', '2025-0424-1038-3');
+      url.searchParams.set('mooc2', '1');
+      url.searchParams.set('isMicroCourse', 'false');
+      url.searchParams.set('editorPreview', '0');
+      const response = await this.request(url.href, { jar, headers: { referer: studyPage.url } });
+      assertAuthenticatedPage(response, 'task_card');
+      if (/请输入(?:图片中的)?验证码/u.test(response.text)) throw new ChaoxingCaptchaRequiredError(undefined, excerpt(response.text));
+      cards.push(parseTaskCard(response.text, response.url));
+    }
+    return { card: mergeTaskCards(cards), cookieJar: jar.serialize() };
   }
 
-  async getVideoStatus(serialized: SerializedChaoxingCookieJar, objectId: string, fid: string): Promise<{ status: ChaoxingVideoStatus; cookieJar: SerializedChaoxingCookieJar }> {
+  async getVideoStatus(
+    serialized: SerializedChaoxingCookieJar,
+    args: { objectId: string; fid: string; refererUrl: string },
+  ): Promise<{ status: ChaoxingVideoStatus; cookieJar: SerializedChaoxingCookieJar }> {
     const jar = ChaoxingCookieJar.from(serialized);
-    const url = new URL(`/ananas/status/${encodeURIComponent(objectId)}`, COURSE_API_ORIGIN);
-    url.searchParams.set('k', fid);
+    const url = new URL(`/ananas/status/${encodeURIComponent(args.objectId)}`, COURSE_API_ORIGIN);
+    url.searchParams.set('k', args.fid);
     url.searchParams.set('flag', 'normal');
-    const response = await this.request(url.href, { jar });
+    url.searchParams.set('_dc', String(Date.now()));
+    const response = await this.request(url.href, {
+      jar,
+      headers: { referer: args.refererUrl, 'x-requested-with': 'XMLHttpRequest' },
+    });
     assertOk(response, 'video_status');
     const payload = parseJsonObject(response.text, 'video_status_json');
     const duration = numberValue(payload.duration);
@@ -317,46 +369,56 @@ export class ChaoxingClient {
   }
 
   async reportVideoProgress(serialized: SerializedChaoxingCookieJar, args: {
-    reportUrl: string; cpi: string; dtoken: string; classId: string; courseId: string; userId: string;
+    reportUrl: string; dtoken: string; classId: string; userId: string;
     jobId: string; objectId: string; otherInfo: string; playingTime: number; duration: number; rt: number;
+    startTime: string; endTime: string; refererUrl: string;
+    courseEngineInfo: string;
     attDuration?: number; attDurationEnc?: string; videoFaceCaptureEnc?: string;
   }): Promise<{ passed: boolean; cookieJar: SerializedChaoxingCookieJar; response: Record<string, unknown> }> {
     const jar = ChaoxingCookieJar.from(serialized);
     const url = new URL(`${args.reportUrl.replace(/\/$/u, '')}/${encodeURIComponent(args.dtoken)}`);
     const playingTime = Math.min(Math.floor(args.playingTime), Math.floor(args.duration));
     const duration = Math.floor(args.duration);
-    const clipTime = `0_${duration}`;
-    const enc = videoProgressEnc(args.classId, args.userId, args.jobId, args.objectId, playingTime, duration);
+    const clipTime = `${args.startTime || '0'}_${args.endTime || duration}`;
+    const enc = videoProgressEnc(args.classId, args.userId, args.jobId, args.objectId, playingTime, duration, clipTime);
+    const [otherInfo, ...otherInfoFields] = args.otherInfo.split('&');
     const params: Record<string, string> = {
       clazzId: args.classId, playingTime: String(playingTime), duration: String(duration), clipTime, objectId: args.objectId,
-      otherInfo: args.otherInfo.split('&')[0] ?? args.otherInfo, courseId: args.courseId, jobid: args.jobId,
-      userid: args.userId, isdrag: '3', view: 'pc', enc, dtype: 'Video', rt: String(args.rt), _t: String(Date.now()),
+      otherInfo: otherInfo ?? '', jobid: args.jobId, userid: args.userId,
+      isdrag: playingTime >= duration ? '4' : '0', view: 'pc', enc, rt: String(args.rt),
+      videoFaceCaptureEnc: args.videoFaceCaptureEnc ?? '', dtype: 'Video', _t: String(Date.now()),
+      attDuration: String(args.attDuration ?? 0), attDurationEnc: args.attDurationEnc ?? '', courseEngineInfo: args.courseEngineInfo,
     };
-    if (args.attDuration) params.attDuration = String(args.attDuration);
-    if (args.attDurationEnc) params.attDurationEnc = args.attDurationEnc;
-    if (args.videoFaceCaptureEnc) params.videoFaceCaptureEnc = args.videoFaceCaptureEnc;
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-    const response = await this.request(url.href, { jar, headers: { referer: `${url.origin}/` } });
+    for (const field of otherInfoFields) {
+      const separator = field.indexOf('=');
+      if (separator <= 0) throw new ChaoxingProtocolError('video_other_info', '视频任务的 otherInfo 参数格式无效。');
+      url.searchParams.set(field.slice(0, separator), field.slice(separator + 1));
+    }
+    const response = await this.request(url.href, {
+      jar,
+      headers: { 'content-type': 'application/json', referer: args.refererUrl, 'x-requested-with': 'XMLHttpRequest' },
+    });
     assertOk(response, 'video_progress');
     if (/请输入(?:图片中的)?验证码/u.test(response.text)) throw new ChaoxingCaptchaRequiredError(undefined, excerpt(response.text));
     const payload = parseJsonObject(response.text, 'video_progress_json');
     return { passed: payload.isPassed === true, cookieJar: jar.serialize(), response: payload };
   }
 
-  async completeDocument(serialized: SerializedChaoxingCookieJar, args: { origin: string; course: ChaoxingCourse; chapterId: string; jobId: string; jtoken: string }): Promise<SerializedChaoxingCookieJar> {
+  async completeDocument(serialized: SerializedChaoxingCookieJar, args: { origin: string; course: ChaoxingCourse; chapterId: string; jobId: string; jtoken: string; refererUrl: string }): Promise<SerializedChaoxingCookieJar> {
     const jar = ChaoxingCookieJar.from(serialized);
     const url = new URL('/ananas/job/document', args.origin);
     setJobParams(url, args);
-    const response = await this.request(url.href, { jar });
+    const response = await this.request(url.href, { jar, headers: { referer: args.refererUrl } });
     assertOk(response, 'document_job');
     return jar.serialize();
   }
 
-  async completeRead(serialized: SerializedChaoxingCookieJar, args: { origin: string; course: ChaoxingCourse; chapterId: string; jobId: string; jtoken: string }): Promise<SerializedChaoxingCookieJar> {
+  async completeRead(serialized: SerializedChaoxingCookieJar, args: { origin: string; course: ChaoxingCourse; chapterId: string; jobId: string; jtoken: string; refererUrl: string }): Promise<SerializedChaoxingCookieJar> {
     const jar = ChaoxingCookieJar.from(serialized);
     const url = new URL('/ananas/job/readv2', args.origin);
     setJobParams(url, args);
-    const response = await this.request(url.href, { jar });
+    const response = await this.request(url.href, { jar, headers: { referer: args.refererUrl } });
     assertOk(response, 'read_job');
     const payload = parseJsonObject(response.text, 'read_job_json');
     if (payload.status !== true && numberValue(payload.status) !== 1) {
@@ -476,7 +538,7 @@ export class ChaoxingClient {
   }
 
   private async enterCourse(jar: ChaoxingCookieJar, course: Pick<ChaoxingCourse, 'courseId' | 'classId' | 'cpi'>): Promise<ChaoxingCourseContext> {
-    const url = new URL('/visit/stucoursemiddle', 'https://mooc1.chaoxing.com');
+    const url = new URL('/visit/stucoursemiddle', MOOC1_ORIGIN);
     url.searchParams.set('courseid', course.courseId);
     url.searchParams.set('clazzid', course.classId);
     url.searchParams.set('cpi', course.cpi);
@@ -485,10 +547,28 @@ export class ChaoxingClient {
     const response = await this.request(url.href, { jar });
     assertAuthenticatedPage(response, 'course_entry');
     const finalUrl = new URL(response.url);
-    const enc = finalUrl.searchParams.get('enc') || extractQueryValue(response.text, 'enc');
-    const openc = extractQueryValue(response.text, 'openc');
+    const $ = load(response.text);
+    const field = (selector: string): string => String($(selector).first().attr('value') ?? '').trim();
+    const route = (module: string): string | null => {
+      const anchor = $(`li[dataname="${module}"] a[data-url]`).first();
+      const value = String(anchor.attr('data-url') ?? '').trim();
+      return value ? new URL(value, response.url).href : null;
+    };
+    const enc = finalUrl.searchParams.get('enc') || field('#enc');
+    const t = finalUrl.searchParams.get('t') || field('#t');
     if (!enc) throw new ChaoxingProtocolError('course_enc_missing', '课程页面缺少 enc 参数。', excerpt(response.text));
-    return { origin: finalUrl.origin, enc, openc, pageUrl: response.url, pageHtml: response.text };
+    if (!t) throw new ChaoxingProtocolError('course_t_missing', '课程页面缺少 t 参数。', excerpt(response.text));
+    return {
+      enc,
+      openc: field('#openc'),
+      t,
+      workEnc: field('#workEnc'),
+      examEnc: field('#examEnc'),
+      chapterUrl: route('zj'),
+      workUrl: route('zy'),
+      examUrl: route('ks'),
+      pageUrl: response.url,
+    };
   }
 
   private async performSignAnalysis(jar: ChaoxingCookieJar, activityId: string): Promise<void> {
@@ -576,21 +656,27 @@ export function parseCourseList(payload: Record<string, unknown>): ChaoxingCours
   return courses;
 }
 
-export function parseChapters(html: string, course: Pick<ChaoxingCourse, 'courseId' | 'classId'>, context: Pick<ChaoxingCourseContext, 'origin' | 'enc'>) {
+export function parseChapters(html: string, course: Pick<ChaoxingCourse, 'courseId' | 'classId'>) {
   const $ = load(html);
+  const chapterEnc = html.match(/\bvar\s+enc\s*=\s*["']([^"']+)["']/u)?.[1] ?? '';
   const chapters: Array<{ chapterId: string; courseId: string; classId: string; title: string; position: number; enc: string; courseOrigin: string }> = [];
-  $('a[href*="studentstudy"][href*="chapterId="]').each((position, element) => {
-    const href = $(element).attr('href');
-    if (!href) return;
-    const url = new URL(href, context.origin);
-    const chapterId = url.searchParams.get('chapterId');
-    const title = normalizeSpace($(element).text());
-    if (!chapterId || !title) return;
-    chapters.push({ chapterId, courseId: course.courseId, classId: course.classId, title, position, enc: url.searchParams.get('enc') || context.enc, courseOrigin: context.origin });
+  $('.chapter_item[onclick*="toOld"]').each((position, element) => {
+    const root = $(element);
+    const onclick = String(root.attr('onclick') ?? '');
+    const args = onclick.match(/toOld\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']/u);
+    if (!args) throw new ChaoxingProtocolError('chapter_route_fields', `第 ${position + 1} 个章节缺少导航参数。`);
+    const [, routeCourseId, chapterId, routeClassId] = args;
+    if (routeCourseId !== course.courseId || routeClassId !== course.classId) {
+      throw new ChaoxingProtocolError('chapter_route_mismatch', `章节 ${chapterId} 的课程标识不一致。`);
+    }
+    const title = normalizeSpace(root.attr('title') || root.find('.clicktitle').first().text());
+    if (!chapterId || !title) throw new ChaoxingProtocolError('chapter_fields_missing', `第 ${position + 1} 个章节缺少 ID 或标题。`);
+    chapters.push({ chapterId, courseId: course.courseId, classId: course.classId, title, position, enc: chapterEnc, courseOrigin: MOOC1_ORIGIN });
   });
   if (chapters.length === 0 && !/暂无章节|还没有章节/u.test($.root().text())) {
     throw new ChaoxingProtocolError('chapter_dom_changed', '课程页面没有识别到章节目录。', excerpt(html));
   }
+  if (chapters.length > 0 && !chapterEnc) throw new ChaoxingProtocolError('chapter_enc_missing', '章节目录缺少访问参数。', excerpt(html));
   return uniqueBy(chapters, (chapter) => chapter.chapterId);
 }
 
@@ -618,7 +704,7 @@ export function parseActivities(text: string, course: Pick<ChaoxingCourse, 'cour
   }).filter((activity) => activity.activityId && (activity.activityType === 2 || activity.activityType === 74));
 }
 
-export function parseTaskCard(html: string): ChaoxingTaskCard {
+export function parseTaskCard(html: string, refererUrl = ''): ChaoxingTaskCard {
   if (/章节未开放/u.test(html)) return { defaults: emptyTaskDefaults(), attachments: [], notOpen: true, faceRequired: false };
   const faceRequired = /人脸识别/u.test(html) && /title\s*:\s*["']人脸识别/u.test(html);
   const source = extractAssignedJson(html, 'mArg');
@@ -629,16 +715,20 @@ export function parseTaskCard(html: string): ChaoxingTaskCard {
     fid: idValue(rawDefaults.fid || rawDefaults.cFid), userid: idValue(rawDefaults.userid), cpi: idValue(rawDefaults.cpi),
     knowledgeid: idValue(rawDefaults.knowledgeid), ktoken: stringValue(rawDefaults.ktoken), reportUrl: stringValue(rawDefaults.reportUrl),
     reportTimeInterval: Math.max(1, numberValue(rawDefaults.reportTimeInterval) || 60),
+    courseEngineInfo: stringValue(rawDefaults.courseEngineInfo) || 'false',
   };
   if (!defaults.fid || !defaults.userid || !defaults.cpi || !defaults.knowledgeid) {
     throw new ChaoxingProtocolError('task_defaults_missing', '章节任务卡缺少默认参数。', excerpt(html));
   }
   const attachments = rawAttachments.map((raw) => {
     const attachment = objectValue(raw);
+    const type = stringValue(attachment.type).toLowerCase();
     return {
-      type: stringValue(attachment.type).toLowerCase(), job: attachment.job === true, jobid: idValue(attachment.jobid),
+      type, job: attachment.job === true, jobid: idValue(attachment.jobid),
       objectId: idValue(attachment.objectId || objectValue(attachment.property).objectid),
-      otherInfo: stringValue(attachment.otherInfo).split('&')[0] || '', jtoken: stringValue(attachment.jtoken), enc: stringValue(attachment.enc),
+      otherInfo: stringValue(attachment.otherInfo), startTime: stringValue(attachment.startTime), endTime: stringValue(attachment.endTime),
+      refererUrl: type === 'video' && refererUrl ? new URL('/ananas/modules/video/index.html', refererUrl).href : refererUrl,
+      jtoken: stringValue(attachment.jtoken), enc: stringValue(attachment.enc),
       isPassed: attachment.isPassed === true, playTime: Math.floor(numberValue(attachment.playTime) / 1000), attDuration: numberValue(attachment.attDuration),
       attDurationEnc: stringValue(attachment.attDurationEnc), videoFaceCaptureEnc: stringValue(attachment.videoFaceCaptureEnc),
       property: objectValue(attachment.property),
@@ -647,13 +737,44 @@ export function parseTaskCard(html: string): ChaoxingTaskCard {
   return { defaults, attachments, notOpen: false, faceRequired };
 }
 
-export function videoProgressEnc(classId: string, userId: string, jobId: string, objectId: string, playingTime: number, duration: number): string {
-  return createHash('md5').update(`[${classId}][${userId}][${jobId}][${objectId}][${playingTime * 1000}][d_yHJ!$pdA~5][${duration * 1000}][0_${duration}]`).digest('hex');
+export function parseTaskCardCount(html: string): number {
+  const $ = load(html);
+  const raw = String($('#cardcount').first().attr('value') ?? '').trim()
+    || html.match(/\bcardcount\s*=\s*["']?(\d+)/u)?.[1]
+    || '';
+  const count = Number(raw);
+  if (!Number.isInteger(count) || count < 0 || count > 200) {
+    throw new ChaoxingProtocolError('task_card_count_missing', '章节页面缺少有效的任务卡数量。', excerpt(html));
+  }
+  return count;
+}
+
+function mergeTaskCards(cards: ChaoxingTaskCard[]): ChaoxingTaskCard {
+  const first = cards[0];
+  if (!first) throw new ChaoxingProtocolError('task_cards_empty', '章节任务卡列表为空。');
+  for (const [index, card] of cards.entries()) {
+    if (card.defaults.fid !== first.defaults.fid
+      || card.defaults.userid !== first.defaults.userid
+      || card.defaults.cpi !== first.defaults.cpi
+      || card.defaults.knowledgeid !== first.defaults.knowledgeid) {
+      throw new ChaoxingProtocolError('task_card_defaults_mismatch', `第 ${index + 1} 张任务卡的身份参数不一致。`);
+    }
+  }
+  return {
+    defaults: first.defaults,
+    attachments: cards.flatMap((card) => card.attachments),
+    notOpen: cards.some((card) => card.notOpen),
+    faceRequired: cards.some((card) => card.faceRequired),
+  };
+}
+
+export function videoProgressEnc(classId: string, userId: string, jobId: string, objectId: string, playingTime: number, duration: number, clipTime = `0_${duration}`): string {
+  return createHash('md5').update(`[${classId}][${userId}][${jobId}][${objectId}][${playingTime * 1000}][d_yHJ!$pdA~5][${duration * 1000}][${clipTime}]`).digest('hex');
 }
 
 function parseCourseListPage(html: string, course: Pick<ChaoxingCourse, 'courseId' | 'classId' | 'name'>, kind: 'work' | 'exam'): ChaoxingDeadlineItem[] {
   const $ = load(html);
-  const blocks = $('.ulDiv li');
+  const blocks = $('.task-list li');
   const bodyText = normalizeSpace($.root().text());
   if (blocks.length === 0) {
     const emptyPattern = kind === 'work' ? /暂无(?:作业|数据)|还没有作业/u : /暂无考试|还没有考试/u;
@@ -664,10 +785,10 @@ function parseCourseListPage(html: string, course: Pick<ChaoxingCourse, 'courseI
   blocks.each((index, element) => {
     const block = $(element);
     const text = normalizeLines(block.text());
-    const title = normalizeSpace(block.find('.tit, .title, .workName, h3, h4, a').first().text()) || text.split('\n')[0] || '';
+    const title = normalizeSpace(block.find('.overHidden2, .tit, .title, .workName, h3, h4, a').first().text()) || text.split('\n')[0] || '';
     if (!title || /^(全部|已完成|未完成|筛选)$/u.test(title)) return;
-    const href = block.find('a[href]').first().attr('href') || '';
-    const remoteId = extractRemoteId(href, kind) || `${kind}-${shortHash(`${course.courseId}:${course.classId}:${title}`)}`;
+    const route = String(block.attr('data') || block.find('[data]').first().attr('data') || block.attr('onclick') || block.find('[onclick]').first().attr('onclick') || '');
+    const remoteId = extractRemoteId(route, kind) || `${kind}-${shortHash(`${course.courseId}:${course.classId}:${title}`)}`;
     const dates = [...text.matchAll(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:\s+\d{1,2}:\d{2})?/gu)].map((match) => parseDate(match[0]));
     const statusPattern = kind === 'work' ? /(未交|待批阅|已完成|已批阅|已交)/u : /(未开始|进行中|已结束|已完成|未交|待批阅)/u;
     const status = text.match(statusPattern)?.[1] || '';
@@ -675,7 +796,7 @@ function parseCourseListPage(html: string, course: Pick<ChaoxingCourse, 'courseI
     items.push({
       recordKey: `${kind}:${course.courseId}:${course.classId}:${remoteId}`, kind, courseId: course.courseId, classId: course.classId,
       remoteId, courseName: course.name, title, status, startAt: kind === 'exam' ? dates[0] ?? null : null,
-      endAt: dates.at(-1) ?? null, score, source: { index, text, href },
+      endAt: dates.at(-1) ?? null, score, source: { index, text, route },
     });
   });
   return items;
@@ -684,6 +805,10 @@ function parseCourseListPage(html: string, course: Pick<ChaoxingCourse, 'courseI
 function extractRemoteId(href: string, kind: 'work' | 'exam'): string {
   if (!href) return '';
   const decoded = href.replaceAll('&amp;', '&');
+  if (kind === 'exam') {
+    const examId = decoded.match(/viewExamAnswer\(\s*["']([^"']+)["']/u)?.[1];
+    if (examId) return examId;
+  }
   try {
     const url = new URL(decoded, 'https://mooc1.chaoxing.com');
     const keys = kind === 'work' ? ['workId', 'workid', 'workAnswerId', 'id'] : ['examId', 'testId', 'id'];
@@ -697,10 +822,30 @@ function extractRemoteId(href: string, kind: 'work' | 'exam'): string {
   return '';
 }
 
-function addCoursePageParams(url: URL, course: Pick<ChaoxingCourse, 'courseId' | 'classId' | 'cpi'>, context: Pick<ChaoxingCourseContext, 'enc' | 'openc'>, extra: Record<string, string> = {}): void {
-  for (const [key, value] of Object.entries({ classId: course.classId, courseId: course.courseId, ut: 's', enc: context.enc, cpi: course.cpi, ...(context.openc ? { openc: context.openc } : {}), ...extra })) {
-    url.searchParams.set(key, value);
+function courseNavigationUrl(
+  route: string,
+  course: Pick<ChaoxingCourse, 'courseId' | 'classId' | 'cpi'>,
+  context: Pick<ChaoxingCourseContext, 'enc' | 'openc' | 't' | 'workEnc' | 'examEnc'>,
+  module: 'chapter' | 'work' | 'exam',
+): URL {
+  const url = new URL(route);
+  if (module === 'work') {
+    url.searchParams.set('courseId', course.courseId);
+    url.searchParams.set('classId', course.classId);
+  } else {
+    url.searchParams.set('courseid', course.courseId);
+    url.searchParams.set('clazzid', course.classId);
   }
+  url.searchParams.set('cpi', course.cpi);
+  url.searchParams.set('ut', 's');
+  url.searchParams.set('t', context.t);
+  url.searchParams.set('stuenc', context.enc);
+  if (module === 'work') url.searchParams.set('enc', context.workEnc);
+  if (module === 'exam') {
+    url.searchParams.set('enc', context.examEnc);
+    url.searchParams.set('openc', context.openc);
+  }
+  return url;
 }
 
 function setJobParams(url: URL, args: { course: ChaoxingCourse; chapterId: string; jobId: string; jtoken: string }): void {
@@ -757,11 +902,6 @@ function extractAssignedJson(html: string, variableName: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-}
-
-function extractQueryValue(html: string, key: string): string {
-  const match = html.match(new RegExp(`[?&]${key}=([^&"']+)`, 'u'));
-  return match?.[1] ? decodeURIComponent(match[1].replaceAll('&amp;', '&')) : '';
 }
 
 function parseJsonObject(text: string, code: string): Record<string, unknown> {
@@ -834,7 +974,7 @@ function uniqueBy<T>(values: T[], key: (value: T) => string): T[] {
 }
 
 function emptyTaskDefaults(): ChaoxingTaskCardDefaults {
-  return { fid: '', userid: '', cpi: '', knowledgeid: '', ktoken: '', reportUrl: '', reportTimeInterval: 60 };
+  return { fid: '', userid: '', cpi: '', knowledgeid: '', ktoken: '', reportUrl: '', reportTimeInterval: 60, courseEngineInfo: 'false' };
 }
 
 function excerpt(value: string, maxLength = 600): string {

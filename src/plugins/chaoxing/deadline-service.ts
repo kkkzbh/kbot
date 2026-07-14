@@ -14,6 +14,8 @@ export interface ChaoxingDeadlineRuntimeConfig {
   reminderLeadMs: number;
 }
 
+const ALL_TASK_KINDS: readonly ChaoxingTaskKind[] = ['work', 'exam', 'sign'];
+
 export class ChaoxingDeadlineService {
   constructor(
     private readonly authService: ChaoxingAuthService,
@@ -25,39 +27,42 @@ export class ChaoxingDeadlineService {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
-  async syncIdentity(identity: OwnerIdentity, notify = true): Promise<ChaoxingTaskRow[]> {
+  async syncIdentity(identity: OwnerIdentity, notify = true, kinds: readonly ChaoxingTaskKind[] = ALL_TASK_KINDS): Promise<ChaoxingTaskRow[]> {
     const syncStartedAt = this.now();
-    const previous = await this.store.listTasks(identity.ownerKey);
+    const previous = (await Promise.all(kinds.map((kind) => this.store.listTasks(identity.ownerKey, kind)))).flat();
     const courses = (await this.catalogService.listCourses(identity)).filter((course) => course.isRetired === 0);
     let auth = await this.authService.getAuthenticatedSession(identity);
     const items: ChaoxingDeadlineItem[] = [];
+    const academicKinds = kinds.filter((kind): kind is 'work' | 'exam' => kind === 'work' || kind === 'exam');
     for (const course of courses) {
-      const assignments = await this.client.getAssignments(auth.cookieJar, course);
-      auth = await this.authService.persistCookies(auth, assignments.cookieJar);
-      await delay(this.config.requestIntervalMs);
-      const exams = await this.client.getExams(auth.cookieJar, course);
-      auth = await this.authService.persistCookies(auth, exams.cookieJar);
-      await delay(this.config.requestIntervalMs);
-      const activities = await this.client.getActivities(auth.cookieJar, course);
-      auth = await this.authService.persistCookies(auth, activities.cookieJar);
-      items.push(...assignments.items, ...exams.items, ...activities.activities.map((activity) => activityDeadline(course, activity)));
-      await delay(this.config.requestIntervalMs);
+      if (academicKinds.length > 0) {
+        const academic = await this.client.getAcademicTasks(auth.cookieJar, course, academicKinds);
+        auth = await this.authService.persistCookies(auth, academic.cookieJar);
+        items.push(...academic.items);
+        await delay(this.config.requestIntervalMs);
+      }
+      if (kinds.includes('sign')) {
+        const activities = await this.client.getActivities(auth.cookieJar, course);
+        auth = await this.authService.persistCookies(auth, activities.cookieJar);
+        items.push(...activities.activities.map((activity) => activityDeadline(course, activity)));
+        await delay(this.config.requestIntervalMs);
+      }
     }
     const created = await this.store.replaceTaskSnapshot(identity.ownerKey, auth.credentialVersion, items, sha256, syncStartedAt);
-    await this.store.pruneTasks(identity.ownerKey, syncStartedAt);
+    await this.store.pruneTasks(identity.ownerKey, kinds, syncStartedAt);
     if (notify && previous.length > 0 && created.length > 0) {
       const message = `学习通发现 ${created.length} 个新任务：\n${created.slice(0, 8).map(formatTaskLine).join('\n')}`;
       await this.notifier.send(identity, message);
       for (const row of created) await this.store.markTaskNotified(row.id, this.now());
     }
     await this.sendDueReminders(identity);
-    return this.store.listTasks(identity.ownerKey);
+    return (await Promise.all(kinds.map((kind) => this.store.listTasks(identity.ownerKey, kind)))).flat();
   }
 
   async query(identity: OwnerIdentity, kind?: ChaoxingTaskKind): Promise<ChaoxingTaskRow[]> {
     const existing = await this.store.listTasks(identity.ownerKey, kind);
     if (existing.length > 0) return pendingTasks(existing);
-    const synced = await this.syncIdentity(identity, false);
+    const synced = await this.syncIdentity(identity, false, kind ? [kind] : ALL_TASK_KINDS);
     return pendingTasks(kind ? synced.filter((item) => item.kind === kind) : synced);
   }
 
