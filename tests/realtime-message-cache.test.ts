@@ -42,6 +42,7 @@ import {
   parseFlexibleTimestamp,
   queryRealtimeMessageEntries,
   realtimeMessageCache,
+  discardRealtimeMessageForSession,
   selectRealtimeMessageWindow,
 } from '../src/plugins/realtime-message/cache.js';
 import {
@@ -138,6 +139,21 @@ describe('realtime message cache helpers', () => {
         bot: { selfId: 'bot-1' },
       }, 2).map((entry) => entry.messageId),
     ).toEqual(['msg-2', 'msg-3']);
+  });
+
+  it('discards a feature command after another history owner commits it', () => {
+    const entry = createEntry({ messageId: 'feature-msg', text: '教务' });
+    realtimeMessageCache.append(entry.groupScopeKey, entry);
+    const session = {
+      ...entry.sessionSnapshot,
+      messageId: 'feature-msg',
+      content: '教务',
+      stripped: { content: '教务' },
+    };
+
+    expect(discardRealtimeMessageForSession(session)).toBe(true);
+    expect(realtimeMessageCache.get(entry.groupScopeKey)).toEqual([]);
+    expect(discardRealtimeMessageForSession(session)).toBe(false);
   });
 
   it('requires complete group session identity for cache scope keys', () => {

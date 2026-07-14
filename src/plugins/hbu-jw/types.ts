@@ -70,6 +70,7 @@ export type HbuJwAcademicDataKind =
   | 'passing_score'
   | 'term_score'
   | 'subitem_detail'
+  | 'course_selection_result'
   | 'schedule_header'
   | 'schedule_course'
   | 'exam_event';
@@ -234,6 +235,35 @@ export interface HbuJwThisSemesterSchedule {
   programPlanName: string;
   totalUnits: number;
   courses: HbuJwScheduleCourse[];
+}
+
+export interface HbuJwCourseSelectionCourse {
+  courseNumber: string;
+  sequenceNumber: string;
+  executiveEducationPlanNumber: string;
+  courseName: string;
+  unit: number;
+  coursePropertiesName: string;
+  courseCategoryName: string;
+  examTypeName: string;
+  teacherName: string;
+  studyModeName: string;
+  selectCourseStatusName: string;
+  restrictedCondition: string;
+  courseSelectionTime: string;
+  timeAndPlaceList: HbuJwScheduleTimeAndPlace[];
+}
+
+export interface HbuJwCourseSelectionGroup {
+  programPlanCode: string;
+  programPlanName: string;
+  totalUnits: number;
+  courses: HbuJwCourseSelectionCourse[];
+}
+
+export interface HbuJwCourseSelectionResult {
+  totalUnits: number;
+  groups: HbuJwCourseSelectionGroup[];
 }
 
 export interface HbuJwCredentialPayload {

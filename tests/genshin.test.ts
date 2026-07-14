@@ -59,7 +59,10 @@ vi.mock('koishi', () => {
   };
 });
 
-import { apply } from '../src/plugins/genshin/index.js';
+import {
+  apply as applyGenshinPlugin,
+  buildGenshinCapabilityReference,
+} from '../src/plugins/genshin/index.js';
 import {
   buildGachaRecordsView,
   GenshinGachaService,
@@ -87,6 +90,17 @@ import type {
 import { renderGenshinBindPage } from '../src/plugins/genshin/web/bind-page.js';
 
 const tempDirs: string[] = [];
+
+function apply(ctx: Record<string, any>, config: Parameters<typeof applyGenshinPlugin>[1]): void {
+  ctx.nativeFeatureChat ??= {
+    registerCapability: vi.fn(() => () => undefined),
+    sendReply: vi.fn(async (session, input) => {
+      await session.send(input.reply);
+      return null;
+    }),
+  };
+  applyGenshinPlugin(ctx as never, config);
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -663,6 +677,24 @@ describe('genshin gacha records service', () => {
 });
 
 describe('genshin menu module', () => {
+  it('describes the exact keyword contract for Agent corrections', () => {
+    const reference = buildGenshinCapabilityReference({
+      isDirect: true,
+      channelId: 'private:10001',
+    } as never, {
+      allowedGroups: new Set<string>(),
+      naturalTriggerEnabled: false,
+      naturalTriggerGroups: new Set<string>(),
+    } as never);
+
+    expect(reference).toContain('总入口：“原神”');
+    expect(reference).toContain('原神确认 <6位数字确认码>');
+    expect(reference).toContain('原神兑换 <兑换码>');
+    expect(reference).toContain('6 至 32 位字母或数字');
+    expect(reference).toContain('“抽卡记录”或“原神抽卡记录”');
+    expect(reference).toContain('米游社国服原神 UID');
+  });
+
   it('builds the genshin menu with currently exposed keywords', () => {
     const view = buildGenshinMenuView();
 

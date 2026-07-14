@@ -1,6 +1,8 @@
 import { parseExpression } from 'cron-parser';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import QRCode from 'qrcode';
+import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
+import '../../types/native-feature-chat.js';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { GenshinGachaService, renderGenshinGachaRecordsImage } from './gacha-records.js';
@@ -13,7 +15,7 @@ import { GenshinUserError, type DatabaseLike, type GenshinGameRole, type OwnerId
 import { renderGenshinBindPage, renderGenshinBindSuccessFragment } from './web/bind-page.js';
 
 export const name = 'genshin';
-export const inject = ['server', 'database', 'puppeteer'] as const;
+export const inject = ['server', 'database', 'puppeteer', 'nativeFeatureChat'] as const;
 
 const logger = new Logger(name);
 const DEFAULT_BIND_PAGE_PATH = '/genshin/bind';
@@ -70,6 +72,7 @@ export const Config: Schema<Config> = Schema.object({
 
 interface GenshinServicesLike {
   database: DatabaseLike;
+  nativeFeatureChat: NativeFeatureChatServiceLike;
   puppeteer: GenshinMenuPuppeteerLike;
   server: {
     get(path: string, handler: (koaCtx: any) => unknown): void;
@@ -127,9 +130,23 @@ export function apply(ctx: Context, config: Config): void {
     iconResolver,
   });
 
+  const unregisterCapability = genshinCtx.nativeFeatureChat.registerCapability({
+    id: 'genshin',
+    buildReference: (session) => buildGenshinCapabilityReference(session, runtime),
+  });
+  ctx.on?.('dispose', unregisterCapability);
+
   registerHostGuard(genshinCtx, runtime);
   registerWebRoutes(genshinCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, menuService, gachaService, genshinCtx.puppeteer, runtime);
+  registerKeywordMiddleware(
+    ctx,
+    service,
+    menuService,
+    gachaService,
+    genshinCtx.puppeteer,
+    genshinCtx.nativeFeatureChat,
+    runtime,
+  );
   registerAutoSign(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -290,6 +307,7 @@ function registerKeywordMiddleware(
   menuService: GenshinMenuService,
   gachaService: GenshinGachaService,
   puppeteer: GenshinMenuPuppeteerLike,
+  nativeFeatureChat: NativeFeatureChatServiceLike,
   runtime: RuntimeConfig,
 ): void {
   ctx.middleware(async (session, next) => {
@@ -302,16 +320,21 @@ function registerKeywordMiddleware(
     }
 
     if (!canUseGenshinInSession(session, runtime.allowedGroups)) {
-      await session.send('当前群未开启原神功能。');
+      await sendGenshinReply(nativeFeatureChat, session, command, text, '当前群未开启原神功能。', {
+        summary: '机器人说明当前群未开启原神功能。',
+        success: false,
+      });
       return;
     }
 
     if (command.kind === 'menu') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await menuService.queryMenu(identity.qqUserId));
+        await sendGenshinReply(nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), {
+          summary: '机器人返回了原神功能菜单图片。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -320,15 +343,20 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         const result = await service.startBinding(identity);
-        await session.send(createMentionedReply(identity.qqUserId, `请打开链接完成原神 UID 绑定：\n${result.link}\n链接 10 分钟内有效。\n\n页面验证通过后会显示 6 位确认码。请回到这里发送：\n原神确认 <确认码>\n完成绑定。`));
+        await sendGenshinReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, `请打开链接完成原神 UID 绑定：\n${result.link}\n链接 10 分钟内有效。\n\n页面验证通过后会显示 6 位确认码。请回到这里发送：\n原神确认 <确认码>\n完成绑定。`), {
+          summary: '机器人提供了原神绑定流程；一次性绑定链接未写入历史。',
+          includeReplyPayload: false,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
 
     if (command.kind === 'confirm_help') {
-      await session.send('请发送完整确认命令：原神确认 <6位确认码>。确认码会在绑定页验证通过后显示。');
+      await sendGenshinReply(nativeFeatureChat, session, command, text, '请发送完整确认命令：原神确认 <6位确认码>。确认码会在绑定页验证通过后显示。', {
+        summary: '机器人说明原神确认码必须是 6 位数字。',
+      });
       return;
     }
 
@@ -336,9 +364,11 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         const role = await service.confirmBinding(identity, command.confirmCode);
-        await session.send(createMentionedReply(identity.qqUserId, `原神绑定完成：UID ${role.uid}。`, 'space'));
+        await sendGenshinReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, `原神绑定完成：UID ${role.uid}。`, 'space'), {
+          summary: `原神绑定完成：UID ${role.uid}。`,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -347,15 +377,20 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         const result = await service.manualSignIn(identity);
-        await session.send(formatSignReply(result.role, result.status, result.message, result.totalSignDay));
+        const reply = formatSignReply(result.role, result.status, result.message, result.totalSignDay);
+        await sendGenshinReply(nativeFeatureChat, session, command, text, reply, {
+          summary: reply,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
 
     if (command.kind === 'redeem_help') {
-      await session.send('请发送：原神兑换 <兑换码>。');
+      await sendGenshinReply(nativeFeatureChat, session, command, text, '请发送：原神兑换 <兑换码>。', {
+        summary: '机器人说明原神兑换命令需要 6 至 32 位字母或数字兑换码。',
+      });
       return;
     }
 
@@ -363,9 +398,12 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         const result = await service.redeemCode(identity, command.cdkey);
-        await session.send(formatRedeemReply(result.role, result.message));
+        const reply = formatRedeemReply(result.role, result.message);
+        await sendGenshinReply(nativeFeatureChat, session, command, text, reply, {
+          summary: `机器人返回了 UID ${result.role.uid} 的兑换结果；兑换码未写入历史。`,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -374,13 +412,15 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         const view = await gachaService.queryGachaRecords(identity);
-        await session.send([
+        await sendGenshinReply(nativeFeatureChat, session, command, text, [
           h.at(identity.qqUserId),
           h.text('\n'),
           await renderGenshinGachaRecordsImage(puppeteer, view),
-        ]);
+        ], {
+          summary: `机器人返回了 UID ${view.uid} 的抽卡记录统计图片。`,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -389,9 +429,11 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         await service.unbind(identity);
-        await session.send('原神绑定已解除。');
+        await sendGenshinReply(nativeFeatureChat, session, command, text, '原神绑定已解除。', {
+          summary: '原神绑定已解除。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }
     }
   });
@@ -522,6 +564,85 @@ type GenshinCommand =
   | { kind: 'redeem'; cdkey: string }
   | { kind: 'gacha_records' }
   | { kind: 'unbind' };
+
+interface GenshinHistoryReplyOptions {
+  summary: string;
+  success?: boolean;
+  includeReplyPayload?: boolean;
+}
+
+function genshinHistoryUserText(command: GenshinCommand, text: string): string {
+  if (command.kind === 'confirm') return '原神确认 <确认码已隐藏>';
+  if (command.kind === 'redeem') return '原神兑换 <兑换码已隐藏>';
+  return text;
+}
+
+async function sendGenshinReply(
+  nativeFeatureChat: NativeFeatureChatServiceLike,
+  session: Session,
+  command: GenshinCommand,
+  text: string,
+  reply: Fragment,
+  options: GenshinHistoryReplyOptions,
+): Promise<void> {
+  await nativeFeatureChat.sendReply(session, {
+    featureId: 'genshin',
+    commandId: command.kind,
+    userText: genshinHistoryUserText(command, text),
+    reply,
+    summary: options.summary,
+    success: options.success ?? true,
+    includeReplyPayload: options.includeReplyPayload ?? true,
+  });
+}
+
+async function sendGenshinError(
+  nativeFeatureChat: NativeFeatureChatServiceLike,
+  session: Session,
+  command: GenshinCommand,
+  text: string,
+  error: unknown,
+): Promise<void> {
+  const message = toUserMessage(error);
+  const sensitiveValue = command.kind === 'confirm'
+    ? command.confirmCode
+    : command.kind === 'redeem'
+      ? command.cdkey
+      : null;
+  const historyMessage = sensitiveValue
+    ? message.replaceAll(sensitiveValue, command.kind === 'confirm' ? '<确认码已隐藏>' : '<兑换码已隐藏>')
+    : message;
+  await sendGenshinReply(nativeFeatureChat, session, command, text, message, {
+    summary: `原神功能未完成：${historyMessage}`,
+    success: false,
+    includeReplyPayload: sensitiveValue == null,
+  });
+}
+
+export function buildGenshinCapabilityReference(session: Session, runtime: RuntimeConfig): string {
+  const enabled = canUseGenshinInSession(session, runtime.allowedGroups);
+  const direct = session.isDirect === true;
+  const groupId = normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
+  const bareEnabled = direct || (
+    runtime.naturalTriggerEnabled
+    && Boolean(groupId && runtime.naturalTriggerGroups.has(groupId))
+  );
+  const invocation = direct || bareEnabled
+    ? '直接发送下面的命令。'
+    : '除抽卡记录外，群聊中需要 @机器人 后发送下面的命令。';
+
+  return [
+    `原神功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
+    '- 总入口：“原神”，返回完整原神菜单。',
+    '- 账号：“原神绑定”、“原神确认 <6位数字确认码>”、“原神解绑”。',
+    '- 日常：“原神签到”、“原神兑换 <兑换码>”；兑换码只接受 6 至 32 位字母或数字。',
+    '- 记录：“抽卡记录”或“原神抽卡记录”，同步并返回当前绑定 UID 的抽卡统计；允许在已启用群聊中直接发送。',
+    '- 功能面向米游社国服原神 UID，查询和操作前需要先完成绑定。',
+    enabled
+      ? '- 用户写成自然语言或格式错误时，纠正并给出最贴近意图的上述准确命令。'
+      : '- 当前群未开启原神功能；说明不可用，不要引导用户反复尝试。',
+  ].join('\n');
+}
 
 function parseGenshinCommand(text: string): GenshinCommand | null {
   if (text === '原神') return { kind: 'menu' };

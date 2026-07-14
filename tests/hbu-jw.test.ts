@@ -73,7 +73,10 @@ vi.mock('koishi', () => {
   };
 });
 
-import { apply } from '../src/plugins/hbu-jw/index.js';
+import {
+  apply as applyHbuJwPlugin,
+  buildHbuJwCapabilityReference,
+} from '../src/plugins/hbu-jw/index.js';
 import {
   HbuJwAcademicCache,
   hbuJwDatabaseFallbackPolicy,
@@ -92,7 +95,13 @@ import {
   buildHbuJwExamScheduleView,
   renderHbuJwExamScheduleImage,
 } from '../src/plugins/hbu-jw/exams.js';
-import { HbuJwGpaService, calculateHbuJwGpa, formatGpaReply } from '../src/plugins/hbu-jw/gpa.js';
+import {
+  HbuJwGpaService,
+  buildHbuJwGpaView,
+  calculateHbuJwGpa,
+  renderHbuJwGpaHtml,
+  renderHbuJwGpaImage,
+} from '../src/plugins/hbu-jw/gpa.js';
 import {
   HbuJwHttpClient,
   HbuJwLoginError,
@@ -132,6 +141,17 @@ import type {
 import { renderBindPage } from '../src/plugins/hbu-jw/web/bind-page.js';
 
 const tempDirs: string[] = [];
+
+function apply(ctx: Record<string, any>, config: Parameters<typeof applyHbuJwPlugin>[1]): void {
+  ctx.nativeFeatureChat ??= {
+    registerCapability: vi.fn(() => () => undefined),
+    sendReply: vi.fn(async (session, input) => {
+      await session.send(input.reply);
+      return null;
+    }),
+  };
+  applyHbuJwPlugin(ctx as never, config);
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -1063,6 +1083,26 @@ describe('hbu-jw academic cache', () => {
 });
 
 describe('hbu-jw menu module', () => {
+  it('describes the exact course query contract for Agent corrections', () => {
+    const reference = buildHbuJwCapabilityReference({
+      isDirect: false,
+      guildId: '100',
+      channelId: '100',
+    } as never, {
+      allowedGroups: new Set(['100']),
+      naturalTriggerEnabled: false,
+      naturalTriggerGroups: new Set<string>(),
+    } as never);
+
+    expect(reference).toContain('总入口：“教务”');
+    expect(reference).toContain('群聊中需要 @机器人');
+    expect(reference).toContain('课程查询 <课程名关键词或课程号> [学期]');
+    expect(reference).toContain('命令名后必须有空格');
+    expect(reference).toContain('0（本学期）');
+    expect(reference).toContain('2025-2026-2-2');
+    expect(reference).toContain('课程号精确匹配');
+  });
+
   it('builds the academic affairs menu with all exposed keywords', () => {
     const view = buildHbuJwMenuView();
 
@@ -1085,8 +1125,9 @@ describe('hbu-jw menu module', () => {
           ['成绩', '查看本学期成绩'],
           ['匿名成绩', '查看本学期成绩，但不显示敏感数据，可查是否出分'],
           ['课程查询', '查看指定课程的分项成绩接口返回'],
+          ['选课结果', '查看本学期课程、学分与选课状态'],
           ['课表', '查看这周的课表'],
-        ['完整课表', '查看本学期动态课表'],
+          ['完整课表', '查看本学期动态课表'],
           ['考试安排', '查看本学期的考试安排'],
         ],
       ],
@@ -1114,6 +1155,7 @@ describe('hbu-jw menu module', () => {
     expect(html).toContain('匿名成绩');
     expect(html).toContain('查看本学期成绩，但不显示敏感数据，可查是否出分');
     expect(html).toContain('课程查询');
+    expect(html).toContain('选课结果');
     expect(html).toContain('考试安排');
     expect(html).not.toContain('<table>');
     expect(html).not.toContain('提示：');
@@ -1155,24 +1197,70 @@ describe('hbu-jw GPA calculation', () => {
     expect(result.excludedArtCourses.map((row) => row.courseName)).toEqual(['燕赵非遗鉴赏与体验', '坤舆艺术名家讲堂系列']);
     expect(result.skippedNoGradePointCourses.map((row) => row.courseName)).toEqual(['待录入绩点课程']);
     expect(result.coveredTerms).toEqual(['2023-2024 秋', '2024-2025 秋', '2025-2026 秋']);
+    expect(result.professional.gpaRounded).toBe('4.59');
+    expect(result.professional.includedCredits).toBe(7);
+    expect(result.general.gpaRounded).toBeNull();
+    expect(result.unclassified.includedCredits).toBe(0);
+    expect(result.termTrend.map((point) => point.cumulativeGpaRounded)).toEqual(['4.50', '4.65', '4.59']);
   });
 
-  it('formats a compact GPA reply without course details', () => {
-    const reply = formatGpaReply('1405359129', calculateHbuJwGpa([
-      scoreRow({ id: { courseNumber: '2023D00003' }, courseName: '程序设计', credit: '3', gradePointScore: 4.5 }),
-      scoreRow({ id: { courseNumber: '0823GRY019' }, courseName: '坤舆艺术名家讲堂系列', credit: '1', gradePointScore: 4.6 }),
-    ]));
+  it('classifies course masks and sorts cumulative GPA points chronologically', () => {
+    const result = calculateHbuJwGpa([
+      scoreRow({ id: { courseNumber: 'MAJOR02' }, courseName: '程序设计', credit: 3, gradePointScore: 4.8, academicYearCode: '2024-2025', termName: '春' }),
+      scoreRow({ id: { courseNumber: 'MAJOR01' }, courseName: '高等数学', credit: 4, gradePointScore: 4.5, academicYearCode: '2023-2024', termName: '秋' }),
+      scoreRow({ id: { courseNumber: 'GENERAL01' }, courseName: '大学英语1', credit: 2, gradePointScore: 4, academicYearCode: '2023-2024', termName: '春' }),
+      scoreRow({ id: { courseNumber: 'GENERAL02' }, courseName: '大学体育2', credit: 1, gradePointScore: 3.5, academicYearCode: '2024-2025', termName: '秋' }),
+      scoreRow({ id: { courseNumber: 'OTHER01' }, courseName: '法学概论', credit: 2, gradePointScore: 4.2, academicYearCode: '2025-2026', termName: '秋' }),
+    ]);
 
-    const text = renderMessageContent(reply);
-    expect(extractAtIds(reply)).toEqual(['1405359129']);
-    expect(text).not.toContain('@1405359129');
-    expect(text).toContain('GPA：4.50');
-    expect(text).toContain('计入：1 门 / 3 学分');
-    expect(text).toContain('排除：非必修 0 门，固定 0 门，艺术 1 门，无绩点 0 门');
-    expect(text).not.toContain('程序设计');
+    expect(result.professional).toMatchObject({
+      gpaRounded: '4.63',
+      includedCredits: 7,
+      includedCourseCount: 2,
+    });
+    expect(result.general).toMatchObject({
+      gpaRounded: '3.83',
+      includedCredits: 3,
+      includedCourseCount: 2,
+    });
+    expect(result.unclassified).toMatchObject({
+      gpaRounded: '4.20',
+      includedCredits: 2,
+      includedCourseCount: 1,
+    });
+    expect(result.termTrend.map((point) => point.label)).toEqual([
+      '2023-2024 秋',
+      '2023-2024 春',
+      '2024-2025 秋',
+      '2024-2025 春',
+      '2025-2026 秋',
+    ]);
+    expect(result.termTrend.at(-1)?.cumulativeGpa).toBeCloseTo(result.gpa, 8);
   });
 
-  it('uses the authenticated session to query and format GPA', async () => {
+  it('renders the GPA view as a PNG card with category summaries and a trend chart', async () => {
+    const result = calculateHbuJwGpa([
+      scoreRow({ id: { courseNumber: 'MAJOR01' }, courseName: '高等数学', credit: 4, gradePointScore: 4.5, academicYearCode: '2023-2024', termName: '秋' }),
+      scoreRow({ id: { courseNumber: 'GENERAL01' }, courseName: '大学英语1', credit: 2, gradePointScore: 4, academicYearCode: '2023-2024', termName: '春' }),
+    ]);
+    const view = buildHbuJwGpaView(result);
+    const html = renderHbuJwGpaHtml(view);
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const image = await renderHbuJwGpaImage(puppeteer, view);
+
+    expect(String(image)).toContain('image/png');
+    expect(html).toContain('累计加权 GPA');
+    expect(html).toContain('专业课 GPA');
+    expect(html).toContain('公共基础 GPA');
+    expect(html).toContain('累计 GPA 走势');
+    expect(html).not.toContain('当前所有已返回成绩');
+    expect(html).not.toContain('必修课口径');
+    expect(html).not.toContain('结果仅供参考');
+    expect(getNavigatedHtml()).toBe(html);
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+  });
+
+  it('uses the authenticated session to query and render a GPA image', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
       cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
@@ -1180,11 +1268,12 @@ describe('hbu-jw GPA calculation', () => {
     const getAllPassingScores = vi.fn(async () => [
       scoreRow({ id: { courseNumber: '2023D00003' }, courseName: '程序设计', credit: '3', gradePointScore: 4.5 }),
     ]);
-    const service = new HbuJwGpaService({ ensureAuthenticated }, { getAllPassingScores });
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwGpaService({ ensureAuthenticated }, { getAllPassingScores }, puppeteer);
 
     const reply = await service.queryGpa(identity());
 
-    expect(renderMessageContent(reply)).toContain('GPA：4.50');
+    expect(renderMessageContent(reply)).toContain('image/png');
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
     expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
@@ -1202,7 +1291,12 @@ describe('hbu-jw GPA calculation', () => {
       scoreRow({ id: { courseNumber: '2023D00003' }, courseName: '程序设计', credit: '3', gradePointScore: 4.5 }),
     ]);
     const cache = new HbuJwAcademicCache(store, { getAllPassingScores } as never, () => Date.UTC(2026, 6, 1));
-    const service = new HbuJwGpaService({ ensureAuthenticated }, { getAllPassingScores }, cache);
+    const service = new HbuJwGpaService(
+      { ensureAuthenticated },
+      { getAllPassingScores },
+      createPuppeteerHarness().puppeteer,
+      cache,
+    );
 
     await service.queryGpa(identity());
 
@@ -1232,6 +1326,7 @@ describe('hbu-jw GPA calculation', () => {
     await new HbuJwGpaService(
       { ensureAuthenticated: vi.fn(async () => auth) },
       { getAllPassingScores: seedGetAllPassingScores },
+      createPuppeteerHarness().puppeteer,
       seedCache,
     ).queryGpa(identity());
 
@@ -1242,13 +1337,14 @@ describe('hbu-jw GPA calculation', () => {
     const service = new HbuJwGpaService(
       { ensureAuthenticated: vi.fn(async () => auth) },
       { getAllPassingScores: failingGetAllPassingScores },
+      createPuppeteerHarness().puppeteer,
       failingCache,
     );
 
     const reply = await service.queryGpa(identity());
 
     expect(renderMessageContent(reply)).toContain('实时查询失败，以下为数据库记录');
-    expect(renderMessageContent(reply)).toContain('GPA：4.50');
+    expect(renderMessageContent(reply)).toContain('image/png');
     expect(failingGetAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
   });
 
@@ -1258,10 +1354,12 @@ describe('hbu-jw GPA calculation', () => {
       reason: '请先发送“教务绑定”。',
     }));
     const getAllPassingScores = vi.fn();
-    const service = new HbuJwGpaService({ ensureAuthenticated }, { getAllPassingScores });
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwGpaService({ ensureAuthenticated }, { getAllPassingScores }, puppeteer);
 
     await expect(service.queryGpa(identity())).rejects.toThrow('请先发送“教务绑定”。');
     expect(getAllPassingScores).not.toHaveBeenCalled();
+    expect(puppeteer.page).not.toHaveBeenCalled();
   });
 });
 
@@ -3466,6 +3564,42 @@ describe('hbu-jw plugin integration', () => {
 
     expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
     expect(getThisSemesterSchedule).not.toHaveBeenCalled();
+  });
+
+  it('routes the selection result keyword and asks for binding before querying', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const getCourseSelectionResult = vi.spyOn(HbuJwHttpClient.prototype, 'getCourseSelectionResult');
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '选课结果',
+      send,
+    }, vi.fn());
+
+    expect(send).toHaveBeenCalledWith('请先发送“教务绑定”。');
+    expect(getCourseSelectionResult).not.toHaveBeenCalled();
   });
 
   it('allows term score keywords in private chats and asks for binding when no session exists', async () => {

@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPA 学业统计卡片</title>
+  <style>
+    :root {
+      --page: #eef4ef;
+      --card: #fbfcfb;
+      --text: #25313a;
+      --muted: #718079;
+      --border: #dce4df;
+      --major: #238358;
+      --general: #b97822;
+      --neutral: #aeb8b2;
+      --area: rgba(35, 131, 88, 0.12);
+      --shadow: rgba(40, 72, 56, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--page);
+      color: var(--text);
+      font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: start center;
+      padding: 32px;
+    }
+
+    #gpa-card {
+      width: min(1080px, 100%);
+      overflow: hidden;
+      padding: 50px 56px 42px;
+      border: 1px solid #d4ddd7;
+      border-radius: 28px;
+      background: var(--card);
+      box-shadow: 0 22px 50px var(--shadow);
+    }
+
+    .hero {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 32px;
+      padding-bottom: 38px;
+    }
+
+    .hero-label {
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1.3;
+    }
+
+    .hero-value {
+      margin-top: 9px;
+      font-size: 96px;
+      line-height: 0.9;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.07em;
+    }
+
+    .hero-meta {
+      display: grid;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.35;
+      text-align: right;
+    }
+
+    .hero-meta strong {
+      color: var(--text);
+      font-size: 23px;
+      font-weight: 500;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .stat {
+      min-width: 0;
+      padding: 29px 28px 28px 0;
+    }
+
+    .stat + .stat {
+      padding-left: 28px;
+      border-left: 1px solid var(--border);
+    }
+
+    .stat-head {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1.3;
+    }
+
+    .mask {
+      width: 13px;
+      height: 13px;
+      flex: 0 0 auto;
+      background: var(--neutral);
+    }
+
+    .mask-major {
+      background: var(--major);
+    }
+
+    .mask-general {
+      background: var(--general);
+    }
+
+    .stat-value {
+      margin-top: 15px;
+      font-size: 43px;
+      line-height: 1;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-unit {
+      margin-left: 6px;
+      color: var(--muted);
+      font-size: 24px;
+      font-weight: 400;
+    }
+
+    .stat-note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.4;
+    }
+
+    .trend {
+      padding-top: 34px;
+    }
+
+    .trend-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 12px;
+    }
+
+    .trend-title {
+      font-size: 21px;
+      font-weight: 500;
+    }
+
+    .trend-summary {
+      color: var(--muted);
+      font-size: 17px;
+      text-align: right;
+    }
+
+    .trend-chart {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .chart-grid {
+      stroke: var(--border);
+      stroke-width: 1;
+    }
+
+    .chart-area {
+      fill: var(--area);
+    }
+
+    .chart-line {
+      fill: none;
+      stroke: var(--major);
+      stroke-width: 4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .chart-point {
+      fill: var(--card);
+      stroke: var(--major);
+      stroke-width: 4;
+    }
+
+    .chart-point-current {
+      fill: var(--major);
+    }
+
+    .chart-axis-label,
+    .chart-term-label {
+      fill: var(--muted);
+      font-size: 15px;
+      font-weight: 400;
+    }
+
+    .chart-axis-label {
+      text-anchor: end;
+    }
+
+    .chart-term-label,
+    .chart-value-label {
+      text-anchor: middle;
+    }
+
+    .chart-value-label {
+      fill: var(--text);
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 16px;
+      }
+
+      #gpa-card {
+        padding: 30px 24px 26px;
+        border-radius: 20px;
+      }
+
+      .hero {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .hero-meta {
+        text-align: left;
+      }
+
+      .stats {
+        grid-template-columns: 1fr;
+      }
+
+      .stat,
+      .stat + .stat {
+        padding: 22px 0;
+        border-left: 0;
+      }
+
+      .stat + .stat {
+        border-top: 1px solid var(--border);
+      }
+
+      .trend-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .trend-summary {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main id="gpa-card" aria-label="GPA 学业统计卡片示例">
+    <section class="hero">
+      <div>
+        <div class="hero-label">累计加权 GPA</div>
+        <div class="hero-value">4.59</div>
+      </div>
+      <div class="hero-meta">
+        <span><strong>6</strong> 个学期</span>
+        <span>2023-2024 秋 — 2025-2026 春</span>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="GPA 分类统计">
+      <div class="stat">
+        <div class="stat-head">
+          <span class="mask" aria-hidden="true"></span>
+          <span>计入学分</span>
+        </div>
+        <div class="stat-value">87.5<span class="stat-unit">学分</span></div>
+        <div class="stat-note">42 门必修课程</div>
+      </div>
+
+      <div class="stat">
+        <div class="stat-head">
+          <span class="mask mask-major" aria-hidden="true"></span>
+          <span>专业课 GPA</span>
+        </div>
+        <div class="stat-value">4.67</div>
+        <div class="stat-note">理工 · 数学 · 49 学分</div>
+      </div>
+
+      <div class="stat">
+        <div class="stat-head">
+          <span class="mask mask-general" aria-hidden="true"></span>
+          <span>公共基础 GPA</span>
+        </div>
+        <div class="stat-value">4.38</div>
+        <div class="stat-note">思政 · 语文 · 外语 · 体育 · 28.5 学分</div>
+      </div>
+    </section>
+
+    <section class="trend" aria-labelledby="gpa-trend-title">
+      <div class="trend-heading">
+        <div id="gpa-trend-title" class="trend-title">累计 GPA 走势</div>
+        <div class="trend-summary">首学期 4.32 · 当前 4.59</div>
+      </div>
+
+      <svg class="trend-chart" viewBox="0 0 960 274" role="img" aria-labelledby="gpa-trend-svg-title gpa-trend-svg-desc">
+        <title id="gpa-trend-svg-title">六个学期的累计 GPA 变化</title>
+        <desc id="gpa-trend-svg-desc">累计 GPA 从 2023 年秋季的 4.32 变化到 2026 年春季的 4.59。</desc>
+
+        <line class="chart-grid" x1="68" y1="50" x2="922" y2="50"></line>
+        <line class="chart-grid" x1="68" y1="122" x2="922" y2="122"></line>
+        <line class="chart-grid" x1="68" y1="194" x2="922" y2="194"></line>
+
+        <text class="chart-axis-label" x="54" y="55">4.6</text>
+        <text class="chart-axis-label" x="54" y="127">4.4</text>
+        <text class="chart-axis-label" x="54" y="199">4.2</text>
+
+        <path class="chart-area" d="M94 151 L254 104 L414 129 L574 82 L734 68 L894 54 L894 194 L94 194 Z"></path>
+        <path class="chart-line" d="M94 151 L254 104 L414 129 L574 82 L734 68 L894 54"></path>
+
+        <circle class="chart-point" cx="94" cy="151" r="7"></circle>
+        <circle class="chart-point" cx="254" cy="104" r="7"></circle>
+        <circle class="chart-point" cx="414" cy="129" r="7"></circle>
+        <circle class="chart-point" cx="574" cy="82" r="7"></circle>
+        <circle class="chart-point" cx="734" cy="68" r="7"></circle>
+        <circle class="chart-point chart-point-current" cx="894" cy="54" r="8"></circle>
+
+        <text class="chart-value-label" x="94" y="132">4.32</text>
+        <text class="chart-value-label" x="254" y="85">4.45</text>
+        <text class="chart-value-label" x="414" y="110">4.38</text>
+        <text class="chart-value-label" x="574" y="63">4.51</text>
+        <text class="chart-value-label" x="734" y="49">4.55</text>
+        <text class="chart-value-label" x="894" y="34">4.59</text>
+
+        <text class="chart-term-label" x="94" y="231"><tspan x="94">2023-24</tspan><tspan x="94" dy="18">秋</tspan></text>
+        <text class="chart-term-label" x="254" y="231"><tspan x="254">2023-24</tspan><tspan x="254" dy="18">春</tspan></text>
+        <text class="chart-term-label" x="414" y="231"><tspan x="414">2024-25</tspan><tspan x="414" dy="18">秋</tspan></text>
+        <text class="chart-term-label" x="574" y="231"><tspan x="574">2024-25</tspan><tspan x="574" dy="18">春</tspan></text>
+        <text class="chart-term-label" x="734" y="231"><tspan x="734">2025-26</tspan><tspan x="734" dy="18">秋</tspan></text>
+        <text class="chart-term-label" x="894" y="231"><tspan x="894">2025-26</tspan><tspan x="894" dy="18">春</tspan></text>
+      </svg>
+    </section>
+  </main>
+</body>
+</html>

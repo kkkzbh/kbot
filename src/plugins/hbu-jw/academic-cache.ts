@@ -3,6 +3,7 @@ import type { HbuJwHttpClient } from './jw-client.js';
 import type { HbuJwStore, HbuJwAcademicItemInput } from './store.js';
 import type {
   HbuJwAcademicDataKind,
+  HbuJwCourseSelectionResult,
   HbuJwExamPlanEvent,
   HbuJwScheduleCourse,
   HbuJwScoreRow,
@@ -45,6 +46,7 @@ export class HbuJwAcademicCache {
       | 'getThisTermScores'
       | 'getSubitemScoreTerms'
       | 'getSubitemScoreDetails'
+      | 'getCourseSelectionResult'
       | 'getThisSemesterSchedule'
       | 'getExamSchedule'
     >,
@@ -197,6 +199,27 @@ export class HbuJwAcademicCache {
         failureReason: reason,
       };
     }
+  }
+
+  async getCourseSelectionResult(
+    identity: OwnerIdentity,
+    auth: HbuJwAcademicAuthenticatedSession,
+    policy: HbuJwAcademicQueryPolicy,
+  ): Promise<HbuJwAcademicQueryResult<HbuJwCourseSelectionResult>> {
+    const result = await this.getList(
+      identity,
+      auth,
+      'course_selection_result',
+      'current',
+      async () => [await this.jwClient.getCourseSelectionResult(auth.cookieJar)],
+      () => ['current'],
+      policy,
+    );
+    const selection = result.data[0];
+    if (!selection) {
+      throw new Error('course selection result snapshot is empty.');
+    }
+    return { ...result, data: selection };
   }
 
   async getExamSchedule(

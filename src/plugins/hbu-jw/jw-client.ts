@@ -1,4 +1,6 @@
 import type {
+  HbuJwCourseSelectionCourse,
+  HbuJwCourseSelectionResult,
   HbuJwExamPlanEvent,
   HbuJwScheduleCourse,
   HbuJwScheduleTimeAndPlace,
@@ -309,6 +311,39 @@ export class HbuJwHttpClient {
     return parseThisSemesterSchedulePayload(payload);
   }
 
+  async getCourseSelectionResult(cookieJar: SerializedCookieJar): Promise<HbuJwCourseSelectionResult> {
+    const jar = CookieJar.from(cookieJar);
+    const pagePath = '/student/courseSelect/courseSelectResult/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwQueryError('选课结果页面访问失败。');
+    }
+
+    const callbackPath = findCourseSelectionResultCallback(page.text);
+    const callback = await this.request(callbackPath, {
+      jar,
+      headers: {
+        accept: 'application/json, text/javascript, */*; q=0.01',
+        'x-requested-with': 'XMLHttpRequest',
+        referer: new URL(pagePath, this.baseUrl).href,
+      },
+    });
+    if (callback.response.status !== 200) {
+      throw new HbuJwQueryError('选课结果接口访问失败。');
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(callback.text);
+    } catch {
+      throw new HbuJwQueryError('选课结果接口返回了非 JSON 内容。');
+    }
+    return parseCourseSelectionResultPayload(payload);
+  }
+
   private async request(url: string, options: RequestOptions & { jar: CookieJar }): Promise<{ response: Response; text: string }> {
     const { jar, ...requestOptions } = options;
     const target = url.startsWith('http://') || url.startsWith('https://') ? url : new URL(url, this.baseUrl).href;
@@ -511,6 +546,15 @@ function findThisSemesterScheduleCallback(html: string): string {
   return matches[0]!;
 }
 
+function findCourseSelectionResultCallback(html: string): string {
+  const matches = [...html.matchAll(/[^"'\s<>]*courseSelect\/thisSemesterCurriculum\/callback[^"'\s<>]*/g)]
+    .map((match) => match[0].replace(/\\\//g, '/'));
+  if (matches.length !== 1) {
+    throw new HbuJwQueryError('选课结果页面没有唯一的回调地址。');
+  }
+  return matches[0]!;
+}
+
 function flattenAllPassingScores(payload: unknown): HbuJwScoreRow[] {
   if (!isRecord(payload) || !Array.isArray(payload.lnList)) {
     throw new HbuJwQueryError('全部及格成绩接口结构异常。');
@@ -663,6 +707,53 @@ function parseThisSemesterSchedulePayload(payload: unknown): HbuJwThisSemesterSc
     totalUnits,
     courses,
   };
+}
+
+function parseCourseSelectionResultPayload(payload: unknown): HbuJwCourseSelectionResult {
+  if (!isRecord(payload) || !Array.isArray(payload.dateList)) {
+    throw new HbuJwQueryError('选课结果接口结构异常。');
+  }
+  const totalUnits = parseRequiredNumber(payload.allUnits, '选课结果总学分异常。');
+  const groups = payload.dateList.map((value) => {
+    if (!isRecord(value) || !Array.isArray(value.selectCourseList)) {
+      throw new HbuJwQueryError('选课结果接口结构异常。');
+    }
+    return {
+      programPlanCode: String(value.programPlanCode ?? '').trim(),
+      programPlanName: String(value.programPlanName ?? '').trim() || '未归入培养方案',
+      totalUnits: parseRequiredNumber(value.totalUnits, '选课结果培养方案学分异常。'),
+      courses: value.selectCourseList.map(parseCourseSelectionCourse),
+    };
+  });
+  return { totalUnits, groups };
+}
+
+function parseCourseSelectionCourse(value: unknown): HbuJwCourseSelectionCourse {
+  if (!isRecord(value) || !isRecord(value.id) || !Array.isArray(value.timeAndPlaceList)) {
+    throw new HbuJwQueryError('选课结果接口结构异常。');
+  }
+  return {
+    courseNumber: readCourseSelectionRequiredString(value.id.coureNumber, '课程号'),
+    sequenceNumber: readCourseSelectionRequiredString(value.id.coureSequenceNumber, '课序号'),
+    executiveEducationPlanNumber: readCourseSelectionRequiredString(value.id.executiveEducationPlanNumber, '执行计划号'),
+    courseName: readCourseSelectionRequiredString(value.courseName, '课程名'),
+    unit: parseRequiredNumber(value.unit, '选课结果课程学分异常。'),
+    coursePropertiesName: String(value.coursePropertiesName ?? '').trim(),
+    courseCategoryName: String(value.courseCategoryName ?? '').trim(),
+    examTypeName: String(value.examTypeName ?? '').trim(),
+    teacherName: String(value.attendClassTeacher ?? '').replace(/\s+/g, ' ').trim(),
+    studyModeName: String(value.studyModeName ?? '').trim(),
+    selectCourseStatusName: String(value.selectCourseStatusName ?? '').trim(),
+    restrictedCondition: String(value.restrictedCondition ?? '').trim(),
+    courseSelectionTime: String(value.courseSelectionTime ?? '').trim(),
+    timeAndPlaceList: value.timeAndPlaceList.map(parseScheduleTimeAndPlace),
+  };
+}
+
+function readCourseSelectionRequiredString(value: unknown, label: string): string {
+  const text = String(value ?? '').trim();
+  if (!text) throw new HbuJwQueryError(`选课结果接口缺少${label}。`);
+  return text;
 }
 
 function parseScheduleCourse(value: unknown): HbuJwScheduleCourse {

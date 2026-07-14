@@ -1,6 +1,8 @@
 import { createReadStream, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
+import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
+import '../../types/native-feature-chat.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { HbuJwAcademicCache } from './academic-cache.js';
 import { HbuJwCourseQueryService } from './course-query.js';
@@ -10,6 +12,7 @@ import { HbuJwGpaService } from './gpa.js';
 import { HbuJwHttpClient } from './jw-client.js';
 import { HbuJwMenuService } from './menu.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
+import { HbuJwSelectionResultService } from './selection-results.js';
 import { HbuJwBindSubmissionPendingError, HbuJwService } from './service.js';
 import { ensureHbuJwTables, HbuJwStore } from './store.js';
 import { HbuJwTermScoresService, type HbuJwTermScoresMode } from './term-scores.js';
@@ -17,7 +20,7 @@ import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.j
 import { renderBindPage } from './web/bind-page.js';
 
 export const name = 'hbu-jw';
-export const inject = ['server', 'database', 'puppeteer'] as const;
+export const inject = ['server', 'database', 'puppeteer', 'nativeFeatureChat'] as const;
 
 const logger = new Logger(name);
 const CAMPUS_BACKGROUND_FILE = join(__dirname, 'assets/campus-bg.jpg');
@@ -62,6 +65,7 @@ export const Config: Schema<Config> = Schema.object({
 
 interface HbuJwServicesLike {
   database: DatabaseLike;
+  nativeFeatureChat: NativeFeatureChatServiceLike;
   puppeteer: HbuJwSchedulePuppeteerLike;
   server: {
     get(path: string, handler: (koaCtx: any) => unknown): void;
@@ -105,15 +109,34 @@ export function apply(ctx: Context, config: Config): void {
     bindTokenTtlMs: runtime.bindTokenTtlMs,
     autoReloginEnabled: runtime.autoReloginEnabled,
   });
-  const gpaService = new HbuJwGpaService(service, jwClient, academicCache);
+  const gpaService = new HbuJwGpaService(service, jwClient, hbuCtx.puppeteer, academicCache);
   const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer, undefined, academicCache);
+  const selectionResultService = new HbuJwSelectionResultService(service, jwClient, hbuCtx.puppeteer, academicCache);
   const termScoresService = new HbuJwTermScoresService(service, jwClient, hbuCtx.puppeteer, academicCache);
   const courseQueryService = new HbuJwCourseQueryService(service, jwClient, hbuCtx.puppeteer, academicCache);
   const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer, undefined, academicCache);
   const menuService = new HbuJwMenuService(hbuCtx.puppeteer);
 
+  const unregisterCapability = hbuCtx.nativeFeatureChat.registerCapability({
+    id: 'hbu-jw',
+    buildReference: (session) => buildHbuJwCapabilityReference(session, runtime),
+  });
+  ctx.on?.('dispose', unregisterCapability);
+
   registerWebRoutes(hbuCtx, service, runtime);
-  registerKeywordMiddleware(ctx, service, gpaService, scheduleService, termScoresService, courseQueryService, examScheduleService, menuService, runtime);
+  registerKeywordMiddleware(
+    ctx,
+    service,
+    gpaService,
+    scheduleService,
+    selectionResultService,
+    termScoresService,
+    courseQueryService,
+    examScheduleService,
+    menuService,
+    hbuCtx.nativeFeatureChat,
+    runtime,
+  );
   registerKeepAlive(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
@@ -218,10 +241,12 @@ function registerKeywordMiddleware(
   service: HbuJwService,
   gpaService: HbuJwGpaService,
   scheduleService: HbuJwScheduleService,
+  selectionResultService: HbuJwSelectionResultService,
   termScoresService: HbuJwTermScoresService,
   courseQueryService: HbuJwCourseQueryService,
   examScheduleService: HbuJwExamScheduleService,
   menuService: HbuJwMenuService,
+  nativeFeatureChat: NativeFeatureChatServiceLike,
   runtime: RuntimeConfig,
 ): void {
   ctx.middleware(async (session, next) => {
@@ -234,16 +259,21 @@ function registerKeywordMiddleware(
     }
 
     if (!canUseHbuJwInSession(session, runtime.allowedGroups)) {
-      await session.send('当前群未开启教务系统功能。');
+      await sendHbuJwReply(nativeFeatureChat, session, command, text, '当前群未开启教务系统功能。', {
+        summary: '机器人说明当前群未开启教务系统功能。',
+        success: false,
+      });
       return;
     }
 
     if (command.kind === 'menu') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await menuService.queryMenu(identity.qqUserId));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), {
+          summary: '机器人返回了教务功能菜单图片。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -252,15 +282,20 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         const result = await service.startBinding(identity);
-        await session.send(createMentionedReply(identity.qqUserId, `请打开链接完成教务绑定：\n${result.link}\n链接 10 分钟内有效。\n\n网页登录成功后，页面会显示 6 位确认码。请回到这里发送：\n教务确认 <确认码>\n完成绑定。`));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, `请打开链接完成教务绑定：\n${result.link}\n链接 10 分钟内有效。\n\n网页登录成功后，页面会显示 6 位确认码。请回到这里发送：\n教务确认 <确认码>\n完成绑定。`), {
+          summary: '机器人提供了教务绑定流程；一次性绑定链接未写入历史。',
+          includeReplyPayload: false,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
 
     if (command.kind === 'confirm_help') {
-      await session.send('请发送完整确认命令：教务确认 <6位确认码>。确认码会在网页登录成功后的页面上显示。');
+      await sendHbuJwReply(nativeFeatureChat, session, command, text, '请发送完整确认命令：教务确认 <6位确认码>。确认码会在网页登录成功后的页面上显示。', {
+        summary: '机器人说明教务确认码必须是 6 位数字。',
+      });
       return;
     }
 
@@ -268,9 +303,11 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         await service.confirmBinding(identity, command.confirmCode);
-        await session.send(createMentionedReply(identity.qqUserId, '教务绑定完成。', 'space'));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, '教务绑定完成。', 'space'), {
+          summary: '教务绑定完成。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -278,9 +315,12 @@ function registerKeywordMiddleware(
     if (command.kind === 'status') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await service.getStatus(identity));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await service.getStatus(identity), {
+          summary: '机器人返回了教务绑定状态；详细账号信息未写入历史。',
+          includeReplyPayload: false,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -289,9 +329,11 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         await service.unbind(identity);
-        await session.send('教务绑定已解除。');
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, '教务绑定已解除。', {
+          summary: '教务绑定已解除。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -299,9 +341,11 @@ function registerKeywordMiddleware(
     if (command.kind === 'gpa') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await gpaService.queryGpa(identity));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await gpaService.queryGpa(identity), {
+          summary: '机器人返回了 GPA 查询结果。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -309,9 +353,25 @@ function registerKeywordMiddleware(
     if (command.kind === 'schedule') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await scheduleService.querySchedule(identity, command.mode));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await scheduleService.querySchedule(identity, command.mode), {
+          summary: command.mode === 'current-week'
+            ? '机器人返回了本周课表查询结果图片。'
+            : '机器人返回了本学期完整动态课表。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      }
+      return;
+    }
+
+    if (command.kind === 'selection_result') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await selectionResultService.querySelectionResult(identity), {
+          summary: '机器人返回了本学期选课结果图片。',
+        });
+      } catch (error) {
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -319,9 +379,13 @@ function registerKeywordMiddleware(
     if (command.kind === 'term_scores') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await termScoresService.queryTermScores(identity, command.mode));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await termScoresService.queryTermScores(identity, command.mode), {
+          summary: command.mode === 'full'
+            ? '机器人返回了本学期成绩查询结果图片。'
+            : '机器人返回了本学期匿名成绩查询结果图片。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -329,9 +393,11 @@ function registerKeywordMiddleware(
     if (command.kind === 'course_query_help') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await courseQueryService.queryHelp(identity.qqUserId));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await courseQueryService.queryHelp(identity.qqUserId), {
+          summary: '机器人返回了课程查询命令格式、课程匹配和学期参数说明图片。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -339,12 +405,15 @@ function registerKeywordMiddleware(
     if (command.kind === 'course_query') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await courseQueryService.queryCourse(identity, {
+        const reply = await courseQueryService.queryCourse(identity, {
           courseQuery: command.courseQuery,
           termInput: command.termInput,
-        }));
+        });
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, reply, {
+          summary: `机器人返回了“${command.courseQuery}”的课程分项成绩查询结果图片（学期参数：${command.termInput ?? '0'}）。`,
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
       return;
     }
@@ -352,9 +421,11 @@ function registerKeywordMiddleware(
     if (command.kind === 'exam_schedule') {
       try {
         const identity = resolveOwnerIdentity(session);
-        await session.send(await examScheduleService.queryExamSchedule(identity));
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, await examScheduleService.queryExamSchedule(identity), {
+          summary: '机器人返回了本学期考试安排查询结果图片。',
+        });
       } catch (error) {
-        await session.send(toUserMessage(error));
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
       }
     }
   });
@@ -428,10 +499,87 @@ type HbuJwCommand =
   | { kind: 'unbind' }
   | { kind: 'gpa' }
   | { kind: 'schedule'; mode: HbuJwScheduleMode }
+  | { kind: 'selection_result' }
   | { kind: 'term_scores'; mode: HbuJwTermScoresMode }
   | { kind: 'course_query_help' }
   | { kind: 'course_query'; courseQuery: string; termInput?: string }
   | { kind: 'exam_schedule' };
+
+interface HbuJwHistoryReplyOptions {
+  summary: string;
+  success?: boolean;
+  includeReplyPayload?: boolean;
+}
+
+function hbuJwHistoryUserText(command: HbuJwCommand, text: string): string {
+  if (command.kind === 'confirm') return '教务确认 <确认码已隐藏>';
+  return text;
+}
+
+async function sendHbuJwReply(
+  nativeFeatureChat: NativeFeatureChatServiceLike,
+  session: Session,
+  command: HbuJwCommand,
+  text: string,
+  reply: Fragment,
+  options: HbuJwHistoryReplyOptions,
+): Promise<void> {
+  await nativeFeatureChat.sendReply(session, {
+    featureId: 'hbu-jw',
+    commandId: command.kind,
+    userText: hbuJwHistoryUserText(command, text),
+    reply,
+    summary: options.summary,
+    success: options.success ?? true,
+    includeReplyPayload: options.includeReplyPayload ?? true,
+  });
+}
+
+async function sendHbuJwError(
+  nativeFeatureChat: NativeFeatureChatServiceLike,
+  session: Session,
+  command: HbuJwCommand,
+  text: string,
+  error: unknown,
+): Promise<void> {
+  const message = toUserMessage(error);
+  const sensitive = command.kind === 'confirm';
+  const historyMessage = sensitive
+    ? message.replaceAll(command.confirmCode, '<确认码已隐藏>')
+    : message;
+  await sendHbuJwReply(nativeFeatureChat, session, command, text, message, {
+    summary: `教务功能未完成：${historyMessage}`,
+    success: false,
+    includeReplyPayload: !sensitive,
+  });
+}
+
+export function buildHbuJwCapabilityReference(session: Session, runtime: RuntimeConfig): string {
+  const enabled = canUseHbuJwInSession(session, runtime.allowedGroups);
+  const direct = session.isDirect === true;
+  const groupId = normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
+  const bareEnabled = direct || (
+    runtime.naturalTriggerEnabled
+    && Boolean(groupId && runtime.naturalTriggerGroups.has(groupId))
+  );
+  const invocation = direct || bareEnabled
+    ? '直接发送下面的命令。'
+    : '群聊中需要 @机器人 后发送下面的命令。';
+
+  return [
+    `教务功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
+    '- 总入口：“教务”，返回完整教务菜单。',
+    '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务状态”、“教务解绑”。',
+    '- 查询：“GPA”、“成绩”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
+    '- 课程查询帮助：“课程查询”。',
+    '- 课程查询严格格式：“课程查询 <课程名关键词或课程号> [学期]”；命令名后必须有空格。',
+    '- 学期省略时使用 0（本学期）；也可用 -1、-2 等非正偏移，或完整学期号，例如 2025-2026-2-2；正数偏移无效。',
+    '- 课程优先按课程号精确匹配，再按课程名关键词匹配；匹配多门时让用户改用课程号或更完整课程名。',
+    enabled
+      ? '- 用户写成自然语言或格式错误时，纠正并给出最贴近意图的上述准确命令。'
+      : '- 当前群未开启教务功能；说明不可用，不要引导用户反复尝试。',
+  ].join('\n');
+}
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '教务') return { kind: 'menu' };
@@ -444,6 +592,7 @@ function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text.toUpperCase() === 'GPA') return { kind: 'gpa' };
   if (text === '课表') return { kind: 'schedule', mode: 'current-week' };
   if (text === '完整课表') return { kind: 'schedule', mode: 'full-semester' };
+  if (text === '选课结果') return { kind: 'selection_result' };
   if (text === '成绩') return { kind: 'term_scores', mode: 'full' };
   if (text === '匿名成绩') return { kind: 'term_scores', mode: 'anonymous' };
   if (text === '课程查询') return { kind: 'course_query_help' };

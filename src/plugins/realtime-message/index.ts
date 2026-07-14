@@ -7,6 +7,7 @@ import {
   buildRealtimeModalities,
   buildSessionSnapshot,
   collectImageUrls,
+  discardRealtimeMessageForSession,
   normalizeMessageText,
   realtimeMessageCache,
   resolveSessionVoiceTranscript,
@@ -39,7 +40,7 @@ import {
   type ChatLunaHistoryWriter,
 } from '../shared/chatluna-history.js';
 
-export { buildGroupScopeKey, realtimeMessageCache };
+export { buildGroupScopeKey, discardRealtimeMessageForSession, realtimeMessageCache };
 
 const logger = new Logger('realtime-message');
 const CHAT_CHAIN_CONTINUE = 2;

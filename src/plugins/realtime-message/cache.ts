@@ -84,6 +84,22 @@ export class RealtimeMessageCache {
     this.buckets.delete(normalizedKey);
   }
 
+  discardSession(groupScopeKey: string, session: RealtimeMessageSessionLike): boolean {
+    const normalizedKey = groupScopeKey.trim();
+    if (!normalizedKey) return false;
+    const existing = this.buckets.get(normalizedKey);
+    if (!existing?.length) return false;
+
+    const remaining = existing.filter((entry) => !isRealtimeEntryFromSession(entry, session));
+    if (remaining.length === existing.length) return false;
+    if (remaining.length > 0) {
+      this.buckets.set(normalizedKey, remaining);
+    } else {
+      this.buckets.delete(normalizedKey);
+    }
+    return true;
+  }
+
   clear(): void {
     this.buckets.clear();
   }
@@ -93,6 +109,11 @@ export const realtimeMessageCache = new RealtimeMessageCache();
 
 export function buildGroupScopeKey(session: RealtimeMessageSessionLike): string | null {
   return buildGroupSessionScopeKey(session);
+}
+
+export function discardRealtimeMessageForSession(session: RealtimeMessageSessionLike): boolean {
+  const groupScopeKey = buildGroupScopeKey(session);
+  return groupScopeKey ? realtimeMessageCache.discardSession(groupScopeKey, session) : false;
 }
 
 function sanitizeContextText(text: string): string {
