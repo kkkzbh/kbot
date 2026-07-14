@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AIMessage, ToolMessage } from '@langchain/core/messages';
+import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
 import { resolveChatlunaSiblingPackageRoot } from './helpers/chatluna-paths.js';
 
 vi.mock('koishi', () => ({
@@ -62,6 +62,30 @@ async function loadResponsesUtils(): Promise<ResponsesUtilsModule> {
 }
 
 describe('chatluna responses input regression', () => {
+  it('uses output_text for assistant history and input_text for user input', async () => {
+    const { langchainMessageToResponseInput } = await loadResponsesUtils();
+    const input = await langchainMessageToResponseInput(
+      [
+        new HumanMessage({ content: [{ type: 'text', text: 'hello' }] }),
+        new AIMessage({ content: [{ type: 'text', text: 'hi' }] }),
+      ],
+      {} as never,
+    );
+
+    expect(input).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hello' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'hi' }],
+      },
+    ]);
+  });
+
   it('keeps only valid function call and tool output pairs in responses mode', async () => {
     const { langchainMessageToResponseInput } = await loadResponsesUtils();
     const paired = await langchainMessageToResponseInput(
@@ -169,12 +193,10 @@ describe('chatluna responses input regression', () => {
     const sharedAdapterBundle = readFileSync(join(sharedAdapterRoot, 'lib', 'index.mjs'), 'utf8');
 
     expect(sharedAdapterSource).toContain('responseInputContent');
-    expect(sharedAdapterSource).toContain("type: 'input_text'");
     expect(sharedAdapterSource).toContain("type: 'input_image'");
     expect(sharedAdapterRequesterSource).toContain('langchainMessageToResponseInput');
 
     expect(sharedAdapterBundle).toContain('responseInputContent');
-    expect(sharedAdapterBundle).toContain('type: "input_text"');
     expect(sharedAdapterBundle).toContain('type: "input_image"');
     expect(sharedAdapterBundle).toContain('langchainMessageToResponseInput');
     expect(sharedAdapterSource).toContain('resolveResponseToolOutputCallIds');
