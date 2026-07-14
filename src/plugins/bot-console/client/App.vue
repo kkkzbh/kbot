@@ -12,6 +12,7 @@ import ToolPolicyPanel from './components/panels/ToolPolicyPanel.vue'
 import HbuJwPanel from './components/panels/HbuJwPanel.vue'
 import ZyhPanel from './components/panels/ZyhPanel.vue'
 import HbuSecondClassPanel from './components/panels/HbuSecondClassPanel.vue'
+import ChaoxingPanel from './components/panels/ChaoxingPanel.vue'
 import GenshinPanel from './components/panels/GenshinPanel.vue'
 import MemoryPanel from './components/panels/MemoryPanel.vue'
 import AffinityPanel from './components/panels/AffinityPanel.vue'
@@ -46,6 +47,7 @@ const TABS = [
   { id: 'hbu-jw', label: '教务系统' },
   { id: 'zyh', label: '志愿汇' },
   { id: 'hbu-second-class', label: '二课' },
+  { id: 'chaoxing', label: '学习通' },
   { id: 'genshin', label: '原神' },
   { id: 'tools', label: '工具控制' },
   { id: 'affinity', label: '关系事件' },
@@ -64,6 +66,7 @@ const panelMap: Record<string, Component> = {
   'hbu-jw': HbuJwPanel,
   zyh: ZyhPanel,
   'hbu-second-class': HbuSecondClassPanel,
+  chaoxing: ChaoxingPanel,
   genshin: GenshinPanel,
   tools: ToolPolicyPanel,
   affinity: AffinityPanel,

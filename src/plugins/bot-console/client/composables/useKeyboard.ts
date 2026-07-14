@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted, type Ref } from 'vue'
 import {
   BASIC_KEYS,
+  CHAOXING_ENV_KEYS,
   FILE_SYSTEM_CONTROL_KEYS,
   HBU_SECOND_CLASS_ENV_KEYS,
   ZYH_ENV_KEYS,
@@ -51,6 +52,13 @@ export function useKeyboard(
         const keys = tab === 'zyh' ? ZYH_ENV_KEYS : HBU_SECOND_CLASS_ENV_KEYS
         if (!keys.some(key => bc.changedKeys.value.has(key))) return
         await bc.saveEnvPatch(keys)
+        toast.add('配置已保存', 'success')
+        return
+      }
+
+      if (tab === 'chaoxing') {
+        if (!CHAOXING_ENV_KEYS.some(key => bc.changedKeys.value.has(key))) return
+        await bc.saveEnvPatch(CHAOXING_ENV_KEYS)
         toast.add('配置已保存', 'success')
         return
       }

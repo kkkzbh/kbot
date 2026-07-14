@@ -59,6 +59,23 @@ export const FIELD_LABELS: Record<string, string> = {
   HBU_SECOND_CLASS_ALLOWED_GROUPS: '二课白名单群',
   HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED: '二课自然触发',
   HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS: '二课自然触发群',
+  CHAOXING_ALLOWED_GROUPS: '学习通白名单群',
+  CHAOXING_PUBLIC_BASE_URL: '学习通绑定外部地址',
+  CHAOXING_BIND_PAGE_PATH: '学习通绑定页路径',
+  CHAOXING_BIND_TOKEN_TTL_MS: '学习通绑定链接有效期',
+  CHAOXING_CREDENTIAL_KEK_PATH: '学习通凭据 KEK 路径',
+  CHAOXING_AUTO_RELOGIN_ENABLED: '学习通自动重新登录',
+  CHAOXING_SESSION_VALIDATION_TTL_MS: '登录态验证缓存时间',
+  CHAOXING_REQUEST_INTERVAL_MS: '普通接口请求间隔',
+  CHAOXING_WORKER_POLL_INTERVAL_MS: '任务队列轮询间隔',
+  CHAOXING_SIGN_WATCH_INTERVAL_MS: '签到监听间隔',
+  CHAOXING_DEADLINE_SYNC_INTERVAL_MS: '待办同步间隔',
+  CHAOXING_DEADLINE_REMINDER_LEAD_MS: '截止提醒提前量',
+  CHAOXING_STUDY_PLAYBACK_RATE: '视频任务计时倍率',
+  CHAOXING_VIDEO_REPORT_INTERVAL_MS: '视频进度上报间隔',
+  CHAOXING_ANSWER_PROVIDER_URL: '外部答案源地址',
+  CHAOXING_ANSWER_PROVIDER_API_KEY: '外部答案源 API Key',
+  CHAOXING_ANSWER_PROVIDER_TIMEOUT_MS: '答案源请求超时',
   GENSHIN_ALLOWED_GROUPS: '原神白名单群',
   GENSHIN_PUBLIC_BASE_URL: '绑定外部地址',
   GENSHIN_BIND_PAGE_PATH: '绑定页路径',
@@ -131,6 +148,40 @@ export const FIELD_HINTS: Record<string, string> = {
     '只有填在这里的群号可以在群聊使用二课；留空时私聊仍可用。',
   HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS:
     '允许裸触发二课命令的群号列表。',
+  CHAOXING_ALLOWED_GROUPS:
+    '只有填在这里的群号可以在群聊使用学习通；留空时私聊仍可用。',
+  CHAOXING_PUBLIC_BASE_URL:
+    '回复学习通绑定链接时使用的外部可访问地址。留空时运行时使用本机 Koishi 端口。',
+  CHAOXING_BIND_PAGE_PATH:
+    '学习通绑定网页路径，必须以 / 开头。留空时使用 /chaoxing/bind。',
+  CHAOXING_BIND_TOKEN_TTL_MS:
+    '学习通一次性绑定链接有效期，单位毫秒。',
+  CHAOXING_CREDENTIAL_KEK_PATH:
+    '用于加密保存学习通密码和登录态的本机密钥文件，文件权限必须为 0600。',
+  CHAOXING_AUTO_RELOGIN_ENABLED:
+    '登录态失效后，是否使用已授权保存的密码自动重新登录。',
+  CHAOXING_SESSION_VALIDATION_TTL_MS:
+    '登录态成功验证后允许复用验证结果的时间，单位毫秒。',
+  CHAOXING_REQUEST_INTERVAL_MS:
+    '学习通普通接口请求之间的最小间隔，单位毫秒。',
+  CHAOXING_WORKER_POLL_INTERVAL_MS:
+    '持久化学习任务队列检查新任务的间隔，单位毫秒。',
+  CHAOXING_SIGN_WATCH_INTERVAL_MS:
+    '签到监听任务扫描开放签到的间隔，单位毫秒。',
+  CHAOXING_DEADLINE_SYNC_INTERVAL_MS:
+    '自动同步作业、考试和活动截止时间的间隔，单位毫秒。',
+  CHAOXING_DEADLINE_REMINDER_LEAD_MS:
+    '在截止时间前多久发送提醒，单位毫秒。',
+  CHAOXING_STUDY_PLAYBACK_RATE:
+    '视频任务的计时倍率，范围 0.1–2；1 表示按真实时间。',
+  CHAOXING_VIDEO_REPORT_INTERVAL_MS:
+    '学习视频进度两次上报之间允许的最大间隔，单位毫秒。',
+  CHAOXING_ANSWER_PROVIDER_URL:
+    '可选的外部答案源 HTTP API；留空时不调用外部答案源。',
+  CHAOXING_ANSWER_PROVIDER_API_KEY:
+    '外部答案源要求的 API Key；保存后控制台会按密钥字段管理。',
+  CHAOXING_ANSWER_PROVIDER_TIMEOUT_MS:
+    '等待外部答案源响应的最长时间，单位毫秒。',
   GENSHIN_ALLOWED_GROUPS:
     '只有填在这里的群号才可以在群聊里使用原神绑定、签到、兑换和菜单。裸原神触发由自然触发白名单控制；留空时群聊不可用，私聊仍可用。',
   GENSHIN_PUBLIC_BASE_URL:

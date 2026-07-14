@@ -236,6 +236,23 @@ export const BOT_CONSOLE_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'HBU_SECOND_CLASS_ALLOWED_GROUPS', label: '二课白名单群', type: 'text', section: 'features' },
   { key: 'HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED', label: '二课自然触发', type: 'toggle', section: 'features' },
   { key: 'HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS', label: '二课自然触发群', type: 'text', section: 'features' },
+  { key: 'CHAOXING_ALLOWED_GROUPS', label: '学习通白名单群', type: 'text', section: 'features' },
+  { key: 'CHAOXING_PUBLIC_BASE_URL', label: '学习通绑定外部地址', type: 'text', section: 'features' },
+  { key: 'CHAOXING_BIND_PAGE_PATH', label: '学习通绑定页路径', type: 'text', section: 'features' },
+  { key: 'CHAOXING_BIND_TOKEN_TTL_MS', label: '学习通绑定链接有效期', type: 'number', section: 'features' },
+  { key: 'CHAOXING_CREDENTIAL_KEK_PATH', label: '学习通凭据 KEK 路径', type: 'text', section: 'features' },
+  { key: 'CHAOXING_AUTO_RELOGIN_ENABLED', label: '学习通自动重新登录', type: 'toggle', section: 'features' },
+  { key: 'CHAOXING_SESSION_VALIDATION_TTL_MS', label: '学习通登录态缓存时间', type: 'number', section: 'features' },
+  { key: 'CHAOXING_REQUEST_INTERVAL_MS', label: '学习通请求间隔', type: 'number', section: 'features' },
+  { key: 'CHAOXING_WORKER_POLL_INTERVAL_MS', label: '学习通任务轮询间隔', type: 'number', section: 'features' },
+  { key: 'CHAOXING_SIGN_WATCH_INTERVAL_MS', label: '学习通签到监听间隔', type: 'number', section: 'features' },
+  { key: 'CHAOXING_DEADLINE_SYNC_INTERVAL_MS', label: '学习通截止任务同步间隔', type: 'number', section: 'features' },
+  { key: 'CHAOXING_DEADLINE_REMINDER_LEAD_MS', label: '学习通截止提醒提前量', type: 'number', section: 'features' },
+  { key: 'CHAOXING_STUDY_PLAYBACK_RATE', label: '学习通视频计时倍率', type: 'number', section: 'features' },
+  { key: 'CHAOXING_VIDEO_REPORT_INTERVAL_MS', label: '学习通视频上报间隔', type: 'number', section: 'features' },
+  { key: 'CHAOXING_ANSWER_PROVIDER_URL', label: '学习通答案源地址', type: 'text', section: 'features' },
+  { key: 'CHAOXING_ANSWER_PROVIDER_API_KEY', label: '学习通答案源密钥', type: 'secret', section: 'features' },
+  { key: 'CHAOXING_ANSWER_PROVIDER_TIMEOUT_MS', label: '学习通答案源超时', type: 'number', section: 'features' },
   { key: 'GENSHIN_ALLOWED_GROUPS', label: '原神白名单群', type: 'text', section: 'features' },
   { key: 'GENSHIN_PUBLIC_BASE_URL', label: '原神绑定外部地址', type: 'text', section: 'features' },
   { key: 'GENSHIN_BIND_PAGE_PATH', label: '原神绑定页路径', type: 'text', section: 'features' },
@@ -381,6 +398,7 @@ function normalizeManagedEnvValue(key: string, value: string | null | undefined)
     key === 'ZYH_NATURAL_TRIGGER_GROUPS' ||
     key === 'HBU_SECOND_CLASS_ALLOWED_GROUPS' ||
     key === 'HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS' ||
+    key === 'CHAOXING_ALLOWED_GROUPS' ||
     key === 'GENSHIN_ALLOWED_GROUPS'
   ) {
     return normalizeManagedGroupList(value);
