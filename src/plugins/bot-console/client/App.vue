@@ -101,10 +101,15 @@ async function handleRefresh() {
 
 async function handleRestart() {
   try {
+    if (bc.pendingSettingsCount.value > 0) {
+      await bc.saveAllSettingsAndRestart()
+      toast.add('全部配置已保存，机器人主程序已触发重启', 'success')
+      return
+    }
     await bc.restartBot()
     toast.add('机器人主程序已触发重启', 'success')
   } catch (err: unknown) {
-    toast.add(err instanceof Error ? err.message : '重启失败', 'error')
+    toast.add(err instanceof Error ? err.message : '保存并重启失败', 'error')
   }
 }
 
@@ -141,10 +146,16 @@ const { loading, botState } = bc
           <button
             class="bc-btn bc-btn-primary"
             type="button"
-            :disabled="!!bc.servicePending['qqbot-koishi.service']"
+            :disabled="!!bc.servicePending['qqbot-koishi.service'] || bc.savingAllSettings.value"
             @click="handleRestart"
           >
-            {{ bc.servicePending['qqbot-koishi.service'] ? '重启中…' : '重启机器人' }}
+            {{
+              bc.savingAllSettings.value || bc.servicePending['qqbot-koishi.service']
+                ? '保存并重启中…'
+                : bc.pendingSettingsCount.value > 0
+                  ? `保存全部并重启 (${bc.pendingSettingsCount.value})`
+                  : '重启机器人'
+            }}
           </button>
         </div>
       </section>
@@ -169,6 +180,27 @@ const { loading, botState } = bc
           </button>
         </div>
       </nav>
+
+      <transition name="bc-savebar">
+        <section
+          v-if="bc.pendingSettingsCount.value > 0"
+          class="bc-global-savebar"
+          aria-live="polite"
+        >
+          <div>
+            <strong>共有 {{ bc.pendingSettingsCount.value }} 项修改待保存</strong>
+            <p>修改可能分布在多个页面；全部保存后统一重启一次。</p>
+          </div>
+          <button
+            class="bc-btn bc-btn-primary"
+            type="button"
+            :disabled="!bc.canSaveAllSettings.value"
+            @click="handleRestart"
+          >
+            {{ bc.savingAllSettings.value ? '保存并重启中…' : '保存全部并重启' }}
+          </button>
+        </section>
+      </transition>
 
       <!-- ── Initial loading skeleton (only before first successful fetch) -->
       <div

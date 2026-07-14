@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject } from 'vue'
+import { computed, inject } from 'vue'
 import { useToast } from '../../composables/useToast'
 import { BASIC_KEYS } from '../../composables/useBotConsole'
 import { getFieldLabel, getFieldHint } from '../../utils/constants'
@@ -9,11 +9,13 @@ const bc = inject<ReturnType<typeof useBotConsole>>('bc')!
 const { add: toastAdd } = useToast()
 
 // Destructure reactive values so refs auto-unwrap in the template
-const { envDraft, changedKeys, canSaveEnv } = bc
+const { envDraft, changedKeys, canSaveAllSettings } = bc
+const basicChangedCount = computed(() => BASIC_KEYS.filter(key => changedKeys.value.has(key)).length)
+const canSaveBasicSettings = computed(() => basicChangedCount.value > 0)
 
 async function handleSave() {
   try {
-    await bc.saveEnv(false)
+    await bc.saveEnvPatch(BASIC_KEYS)
     toastAdd('基础配置已保存', 'success')
   } catch (err: unknown) {
     toastAdd(err instanceof Error ? err.message : '保存失败', 'error')
@@ -22,8 +24,8 @@ async function handleSave() {
 
 async function handleSaveAndRestart() {
   try {
-    await bc.saveEnv(true)
-    toastAdd('基础配置已保存，正在重启机器人…', 'success')
+    await bc.saveAllSettingsAndRestart()
+    toastAdd('全部配置已保存，正在重启机器人…', 'success')
   } catch (err: unknown) {
     toastAdd(err instanceof Error ? err.message : '保存并重启失败', 'error')
   }
@@ -39,12 +41,12 @@ async function handleSaveAndRestart() {
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
         <span
-          v-if="changedKeys.size > 0"
+          v-if="basicChangedCount > 0"
           class="bc-badge bc-badge-primary"
-        >{{ changedKeys.size }} 项已修改</span>
+        >{{ basicChangedCount }} 项已修改</span>
         <button
           class="bc-btn"
-          :disabled="!canSaveEnv"
+          :disabled="!canSaveBasicSettings"
           type="button"
           @click="handleSave"
         >
@@ -52,11 +54,11 @@ async function handleSaveAndRestart() {
         </button>
         <button
           class="bc-btn bc-btn-primary"
-          :disabled="!canSaveEnv"
+          :disabled="!canSaveAllSettings"
           type="button"
           @click="handleSaveAndRestart"
         >
-          保存并重启
+          保存全部并重启
         </button>
       </div>
     </div>

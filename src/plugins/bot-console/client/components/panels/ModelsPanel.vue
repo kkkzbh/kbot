@@ -564,7 +564,7 @@ async function handleSave() {
     return
   }
   try {
-    const result = await bc.saveModelSettings(false)
+    const result = await bc.saveModelSettings()
     if (result?.hotSwitched) {
       toastAdd('模型已热切换，下一轮对话对所有房间生效', 'success')
     } else if (result?.restartRequired) {

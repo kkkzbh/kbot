@@ -114,6 +114,12 @@ export const FEATURE_NUMBER_KEYS = [
   'QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT',
 ] as const
 
+export const FEATURE_ENV_KEYS = [
+  ...FEATURE_KEYS,
+  ...FEATURE_TEXT_KEYS,
+  ...FEATURE_NUMBER_KEYS,
+] as const
+
 export const TTS_BOT_ENV_KEYS = [
   'QQ_VOICE_OUTPUT_ENABLED',
   'QQ_VOICE_TTS_BASE_URL',
@@ -271,9 +277,7 @@ export const MEMORY_KEYS = [
 ] as const
 
 export const ALL_ENV_KEYS = [
-  ...FEATURE_KEYS,
-  ...FEATURE_TEXT_KEYS,
-  ...FEATURE_NUMBER_KEYS,
+  ...FEATURE_ENV_KEYS,
   ...TTS_BOT_ENV_KEYS,
   ...FILE_SYSTEM_CONTROL_KEYS,
   ...HBU_JW_ENV_KEYS,
@@ -677,6 +681,9 @@ export function useBotConsole() {
   /** Last successfully loaded tool overrides. */
   const originalToolOverrides = ref<Record<string, ToolOverrideMode>>({})
 
+  /** True while every pending settings domain is being saved before a restart. */
+  const savingAllSettings = ref(false)
+
   // ── Computed ─────────────────────────────────────────────────────────────────
 
   /** Set of env keys whose current draft value differs from the last saved value. */
@@ -781,8 +788,16 @@ export function useBotConsole() {
     return keys
   })
 
+  const changedFeatureEnvKeys = computed<Set<string>>(() => {
+    const keys = new Set<string>()
+    for (const key of FEATURE_ENV_KEYS) {
+      if (changedKeys.value.has(key)) keys.add(key)
+    }
+    return keys
+  })
+
   const canSaveFeatureOverrides = computed(() => changedFeatureOverrideKeys.value.size > 0)
-  const canSaveFeatureSettings = computed(() => canSaveEnv.value || canSaveFeatureOverrides.value)
+  const canSaveFeatureSettings = computed(() => changedFeatureEnvKeys.value.size > 0 || canSaveFeatureOverrides.value)
 
   const toolPolicyScopes = computed<ToolPolicyScope[]>(() => buildToolScopeMap(botState.value))
   const toolPolicyCatalog = computed<ToolCatalogEntry[]>(() => buildToolCatalog(botState.value))
@@ -804,6 +819,18 @@ export function useBotConsole() {
 
   const canSaveToolPolicyOverrides = computed(() => changedToolOverrideKeys.value.size > 0)
   const canSaveToolPolicySettings = computed(() => canSaveToolPolicyOverrides.value)
+
+  const pendingSettingsCount = computed(() => {
+    const activeModelTabChanged = activeModelTab.value !== originalModelTabs.value.activeTab
+    return changedKeys.value.size
+      + changedTtsEnvKeys.value.size
+      + dirtyModelTabIds.value.length
+      + (activeModelTabChanged ? 1 : 0)
+      + changedFeatureOverrideKeys.value.size
+      + changedToolOverrideKeys.value.size
+  })
+
+  const canSaveAllSettings = computed(() => pendingSettingsCount.value > 0 && !savingAllSettings.value)
 
   const canSavePreset = computed(() => {
     const p = currentPreset.value
@@ -1065,10 +1092,25 @@ export function useBotConsole() {
   }
 
   /**
-   * Saves all managed env keys to the backend.
-   * Optionally restarts the Koishi runtime immediately after saving.
+   * Saves the selected managed env keys to the backend.
    */
-  async function saveEnvPatch(keys: readonly string[], restartAfter = false): Promise<SaveEnvResponse> {
+  function syncEnvState(env: Record<string, string>, submittedEnv: Record<string, string> = {}): void {
+    const pendingDraft: Record<string, string> = {}
+    for (const key of changedKeys.value) {
+      const wasSubmitted = Object.prototype.hasOwnProperty.call(submittedEnv, key)
+      if (!wasSubmitted || (envDraft[key] ?? '') !== submittedEnv[key]) {
+        pendingDraft[key] = envDraft[key] ?? ''
+      }
+    }
+
+    originalEnv.value = { ...env }
+    for (const key of Object.keys(envDraft)) {
+      delete envDraft[key]
+    }
+    Object.assign(envDraft, env, pendingDraft)
+  }
+
+  async function saveEnvPatch(keys: readonly string[]): Promise<SaveEnvResponse> {
     const payload: Record<string, string> = {}
     for (const key of keys) {
       if (changedKeys.value.has(key)) {
@@ -1077,42 +1119,45 @@ export function useBotConsole() {
     }
 
     const result = await send<SaveEnvResponse>('bot-console/save-env', payload)
+    const savedEnv = result?.env ?? {}
 
-    // Sync saved state
-    originalEnv.value = { ...(result?.env ?? {}) }
-    for (const key of Object.keys(envDraft)) {
-      delete envDraft[key]
-    }
-    Object.assign(envDraft, result?.env ?? {})
+    syncEnvState(savedEnv, payload)
 
     if (botState.value) {
       botState.value = {
         ...botState.value,
-        env: result?.env ?? botState.value.env,
+        env: savedEnv,
       }
     }
-
-    if (restartAfter) await restartBot()
 
     return result
   }
 
-  async function saveEnv(restartAfter = false): Promise<SaveEnvResponse> {
-    return saveEnvPatch(ALL_ENV_KEYS, restartAfter)
+  async function saveEnv(): Promise<SaveEnvResponse> {
+    return saveEnvPatch(ALL_ENV_KEYS)
   }
 
-  function syncTtsState(env: Record<string, string>, tts: BotConsoleTtsState): void {
-    originalEnv.value = { ...env }
-    for (const key of Object.keys(envDraft)) {
-      delete envDraft[key]
+  function syncTtsState(
+    env: Record<string, string>,
+    tts: BotConsoleTtsState,
+    submittedBotEnv: Record<string, string>,
+    submittedLocalEnv: Record<string, string>,
+  ): void {
+    syncEnvState(env, submittedBotEnv)
+
+    const pendingLocalDraft: Record<string, string> = {}
+    for (const key of changedTtsEnvKeys.value) {
+      const wasSubmitted = Object.prototype.hasOwnProperty.call(submittedLocalEnv, key)
+      if (!wasSubmitted || (ttsEnvDraft[key] ?? '') !== submittedLocalEnv[key]) {
+        pendingLocalDraft[key] = ttsEnvDraft[key] ?? ''
+      }
     }
-    Object.assign(envDraft, env)
 
     originalTtsEnv.value = { ...(tts.localGateway.env ?? {}) }
     for (const key of Object.keys(ttsEnvDraft)) {
       delete ttsEnvDraft[key]
     }
-    Object.assign(ttsEnvDraft, tts.localGateway.env ?? {})
+    Object.assign(ttsEnvDraft, tts.localGateway.env ?? {}, pendingLocalDraft)
 
     if (botState.value) {
       botState.value = {
@@ -1146,16 +1191,16 @@ export function useBotConsole() {
       botEnv,
       localEnv,
     })
-    syncTtsState(result.env, result.tts)
+    syncTtsState(result.env, result.tts, botEnv, localEnv)
     return result
   }
 
-  async function saveHbuJwSettings(restartAfter = false): Promise<SaveEnvResponse> {
-    return saveEnvPatch(HBU_JW_ENV_KEYS, restartAfter)
+  async function saveHbuJwSettings(): Promise<SaveEnvResponse> {
+    return saveEnvPatch(HBU_JW_ENV_KEYS)
   }
 
-  async function saveGenshinSettings(restartAfter = false): Promise<SaveEnvResponse> {
-    return saveEnvPatch(GENSHIN_ENV_KEYS, restartAfter)
+  async function saveGenshinSettings(): Promise<SaveEnvResponse> {
+    return saveEnvPatch(GENSHIN_ENV_KEYS)
   }
 
   async function probeTtsHealth(): Promise<ProbeTtsHealthResponse> {
@@ -1181,7 +1226,7 @@ export function useBotConsole() {
     return send<SynthesizeTtsSampleResponse>('bot-console/synthesize-tts-sample', { text, style })
   }
 
-  async function saveModelTabs(restartAfter = false): Promise<SaveModelTabsResponse> {
+  async function saveModelTabs(): Promise<SaveModelTabsResponse> {
     const payload: SaveModelTabsRequest = {
       activeTab: activeModelTab.value,
       tabs: MODEL_TAB_IDS.map(id => ({
@@ -1195,11 +1240,7 @@ export function useBotConsole() {
 
     const result = await send<SaveModelTabsResponse>('bot-console/save-model-tabs', payload)
 
-    originalEnv.value = { ...(result?.env ?? {}) }
-    for (const key of Object.keys(envDraft)) {
-      delete envDraft[key]
-    }
-    Object.assign(envDraft, result?.env ?? {})
+    syncEnvState(result?.env ?? {})
 
     const nextTabs = result?.modelTabs ?? buildModelTabsState(botState.value)
     originalModelTabs.value = nextTabs
@@ -1216,18 +1257,16 @@ export function useBotConsole() {
       }
     }
 
-    if (restartAfter) await restartBot()
     return result
   }
 
-  async function saveModelSettings(restartAfter = false): Promise<SaveModelTabsResponse | undefined> {
+  async function saveModelSettings(): Promise<SaveModelTabsResponse | undefined> {
     // Single source of truth: model tabs only. Auxiliary fields (preset, context ratio) live on
     // their own panels now and are saved through saveEnv there.
     let result: SaveModelTabsResponse | undefined
     if (modelTabsChanged.value) {
-      result = await saveModelTabs(false)
+      result = await saveModelTabs()
     }
-    if (restartAfter) await restartBot()
     return result
   }
 
@@ -1360,14 +1399,13 @@ export function useBotConsole() {
     return result
   }
 
-  async function saveFeatureSettings(restartAfter = false): Promise<void> {
-    if (canSaveEnv.value) {
-      await saveEnv(false)
+  async function saveFeatureSettings(): Promise<void> {
+    if (changedFeatureEnvKeys.value.size > 0) {
+      await saveEnvPatch(FEATURE_ENV_KEYS)
     }
     if (canSaveFeatureOverrides.value) {
       await saveFeatureOverrides()
     }
-    if (restartAfter) await restartBot()
   }
 
   function getToolOverrideMode(scope: ToolPolicyScope, routeProfile: ToolRouteProfile, toolName: string): ToolOverrideMode {
@@ -1527,6 +1565,52 @@ export function useBotConsole() {
     }
 
     return result
+  }
+
+  function validatePendingModelSettings(): void {
+    if (!modelTabsChanged.value) return
+
+    const tabIds = dirtyModelTabIds.value.length > 0
+      ? dirtyModelTabIds.value
+      : [activeModelTab.value]
+    for (const id of tabIds) {
+      const validation = validateMainChatTabModel(id, modelTabsDraft[id].defaultModel)
+      if (!validation.ok) {
+        throw new Error(validation.message ?? `${modelTabsDraft[id].title}模型配置无效`)
+      }
+    }
+  }
+
+  async function saveAllSettingsAndRestart(): Promise<void> {
+    if (pendingSettingsCount.value === 0 || savingAllSettings.value) return
+
+    validatePendingModelSettings()
+    if (changedToolOverrideKeys.value.size > 0) {
+      const validationErrors = validateToolPolicyDraft()
+      if (validationErrors.length > 0) throw new Error(validationErrors[0])
+    }
+
+    savingAllSettings.value = true
+    try {
+      if (changedKeys.value.size > 0) {
+        await saveEnv()
+      }
+      if (modelTabsChanged.value) {
+        await saveModelTabs()
+      }
+      if (changedTtsEnvKeys.value.size > 0) {
+        await saveTtsSettings()
+      }
+      if (changedFeatureOverrideKeys.value.size > 0) {
+        await saveFeatureOverrides()
+      }
+      if (changedToolOverrideKeys.value.size > 0) {
+        await saveToolOverrides()
+      }
+      await restartBot()
+    } finally {
+      savingAllSettings.value = false
+    }
   }
 
   async function clearConversationHistory(target: ConversationTarget): Promise<ClearConversationHistoryResponse> {
@@ -1788,6 +1872,7 @@ export function useBotConsole() {
     selectedToolScopeKey,
     toolOverrideDraft,
     originalToolOverrides,
+    savingAllSettings,
 
     // Computed
     changedKeys,
@@ -1803,6 +1888,7 @@ export function useBotConsole() {
     dirtyModelTabIds,
     currentModelValidation,
     canSaveModelSettings,
+    changedFeatureEnvKeys,
     changedFeatureOverrideKeys,
     canSaveFeatureOverrides,
     canSaveFeatureSettings,
@@ -1815,6 +1901,8 @@ export function useBotConsole() {
     changedToolOverrideKeys,
     canSaveToolPolicyOverrides,
     canSaveToolPolicySettings,
+    pendingSettingsCount,
+    canSaveAllSettings,
     canSavePreset,
     defaultPreset,
     currentModelTabDraft,
@@ -1856,6 +1944,7 @@ export function useBotConsole() {
     setToolRouteProfile,
     validateToolPolicyDraft,
     saveToolOverrides,
+    saveAllSettingsAndRestart,
     clearConversationHistory,
     deleteConversationRoom,
     openPreset,

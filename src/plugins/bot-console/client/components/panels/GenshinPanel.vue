@@ -17,6 +17,7 @@ const {
   envDraft,
   changedGenshinEnvKeys,
   canSaveGenshinSettings,
+  canSaveAllSettings,
 } = bc
 
 const textKeys = [
@@ -96,8 +97,13 @@ function normalizeExplicitTrue(value: string | undefined): boolean {
 async function handleSave(restartAfter = false): Promise<void> {
   try {
     envDraft.GENSHIN_ALLOWED_GROUPS = normalizeGroupList(envDraft.GENSHIN_ALLOWED_GROUPS ?? '')
-    await bc.saveGenshinSettings(restartAfter)
-    toastAdd(restartAfter ? '原神配置已保存，正在重启机器人…' : '原神配置已保存', 'success')
+    if (restartAfter) {
+      await bc.saveAllSettingsAndRestart()
+      toastAdd('全部配置已保存，正在重启机器人…', 'success')
+      return
+    }
+    await bc.saveGenshinSettings()
+    toastAdd('原神配置已保存', 'success')
   } catch (error: unknown) {
     toastAdd(formatErrorMessage(error, restartAfter ? '保存并重启失败' : '保存原神配置失败'), 'error')
   }
@@ -127,10 +133,10 @@ async function handleSave(restartAfter = false): Promise<void> {
         <button
           class="bc-btn bc-btn-primary"
           type="button"
-          :disabled="!canSaveGenshinSettings"
+          :disabled="!canSaveAllSettings"
           @click="handleSave(true)"
         >
-          保存并重启
+          保存全部并重启
         </button>
       </div>
     </div>

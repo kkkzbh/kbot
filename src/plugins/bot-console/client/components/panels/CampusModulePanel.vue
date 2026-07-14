@@ -16,7 +16,7 @@ const props = defineProps<{
 
 const bc = inject<ReturnType<typeof useBotConsole>>('bc')!
 const { add: toastAdd } = useToast()
-const { envDraft, changedKeys } = bc
+const { envDraft, changedKeys, canSaveAllSettings } = bc
 
 const changedCount = computed(() => props.envKeys.filter(key => changedKeys.value.has(key)).length)
 const canSave = computed(() => changedCount.value > 0)
@@ -54,8 +54,13 @@ async function handleSave(restartAfter = false): Promise<void> {
     for (const key of props.envKeys.filter(key => key.endsWith('_GROUPS'))) {
       envDraft[key] = normalizeGroupList(envDraft[key] ?? '')
     }
-    await bc.saveEnvPatch(props.envKeys, restartAfter)
-    toastAdd(restartAfter ? `${props.title}配置已保存，正在重启机器人…` : `${props.title}配置已保存`, 'success')
+    if (restartAfter) {
+      await bc.saveAllSettingsAndRestart()
+      toastAdd('全部配置已保存，正在重启机器人…', 'success')
+      return
+    }
+    await bc.saveEnvPatch(props.envKeys)
+    toastAdd(`${props.title}配置已保存`, 'success')
   } catch (error: unknown) {
     toastAdd(formatErrorMessage(error, `保存${props.title}配置失败`), 'error')
   }
@@ -72,7 +77,7 @@ async function handleSave(restartAfter = false): Promise<void> {
       <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
         <span v-if="changedCount" class="bc-badge bc-badge-primary">{{ changedCount }} 项已修改</span>
         <button class="bc-btn" type="button" :disabled="!canSave" @click="handleSave(false)">保存配置</button>
-        <button class="bc-btn bc-btn-primary" type="button" :disabled="!canSave" @click="handleSave(true)">保存并重启</button>
+        <button class="bc-btn bc-btn-primary" type="button" :disabled="!canSaveAllSettings" @click="handleSave(true)">保存全部并重启</button>
       </div>
     </div>
 

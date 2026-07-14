@@ -22,6 +22,7 @@ const {
   botState,
   envDraft,
   changedKeys,
+  changedFeatureEnvKeys,
   canSaveFeatureSettings,
   changedFeatureOverrideKeys,
   featureOverrideDraft,
@@ -149,7 +150,7 @@ function getSelectedTargets(targets: ConversationTarget[]): ConversationTarget[]
 
 async function handleSave() {
   try {
-    await bc.saveFeatureSettings(false)
+    await bc.saveFeatureSettings()
     toastAdd('功能配置已保存', 'success')
   } catch (e: unknown) {
     toastAdd(formatErrorMessage(e, '保存失败'), 'error')
@@ -274,9 +275,9 @@ async function handleBatchDelete(targets: ConversationTarget[]) {
         <p class="bc-muted">作为所有作用域的基础默认值。</p>
       </div>
       <span
-        v-if="changedKeys.size > 0"
+        v-if="changedFeatureEnvKeys.size > 0"
         class="bc-badge bc-badge-primary"
-      >{{ changedKeys.size }} 项全局修改</span>
+      >{{ changedFeatureEnvKeys.size }} 项全局修改</span>
     </div>
 
     <div class="bc-toggle-grid">

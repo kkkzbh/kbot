@@ -17,6 +17,7 @@ const {
   envDraft,
   changedHbuJwEnvKeys,
   canSaveHbuJwSettings,
+  canSaveAllSettings,
 } = bc
 
 const textKeys = [
@@ -88,8 +89,13 @@ function normalizeExplicitTrue(value: string | undefined): boolean {
 async function handleSave(restartAfter = false): Promise<void> {
   try {
     envDraft.HBU_JW_ALLOWED_GROUPS = normalizeGroupList(envDraft.HBU_JW_ALLOWED_GROUPS ?? '')
-    await bc.saveHbuJwSettings(restartAfter)
-    toastAdd(restartAfter ? '教务系统配置已保存，正在重启机器人…' : '教务系统配置已保存', 'success')
+    if (restartAfter) {
+      await bc.saveAllSettingsAndRestart()
+      toastAdd('全部配置已保存，正在重启机器人…', 'success')
+      return
+    }
+    await bc.saveHbuJwSettings()
+    toastAdd('教务系统配置已保存', 'success')
   } catch (error: unknown) {
     toastAdd(formatErrorMessage(error, restartAfter ? '保存并重启失败' : '保存教务系统配置失败'), 'error')
   }
@@ -119,10 +125,10 @@ async function handleSave(restartAfter = false): Promise<void> {
         <button
           class="bc-btn bc-btn-primary"
           type="button"
-          :disabled="!canSaveHbuJwSettings"
+          :disabled="!canSaveAllSettings"
           @click="handleSave(true)"
         >
-          保存并重启
+          保存全部并重启
         </button>
       </div>
     </div>

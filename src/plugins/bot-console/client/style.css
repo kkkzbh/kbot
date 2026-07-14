@@ -909,6 +909,45 @@
     font-weight: 600;
 }
 
+.bc-global-savebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid color-mix(in srgb, var(--k-color-warning) 34%, var(--k-card-border));
+    border-radius: 14px;
+    background:
+        linear-gradient(135deg,
+            color-mix(in srgb, var(--k-color-warning) 11%, var(--k-card-bg)),
+            color-mix(in srgb, var(--k-color-primary) 7%, var(--k-card-bg)));
+    box-shadow: var(--k-card-shadow);
+}
+
+.bc-global-savebar strong {
+    display: block;
+    color: var(--bc-text-strong);
+    font-size: 0.92rem;
+}
+
+.bc-global-savebar p {
+    margin: 0.2rem 0 0;
+    color: var(--bc-text-muted);
+    font-size: 0.8rem;
+    line-height: 1.4;
+}
+
+.bc-savebar-enter-active,
+.bc-savebar-leave-active {
+    transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.bc-savebar-enter-from,
+.bc-savebar-leave-to {
+    opacity: 0;
+    transform: translateY(-0.35rem);
+}
+
 .bc-service-meta-row strong {
     color: var(--bc-text-strong);
     font-size: 0.84rem;
@@ -3503,6 +3542,15 @@
 
     .bc-hero-actions {
         align-self: stretch;
+    }
+
+    .bc-global-savebar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .bc-global-savebar .bc-btn {
+        width: 100%;
     }
 
     .bc-tabbar-wrap {

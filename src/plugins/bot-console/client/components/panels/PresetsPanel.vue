@@ -197,7 +197,7 @@ async function handleSetDefault(name: string) {
   suppressPresetOpen()
   try {
     envDraft.CHATLUNA_DEFAULT_PRESET = name
-    await bc.saveEnvPatch(['CHATLUNA_DEFAULT_PRESET'], false)
+    await bc.saveEnvPatch(['CHATLUNA_DEFAULT_PRESET'])
     toastAdd(`默认预设已切换为「${name}」`, 'success')
   } catch (err: unknown) {
     toastAdd(err instanceof Error ? err.message : '设为默认预设失败', 'error')

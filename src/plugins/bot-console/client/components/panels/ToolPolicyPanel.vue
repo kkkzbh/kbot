@@ -39,6 +39,7 @@ const {
   changedToolOverrideKeys,
   envDraft,
   changedKeys,
+  canSaveAllSettings,
 } = bc
 
 const expandedScopeSections = ref<Record<string, boolean>>({
@@ -261,26 +262,30 @@ function getEffectiveStateBadgeClass(tool: ToolCatalogEntry): string {
 
 async function handleSaveAll(restartAfter: boolean) {
   try {
+    if (restartAfter) {
+      await bc.saveAllSettingsAndRestart()
+      toastAdd('全部配置已保存，正在重启机器人…', 'success')
+      return
+    }
+
     const hadGlobalChanges = canSaveFileSystemConfig.value
     const hadToolChanges = changedToolOverrideKeys.value.size > 0
 
     if (hadGlobalChanges) {
-      await bc.saveEnvPatch(FILE_SYSTEM_CONTROL_KEYS, false)
+      await bc.saveEnvPatch(FILE_SYSTEM_CONTROL_KEYS)
     }
     if (hadToolChanges) {
       await bc.saveToolOverrides()
     }
-    if (restartAfter) await bc.restartBot()
-
     if (hadGlobalChanges && hadToolChanges) {
-      toastAdd(restartAfter ? '工具配置与全局设置已保存，正在重启机器人…' : '工具配置与全局设置已保存', 'success')
+      toastAdd('工具配置与全局设置已保存', 'success')
       return
     }
     if (hadGlobalChanges) {
-      toastAdd(restartAfter ? '全局工具设置已保存，正在重启机器人…' : '全局工具设置已保存', 'success')
+      toastAdd('全局工具设置已保存', 'success')
       return
     }
-    toastAdd(restartAfter ? '工具策略已保存，正在重启机器人…' : '工具策略已保存', 'success')
+    toastAdd('工具策略已保存', 'success')
   } catch (err: unknown) {
     toastAdd(formatErrorMessage(err, '保存失败'), 'error')
   }
@@ -288,8 +293,13 @@ async function handleSaveAll(restartAfter: boolean) {
 
 async function handleSaveFileSystemConfig(restartAfter: boolean) {
   try {
-    await bc.saveEnvPatch(FILE_SYSTEM_CONTROL_KEYS, restartAfter)
-    toastAdd(restartAfter ? '文件系统配置已保存，正在重启机器人…' : '文件系统配置已保存', 'success')
+    if (restartAfter) {
+      await bc.saveAllSettingsAndRestart()
+      toastAdd('全部配置已保存，正在重启机器人…', 'success')
+      return
+    }
+    await bc.saveEnvPatch(FILE_SYSTEM_CONTROL_KEYS)
+    toastAdd('文件系统配置已保存', 'success')
   } catch (err: unknown) {
     toastAdd(formatErrorMessage(err, '文件系统配置保存失败'), 'error')
   }
@@ -466,10 +476,10 @@ function effectiveStatusLabel(toolName: string): string {
               <button
                 type="button"
                 class="bc-btn bc-btn-sm bc-btn-primary"
-                :disabled="!canSaveFileSystemConfig"
+                :disabled="!canSaveAllSettings"
                 @click="handleSaveFileSystemConfig(true)"
               >
-                保存并重启
+                保存全部并重启
               </button>
             </div>
           </div>
@@ -834,7 +844,7 @@ function effectiveStatusLabel(toolName: string): string {
       >
         <div class="bc-tool-fab-status">
           <strong>{{ changedToolOverrideKeys.size + fileSystemConfigChangedKeys.length }} 项待保存</strong>
-          <span>修改后点击保存；涉及全局设置时可直接保存并重启。</span>
+          <span>保存并重启会同时提交其他页面的待保存修改。</span>
         </div>
         <div class="bc-tool-fab-actions">
           <button
@@ -847,9 +857,10 @@ function effectiveStatusLabel(toolName: string): string {
           <button
             type="button"
             class="bc-btn bc-btn-sm bc-btn-primary"
+            :disabled="!canSaveAllSettings"
             @click="handleSaveAll(true)"
           >
-            保存并重启
+            保存全部并重启
           </button>
         </div>
       </div>

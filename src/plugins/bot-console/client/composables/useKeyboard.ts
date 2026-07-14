@@ -1,5 +1,11 @@
 import { onMounted, onUnmounted, type Ref } from 'vue'
-import type { useBotConsole } from './useBotConsole'
+import {
+  BASIC_KEYS,
+  FILE_SYSTEM_CONTROL_KEYS,
+  HBU_SECOND_CLASS_ENV_KEYS,
+  ZYH_ENV_KEYS,
+  type useBotConsole,
+} from './useBotConsole'
 import type { useToast } from './useToast'
 
 export function useKeyboard(
@@ -22,28 +28,59 @@ export function useKeyboard(
 
       if (tab === 'features') {
         if (!bc.canSaveFeatureSettings.value) return
-        await bc.saveFeatureSettings(false)
+        await bc.saveFeatureSettings()
         toast.add('配置已保存', 'success')
         return
       }
 
       if (tab === 'hbu-jw') {
         if (!bc.canSaveHbuJwSettings.value) return
-        await bc.saveHbuJwSettings(false)
+        await bc.saveHbuJwSettings()
         toast.add('配置已保存', 'success')
         return
       }
 
       if (tab === 'genshin') {
         if (!bc.canSaveGenshinSettings.value) return
-        await bc.saveGenshinSettings(false)
+        await bc.saveGenshinSettings()
         toast.add('配置已保存', 'success')
         return
       }
 
-      if (tab === 'models' || tab === 'basic') {
-        if (!bc.canSaveEnv.value) return
-        await bc.saveEnv(false)
+      if (tab === 'zyh' || tab === 'hbu-second-class') {
+        const keys = tab === 'zyh' ? ZYH_ENV_KEYS : HBU_SECOND_CLASS_ENV_KEYS
+        if (!keys.some(key => bc.changedKeys.value.has(key))) return
+        await bc.saveEnvPatch(keys)
+        toast.add('配置已保存', 'success')
+        return
+      }
+
+      if (tab === 'models') {
+        if (!bc.canSaveModelSettings.value) return
+        await bc.saveModelSettings()
+        toast.add('配置已保存', 'success')
+        return
+      }
+
+      if (tab === 'tts') {
+        if (!bc.canSaveTtsSettings.value) return
+        await bc.saveTtsSettings()
+        toast.add('配置已保存', 'success')
+        return
+      }
+
+      if (tab === 'tools') {
+        const hasFileSystemChanges = FILE_SYSTEM_CONTROL_KEYS.some(key => bc.changedKeys.value.has(key))
+        if (!hasFileSystemChanges && !bc.canSaveToolPolicyOverrides.value) return
+        if (hasFileSystemChanges) await bc.saveEnvPatch(FILE_SYSTEM_CONTROL_KEYS)
+        if (bc.canSaveToolPolicyOverrides.value) await bc.saveToolOverrides()
+        toast.add('配置已保存', 'success')
+        return
+      }
+
+      if (tab === 'basic') {
+        if (!BASIC_KEYS.some(key => bc.changedKeys.value.has(key))) return
+        await bc.saveEnvPatch(BASIC_KEYS)
         toast.add('配置已保存', 'success')
         return
       }
