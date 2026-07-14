@@ -306,6 +306,15 @@ export function parseStudyProgress(value: string, courseName: string): ChaoxingS
   return parsed as ChaoxingStudyProgress;
 }
 
+export function selectResumableStudyJob(jobs: ChaoxingJob[], course: Pick<ChaoxingCourse, 'courseId' | 'classId'>): ChaoxingJob | undefined {
+  return jobs
+    .filter((job) => job.type === 'study'
+      && job.courseId === course.courseId
+      && job.classId === course.classId
+      && ['waiting_input', 'failed', 'cancelled'].includes(job.status))
+    .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+}
+
 function videoRate(attachment: ChaoxingTaskAttachment): number {
   const propertyRate = Number(attachment.property.rt);
   if (Number.isFinite(propertyRate) && propertyRate > 0) return propertyRate;

@@ -13,8 +13,8 @@ import { ChaoxingMenuService, type ChaoxingMenuPuppeteerLike } from './menu.js';
 import { ChaoxingSignService, formatDetectedSigns } from './sign-service.js';
 import { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
 import { ChaoxingTaskStore, ensureChaoxingTables } from './store.js';
-import { ChaoxingStudyRunner } from './study-runner.js';
-import { ChaoxingUserError, type ChaoxingJobType, type DatabaseLike, type OwnerIdentity } from './types.js';
+import { ChaoxingStudyRunner, selectResumableStudyJob } from './study-runner.js';
+import { ChaoxingUserError, type ChaoxingJob, type ChaoxingJobType, type DatabaseLike, type OwnerIdentity } from './types.js';
 import { renderChaoxingBindPage } from './web/bind-page.js';
 import { ChaoxingWorker, formatJobStatus, parseAnswerJobProgress, type ChaoxingNotifier } from './worker.js';
 
@@ -254,13 +254,14 @@ async function executeCommand(command: ChaoxingCommand, identity: OwnerIdentity,
     return '学习通签到监听已停止。';
   }
   if (command.kind === 'study_start' || command.kind === 'answer_start') {
-    await assertNoActiveLearningJob(services.store, identity.ownerKey);
+    const allJobs = await services.store.listJobs(identity.ownerKey);
+    const active = activeLearningJob(allJobs);
+    if (active && (command.kind === 'answer_start' || active.type !== 'study' || active.status !== 'waiting_input')) throw activeLearningJobError(active);
     const course = await services.catalog.resolveCourse(identity, command.courseQuery);
     const type: ChaoxingJobType = command.kind === 'study_start' ? 'study' : 'answer';
     if (type === 'study') {
-      const resumable = (await services.store.listJobs(identity.ownerKey))
-        .filter((job) => job.type === 'study' && job.courseId === course.courseId && job.classId === course.classId && ['waiting_input', 'failed', 'cancelled'].includes(job.status))
-        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+      if (active && (active.courseId !== course.courseId || active.classId !== course.classId)) throw activeLearningJobError(active);
+      const resumable = selectResumableStudyJob(allJobs, course);
       if (resumable) {
         await services.store.resumeJob(resumable.id, Date.now());
         services.worker.wake();
@@ -429,9 +430,12 @@ async function syncDeadlines(store: ChaoxingTaskStore, deadline: ChaoxingDeadlin
   }
 }
 
-async function assertNoActiveLearningJob(store: ChaoxingTaskStore, ownerKey: string): Promise<void> {
-  const active = (await store.listJobs(ownerKey)).find((job) => (job.type === 'study' || job.type === 'answer') && ['queued', 'running', 'waiting_input'].includes(job.status));
-  if (active) throw new ChaoxingUserError(`已有学习任务 #${active.id}（${active.status}），请先处理或停止。`);
+function activeLearningJob(jobs: ChaoxingJob[]): ChaoxingJob | undefined {
+  return jobs.find((job) => (job.type === 'study' || job.type === 'answer') && ['queued', 'running', 'waiting_input'].includes(job.status));
+}
+
+function activeLearningJobError(job: ChaoxingJob): ChaoxingUserError {
+  return new ChaoxingUserError(`已有学习任务 #${job.id}（${job.status}），请先处理或停止。`);
 }
 
 async function requireOwnedWaitingAnswerJob(store: ChaoxingTaskStore, ownerKey: string, jobId: number) {

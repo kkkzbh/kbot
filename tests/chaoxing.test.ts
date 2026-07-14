@@ -15,6 +15,7 @@ import {
 import { parseChaoxingCommand } from '../src/plugins/chaoxing/commands.js';
 import { ChaoxingDeadlineService } from '../src/plugins/chaoxing/deadline-service.js';
 import { ChaoxingOwnerCoordinator } from '../src/plugins/chaoxing/owner-coordinator.js';
+import { selectResumableStudyJob } from '../src/plugins/chaoxing/study-runner.js';
 import type { ChaoxingQuestion } from '../src/plugins/chaoxing/types.js';
 import { renderChaoxingBindPage } from '../src/plugins/chaoxing/web/bind-page.js';
 
@@ -197,6 +198,21 @@ describe('chaoxing protocol parsers', () => {
 });
 
 describe('chaoxing local contracts', () => {
+  it('selects the latest resumable study checkpoint for the same course', () => {
+    const base = {
+      ownerKey: 'onebot:1', platform: 'onebot', qqUserId: '1', channelId: 'group:1', type: 'study' as const,
+      courseId: '100', classId: '200', courseQuery: '软件工程', payloadJson: '{}', progressJson: '{}', resultJson: null,
+      errorMessage: null, runAfter: 0, lockedAt: null, startedAt: null, finishedAt: null, createdAt: 1,
+    };
+    const jobs = [
+      { ...base, id: 1, status: 'failed' as const, updatedAt: 10 },
+      { ...base, id: 2, status: 'waiting_input' as const, updatedAt: 20 },
+      { ...base, id: 3, status: 'cancelled' as const, courseId: 'other', updatedAt: 30 },
+    ];
+
+    expect(selectResumableStudyJob(jobs, { courseId: '100', classId: '200' })?.id).toBe(2);
+  });
+
   it('syncs only the task type requested by the user', async () => {
     const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
     const course = {
