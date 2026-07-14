@@ -219,7 +219,6 @@ function cacheNotice(result: { source: string; fetchedAt: number }): string {
 
 function methodLabel(method: string): string {
   return ({
-    zyh_app_sso: '志愿汇 App 扫码授权（登录态过期后需重新扫码）',
     direct_credentials: '二课账号登录',
     token_import: '导入二课 Token',
   } as Record<string, string>)[method] ?? method;

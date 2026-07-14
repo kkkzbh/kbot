@@ -30,10 +30,9 @@ import {
   type CampusOwnerIdentity,
 } from '../src/plugins/campus-auth-core/types.js';
 import { renderCampusBindPage } from '../src/plugins/campus-auth-core/bind-page.js';
-import { renderCampusAppBridgePage } from '../src/plugins/campus-auth-core/app-bridge-page.js';
 import { SecondClassHttpClient } from '../src/plugins/hbu-second-class/client.js';
 import { SecondClassCache } from '../src/plugins/hbu-second-class/cache.js';
-import { HbuSecondClassService } from '../src/plugins/hbu-second-class/service.js';
+import { HbuSecondClassAuthProvider, HbuSecondClassService } from '../src/plugins/hbu-second-class/service.js';
 import { collectRadarPoints, collectTranscriptRows } from '../src/plugins/hbu-second-class/render.js';
 import { parseSecondClassCommand, shouldExposeSecondClassCapabilityReference } from '../src/plugins/hbu-second-class/index.js';
 import { SecondClassSessionExpiredError } from '../src/plugins/hbu-second-class/types.js';
@@ -178,52 +177,6 @@ describe('campus auth core contracts', () => {
     await expect(service.submitBinding(token, 'session_import', {})).rejects.toThrow('尝试次数已用完');
   });
 
-  it('accepts an App Bridge code through the provider boundary without persisting it', async () => {
-    const { service, database } = createAuthService();
-    const authenticateAppBridge = vi.fn(async ({ code }: { code: string }) => ({
-      method: 'zyh_app_sso' as const,
-      sessionPayload: { token: 'second-class-session' },
-      accountLabel: 'fixture-account',
-    }));
-    service.registerProvider({
-      ...provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['direct_credentials']),
-      appBridge: {
-        kind: 'zyh_temp_user_code',
-        method: 'zyh_app_sso',
-        label: '志愿汇 App 扫码授权',
-        description: '测试 Bridge',
-      },
-      authenticateAppBridge,
-    });
-    const identity = owner();
-    const started = await service.startBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
-    const token = new URL(started.link).searchParams.get('token')!;
-    await service.submitAppBridgeBinding(token, 'fixture-app-code');
-    const page = await service.resolveBindPage(token);
-    expect(page.state).toBe('verified');
-    await service.confirmBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, page.confirmCode!);
-    expect(authenticateAppBridge).toHaveBeenCalledWith(expect.objectContaining({ code: 'fixture-app-code' }));
-    expect((await service.getActiveSession(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS))?.row.method).toBe('zyh_app_sso');
-    expect(JSON.stringify([...database.tables.values()])).not.toContain('fixture-app-code');
-  });
-
-  it('redacts an App Bridge code from failed challenge state and user errors', async () => {
-    const { service, database } = createAuthService();
-    service.registerProvider({
-      ...provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['direct_credentials']),
-      appBridge: {
-        kind: 'zyh_temp_user_code', method: 'zyh_app_sso', label: '扫码授权', description: '测试 Bridge',
-      },
-      authenticateAppBridge: async ({ code }) => {
-        throw new CampusAuthUserError(`远端拒绝临时码 ${code}`);
-      },
-    });
-    const started = await service.startBinding(owner(), CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
-    const token = new URL(started.link).searchParams.get('token')!;
-    await expect(service.submitAppBridgeBinding(token, 'fixture-app-code')).rejects.toThrow('远端拒绝临时码 <redacted>');
-    expect(JSON.stringify([...database.tables.values()])).not.toContain('fixture-app-code');
-  });
-
   it('keeps independent 二课 sessions when 志愿汇 is unbound', async () => {
     const { service } = createAuthService();
     service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_ZYH, ['session_import']));
@@ -280,33 +233,6 @@ describe('campus auth core contracts', () => {
     expect(html).toContain('navigator.clipboard.writeText');
   });
 
-  it('renders the one-time App authorization QR card only from explicit page data', () => {
-    const html = renderCampusBindPage({
-      providerLabel: '河北大学二课', qqUserId: '10001', state: 'form',
-      appBridge: {
-        label: '使用志愿汇 App 扫码授权',
-        description: '验证 App Bridge',
-        qrImageDataUrl: 'data:image/png;base64,fixture-qr',
-      },
-    });
-    expect(html).toContain('使用志愿汇 App 扫码授权');
-    expect(html).toContain('data:image/png;base64,fixture-qr');
-    expect(html).toContain('志愿汇 App 首页“扫一扫”');
-  });
-
-  it('renders a Bridge probe that submits the code without exposing it in the page', () => {
-    const html = renderCampusAppBridgePage({
-      providerLabel: '河北大学二课', token: 'one-time-token',
-      submitPath: '/campus/bind/app-bridge/submit', returnPath: '/campus/bind?token=one-time-token',
-    });
-    expect(html).toContain('window.getTempUserCodeCallback');
-    expect(html).toContain('window.android.getTempUserCode()');
-    expect(html).toContain("window.webkit.messageHandlers.getTempUserCode.postMessage('')");
-    expect(html).toContain("new URLSearchParams({ token, code })");
-    expect(html).toContain('8 秒内未收到 getTempUserCodeCallback');
-    expect(html).not.toContain('fixture-app-code');
-  });
-
   it('redacts credential, token, captcha, and bearer values from diagnostics', () => {
     const value = diagnostic(new Error('password=plain Authorization:auth-token token=api-token captcha=1234 Bearer bearer-token'));
     expect(value).not.toContain('plain');
@@ -342,6 +268,14 @@ describe('志愿汇 protocol client', () => {
 });
 
 describe('河北大学二课 protocol client', () => {
+  it('offers only persistent account and Token binding methods', async () => {
+    const provider = new HbuSecondClassAuthProvider({
+      getCaptcha: vi.fn(async () => ({ uuid: 'captcha-uuid', imageDataUrl: 'data:image/png;base64,fixture' })),
+    } as never);
+    const methods = await provider.getBindingMethods();
+    expect(methods.map((method) => method.id)).toEqual(['direct_credentials', 'token_import']);
+  });
+
   it('uses the Web SM2 login contract and validates the 河北大学 tenant', async () => {
     let loginBody: Record<string, unknown> = {};
     const client = new SecondClassHttpClient(async (request) => {
@@ -371,24 +305,6 @@ describe('河北大学二课 protocol client', () => {
       return { status: 200, text: JSON.stringify({ code: 200, data: { id: 'other-school', name: '其他大学' } }) };
     });
     await expect(client.importToken('other-token')).rejects.toThrow('不属于河北大学');
-  });
-
-  it('uses one fresh App Bridge code only for the SSO login request', async () => {
-    const requests: Array<{ path: string; headers: Record<string, string> }> = [];
-    const client = new SecondClassHttpClient(async (request) => {
-      const path = new URL(request.url).pathname;
-      requests.push({ path, headers: request.headers });
-      if (path === '/auth/h5/auth/login') return { status: 200, text: fixture('second-class-login-success.json') };
-      if (path === '/app/h5/info') return { status: 200, text: fixture('second-class-info-success.json') };
-      if (path === '/app/h5/school/info') return { status: 200, text: fixture('second-class-school-success.json') };
-      throw new Error(`unexpected path ${path}`);
-    });
-    await client.loginWithZyhAppCode('fresh-app-code');
-    expect(requests.map((request) => request.path)).toEqual([
-      '/auth/h5/auth/login', '/app/h5/info', '/app/h5/school/info',
-    ]);
-    expect(requests[0]?.headers.token).toBe('fresh-app-code');
-    expect(requests.slice(1).every((request) => request.headers.token == null)).toBe(true);
   });
 
   it('treats HTTP and envelope 401 responses as expired sessions', async () => {
@@ -479,11 +395,11 @@ describe('session renewal contracts', () => {
     expect(campusAuth.markSessionInvalid).toHaveBeenCalled();
   });
 
-  it('requires a fresh App scan when the App-authorized 二课 session expires', async () => {
+  it('requires rebinding when a 二课 session expires', async () => {
     const database = createDatabase();
     const oldSession = { token: 'expired', schoolId: '1101092545313637006', schoolName: '河北大学', studentNo: '2026000001', accountName: '学生' };
     const campusAuth = {
-      getActiveSession: vi.fn(async () => ({ row: { method: 'zyh_app_sso', version: 4 }, payload: oldSession })),
+      getActiveSession: vi.fn(async () => ({ row: { method: 'direct_credentials', version: 4 }, payload: oldSession })),
       markSessionValidated: vi.fn(async () => undefined),
       markSessionInvalid: vi.fn(async () => undefined),
     };
@@ -491,7 +407,7 @@ describe('session renewal contracts', () => {
       getUserInfo: vi.fn(async () => { throw new SecondClassSessionExpiredError(); }),
     };
     const service = new HbuSecondClassService(campusAuth as never, client as never, new SecondClassCache(database as never));
-    await expect(service.ensureAuthenticated(owner())).rejects.toThrow('重新使用志愿汇 App 扫码绑定');
+    await expect(service.ensureAuthenticated(owner())).rejects.toThrow('重新绑定');
     expect(campusAuth.markSessionInvalid).toHaveBeenCalledWith(owner().ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'session_expired');
 
     campusAuth.getActiveSession.mockResolvedValueOnce({ row: { method: 'token_import', version: 5 }, payload: oldSession });

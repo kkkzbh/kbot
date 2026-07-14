@@ -1,13 +1,11 @@
 import { Context, Logger, Schema } from 'koishi';
-import QRCode from 'qrcode';
 import type { CampusAuthServiceLike } from '../../types/campus-auth.js';
 import '../../types/campus-auth.js';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
-import { renderCampusAppBridgePage } from './app-bridge-page.js';
 import { renderCampusBindPage } from './bind-page.js';
 import { CampusAuthService } from './service.js';
 import { ensureCampusAuthTables, CampusAuthStore } from './store.js';
-import type { CampusAuthDatabase, CampusAuthMethod, CampusAuthProvider } from './types.js';
+import type { CampusAuthDatabase, CampusAuthMethod } from './types.js';
 import { CampusAuthUserError } from './types.js';
 
 export * from './types.js';
@@ -61,7 +59,7 @@ export function apply(ctx: Context, config: Config): void {
     { publicBaseUrl, bindPagePath, bindTokenTtlMs, maxBindingAttempts },
   );
   provideService(ctx, service);
-  registerRoutes(serviceCtx, service, bindPagePath, publicBaseUrl);
+  registerRoutes(serviceCtx, service, bindPagePath);
   ctx.on?.('ready', () => service.cleanupExpiredChallenges());
   logger.info('campus auth bind page registered at %s.', bindPagePath);
 }
@@ -79,17 +77,12 @@ function provideService(ctx: Context, service: CampusAuthServiceLike): void {
   }
 }
 
-function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bindPagePath: string, publicBaseUrl: string): void {
-  const appBridgePath = `${bindPagePath}/app-bridge`;
-  const appBridgeSubmitPath = `${appBridgePath}/submit`;
+function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bindPagePath: string): void {
   ctx.server.get(bindPagePath, async (koaCtx: any) => {
     const token = queryToken(koaCtx);
     try {
       const state = await service.resolveBindPage(token);
       const methods = state.state === 'form' ? await state.provider.getBindingMethods() : [];
-      const appBridge = state.state === 'form'
-        ? await createAppBridgeView(state.provider, token, publicBaseUrl, appBridgePath)
-        : undefined;
       writeHtml(koaCtx, 200, renderCampusBindPage({
         providerId: state.provider.id,
         providerLabel: state.provider.label,
@@ -97,7 +90,6 @@ function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bind
         token,
         submitPath: `${bindPagePath}/submit`,
         methods,
-        appBridge,
         state: state.state,
         confirmCommand: state.confirmCode ? `${state.provider.confirmCommandPrefix} ${state.confirmCode}` : undefined,
         message: state.challenge.errorMessage ?? undefined,
@@ -109,38 +101,6 @@ function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bind
         state: 'invalid',
         message: userMessage(error),
       }));
-    }
-  });
-
-  ctx.server.get(appBridgePath, async (koaCtx: any) => {
-    const token = queryToken(koaCtx);
-    try {
-      const state = await service.resolveBindPage(token);
-      if (state.state !== 'form') throw new CampusAuthUserError('当前绑定流程无需再次调用 App 授权。');
-      if (!state.provider.appBridge) throw new CampusAuthUserError('当前模块不支持 App 扫码授权。');
-      writeHtml(koaCtx, 200, renderCampusAppBridgePage({
-        providerLabel: state.provider.label,
-        token,
-        submitPath: appBridgeSubmitPath,
-        returnPath: `${bindPagePath}?token=${encodeURIComponent(token)}`,
-      }));
-    } catch (error) {
-      writeHtml(koaCtx, 400, renderCampusAppBridgePage({
-        providerLabel: '校园账号',
-        state: 'invalid',
-        message: userMessage(error),
-      }));
-    }
-  });
-
-  ctx.server.post(appBridgeSubmitPath, async (koaCtx: any) => {
-    const body = await readRequestBody(koaCtx);
-    const token = String(body.token ?? '').trim();
-    try {
-      await service.submitAppBridgeBinding(token, String(body.code ?? ''));
-      writeJson(koaCtx, 200, { ok: true });
-    } catch (error) {
-      writeJson(koaCtx, 400, { ok: false, message: userMessage(error) });
     }
   });
 
@@ -164,9 +124,6 @@ function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bind
           methods: await state.provider.getBindingMethods(),
           selectedMethod: method,
           submittedFields: fields,
-          appBridge: state.state === 'form'
-            ? await createAppBridgeView(state.provider, token, publicBaseUrl, appBridgePath)
-            : undefined,
           state: state.state === 'verified' ? 'verified' : 'form',
           confirmCommand: state.confirmCode ? `${state.provider.confirmCommandPrefix} ${state.confirmCode}` : undefined,
           message: userMessage(error),
@@ -183,23 +140,6 @@ function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bind
   });
 }
 
-async function createAppBridgeView(
-  provider: CampusAuthProvider,
-  token: string,
-  publicBaseUrl: string,
-  appBridgePath: string,
-): Promise<{ label: string; description: string; qrImageDataUrl: string } | undefined> {
-  if (!provider.appBridge) return undefined;
-  return {
-    label: provider.appBridge.label,
-    description: provider.appBridge.description,
-    qrImageDataUrl: await QRCode.toDataURL(
-      `${publicBaseUrl}${appBridgePath}?token=${encodeURIComponent(token)}`,
-      { errorCorrectionLevel: 'M', margin: 2, width: 280 },
-    ),
-  };
-}
-
 function queryToken(koaCtx: any): string {
   return String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
 }
@@ -210,16 +150,8 @@ function writeHtml(koaCtx: any, status: number, html: string): void {
   koaCtx.set('cache-control', 'no-store');
   koaCtx.set('referrer-policy', 'no-referrer');
   koaCtx.set('x-frame-options', 'DENY');
-  koaCtx.set('content-security-policy', "default-src 'none'; connect-src 'self'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  koaCtx.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   koaCtx.body = html;
-}
-
-function writeJson(koaCtx: any, status: number, value: unknown): void {
-  koaCtx.status = status;
-  koaCtx.set('content-type', 'application/json; charset=utf-8');
-  koaCtx.set('cache-control', 'no-store');
-  koaCtx.set('referrer-policy', 'no-referrer');
-  koaCtx.body = JSON.stringify(value);
 }
 
 function writeRedirect(koaCtx: any, location: string): void {

@@ -12,19 +12,12 @@ import {
 import { SecondClassCache } from './cache.js';
 import { SecondClassHttpClient } from './client.js';
 import type { SecondClassPage, SecondClassSessionPayload } from './types.js';
-import { SecondClassApiError, SecondClassSessionExpiredError } from './types.js';
+import { SecondClassSessionExpiredError } from './types.js';
 
 export class HbuSecondClassAuthProvider implements CampusAuthProvider {
   readonly id = CAMPUS_AUTH_PROVIDER_SECOND_CLASS;
   readonly label = '河北大学二课';
   readonly confirmCommandPrefix = '二课确认';
-  readonly appBridge = {
-    kind: 'zyh_temp_user_code',
-    method: 'zyh_app_sso',
-    label: '使用志愿汇 App 扫码授权',
-    description: '实验功能：用志愿汇“扫一扫”打开一次性页面，验证 App Bridge 和 QQBot 域名授权。',
-  } as const;
-
   constructor(private readonly client: SecondClassHttpClient) {}
 
   async getBindingMethods(): Promise<CampusAuthMethodView[]> {
@@ -74,22 +67,6 @@ export class HbuSecondClassAuthProvider implements CampusAuthProvider {
       accountLabel: session.accountName || maskStudentNo(session.studentNo),
     };
   }
-
-  async authenticateAppBridge(input: { code: string }): Promise<CampusAuthPendingResult> {
-    let session: SecondClassSessionPayload;
-    try {
-      session = await this.client.loginWithZyhAppCode(input.code);
-    } catch (error) {
-      throw toUserError(error, '志愿汇 App 授权未能登录二课。');
-    }
-    return {
-      method: this.appBridge.method,
-      sessionPayload: session,
-      sourceProviderId: null,
-      sourceCredentialId: null,
-      accountLabel: session.accountName || maskStudentNo(session.studentNo),
-    };
-  }
 }
 
 export interface SecondClassAuthenticatedContext {
@@ -115,8 +92,7 @@ export class HbuSecondClassService {
       if (!(error instanceof SecondClassSessionExpiredError)) throw error;
     }
     await this.campusAuth.markSessionInvalid(identity.ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'session_expired');
-    const instruction = active.row.method === 'zyh_app_sso' ? '请重新使用志愿汇 App 扫码绑定。' : '请重新绑定。';
-    throw new CampusAuthUserError(`二课登录态已失效，${instruction}`);
+    throw new CampusAuthUserError('二课登录态已失效，请重新绑定。');
   }
 
   queryCredits(identity: CampusOwnerIdentity): Promise<VersionedQueryResult<unknown>> {
@@ -153,12 +129,6 @@ export class HbuSecondClassService {
       return loader(auth.session.token);
     });
   }
-}
-
-function toUserError(error: unknown, fallback: string): CampusAuthUserError {
-  if (error instanceof CampusAuthUserError) return error;
-  if (error instanceof SecondClassApiError) return new CampusAuthUserError(error.message || fallback);
-  return new CampusAuthUserError(fallback);
 }
 
 function maskStudentNo(value: string): string {

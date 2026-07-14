@@ -120,7 +120,7 @@ function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhServ
         await reply(services.nativeFeatureChat, session, command, text, details, '机器人返回了志愿汇绑定状态。', true, false);
       } else if (command.kind === 'unbind') {
         await services.campusAuth.unbind(identity, CAMPUS_AUTH_PROVIDER_ZYH);
-        await reply(services.nativeFeatureChat, session, command, text, '志愿汇绑定已解除；由该账号生成的二课 SSO 登录态也已撤销。', '志愿汇绑定已解除。');
+        await reply(services.nativeFeatureChat, session, command, text, '志愿汇绑定已解除；二课绑定保持不变。', '志愿汇绑定已解除。');
       } else if (command.kind === 'hours') {
         const result = await service.queryHours(identity);
         const profile = result.data;

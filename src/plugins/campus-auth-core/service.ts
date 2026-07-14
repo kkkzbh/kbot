@@ -134,27 +134,6 @@ export class CampusAuthService {
     }), sensitiveValues);
   }
 
-  async submitAppBridgeBinding(token: string, code: string): Promise<void> {
-    const challenge = await this.requireSubmittableChallenge(token);
-    if (!challenge) return;
-    const provider = this.getProvider(challenge.providerId);
-    if (!provider.appBridge || !provider.authenticateAppBridge) {
-      throw new CampusAuthUserError('当前模块不支持 App 扫码授权。');
-    }
-    const normalizedCode = code.trim();
-    if (!normalizedCode) throw new CampusAuthUserError('志愿汇 App 没有返回临时授权码。');
-    const method = provider.appBridge.method;
-    await this.authenticateChallenge(challenge, method, () => provider.authenticateAppBridge!({
-      identity: {
-        ownerKey: challenge.ownerKey,
-        platform: challenge.platform,
-        qqUserId: challenge.qqUserId,
-        channelId: challenge.channelId,
-      },
-      code: normalizedCode,
-    }), [normalizedCode]);
-  }
-
   private async requireSubmittableChallenge(token: string): Promise<CampusAuthChallenge | null> {
     const challenge = await this.requireUsableChallenge(token);
     if (challenge.status === 'verified') return null;

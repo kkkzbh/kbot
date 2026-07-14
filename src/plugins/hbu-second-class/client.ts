@@ -82,14 +82,6 @@ export class SecondClassHttpClient {
     return this.buildSession(normalized, await this.getUserInfo(normalized));
   }
 
-  async loginWithZyhAppCode(zyhCode: string): Promise<SecondClassSessionPayload> {
-    const normalized = zyhCode.trim();
-    if (!normalized) throw new CampusAuthUserError('志愿汇 App 没有返回临时授权码。');
-    const login = await this.request('/auth/h5/auth/login', { method: 'POST', zyhCode: normalized });
-    const token = requireToken(login.data);
-    return this.buildSession(token, await this.getUserInfo(token));
-  }
-
   async getUserInfo(token: string): Promise<SecondClassUserInfo> {
     const infoEnvelope = await this.request('/app/h5/info', { token });
     const raw = requireRecord(infoEnvelope.data, '二课账号信息响应缺少数据。');
