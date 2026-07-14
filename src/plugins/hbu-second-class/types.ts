@@ -27,6 +27,28 @@ export interface SecondClassLoginInput {
   captchaUuid: string;
 }
 
+export interface SecondClassCredentialPayload {
+  loginName: string;
+  password: string;
+}
+
+export type SecondClassReauthStatus = 'waiting' | 'verifying';
+
+export interface SecondClassReauthChallenge {
+  id: number;
+  ownerKey: string;
+  platform: string;
+  qqUserId: string;
+  channelId: string;
+  credentialId: number;
+  captchaUuid: string;
+  status: SecondClassReauthStatus;
+  attemptId?: string | null;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface SecondClassPage {
   rows: Record<string, unknown>[];
   total: number | null;

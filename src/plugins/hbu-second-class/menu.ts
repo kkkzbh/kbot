@@ -41,6 +41,7 @@ export function buildHbuSecondClassMenuView(): FeatureMenuView {
           { keyword: '二课绑定', description: '使用二课账号或 Token 完成绑定', icon: 'shield' },
           { keyword: '二课确认 <确认码>', description: '网页验证成功后确认账号绑定', icon: 'check', accent: true },
           { keyword: '二课状态', description: '检查当前绑定方式与登录状态', icon: 'id-card' },
+          { keyword: '二课验证 [验证码]', description: 'Token 失效后获取图片或提交验证码续登', icon: 'check' },
           { keyword: '二课解绑', description: '清除二课绑定和历史查询缓存', icon: 'link-off' },
         ],
       },

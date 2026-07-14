@@ -32,10 +32,20 @@ import {
 import { renderCampusBindPage } from '../src/plugins/campus-auth-core/bind-page.js';
 import { SecondClassHttpClient } from '../src/plugins/hbu-second-class/client.js';
 import { SecondClassCache } from '../src/plugins/hbu-second-class/cache.js';
-import { HbuSecondClassAuthProvider, HbuSecondClassService } from '../src/plugins/hbu-second-class/service.js';
+import { SecondClassReauthStore } from '../src/plugins/hbu-second-class/reauth-store.js';
+import {
+  HbuSecondClassAuthProvider,
+  HbuSecondClassService,
+  SecondClassReauthRequiredError,
+} from '../src/plugins/hbu-second-class/service.js';
 import { collectRadarPoints, collectTranscriptRows } from '../src/plugins/hbu-second-class/render.js';
-import { parseSecondClassCommand, shouldExposeSecondClassCapabilityReference } from '../src/plugins/hbu-second-class/index.js';
-import { SecondClassSessionExpiredError } from '../src/plugins/hbu-second-class/types.js';
+import {
+  buildSecondClassReauthReply,
+  parseSecondClassCommand,
+  secondClassCaptchaImage,
+  shouldExposeSecondClassCapabilityReference,
+} from '../src/plugins/hbu-second-class/index.js';
+import { SecondClassApiError, SecondClassSessionExpiredError } from '../src/plugins/hbu-second-class/types.js';
 import { VersionedJsonCache } from '../src/plugins/shared/versioned-json-cache.js';
 import { parseZyhCommand, shouldExposeZyhCapabilityReference } from '../src/plugins/zyh/index.js';
 import { ZyhHttpClient } from '../src/plugins/zyh/client.js';
@@ -117,12 +127,13 @@ describe('campus auth core contracts', () => {
     ['managed_credentials', CAMPUS_AUTH_PROVIDER_ZYH],
     ['session_credentials', CAMPUS_AUTH_PROVIDER_ZYH],
     ['session_import', CAMPUS_AUTH_PROVIDER_ZYH],
+    ['managed_credentials', CAMPUS_AUTH_PROVIDER_SECOND_CLASS],
     ['direct_credentials', CAMPUS_AUTH_PROVIDER_SECOND_CLASS],
     ['token_import', CAMPUS_AUTH_PROVIDER_SECOND_CLASS],
   ] as const)('persists %s only after the six-digit confirmation', async (method, providerId) => {
     const { service, database } = createAuthService();
     service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_ZYH, ['managed_credentials', 'session_credentials', 'session_import']));
-    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['direct_credentials', 'token_import']));
+    service.registerProvider(provider(CAMPUS_AUTH_PROVIDER_SECOND_CLASS, ['managed_credentials', 'direct_credentials', 'token_import']));
     const identity = owner(method);
     const started = await service.startBinding(identity, providerId);
     const token = new URL(started.link).searchParams.get('token')!;
@@ -268,12 +279,23 @@ describe('志愿汇 protocol client', () => {
 });
 
 describe('河北大学二课 protocol client', () => {
-  it('offers only persistent account and Token binding methods', async () => {
+  it('offers managed renewal, one-time account, and Token binding methods', async () => {
+    const directLogin = vi.fn(async () => ({
+      token: 'token', schoolId: '1101092545313637006', schoolName: '河北大学', studentNo: '2026000001', accountName: '学生',
+    }));
     const provider = new HbuSecondClassAuthProvider({
       getCaptcha: vi.fn(async () => ({ uuid: 'captcha-uuid', imageDataUrl: 'data:image/png;base64,fixture' })),
+      directLogin,
     } as never);
     const methods = await provider.getBindingMethods();
-    expect(methods.map((method) => method.id)).toEqual(['direct_credentials', 'token_import']);
+    expect(methods.map((method) => method.id)).toEqual(['managed_credentials', 'direct_credentials', 'token_import']);
+    const result = await provider.authenticate({
+      identity: owner(),
+      method: 'managed_credentials',
+      fields: { loginName: '2026000001', password: 'secret', captchaCode: 'a1b2', captchaUuid: 'captcha-uuid', persistConsent: 'yes' },
+    });
+    expect(result.credentialPayload).toEqual({ loginName: '2026000001', password: 'secret' });
+    expect(directLogin).toHaveBeenCalledWith({ loginName: '2026000001', password: 'secret', captchaCode: 'a1b2', captchaUuid: 'captcha-uuid' });
   });
 
   it('uses the Web SM2 login contract and validates the 河北大学 tenant', async () => {
@@ -332,6 +354,29 @@ describe('versioned cache and user-facing parsers', () => {
     expect(parseSecondClassCommand('二课成绩单 2025-2026-2')).toEqual({ kind: 'transcript', semester: '2025-2026-2' });
     expect(parseSecondClassCommand('二课确认 654321')).toEqual({ kind: 'confirm', code: '654321' });
     expect(parseSecondClassCommand('二课确认 abcdef')).toBeNull();
+    expect(parseSecondClassCommand('二课验证')).toEqual({ kind: 'reauth_request' });
+    expect(parseSecondClassCommand('二课验证 a1B2')).toEqual({ kind: 'reauth_submit', code: 'a1B2' });
+    expect(parseSecondClassCommand('二课验证 1234!')).toBeNull();
+  });
+
+  it('converts a captcha data URL into a chat image fragment', () => {
+    const encoded = Buffer.from('captcha-image').toString('base64');
+    const image = secondClassCaptchaImage({ uuid: 'uuid', imageDataUrl: `data:image/png;base64,${encoded}` }) as unknown as { type: string; attrs: { source: Buffer; mime: string } };
+    expect(image.type).toBe('image');
+    expect(image.attrs.mime).toBe('image/png');
+    expect(image.attrs.source.equals(Buffer.from('captcha-image'))).toBe(true);
+  });
+
+  it('builds an addressed chat reply with the captcha image and verification command', () => {
+    const reply = buildSecondClassReauthReply('10001', {
+      message: '请输入验证码。',
+      captcha: { uuid: 'uuid', imageDataUrl: 'data:image/png;base64,Y2FwdGNoYQ==' },
+      expiresAt: 310_000,
+    }, 10_000) as unknown as Array<{ type: string; attrs: Record<string, unknown> }>;
+    expect(reply.map((part) => part.type)).toEqual(['at', 'text', 'image', 'text']);
+    expect(reply[0]?.attrs.id).toBe('10001');
+    expect(reply[2]?.attrs.mime).toBe('image/png');
+    expect(reply[3]?.attrs.content).toContain('5 分钟内回复：二课验证 <验证码>');
   });
 
   it('exposes capability guidance only for current-message command intent', () => {
@@ -406,12 +451,101 @@ describe('session renewal contracts', () => {
     const client = {
       getUserInfo: vi.fn(async () => { throw new SecondClassSessionExpiredError(); }),
     };
-    const service = new HbuSecondClassService(campusAuth as never, client as never, new SecondClassCache(database as never));
+    const service = new HbuSecondClassService(
+      campusAuth as never,
+      client as never,
+      new SecondClassCache(database as never),
+      new SecondClassReauthStore(database as never),
+    );
     await expect(service.ensureAuthenticated(owner())).rejects.toThrow('重新绑定');
     expect(campusAuth.markSessionInvalid).toHaveBeenCalledWith(owner().ownerKey, CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'session_expired');
 
     campusAuth.getActiveSession.mockResolvedValueOnce({ row: { method: 'token_import', version: 5 }, payload: oldSession });
     await expect(service.ensureAuthenticated(owner())).rejects.toThrow('重新绑定');
     expect(campusAuth.markSessionInvalid).toHaveBeenCalled();
+  });
+
+  it('issues a chat captcha and renews a managed 二课 session without rotating its cache version', async () => {
+    const database = createDatabase();
+    const oldSession = { token: 'expired', schoolId: '1101092545313637006', schoolName: '河北大学', studentNo: '2026000001', accountName: '学生' };
+    const freshSession = { ...oldSession, token: 'fresh' };
+    const credential = { row: { id: 12, method: 'managed_credentials' }, payload: { loginName: '2026000001', password: 'secret' } };
+    const campusAuth = {
+      getActiveSession: vi.fn(async () => ({ row: { method: 'managed_credentials', version: 8 }, payload: oldSession })),
+      getActiveCredential: vi.fn(async () => credential),
+      replaceSession: vi.fn(async () => ({ row: { method: 'managed_credentials', version: 8 }, payload: freshSession })),
+      markSessionValidated: vi.fn(async () => undefined),
+      markSessionInvalid: vi.fn(async () => undefined),
+      markCredentialUsed: vi.fn(async () => undefined),
+      markCredentialFailure: vi.fn(async () => undefined),
+    };
+    const client = {
+      getUserInfo: vi.fn(async () => { throw new SecondClassSessionExpiredError(); }),
+      getCaptcha: vi.fn(async () => ({ uuid: 'captcha-uuid', imageDataUrl: 'data:image/png;base64,Y2FwdGNoYQ==' })),
+      directLogin: vi.fn(async () => freshSession),
+    };
+    const store = new SecondClassReauthStore(database as never, () => 10_000);
+    const service = new HbuSecondClassService(campusAuth as never, client as never, new SecondClassCache(database as never), store);
+
+    let required: unknown;
+    try {
+      await service.ensureAuthenticated(owner());
+    } catch (error) {
+      required = error;
+    }
+    expect(required).toBeInstanceOf(SecondClassReauthRequiredError);
+    expect((required as SecondClassReauthRequiredError).prompt.captcha.uuid).toBe('captcha-uuid');
+    expect(database.tables.get('hbu_second_class_reauth')).toEqual([
+      expect.objectContaining({ ownerKey: owner().ownerKey, credentialId: 12, captchaUuid: 'captcha-uuid', status: 'waiting' }),
+    ]);
+    expect(JSON.stringify(database.tables.get('hbu_second_class_reauth'))).not.toContain('secret');
+
+    const renewed = await service.completeReauth(owner(), 'a1B2');
+    expect(renewed).toEqual({ session: freshSession, sessionVersion: 8 });
+    expect(client.directLogin).toHaveBeenCalledWith({ loginName: '2026000001', password: 'secret', captchaCode: 'a1B2', captchaUuid: 'captcha-uuid' });
+    expect(campusAuth.replaceSession).toHaveBeenCalledWith(owner(), CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'managed_credentials', freshSession, { sourceCredentialId: 12, rotateVersion: false });
+    expect(campusAuth.markCredentialUsed).toHaveBeenCalledWith(12);
+    expect(database.tables.get('hbu_second_class_reauth')).toEqual([]);
+  });
+
+  it('accepts a 二课 captcha only in the originating chat and before expiry', async () => {
+    const database = createDatabase();
+    let now = 20_000;
+    const store = new SecondClassReauthStore(database as never, () => now);
+    await store.replace(owner(), 3, 'uuid');
+    expect(await store.claim(owner('10001', 'private:other'))).toBeNull();
+    expect(await store.getWaiting(owner().ownerKey)).toEqual(expect.objectContaining({ status: 'waiting', captchaUuid: 'uuid' }));
+    now += 5 * 60_000;
+    expect(await store.getWaiting(owner().ownerKey)).toBeNull();
+    expect(database.tables.get('hbu_second_class_reauth')).toEqual([]);
+  });
+
+  it('replaces a rejected 二课 captcha while retaining the managed credential reference', async () => {
+    const database = createDatabase();
+    const credential = { row: { id: 5, method: 'managed_credentials' }, payload: { loginName: '2026000001', password: 'secret' } };
+    const campusAuth = {
+      getActiveCredential: vi.fn(async () => credential),
+      markCredentialFailure: vi.fn(async () => undefined),
+    };
+    const client = {
+      getCaptcha: vi
+        .fn()
+        .mockResolvedValueOnce({ uuid: 'first-uuid', imageDataUrl: 'data:image/png;base64,Zmlyc3Q=' })
+        .mockResolvedValueOnce({ uuid: 'second-uuid', imageDataUrl: 'data:image/png;base64,c2Vjb25k' }),
+      directLogin: vi.fn(async () => { throw new SecondClassApiError('验证码错误。', 400, 200); }),
+    };
+    const store = new SecondClassReauthStore(database as never, () => 30_000);
+    const service = new HbuSecondClassService(campusAuth as never, client as never, new SecondClassCache(database as never), store);
+    await service.beginReauth(owner());
+
+    let required: unknown;
+    try {
+      await service.completeReauth(owner(), 'wrong');
+    } catch (error) {
+      required = error;
+    }
+    expect(required).toBeInstanceOf(SecondClassReauthRequiredError);
+    expect((required as SecondClassReauthRequiredError).prompt.captcha.uuid).toBe('second-uuid');
+    expect(await store.getWaiting(owner().ownerKey)).toEqual(expect.objectContaining({ credentialId: 5, captchaUuid: 'second-uuid' }));
   });
 });
