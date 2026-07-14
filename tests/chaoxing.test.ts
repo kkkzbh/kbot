@@ -144,6 +144,20 @@ describe('chaoxing protocol parsers', () => {
     });
   });
 
+  it('classifies the 202 anti-spider page as a captcha pause', async () => {
+    const client = new ChaoxingClient({
+      fetchImpl: vi.fn().mockResolvedValue(new Response('【9010】操作异常，请输入图片中的验证码', { status: 202 })) as typeof fetch,
+    });
+    const course = {
+      courseId: '100', classId: '200', cpi: '300', name: '软件工程', className: '', teacherName: '', schoolName: '', imageUrl: '', state: 1, isRetired: 0,
+    };
+
+    await expect(client.getAcademicTasks({ cookies: [] }, course, ['work'])).rejects.toMatchObject({
+      name: 'ChaoxingCaptchaRequiredError',
+      message: '学习通要求完成验证码，任务已暂停。',
+    });
+  });
+
   it('parses supported chapter quiz questions and preserves submit fields', () => {
     const parsed = parseWorkPage(`
       <form action="/mooc-ans/work/addStudentWorkNew">

@@ -63,6 +63,7 @@ export class ChaoxingStudyRunner {
       auth = await this.authService.persistCookies(auth, cardResult.cookieJar);
       if (cardResult.card.notOpen) {
         progress = await this.skipChapter(job, progress, chapterIndex, chapter, '章节尚未开放');
+        await this.sleepWithCancellation(job.id, this.config.requestIntervalMs);
         continue;
       }
       if (cardResult.card.faceRequired) {
@@ -102,6 +103,7 @@ export class ChaoxingStudyRunner {
       }
       progress = { ...progress, chapterIndex: chapterIndex + 1, attachmentIndex: 0, currentChapter: undefined, currentTask: undefined };
       await this.store.updateJobProgress(job.id, progress, this.now());
+      await this.sleepWithCancellation(job.id, this.config.requestIntervalMs);
     }
     return progress;
   }
@@ -115,9 +117,15 @@ export class ChaoxingStudyRunner {
       await this.assertRunning(job.id);
       const cardResult = await this.client.getChapterTasks(auth.cookieJar, course, chapter);
       auth = await this.authService.persistCookies(auth, cardResult.cookieJar);
-      if (cardResult.card.notOpen || cardResult.card.faceRequired) continue;
+      if (cardResult.card.notOpen || cardResult.card.faceRequired) {
+        await this.sleepWithCancellation(job.id, this.config.requestIntervalMs);
+        continue;
+      }
       const work = cardResult.card.attachments.find((attachment) => attachment.job && !attachment.isPassed && attachment.type === 'workid');
-      if (!work) continue;
+      if (!work) {
+        await this.sleepWithCancellation(job.id, this.config.requestIntervalMs);
+        continue;
+      }
       const draft = await this.answerService.prepareDraft(identity, {
         course,
         chapterId: chapter.chapterId,

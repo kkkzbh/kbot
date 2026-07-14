@@ -858,6 +858,10 @@ function setJobParams(url: URL, args: { course: ChaoxingCourse; chapterId: strin
 }
 
 function assertOk(response: InternalResponse, operation: string): void {
+  if (new URL(response.url).pathname === '/antispiderShowVerify.ac'
+    || /操作异常[^。]*请输入图片中的验证码|请输入(?:图片中的)?验证码/u.test(response.text)) {
+    throw new ChaoxingCaptchaRequiredError(undefined, excerpt(response.text));
+  }
   if (response.response.status >= 200 && response.response.status < 300) return;
   throw new ChaoxingProtocolError(`${operation}_http_${response.response.status}`, `学习通请求失败（${response.response.status}）。`, excerpt(response.text));
 }
