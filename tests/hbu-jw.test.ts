@@ -150,6 +150,13 @@ function apply(ctx: Record<string, any>, config: Parameters<typeof applyHbuJwPlu
       return null;
     }),
   };
+  ctx.chatluna ??= {
+    platform: { registerTool: vi.fn(() => () => undefined) },
+    registerAllowReplyResolver: vi.fn(() => () => undefined),
+  };
+  ctx.chatluna_storage ??= {
+    createTempFile: vi.fn(async () => ({ id: 'test-asset', url: 'asset://test-guidance-card' })),
+  };
   applyHbuJwPlugin(ctx as never, config);
 }
 
@@ -2773,6 +2780,56 @@ describe('hbu-jw bind page rendering', () => {
 });
 
 describe('hbu-jw plugin integration', () => {
+  it('registers the three guidance tools and blocks an unbound guidance keyword before Agent handoff', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const registerTool = vi.fn((_name: string, _tool: unknown) => () => undefined);
+    const registerAllowReplyResolver = vi.fn(() => () => undefined);
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+      chatluna: { platform: { registerTool }, registerAllowReplyResolver },
+      chatluna_storage: { createTempFile: vi.fn() },
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
+    });
+
+    expect(registerTool.mock.calls.map((call) => call[0])).toEqual([
+      'hbu_jw_course_guidance_context',
+      'hbu_jw_course_offerings',
+      'hbu_jw_validate_course_recommendation',
+    ]);
+    expect(registerAllowReplyResolver).toHaveBeenCalledWith('qqbot-hbu-jw-course-guidance', expect.any(Function));
+
+    const next = vi.fn();
+    const send = vi.fn();
+    await middleware.mock.calls[0]?.[0]({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '选课指导',
+      send,
+    }, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(renderMessageContent(send.mock.calls[0]?.[0])).toContain('教务绑定');
+  });
+
   it('returns the academic affairs menu in allowed groups without creating a binding challenge', async () => {
     const dir = createTempDir();
     const database = createDatabase();

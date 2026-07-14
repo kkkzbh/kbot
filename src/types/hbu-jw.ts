@@ -6,6 +6,7 @@ import type {
   HbuJwBindChallenge,
   HbuJwCredential,
   HbuJwSession,
+  HbuJwTrainingPlanCacheRow,
 } from '../plugins/hbu-jw/types.js';
 
 declare module 'koishi' {
@@ -16,5 +17,6 @@ declare module 'koishi' {
     hbu_jw_auth_audit: HbuJwAuthAudit;
     hbu_jw_academic_sync_state: HbuJwAcademicSyncState;
     hbu_jw_academic_item: HbuJwAcademicItem;
+    hbu_jw_training_plan: HbuJwTrainingPlanCacheRow;
   }
 }

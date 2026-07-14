@@ -266,6 +266,85 @@ export interface HbuJwCourseSelectionResult {
   groups: HbuJwCourseSelectionGroup[];
 }
 
+export interface HbuJwStudentPlanProfile {
+  majorName: string;
+  cohortYear: number;
+  planNumber: string | null;
+  planDetailPath: string | null;
+}
+
+export interface HbuJwTrainingPlanCategory {
+  code: string;
+  name: string;
+  catalogCredits: number;
+  requiredCredits: number;
+}
+
+export type HbuJwTrainingPlanCourseAttribute = 'required' | 'limited' | 'elective';
+
+export interface HbuJwTrainingPlanCourse {
+  courseNumber: string;
+  courseName: string;
+  categoryCode: string;
+  categoryName: string;
+  attribute: HbuJwTrainingPlanCourseAttribute;
+  credits: number | null;
+  replacementCourseNumbers: string[];
+}
+
+export interface HbuJwTrainingPlanSnapshot {
+  planNumber: string;
+  planName: string;
+  majorCode: string;
+  majorName: string;
+  cohortYear: number;
+  requiredCredits: number;
+  categories: HbuJwTrainingPlanCategory[];
+  courses: HbuJwTrainingPlanCourse[];
+}
+
+export interface HbuJwTrainingPlanCacheRow {
+  id: number;
+  planNumber: string;
+  majorCode: string;
+  majorName: string;
+  cohortYear: number;
+  planName: string;
+  snapshotJson: string;
+  sourceHash: string;
+  syncedAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HbuJwCourseOfferingMeeting {
+  classWeek: string;
+  weekday: number;
+  startSection: number;
+  sectionCount: number;
+  campusName: string;
+  teachingBuildingName: string;
+  classroomName: string;
+}
+
+export interface HbuJwCourseOffering {
+  executionPlanNumber: string;
+  courseNumber: string;
+  sequenceNumber: string;
+  courseName: string;
+  credits: number;
+  courseAttributeCode: string;
+  courseAttributeName: string;
+  categoryCode: string;
+  categoryName: string;
+  planCategoryCode: string;
+  planCategoryName: string;
+  teacherName: string;
+  capacity: number;
+  remainingSeats: number;
+  meetings: HbuJwCourseOfferingMeeting[];
+}
+
 export interface HbuJwCredentialPayload {
   username: string;
   password: string;
@@ -282,6 +361,7 @@ export type DatabaseLike = {
   get<T = Record<string, unknown>>(table: string, query: Record<string, unknown>): Promise<T[]>;
   set(table: string, query: Record<string, unknown>, data: Record<string, unknown>): Promise<unknown>;
   create<T = Record<string, unknown>>(table: string, row: Record<string, unknown>): Promise<T>;
+  upsert(table: string, rows: Array<Record<string, unknown>>, keys?: string[]): Promise<unknown>;
   remove(table: string, query: Record<string, unknown>): Promise<unknown>;
 };
 

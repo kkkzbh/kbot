@@ -6,6 +6,11 @@ import '../../types/native-feature-chat.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { HbuJwAcademicCache } from './academic-cache.js';
 import { HbuJwCourseQueryService } from './course-query.js';
+import { HbuJwCourseGuidanceService, type HbuJwGuidanceStorageLike } from './course-guidance.js';
+import {
+  registerHbuJwCourseGuidanceTools,
+  type HbuJwCourseGuidanceToolsContext,
+} from './course-guidance-tools.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwExamScheduleService } from './exams.js';
 import { HbuJwGpaService } from './gpa.js';
@@ -20,7 +25,7 @@ import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.j
 import { renderBindPage } from './web/bind-page.js';
 
 export const name = 'hbu-jw';
-export const inject = ['server', 'database', 'puppeteer', 'nativeFeatureChat'] as const;
+export const inject = { required: ['server', 'database', 'puppeteer', 'nativeFeatureChat', 'chatluna', 'chatluna_storage'] } as const;
 
 const logger = new Logger(name);
 const CAMPUS_BACKGROUND_FILE = join(__dirname, 'assets/campus-bg.jpg');
@@ -71,6 +76,14 @@ interface HbuJwServicesLike {
     get(path: string, handler: (koaCtx: any) => unknown): void;
     post(path: string, handler: (koaCtx: any) => unknown): void;
   };
+  chatluna: {
+    platform: HbuJwCourseGuidanceToolsContext['chatluna']['platform'];
+    registerAllowReplyResolver?: (
+      name: string,
+      resolver: (arg: { session: Session; context: unknown }) => boolean | void | Promise<boolean | void>,
+    ) => () => void;
+  };
+  chatluna_storage: HbuJwGuidanceStorageLike;
 }
 
 interface RuntimeConfig {
@@ -116,6 +129,28 @@ export function apply(ctx: Context, config: Config): void {
   const courseQueryService = new HbuJwCourseQueryService(service, jwClient, hbuCtx.puppeteer, academicCache);
   const examScheduleService = new HbuJwExamScheduleService(service, jwClient, hbuCtx.puppeteer, undefined, academicCache);
   const menuService = new HbuJwMenuService(hbuCtx.puppeteer);
+  const guidanceService = new HbuJwCourseGuidanceService(
+    service,
+    jwClient,
+    store,
+    hbuCtx.puppeteer,
+    hbuCtx.chatluna_storage,
+  );
+  const guidanceSessions = new WeakSet<object>();
+
+  const toolDisposers = registerHbuJwCourseGuidanceTools(
+    hbuCtx as unknown as HbuJwCourseGuidanceToolsContext,
+    guidanceService,
+  );
+  for (const dispose of toolDisposers) ctx.on?.('dispose', dispose);
+  if (typeof hbuCtx.chatluna.registerAllowReplyResolver !== 'function') {
+    throw new Error('hbu-jw requires chatluna.registerAllowReplyResolver.');
+  }
+  const disposeAllowResolver = hbuCtx.chatluna.registerAllowReplyResolver(
+    'qqbot-hbu-jw-course-guidance',
+    ({ session }) => guidanceSessions.has(session as object) ? true : undefined,
+  );
+  ctx.on?.('dispose', disposeAllowResolver);
 
   const unregisterCapability = hbuCtx.nativeFeatureChat.registerCapability({
     id: 'hbu-jw',
@@ -134,6 +169,8 @@ export function apply(ctx: Context, config: Config): void {
     courseQueryService,
     examScheduleService,
     menuService,
+    guidanceService,
+    guidanceSessions,
     hbuCtx.nativeFeatureChat,
     runtime,
   );
@@ -246,6 +283,8 @@ function registerKeywordMiddleware(
   courseQueryService: HbuJwCourseQueryService,
   examScheduleService: HbuJwExamScheduleService,
   menuService: HbuJwMenuService,
+  guidanceService: HbuJwCourseGuidanceService,
+  guidanceSessions: WeakSet<object>,
   nativeFeatureChat: NativeFeatureChatServiceLike,
   runtime: RuntimeConfig,
 ): void {
@@ -264,6 +303,22 @@ function registerKeywordMiddleware(
         success: false,
       });
       return;
+    }
+
+    if (command.kind === 'course_guidance') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        await guidanceService.assertBound(identity);
+        guidanceSessions.add(session as object);
+        try {
+          return await next();
+        } finally {
+          guidanceSessions.delete(session as object);
+        }
+      } catch (error) {
+        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        return;
+      }
     }
 
     if (command.kind === 'menu') {
@@ -503,7 +558,8 @@ type HbuJwCommand =
   | { kind: 'term_scores'; mode: HbuJwTermScoresMode }
   | { kind: 'course_query_help' }
   | { kind: 'course_query'; courseQuery: string; termInput?: string }
-  | { kind: 'exam_schedule' };
+  | { kind: 'exam_schedule' }
+  | { kind: 'course_guidance' };
 
 interface HbuJwHistoryReplyOptions {
   summary: string;
@@ -571,6 +627,11 @@ export function buildHbuJwCapabilityReference(session: Session, runtime: Runtime
     '- 总入口：“教务”，返回完整教务菜单。',
     '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务状态”、“教务解绑”。',
     '- 查询：“GPA”、“成绩”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
+    '- AI 选课指导关键词：“选课指导”。该功能只给出指导，不执行实际选课。',
+    '- 收到“选课指导”后必须严格依次调用 hbu_jw_course_guidance_context、hbu_jw_course_offerings、hbu_jw_validate_course_recommendation。禁止跳步。',
+    '- 只有最终验证返回 valid=true 才能输出方案；按缺失必修、当前方案开课、任选课组缺口、通识通选排序，以达到最低学分且不超过最低要求为原则。',
+    '- 最终 StructuredReply 第一条必须发送 context.card.assetRef 图片，随后列出课程名、课程号、课序号、学分、理由、预计完成度和开课数据时间。',
+    '- “选课结果”代表当前选课轮次（通常是下学期），计入进行中并作为时间冲突基线；“完整课表”代表本学期。',
     '- 课程查询帮助：“课程查询”。',
     '- 课程查询严格格式：“课程查询 <课程名关键词或课程号> [学期]”；命令名后必须有空格。',
     '- 学期省略时使用 0（本学期）；也可用 -1、-2 等非正偏移，或完整学期号，例如 2025-2026-2-2；正数偏移无效。',
@@ -582,6 +643,7 @@ export function buildHbuJwCapabilityReference(session: Session, runtime: Runtime
 }
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
+  if (text === '选课指导') return { kind: 'course_guidance' };
   if (text === '教务') return { kind: 'menu' };
   if (text === '教务绑定') return { kind: 'bind' };
   if (/^教务(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };

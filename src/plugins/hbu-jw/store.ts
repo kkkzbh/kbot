@@ -10,6 +10,8 @@ import type {
   HbuJwCredential,
   HbuJwSession,
   HbuJwSessionStatus,
+  HbuJwTrainingPlanCacheRow,
+  HbuJwTrainingPlanSnapshot,
   OwnerIdentity,
 } from './types.js';
 import { HBU_JW_SERVICE_ID } from './types.js';
@@ -160,6 +162,28 @@ export function ensureHbuJwTables(ctx: Context): void {
       autoInc: true,
       unique: ['recordKey'],
       indexes: [['ownerKey', 'credentialVersion', 'dataKind'], ['scopeKey'], ['fetchedAt']],
+    },
+  );
+
+  ctx.model.extend(
+    'hbu_jw_training_plan',
+    {
+      id: 'unsigned',
+      planNumber: 'string',
+      majorCode: 'string',
+      majorName: 'string',
+      cohortYear: 'integer',
+      planName: 'string',
+      snapshotJson: 'text',
+      sourceHash: 'string',
+      syncedAt: 'double',
+      createdAt: 'double',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: ['planNumber'],
+      indexes: [['majorName', 'cohortYear'], ['syncedAt']],
     },
   );
 }
@@ -456,6 +480,31 @@ export class HbuJwStore {
   async listRecentActiveSessions(cutoff: number): Promise<HbuJwSession[]> {
     const rows = await this.database.get<HbuJwSession>('hbu_jw_session', { status: 'active' });
     return rows.filter((row) => row.validatedAt >= cutoff);
+  }
+
+  async getTrainingPlan(planNumber: string): Promise<HbuJwTrainingPlanCacheRow | null> {
+    const [row] = await this.database.get<HbuJwTrainingPlanCacheRow>('hbu_jw_training_plan', { planNumber });
+    return row ?? null;
+  }
+
+  async listTrainingPlansByMajor(majorName: string): Promise<HbuJwTrainingPlanCacheRow[]> {
+    return this.database.get<HbuJwTrainingPlanCacheRow>('hbu_jw_training_plan', { majorName });
+  }
+
+  async upsertTrainingPlan(snapshot: HbuJwTrainingPlanSnapshot, sourceHash: string, now: number): Promise<void> {
+    const existing = await this.getTrainingPlan(snapshot.planNumber);
+    await this.database.upsert('hbu_jw_training_plan', [{
+      planNumber: snapshot.planNumber,
+      majorCode: snapshot.majorCode,
+      majorName: snapshot.majorName,
+      cohortYear: snapshot.cohortYear,
+      planName: snapshot.planName,
+      snapshotJson: JSON.stringify(snapshot),
+      sourceHash,
+      syncedAt: now,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    }], ['planNumber']);
   }
 
   async beginAcademicSync(
