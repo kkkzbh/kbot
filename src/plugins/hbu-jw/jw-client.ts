@@ -391,7 +391,8 @@ export class HbuJwHttpClient {
       throw new HbuJwQueryError('培养方案课程树没有课组根节点。');
     }
 
-    const categories = (await Promise.all(roots.map(async (root) => {
+    const categoryEntries = (await Promise.all(roots.map(async (root) => {
+      const rootId = requireString(root.id, '课组根节点代码');
       const path = stringValue(root.info1 ?? root.urlPath ?? root.url);
       if (!path) throw new HbuJwQueryError('培养方案课组缺少查询地址。');
       const response = await this.request(path, {
@@ -410,24 +411,20 @@ export class HbuJwHttpClient {
       const requiredCredits = requireNonNegativeNumber(category.zsxf, '课组最低学分');
       if (requiredCredits === 0) return null;
       return {
-        code: requireString(category.kzh ?? category.id ?? root.id, '课组代码'),
-        name: cleanHtmlText(category.kzm ?? category.name ?? root.name),
-        catalogCredits: requireNonNegativeNumber(category.kczxf ?? requiredCredits, '课组课程总学分'),
-        requiredCredits,
-      } satisfies HbuJwTrainingPlanCategory;
-    }))).filter((value): value is HbuJwTrainingPlanCategory => value !== null);
+        rootId,
+        category: {
+          code: requireString(requireRecord(category.id, '培养方案课组标识').kzh, '课组代码'),
+          name: requireString(cleanHtmlText(category.kzm), '课组名称'),
+          requiredCredits,
+        } satisfies HbuJwTrainingPlanCategory,
+      };
+    }))).filter((value): value is { rootId: string; category: HbuJwTrainingPlanCategory } => value !== null);
+    const categories = categoryEntries.map((entry) => entry.category);
     if (categories.length === 0) {
       throw new HbuJwQueryError('培养方案没有正学分课组。');
     }
 
-    const categoryByNode = new Map<string, HbuJwTrainingPlanCategory>();
-    for (const root of roots) {
-      const rootId = stringValue(root.id);
-      const rootCode = stringValue(root.kzh ?? rootId);
-      const category = categories.find((item) => item.code === rootCode)
-        ?? categories.find((item) => item.name === cleanHtmlText(root.name));
-      if (rootId && category) categoryByNode.set(rootId, category);
-    }
+    const categoryByNode = new Map(categoryEntries.map((entry) => [entry.rootId, entry.category]));
     const courses: HbuJwTrainingPlanCourse[] = [];
     const seenCourses = new Set<string>();
     for (const node of treeList) {
@@ -473,11 +470,12 @@ export class HbuJwHttpClient {
     const page = await this.request(pagePath, { jar, headers: { referer: `${this.baseUrl}/index` } });
     if (page.response.status !== 200) throw new HbuJwQueryError('方案选课页面访问失败。');
     const callbackPath = findUniquePath(page.text, /[^"'\s<>]*planCourse\/courseList[^"'\s<>]*/g, '方案选课');
+    const currentExecutionPlanNumber = readSelectedOptionValue(page.text, 'jhxn', '方案选课当前执行计划');
     const response = await this.request(callbackPath, {
       jar,
       method: 'POST',
       headers: ajaxFormHeaders(new URL(pagePath, this.baseUrl).href),
-      body: new URLSearchParams({ fajhh: planNumber, jhxn: '', kcsxdm: '', kch: '', kcm: '', kclbdm: '', xqh: '', xq: '0', jc: '0' }),
+      body: new URLSearchParams({ fajhh: planNumber, jhxn: currentExecutionPlanNumber, kcsxdm: '', kch: '', kcm: '', kclbdm: '', xqh: '', xq: '0', jc: '0' }),
     });
     if (response.response.status !== 200) throw new HbuJwQueryError('方案选课接口访问失败。');
     const payload = parseJsonObject(response.text, '方案选课接口');
@@ -994,18 +992,15 @@ function parseStudentPlanProfile(html: string): HbuJwStudentPlanProfile {
 }
 
 function readProfileField(html: string, labels: string[]): string {
-  for (const label of labels) {
-    const escaped = escapeRegExp(label);
-    const row = html.match(new RegExp(`<[^>]+class=["'][^"']*profile-info-row[^"']*["'][^>]*>[\\s\\S]*?${escaped}[：:]?[\\s\\S]*?<\\/[^>]+>`, 'i'))?.[0];
-    if (!row) continue;
-    const text = cleanHtmlText(row);
-    const value = text.replace(new RegExp(`^.*?${escaped}[：:]?\\s*`), '').trim();
+  const acceptedLabels = new Set(labels);
+  const fields = html.matchAll(
+    /<div\b[^>]*class=["'][^"']*\bprofile-info-name\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<div\b[^>]*class=["'][^"']*\bprofile-info-value\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+  );
+  for (const field of fields) {
+    const label = cleanHtmlText(field[1]).replace(/[：:]$/, '').trim();
+    if (!acceptedLabels.has(label)) continue;
+    const value = cleanHtmlText(field[2]);
     if (value) return value;
-  }
-  const text = cleanHtmlText(html);
-  for (const label of labels) {
-    const matched = text.match(new RegExp(`${escapeRegExp(label)}[：:]\\s*([^\\s]{2,40})`));
-    if (matched?.[1]) return matched[1];
   }
   return '';
 }
@@ -1068,6 +1063,12 @@ function requireNonNegativeNumber(value: unknown, label: string): number {
   return parsed;
 }
 
+function requireFiniteNumber(value: unknown, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new HbuJwQueryError(`${label}异常。`);
+  return parsed;
+}
+
 function requirePositiveNumber(value: unknown, label: string): number {
   const parsed = requireNonNegativeNumber(value, label);
   if (parsed <= 0) throw new HbuJwQueryError(`${label}异常。`);
@@ -1077,6 +1078,10 @@ function requirePositiveNumber(value: unknown, label: string): number {
 function optionalPositiveNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isBlankValue(value: unknown): boolean {
+  return value == null || String(value).trim() === '';
 }
 
 function parseReplacementCourseNumbers(node: Record<string, unknown>): string[] {
@@ -1126,6 +1131,15 @@ function findUniquePath(html: string, pattern: RegExp, label: string): string {
   return paths[0]!;
 }
 
+function readSelectedOptionValue(html: string, selectId: string, label: string): string {
+  const select = html.match(new RegExp(`<select\\b[^>]*\\bid=["']${escapeRegExp(selectId)}["'][^>]*>[\\s\\S]*?<\\/select>`, 'i'))?.[0];
+  if (!select) throw new HbuJwQueryError(`${label}缺失。`);
+  const selectedOption = [...select.matchAll(/<option\b([^>]*)>[\s\S]*?<\/option>/gi)]
+    .find((match) => /\bselected(?:\s*=\s*["'][^"']*["'])?/i.test(match[1] ?? ''));
+  const value = selectedOption?.[1]?.match(/\bvalue=["']([^"']+)["']/i)?.[1];
+  return requireString(value, label);
+}
+
 function ajaxFormHeaders(referer: string): Record<string, string> {
   return {
     accept: 'application/json, text/javascript, */*; q=0.01',
@@ -1143,7 +1157,7 @@ function normalizeCourseOfferings(
   for (const row of rows) {
     const courseNumber = requireString(source === 'plan' ? row.courseNum : row.kch, '开课课程号');
     const sequenceNumber = requireString(source === 'plan' ? row.classNum : row.kxh, '开课课序号');
-    const executionPlanNumber = requireString(source === 'plan' ? row.schemeNum : row.zxjxjhh, '开课执行计划号');
+    const executionPlanNumber = requireString(source === 'plan' ? row.jhxnxqdm : row.zxjxjhh, '开课执行计划号');
     const key = `${executionPlanNumber}@${courseNumber}@${sequenceNumber}`;
     const meetings = normalizeOfferingMeetings(row, source);
     const existing = offerings.get(key);
@@ -1165,7 +1179,7 @@ function normalizeCourseOfferings(
       planCategoryName: stringValue(row.kzm),
       teacherName: cleanHtmlText(row.skjs ?? row.attendClassTeacher),
       capacity: requireNonNegativeNumber(row.bkskrl ?? row.skrl ?? 0, '开课容量'),
-      remainingSeats: requireNonNegativeNumber(row.bkskyl ?? row.skyl ?? row.kyl ?? 0, '开课余量'),
+      remainingSeats: requireFiniteNumber(row.bkskyl ?? row.skyl ?? row.kyl ?? 0, '开课余量'),
       meetings,
     });
   }
@@ -1173,28 +1187,29 @@ function normalizeCourseOfferings(
 }
 
 function normalizeOfferingMeetings(row: Record<string, unknown>, source: 'plan' | 'free'): HbuJwCourseOfferingMeeting[] {
-  const raw = source === 'plan' && Array.isArray(row.kcsjddlist)
-    ? requireRecordArray(row.kcsjddlist, '方案选课上课时间')
-    : [row];
-  return raw.map((meeting) => {
-    const weekday = Number(meeting.skxq ?? meeting.classDay ?? row.skxq ?? row.classDay);
-    const startSection = Number(meeting.skjc ?? meeting.classSessions ?? row.skjc ?? row.classSessions);
-    const sectionCount = Number(meeting.cxjc ?? meeting.continuingSession ?? row.cxjc ?? row.continuingSession ?? 1);
-    if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7
-      || !Number.isInteger(startSection) || startSection < 1
-      || !Number.isInteger(sectionCount) || sectionCount < 1) {
-      throw new HbuJwQueryError('开课时间结构异常。');
-    }
-    return {
-      classWeek: requireString(meeting.skzc ?? meeting.classWeek ?? row.skzc ?? row.classWeek, '开课周次'),
-      weekday,
-      startSection,
-      sectionCount,
-      campusName: stringValue(meeting.kkxqm ?? meeting.campusName),
-      teachingBuildingName: stringValue(meeting.jxlm ?? meeting.teachingBuildingName),
-      classroomName: stringValue(meeting.jsm ?? meeting.classroomName),
-    };
-  });
+  const scheduleValues = source === 'plan'
+    ? [row.weekNum, row.courseStartNum, row.cxjc, row.zcsm]
+    : [row.skxq, row.skjc, row.cxjc, row.skzc];
+  if (scheduleValues.every(isBlankValue)) {
+    return [];
+  }
+  const weekday = Number(scheduleValues[0]);
+  const startSection = Number(scheduleValues[1]);
+  const sectionCount = Number(scheduleValues[2]);
+  if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7
+    || !Number.isInteger(startSection) || startSection < 1 || startSection > 11
+    || !Number.isInteger(sectionCount) || sectionCount < 1 || startSection + sectionCount - 1 > 11) {
+    throw new HbuJwQueryError('开课时间结构异常。');
+  }
+  return [{
+    classWeek: requireString(source === 'plan' ? row.zcsm : row.skzc, '开课周次'),
+    weekday,
+    startSection,
+    sectionCount,
+    campusName: stringValue(row.kkxqm),
+    teachingBuildingName: stringValue(row.jxlm),
+    classroomName: stringValue(row.jasm),
+  }];
 }
 
 function escapeRegExp(value: string): string {

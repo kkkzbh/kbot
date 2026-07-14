@@ -123,6 +123,7 @@ export interface GuidanceCreditTarget {
   maximumSelectableCredits: number;
   exactFillPossible: boolean;
   oneMaximumCourseCombination: string[];
+  oneMaximumSectionCombination: GuidanceSectionRef[];
 }
 
 export class HbuJwCourseGuidanceService {
@@ -202,11 +203,15 @@ export class HbuJwCourseGuidanceService {
       });
     }
     result.sort(compareOfferings);
+    const exposedOfferings = result.slice(0, MAX_OFFERINGS_EXPOSED);
     const creditTargets = loaded.publicContext.progress.categories
       .filter((category) => category.remainingCredits > 0)
       .map((category) => {
-        const options = result.filter((offering) => offering.mappedCategoryCode === category.code && offering.priority !== 'missing-required');
-        const combination = selectMaxCreditCombination(options, Math.min(category.remainingCredits, loaded.publicContext.progress.remainingCredits));
+        const options = exposedOfferings.filter((offering) => offering.mappedCategoryCode === category.code && offering.priority !== 'missing-required');
+        const combination = selectMaxConflictFreeCreditCombination(
+          options,
+          Math.min(category.remainingCredits, loaded.publicContext.progress.remainingCredits),
+        );
         const maximumSelectableCredits = sumCredits(combination);
         return {
           categoryCode: category.code,
@@ -215,10 +220,11 @@ export class HbuJwCourseGuidanceService {
           maximumSelectableCredits,
           exactFillPossible: Math.abs(maximumSelectableCredits - category.remainingCredits) < 0.001,
           oneMaximumCourseCombination: combination.map((offering) => offering.courseNumber),
+          oneMaximumSectionCombination: combination.map(sectionRef),
         };
       });
     return {
-      offerings: result.slice(0, MAX_OFFERINGS_EXPOSED),
+      offerings: exposedOfferings,
       creditTargets,
       dataAsOf: new Date(this.now()).toISOString(),
     };
@@ -298,7 +304,11 @@ export class HbuJwCourseGuidanceService {
       const options = offeringsResult.offerings.filter((offering) => offering.mappedCategoryCode === category.code
         && planIndex.get(offering.courseNumber)?.attribute !== 'required'
         && !mandatorySelections.some((mandatory) => hasMeetingConflict(offering.meetings, mandatory.meetings)));
-      const maximum = sumCredits(selectMaxCreditCombination(options, Math.min(category.remainingCredits, electiveTotalCapacity)));
+      const maximum = sumCredits(selectMaxConflictFreeCreditCombination(
+        options,
+        Math.min(category.remainingCredits, electiveTotalCapacity),
+        mandatorySelections.flatMap((offering) => offering.meetings),
+      ));
       if (selectedCredits + 0.001 < maximum) {
         errors.push({
           code: 'not_maximal_credit_fit',
@@ -416,6 +426,65 @@ export function selectMaxCreditCombination<T extends { courseNumber: string; cre
   }
   const best = Math.max(...states.keys());
   return states.get(best) ?? [];
+}
+
+export function selectMaxConflictFreeCreditCombination<
+  T extends { courseNumber: string; credits: number; meetings: HbuJwCourseOfferingMeeting[] },
+>(
+  options: T[],
+  creditLimit: number,
+  blockedMeetings: HbuJwCourseOfferingMeeting[] = [],
+): T[] {
+  const scale = 100;
+  const limit = Math.max(0, Math.floor(creditLimit * scale + 0.001));
+  const grouped = new Map<string, T[]>();
+  for (const option of options) {
+    if (!Number.isFinite(option.credits) || option.credits <= 0) continue;
+    const sections = grouped.get(option.courseNumber) ?? [];
+    sections.push(option);
+    grouped.set(option.courseNumber, sections);
+  }
+  const groups = [...grouped.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, sections]) => sections);
+  const reachable = new Set<number>([0]);
+  for (const sections of groups) {
+    const weights = new Set(sections.map((section) => Math.round(section.credits * scale)));
+    for (const current of [...reachable].sort((left, right) => right - left)) {
+      for (const weight of weights) {
+        if (current + weight <= limit) reachable.add(current + weight);
+      }
+    }
+  }
+  const blockedMask = meetingScheduleMask(blockedMeetings);
+  const maximumRemaining = new Array<number>(groups.length + 1).fill(0);
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    maximumRemaining[index] = maximumRemaining[index + 1]!
+      + Math.max(...groups[index]!.map((section) => Math.round(section.credits * scale)));
+  }
+  for (const target of [...reachable].sort((left, right) => right - left)) {
+    const failed = new Set<string>();
+    const search = (index: number, credits: number, occupied: bigint): T[] | null => {
+      if (credits === target) return [];
+      if (index >= groups.length || credits > target || credits + maximumRemaining[index]! < target) return null;
+      const stateKey = `${index}:${credits}:${occupied.toString(36)}`;
+      if (failed.has(stateKey)) return null;
+      for (const section of groups[index]!) {
+        const weight = Math.round(section.credits * scale);
+        const mask = meetingScheduleMask(section.meetings);
+        if (credits + weight > target || (occupied & mask) !== 0n) continue;
+        const tail = search(index + 1, credits + weight, occupied | mask);
+        if (tail) return [section, ...tail];
+      }
+      const skipped = search(index + 1, credits, occupied);
+      if (skipped) return skipped;
+      failed.add(stateKey);
+      return null;
+    };
+    const combination = search(0, 0, blockedMask);
+    if (combination) return combination;
+  }
+  return [];
 }
 
 function sumCredits(items: Array<{ credits: number }>): number {
@@ -582,8 +651,7 @@ export function validateTrainingPlanSnapshot(value: unknown): asserts value is H
   let categoryTotal = 0;
   for (const category of snapshot.categories) {
     if (!category.code || !category.name || categoryCodes.has(category.code)
-      || !Number.isFinite(category.requiredCredits) || category.requiredCredits <= 0
-      || !Number.isFinite(category.catalogCredits) || category.catalogCredits < category.requiredCredits) {
+      || !Number.isFinite(category.requiredCredits) || category.requiredCredits <= 0) {
       throw new Error('hbu-jw training plan snapshot contains an invalid category.');
     }
     categoryCodes.add(category.code);
@@ -670,6 +738,22 @@ function parseWeeks(value: string): Set<number> {
     }
   }
   return weeks;
+}
+
+function meetingScheduleMask(meetings: HbuJwCourseOfferingMeeting[]): bigint {
+  let mask = 0n;
+  for (const meeting of meetings) {
+    const parsedWeeks = parseWeeks(meeting.classWeek);
+    const weeks = parsedWeeks.size > 0 ? parsedWeeks : new Set(Array.from({ length: 30 }, (_, index) => index + 1));
+    const lastSection = meeting.startSection + meeting.sectionCount - 1;
+    for (const week of weeks) {
+      for (let section = meeting.startSection; section <= lastSection; section += 1) {
+        const index = ((week - 1) * 7 + (meeting.weekday - 1)) * 11 + (section - 1);
+        mask |= 1n << BigInt(index);
+      }
+    }
+  }
+  return mask;
 }
 
 function compareOfferings(left: GuidanceOfferingView, right: GuidanceOfferingView): number {

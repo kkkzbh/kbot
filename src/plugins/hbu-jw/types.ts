@@ -276,7 +276,6 @@ export interface HbuJwStudentPlanProfile {
 export interface HbuJwTrainingPlanCategory {
   code: string;
   name: string;
-  catalogCredits: number;
   requiredCredits: number;
 }
 

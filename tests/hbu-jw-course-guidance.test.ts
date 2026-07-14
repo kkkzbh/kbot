@@ -3,6 +3,7 @@ import {
   calculateGuidanceProgress,
   HbuJwCourseGuidanceService,
   renderGuidanceHtml,
+  selectMaxConflictFreeCreditCombination,
   selectMaxCreditCombination,
   selectNearestFreshTrainingPlan,
   type HbuJwGuidanceContext,
@@ -30,9 +31,9 @@ function snapshot(): HbuJwTrainingPlanSnapshot {
     cohortYear: 2023,
     requiredCredits: 167,
     categories: [
-      { code: 'A', name: '专业必修课', catalogCredits: 100, requiredCredits: 100 },
-      { code: 'B', name: '专业任选课', catalogCredits: 80, requiredCredits: 60 },
-      { code: 'C', name: '通识通选课', catalogCredits: 20, requiredCredits: 7 },
+      { code: 'A', name: '专业必修课', requiredCredits: 100 },
+      { code: 'B', name: '专业任选课', requiredCredits: 60 },
+      { code: 'C', name: '通识通选课', requiredCredits: 7 },
     ],
     courses: [
       { courseNumber: 'CS101', courseName: '程序设计', categoryCode: 'A', categoryName: '专业必修课', attribute: 'required', credits: 4, replacementCourseNumbers: [] },
@@ -110,6 +111,24 @@ describe('hbu-jw course guidance calculation', () => {
     expect(selectMaxCreditCombination(options, 4).reduce((sum, course) => sum + course.credits, 0)).toBe(3.5);
   });
 
+  it('chooses a maximum-credit section combination without timetable conflicts', () => {
+    const meeting = (weekday: number) => [{
+      classWeek: '1-16周', weekday, startSection: 1, sectionCount: 2,
+      campusName: '', teachingBuildingName: '', classroomName: '',
+    }];
+    const options = [
+      { courseNumber: 'A', sequenceNumber: '01', credits: 2, meetings: meeting(1) },
+      { courseNumber: 'B', sequenceNumber: '01', credits: 2, meetings: meeting(1) },
+      { courseNumber: 'B', sequenceNumber: '02', credits: 2, meetings: meeting(2) },
+      { courseNumber: 'C', sequenceNumber: '01', credits: 1.5, meetings: meeting(3) },
+    ];
+
+    expect(selectMaxConflictFreeCreditCombination(options, 4).map((course) => `${course.courseNumber}-${course.sequenceNumber}`))
+      .toEqual(['A-01', 'B-02']);
+    expect(selectMaxConflictFreeCreditCombination(options, 4, meeting(2)).reduce((sum, course) => sum + course.credits, 0))
+      .toBe(3.5);
+  });
+
   it('selects only a fresh exact-major fallback, using the older cohort on an equal distance', () => {
     const now = Date.UTC(2026, 6, 15);
     const row = (planNumber: string, majorName: string, cohortYear: number, syncedAt = now): HbuJwTrainingPlanCacheRow => ({
@@ -180,8 +199,18 @@ describe('hbu-jw official plan and offering contracts', () => {
       const url = new URL(String(input));
       if (url.pathname === '/student/rollManagement/rollInfo/index') {
         return new Response(`
-          <div class="profile-info-row"><span>入学年级：</span><span>2023</span></div>
-          <div class="profile-info-row"><span>专业：</span><span>计算机科学与技术</span></div>
+          <div class="profile-info-row">
+            <div class="profile-info-name">年级</div>
+            <div class="profile-info-value">2023级</div>
+            <div class="profile-info-name">院系</div>
+            <div class="profile-info-value">网络空间安全与计算机学院</div>
+          </div>
+          <div class="profile-info-row">
+            <div class="profile-info-name">专业</div>
+            <div class="profile-info-value">计算机科学与技术</div>
+            <div class="profile-info-name">专业方向</div>
+            <div class="profile-info-value"></div>
+          </div>
           <input value="10708" id="zx">
           <script>const url = "/student/rollManagement/project/token-a/10708/1/detail";</script>
         `, { status: 200 });
@@ -199,10 +228,10 @@ describe('hbu-jw official plan and offering contracts', () => {
         });
       }
       if (url.pathname === '/plan/category/A') {
-        return Response.json({ flag: true, kz: { kzh: 'A', kzm: '专业必修课', zsxf: 167, kczxf: 170 } });
+        return Response.json({ flag: true, kz: { id: { fajhh: '10708', kzh: 'A', kzlxm: '002' }, kzm: '专业必修课', zsxf: 167, kczxf: 170 } });
       }
       if (url.pathname === '/plan/category/Z') {
-        return Response.json({ flag: true, kz: { kzh: 'Z', kzm: '零学分池', zsxf: 0, kczxf: 1000 } });
+        return Response.json({ flag: true, kz: { id: { fajhh: '10708', kzh: 'Z', kzlxm: '002' }, kzm: '零学分池', zsxf: 0, kczxf: 1000 } });
       }
       throw new Error(`unexpected request ${url.href}`);
     });
@@ -218,7 +247,7 @@ describe('hbu-jw official plan and offering contracts', () => {
       planDetailPath: '/student/rollManagement/project/token-a/10708/1/detail',
     });
     expect(plan.requiredCredits).toBe(167);
-    expect(plan.categories).toEqual([{ code: 'A', name: '专业必修课', catalogCredits: 170, requiredCredits: 167 }]);
+    expect(plan.categories).toEqual([{ code: 'A', name: '专业必修课', requiredCredits: 167 }]);
     expect(plan.courses).toEqual([expect.objectContaining({ courseNumber: 'CS101', credits: 4, attribute: 'required' })]);
   });
 
@@ -227,7 +256,8 @@ describe('hbu-jw official plan and offering contracts', () => {
       const url = new URL(String(input));
       if (url.pathname.endsWith('/rollInfo/index')) {
         return new Response(`
-          <div>入学年级：2023 专业：计算机科学与技术</div>
+          <div class="profile-info-row"><div class="profile-info-name">入学年级</div><div class="profile-info-value">2023级</div></div>
+          <div class="profile-info-row"><div class="profile-info-name">专业</div><div class="profile-info-value">计算机科学与技术</div></div>
           <input id="zx" value="10708">
           <script>"/student/rollManagement/project/token-a/10708/1/detail"</script>
         `);
@@ -240,30 +270,80 @@ describe('hbu-jw official plan and offering contracts', () => {
   });
 
   it('normalizes plan-course sections with official identifiers, seats, and meeting data', async () => {
-    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith('/planCourse/index')) {
-        return new Response('<script>const endpoint="/student/courseSelect/planCourse/courseList"</script>');
+        return new Response(`
+          <select id="jhxn">
+            <option value="">全部</option>
+            <option value="2026-2027-1-2" selected>2026-2027学年秋</option>
+            <option value="2025-2026-2-2">2025-2026学年春</option>
+          </select>
+          <script>const endpoint="/student/courseSelect/planCourse/courseList"</script>
+        `);
       }
       if (url.pathname.endsWith('/planCourse/courseList')) {
-        return Response.json({ rwfalist: [{
-          schemeNum: '2026-2027-1', courseNum: 'CS301', classNum: '02', kcm: '编译原理', xf: 3,
-          kcsxdm: '01', kcsxmc: '必修', kzh: 'A', kzm: '专业必修课', skjs: '张老师',
-          bkskrl: 80, bkskyl: 12,
-          kcsjddlist: [{ skzc: '1-16周', skxq: 2, skjc: 3, cxjc: 2, kkxqm: '七一路', jxlm: 'A楼', jsm: '101' }],
+        expect(new URLSearchParams(String(init?.body)).get('jhxn')).toBe('2026-2027-1-2');
+        return Response.json({ rwfalist: [
+          {
+            schemeNum: '10708', jhxnxqdm: '2026-2027-1-2', courseNum: 'CS301', classNum: '02', kcm: '编译原理', xf: 3,
+            kcsxdm: '01', kcsxmc: '必修', kzh: 'A', kzm: '专业必修课', skjs: '张老师',
+            bkskrl: 80, bkskyl: 12,
+            zcsm: '1-16周', weekNum: 2, courseStartNum: 3, cxjc: 2, kkxqm: '七一路', jxlm: 'A楼', jasm: '101',
+          },
+          {
+            schemeNum: '10708', jhxnxqdm: '2026-2027-1-2', courseNum: 'CS302', classNum: '03', kcm: '已超员课程', xf: 2,
+            kcsxdm: '01', kcsxmc: '必修', kzh: 'A', kzm: '专业必修课', skjs: '李老师',
+            bkskrl: 50, bkskyl: -3,
+            zcsm: '1-16周', weekNum: 3, courseStartNum: 5, cxjc: 2, kkxqm: '七一路', jxlm: 'A楼', jasm: '102',
+          },
+          {
+            schemeNum: '10708', jhxnxqdm: '2026-2027-1-2', courseNum: 'TWE23G0001', classNum: '01', kcm: '网络通识课', xf: 1,
+            kcsxdm: '02', kcsxmc: '任选', kzh: 'G', kzm: '网络通识课', skjs: '',
+            bkskrl: 5000, bkskyl: 4990,
+            zcsm: null, weekNum: null, courseStartNum: null, cxjc: null, kkxqm: '七一路', jxlm: null, jasm: null,
+          },
+        ] });
+      }
+      throw new Error(`unexpected request ${url.href}`);
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as typeof fetch, baseUrl: 'https://jw.example' });
+
+    await expect(client.getPlanCourseOfferings(EMPTY_JAR, '10708')).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        executionPlanNumber: '2026-2027-1-2',
+        courseNumber: 'CS301',
+        sequenceNumber: '02',
+        remainingSeats: 12,
+        meetings: [expect.objectContaining({ weekday: 2, startSection: 3, sectionCount: 2 })],
+      }),
+      expect.objectContaining({ courseNumber: 'CS302', remainingSeats: -3 }),
+      expect.objectContaining({ courseNumber: 'TWE23G0001', meetings: [] }),
+    ]));
+  });
+
+  it('represents asynchronous free courses without a fixed meeting instead of rejecting the course set', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/freeCourse/index')) {
+        return new Response('<script>const endpoint="/student/courseSelect/freeCourse/courseList"</script>');
+      }
+      if (url.pathname.endsWith('/freeCourse/courseList')) {
+        return Response.json({ rwRxkZlList: [{
+          zxjxjhh: '2026-2027-1-2', kch: 'TWE23G0001', kxh: '01', kcm: '中华诗词之美', xf: 1,
+          bkskrl: 5000, bkskyl: 4990, skxq: null, skjc: null, cxjc: null, skzc: null,
         }] });
       }
       throw new Error(`unexpected request ${url.href}`);
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as typeof fetch, baseUrl: 'https://jw.example' });
 
-    await expect(client.getPlanCourseOfferings(EMPTY_JAR, '10708')).resolves.toEqual([
+    await expect(client.getFreeCourseOfferings(EMPTY_JAR)).resolves.toEqual([
       expect.objectContaining({
-        executionPlanNumber: '2026-2027-1',
-        courseNumber: 'CS301',
-        sequenceNumber: '02',
-        remainingSeats: 12,
-        meetings: [expect.objectContaining({ weekday: 2, startSection: 3, sectionCount: 2 })],
+        executionPlanNumber: '2026-2027-1-2',
+        courseNumber: 'TWE23G0001',
+        remainingSeats: 4990,
+        meetings: [],
       }),
     ]);
   });
@@ -274,7 +354,7 @@ describe('hbu-jw final recommendation validation', () => {
     const plan: HbuJwTrainingPlanSnapshot = {
       planNumber: 'P1', planName: '测试方案', majorCode: 'M1', majorName: '计算机科学与技术', cohortYear: 2023,
       requiredCredits: 5,
-      categories: [{ code: 'E', name: '专业任选课', catalogCredits: 8, requiredCredits: 5 }],
+      categories: [{ code: 'E', name: '专业任选课', requiredCredits: 5 }],
       courses: [
         { courseNumber: 'E1', courseName: '任选一', categoryCode: 'E', categoryName: '专业任选课', attribute: 'elective', credits: 3, replacementCourseNumbers: [] },
         { courseNumber: 'E2', courseName: '任选二', categoryCode: 'E', categoryName: '专业任选课', attribute: 'elective', credits: 2, replacementCourseNumbers: [] },
