@@ -13,7 +13,7 @@ import {
   videoProgressEnc,
 } from '../src/plugins/chaoxing/client.js';
 import { parseChaoxingCommand } from '../src/plugins/chaoxing/commands.js';
-import { ChaoxingDeadlineService } from '../src/plugins/chaoxing/deadline-service.js';
+import { ChaoxingDeadlineService, filterPendingTasks } from '../src/plugins/chaoxing/deadline-service.js';
 import { ChaoxingOwnerCoordinator } from '../src/plugins/chaoxing/owner-coordinator.js';
 import { selectResumableStudyJob } from '../src/plugins/chaoxing/study-runner.js';
 import type { ChaoxingQuestion } from '../src/plugins/chaoxing/types.js';
@@ -85,10 +85,10 @@ describe('chaoxing protocol parsers', () => {
     const exams = parseExams(`
       <ul class="task-list"><li onclick="viewExamAnswer('exam-1', 'answer-1')">
         <p class="overHidden2">软件工程期末考试</p>
-        <p class="status">已结束</p><p>2026-07-10 09:00 至 2026-07-10 11:00</p>
+        <p class="status">已过期</p><p>2026-07-10 09:00 至 2026-07-10 11:00</p>
       </li></ul>
     `, course);
-    expect(exams).toEqual([expect.objectContaining({ remoteId: 'exam-1', title: '软件工程期末考试', status: '已结束' })]);
+    expect(exams).toEqual([expect.objectContaining({ remoteId: 'exam-1', title: '软件工程期末考试', status: '已过期' })]);
   });
 
   it('parses sign activities', () => {
@@ -198,6 +198,14 @@ describe('chaoxing protocol parsers', () => {
 });
 
 describe('chaoxing local contracts', () => {
+  it('does not report expired or closed remote tasks as pending', () => {
+    expect(filterPendingTasks([
+      { status: '已过期', endAt: null } as never,
+      { status: '已截止', endAt: null } as never,
+      { status: '未交', endAt: null } as never,
+    ])).toEqual([{ status: '未交', endAt: null }]);
+  });
+
   it('selects the latest resumable study checkpoint for the same course', () => {
     const base = {
       ownerKey: 'onebot:1', platform: 'onebot', qqUserId: '1', channelId: 'group:1', type: 'study' as const,

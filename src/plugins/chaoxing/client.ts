@@ -790,7 +790,9 @@ function parseCourseListPage(html: string, course: Pick<ChaoxingCourse, 'courseI
     const route = String(block.attr('data') || block.find('[data]').first().attr('data') || block.attr('onclick') || block.find('[onclick]').first().attr('onclick') || '');
     const remoteId = extractRemoteId(route, kind) || `${kind}-${shortHash(`${course.courseId}:${course.classId}:${title}`)}`;
     const dates = [...text.matchAll(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:\s+\d{1,2}:\d{2})?/gu)].map((match) => parseDate(match[0]));
-    const statusPattern = kind === 'work' ? /(未交|待批阅|已完成|已批阅|已交)/u : /(未开始|进行中|已结束|已完成|未交|待批阅)/u;
+    const statusPattern = kind === 'work'
+      ? /(未交|待批阅|已完成|已批阅|已交|已过期|已截止)/u
+      : /(未开始|进行中|已结束|已完成|未交|待批阅|已过期|已截止)/u;
     const status = text.match(statusPattern)?.[1] || '';
     const score = text.match(/(\d+(?:\.\d+)?)\s*分(?!钟)/u)?.[1] ?? null;
     items.push({

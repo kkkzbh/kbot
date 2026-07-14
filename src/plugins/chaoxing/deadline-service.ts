@@ -61,14 +61,14 @@ export class ChaoxingDeadlineService {
 
   async query(identity: OwnerIdentity, kind?: ChaoxingTaskKind): Promise<ChaoxingTaskRow[]> {
     const existing = await this.store.listTasks(identity.ownerKey, kind);
-    if (existing.length > 0) return pendingTasks(existing);
+    if (existing.length > 0) return filterPendingTasks(existing);
     const synced = await this.syncIdentity(identity, false, kind ? [kind] : ALL_TASK_KINDS);
-    return pendingTasks(kind ? synced.filter((item) => item.kind === kind) : synced);
+    return filterPendingTasks(kind ? synced.filter((item) => item.kind === kind) : synced);
   }
 
   private async sendDueReminders(identity: OwnerIdentity): Promise<void> {
     const now = this.now();
-    const due = pendingTasks(await this.store.listTasks(identity.ownerKey)).filter((item) =>
+    const due = filterPendingTasks(await this.store.listTasks(identity.ownerKey)).filter((item) =>
       item.endAt != null && item.endAt > now && item.endAt - now <= this.config.reminderLeadMs && item.remindedAt == null,
     );
     if (due.length === 0) return;
@@ -93,8 +93,8 @@ function activityDeadline(course: ChaoxingCourse, activity: ChaoxingActivity): C
   };
 }
 
-function pendingTasks(items: ChaoxingTaskRow[]): ChaoxingTaskRow[] {
-  const done = new Set(['已完成', '已批阅', '已交', '待批阅', '已签到', '已结束']);
+export function filterPendingTasks(items: ChaoxingTaskRow[]): ChaoxingTaskRow[] {
+  const done = new Set(['已完成', '已批阅', '已交', '待批阅', '已签到', '已结束', '已过期', '已截止']);
   return items.filter((item) => !done.has(item.status)).sort((left, right) => (left.endAt ?? Number.MAX_SAFE_INTEGER) - (right.endAt ?? Number.MAX_SAFE_INTEGER));
 }
 
