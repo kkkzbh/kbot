@@ -15,10 +15,9 @@ import { HbuJwHttpClient } from '../src/plugins/hbu-jw/jw-client.js';
 import { buildHbuJwMenuView } from '../src/plugins/hbu-jw/menu.js';
 import {
   HbuJwSelectionResultService,
-  buildHbuJwSelectionResultView,
-  renderHbuJwSelectionResultHtml,
-  renderHbuJwSelectionResultImage,
+  buildHbuJwSelectionSchedule,
 } from '../src/plugins/hbu-jw/selection-results.js';
+import { buildHbuJwScheduleView, renderHbuJwScheduleHtml } from '../src/plugins/hbu-jw/schedule.js';
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
 import type {
   DatabaseLike,
@@ -258,24 +257,35 @@ describe('hbu-jw selection result http contract', () => {
 });
 
 describe('hbu-jw selection result module', () => {
-  it('builds and renders the selected courses, statuses, schedule and restrictions', async () => {
-    const view = buildHbuJwSelectionResultView(selectionResult());
-    const { page, puppeteer, getHtml } = createPuppeteerHarness();
-    const image = await renderHbuJwSelectionResultImage(puppeteer, view);
+  it('adapts selection data into the complete schedule domain model', () => {
+    const schedule = buildHbuJwSelectionSchedule(selectionResult());
 
-    expect(view).toMatchObject({
-      totalUnitsText: '5',
-      courseCount: 2,
-      statusSummary: '选中 1 · 置入 1',
-      subtitle: '2026-2027 学年 · 第 1 学期',
+    expect(schedule).toMatchObject({
+      executiveEducationPlanNumber: '2026-2027-1-2',
+      programPlanName: '2023级计算机科学与技术专业人才培养方案',
+      totalUnits: 5,
     });
-    expect(view.groups[0]?.rows[0]?.scheduleLines).toEqual(['周二 第3-4节 · 1-4周 · 七一路校区 A5座 312']);
-    expect(view.groups[0]?.rows[1]).toMatchObject({ scheduleLines: ['时间地点待定'], restrictionText: '限本年级学生' });
-    expect(String(image)).toContain('image/png');
-    expect(getHtml()).toContain('河北大学选课结果');
-    expect(getHtml()).toContain('计算机网络');
-    expect(getHtml()).toContain('限本年级学生');
-    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
+    expect(schedule.courses).toHaveLength(2);
+    expect(schedule.courses[0]).toMatchObject({
+      courseNumber: '2023S01007',
+      sequenceNumber: '01',
+      courseName: '计算机网络',
+      selectCourseStatusName: '选中',
+    });
+  });
+
+  it('uses the exact complete schedule HTML', () => {
+    const schedule = buildHbuJwSelectionSchedule(selectionResult());
+    const view = buildHbuJwScheduleView(schedule, 'full-semester', Date.UTC(2026, 6, 15));
+    const html = renderHbuJwScheduleHtml(view);
+
+    expect(html).toContain('id="hbu-jw-schedule-card"');
+    expect(html).toContain('<h1>河北大学完整课表</h1>');
+    expect(html).toContain('2026-2027 秋 · 全学期');
+    expect(html).toContain('计算机网络_01');
+    expect(html).toContain('七一路校区A5座312');
+    expect(html).toContain('<span>未安排课程</span><span class="footer-value">1 门</span>');
+    expect(html).not.toContain('hbu-jw-selection-result-card');
   });
 
   it('authenticates, queries, and returns a mentioned image', async () => {
@@ -289,12 +299,14 @@ describe('hbu-jw selection result module', () => {
       { ensureAuthenticated },
       { getCourseSelectionResult },
       puppeteer,
+      undefined,
+      () => Date.UTC(2026, 6, 15),
     );
 
     const reply = await service.querySelectionResult(identity());
 
     expect(contentText(reply)).toContain('<at id="1405359129"/>');
-    expect(contentText(reply)).toContain('image/png');
+    expect(contentText(reply)).toContain('image/gif');
     expect(getCourseSelectionResult).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
   });
 
@@ -307,9 +319,8 @@ describe('hbu-jw selection result module', () => {
     });
   });
 
-  it('renders the empty result state explicitly', () => {
-    const html = renderHbuJwSelectionResultHtml(buildHbuJwSelectionResultView({ totalUnits: 0, groups: [] }));
-    expect(html).toContain('教务系统当前没有选课结果');
+  it('reports an explicit user error for an empty result', () => {
+    expect(() => buildHbuJwSelectionSchedule({ totalUnits: 0, groups: [] })).toThrow('教务系统当前没有选课结果');
   });
 });
 
