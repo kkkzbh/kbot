@@ -76,6 +76,7 @@ vi.mock('koishi', () => {
 import {
   apply as applyHbuJwPlugin,
   buildHbuJwCapabilityReference,
+  shouldExposeHbuJwCapabilityReference,
 } from '../src/plugins/hbu-jw/index.js';
 import {
   HbuJwAcademicCache,
@@ -1090,6 +1091,19 @@ describe('hbu-jw academic cache', () => {
 });
 
 describe('hbu-jw menu module', () => {
+  it('only exposes command guidance for likely feature usage', () => {
+    const session = (content: string) => ({ content, stripped: { content } }) as never;
+
+    expect(shouldExposeHbuJwCapabilityReference(session('在'))).toBe(false);
+    expect(shouldExposeHbuJwCapabilityReference(session('我的成绩有点差，安慰一下我'))).toBe(false);
+    expect(shouldExposeHbuJwCapabilityReference(session('你觉得 GPA 重要吗？'))).toBe(false);
+    expect(shouldExposeHbuJwCapabilityReference(session('我去教务处拿材料'))).toBe(false);
+    expect(shouldExposeHbuJwCapabilityReference(session('课程查询模式识别'))).toBe(true);
+    expect(shouldExposeHbuJwCapabilityReference(session('课程查询 模式识别 -1'))).toBe(true);
+    expect(shouldExposeHbuJwCapabilityReference(session('GPA 怎么查'))).toBe(true);
+    expect(shouldExposeHbuJwCapabilityReference(session('教务功能怎么用'))).toBe(true);
+  });
+
   it('describes the exact course query contract for Agent corrections', () => {
     const reference = buildHbuJwCapabilityReference({
       isDirect: false,
@@ -1108,6 +1122,18 @@ describe('hbu-jw menu module', () => {
     expect(reference).toContain('0（本学期）');
     expect(reference).toContain('2025-2026-2-2');
     expect(reference).toContain('课程号精确匹配');
+    expect(reference).not.toContain('hbu_jw_course_guidance_context');
+
+    const guidanceReference = buildHbuJwCapabilityReference({
+      isDirect: true,
+      content: '选课指导',
+      stripped: { content: '选课指导' },
+    } as never, {
+      allowedGroups: new Set<string>(),
+      naturalTriggerEnabled: false,
+      naturalTriggerGroups: new Set<string>(),
+    } as never);
+    expect(guidanceReference).toContain('hbu_jw_course_guidance_context');
   });
 
   it('builds the academic affairs menu with all exposed keywords', () => {

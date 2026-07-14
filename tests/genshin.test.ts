@@ -62,6 +62,7 @@ vi.mock('koishi', () => {
 import {
   apply as applyGenshinPlugin,
   buildGenshinCapabilityReference,
+  shouldExposeGenshinCapabilityReference,
 } from '../src/plugins/genshin/index.js';
 import {
   buildGachaRecordsView,
@@ -677,6 +678,18 @@ describe('genshin gacha records service', () => {
 });
 
 describe('genshin menu module', () => {
+  it('only exposes command guidance for likely feature usage', () => {
+    const session = (content: string) => ({ content, stripped: { content } }) as never;
+
+    expect(shouldExposeGenshinCapabilityReference(session('你玩原神吗？'))).toBe(false);
+    expect(shouldExposeGenshinCapabilityReference(session('原神最近的剧情怎么样？'))).toBe(false);
+    expect(shouldExposeGenshinCapabilityReference(session('抽卡记录看起来挺有意思'))).toBe(false);
+    expect(shouldExposeGenshinCapabilityReference(session('原神兑换ABCDEF12'))).toBe(true);
+    expect(shouldExposeGenshinCapabilityReference(session('原神确认123456'))).toBe(true);
+    expect(shouldExposeGenshinCapabilityReference(session('抽卡记录怎么查'))).toBe(true);
+    expect(shouldExposeGenshinCapabilityReference(session('原神签到失败了'))).toBe(true);
+  });
+
   it('describes the exact keyword contract for Agent corrections', () => {
     const reference = buildGenshinCapabilityReference({
       isDirect: true,

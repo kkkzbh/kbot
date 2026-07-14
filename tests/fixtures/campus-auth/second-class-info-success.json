@@ -1,0 +1,18 @@
+{
+  "code": 200,
+  "msg": null,
+  "data": {
+    "studentNo": "2026000001",
+    "phone": "13000000000",
+    "user": {
+      "nickName": "测试学生"
+    },
+    "units": [
+      {
+        "schoolId": "1101092545313637006",
+        "schoolName": "河北大学",
+        "children": []
+      }
+    ]
+  }
+}

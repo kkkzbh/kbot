@@ -270,10 +270,12 @@ describe('native feature chat integration', () => {
     const harness = createHarness();
     harness.service.registerCapability({
       id: 'hbu-jw',
+      isRelevant: () => true,
       buildReference: () => '教务总入口：“教务”；课程查询格式：“课程查询 <课程> [学期]”。',
     });
     harness.service.registerCapability({
       id: 'genshin',
+      isRelevant: () => true,
       buildReference: () => '原神总入口：“原神”；抽卡统计命令：“抽卡记录”。',
     });
     await harness.emit('ready');
@@ -300,8 +302,43 @@ describe('native feature chat integration', () => {
       ttl: 'turn',
     });
     const payload = String(fragment?.payload.value ?? '');
-    expect(payload).toContain('用户表达相关意图、漏写参数或写错格式时');
+    expect(payload).toContain('自由聊天是默认职责');
+    expect(payload).toContain('只有当前消息明确询问、尝试或要求纠正');
     expect(payload).toContain('课程查询 <课程> [学期]');
     expect(payload).toContain('抽卡记录');
+  });
+
+  it('injects only the chat boundary when no capability matches the current message', async () => {
+    const harness = createHarness();
+    harness.service.registerCapability({
+      id: 'hbu-jw',
+      isRelevant: () => false,
+      buildReference: () => '教务总入口：“教务”。',
+    });
+    harness.service.registerCapability({
+      id: 'genshin',
+      isRelevant: () => false,
+      buildReference: () => '原神总入口：“原神”。',
+    });
+    await harness.emit('ready');
+
+    beginPromptAssemblyTurn('conv-native-feature');
+    const middleware = harness.chainMiddlewares.get('qqbot_native_feature_capabilities');
+    await middleware!(createSession({ content: '在', stripped: { content: '在' } }), {
+      options: {
+        conversation: {
+          conversationId: 'conv-native-feature',
+          conversation: { id: 'conv-native-feature' },
+        },
+      },
+    });
+
+    const [fragment] = peekPromptFragments('conv-native-feature');
+    const payload = String(fragment?.payload.value ?? '');
+    expect(payload).toContain('自由聊天是默认职责');
+    expect(payload).toContain('历史中的功能查询结果只在当前消息明确引用');
+    expect(payload).not.toContain('教务总入口');
+    expect(payload).not.toContain('原神总入口');
+    expect(payload).not.toContain('当前消息可能涉及的只读命令参考');
   });
 });

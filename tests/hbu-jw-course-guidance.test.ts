@@ -8,6 +8,7 @@ import {
   selectNearestFreshTrainingPlan,
   type HbuJwGuidanceContext,
 } from '../src/plugins/hbu-jw/course-guidance.js';
+import { registerHbuJwCourseGuidanceTools } from '../src/plugins/hbu-jw/course-guidance-tools.js';
 import { HbuJwHttpClient } from '../src/plugins/hbu-jw/jw-client.js';
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
 import type {
@@ -21,6 +22,28 @@ import type {
 } from '../src/plugins/hbu-jw/types.js';
 
 const EMPTY_JAR: SerializedCookieJar = { cookies: [] };
+
+describe('hbu-jw course guidance tool boundary', () => {
+  it('authorizes tools only while the explicit guidance session gate is active', () => {
+    const registered: Array<{ authorization: (session: { userId?: string }) => boolean }> = [];
+    const registerTool = vi.fn((_name: string, tool: { authorization: (session: { userId?: string }) => boolean }) => {
+      registered.push(tool);
+      return () => undefined;
+    });
+    let active = false;
+    registerHbuJwCourseGuidanceTools(
+      { chatluna: { platform: { registerTool } } } as never,
+      {} as never,
+      () => active,
+    );
+
+    expect(registered).toHaveLength(3);
+    expect(registered.map((tool) => tool.authorization({ userId: '10001' }))).toEqual([false, false, false]);
+    active = true;
+    expect(registered.map((tool) => tool.authorization({ userId: '10001' }))).toEqual([true, true, true]);
+    expect(registered.map((tool) => tool.authorization({}))).toEqual([false, false, false]);
+  });
+});
 
 function snapshot(): HbuJwTrainingPlanSnapshot {
   return {

@@ -225,6 +225,17 @@ export const BOT_CONSOLE_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'HBU_JW_KEEP_ALIVE_ENABLED', label: '教务登录态保活', type: 'toggle', section: 'features' },
   { key: 'HBU_JW_KEEP_ALIVE_INTERVAL_MS', label: '教务保活周期', type: 'number', section: 'features' },
   { key: 'HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS', label: '教务保活最近使用窗口', type: 'number', section: 'features' },
+  { key: 'CAMPUS_AUTH_PUBLIC_BASE_URL', label: '校园绑定外部地址', type: 'text', section: 'features' },
+  { key: 'CAMPUS_AUTH_BIND_PAGE_PATH', label: '校园绑定页路径', type: 'text', section: 'features' },
+  { key: 'CAMPUS_AUTH_BIND_TOKEN_TTL_MS', label: '校园绑定链接有效期', type: 'number', section: 'features' },
+  { key: 'CAMPUS_AUTH_CREDENTIAL_KEK_PATH', label: '校园认证 KEK 路径', type: 'text', section: 'features' },
+  { key: 'CAMPUS_AUTH_MAX_BINDING_ATTEMPTS', label: '校园绑定最多尝试次数', type: 'number', section: 'features' },
+  { key: 'ZYH_ALLOWED_GROUPS', label: '志愿汇白名单群', type: 'text', section: 'features' },
+  { key: 'ZYH_NATURAL_TRIGGER_ENABLED', label: '志愿汇自然触发', type: 'toggle', section: 'features' },
+  { key: 'ZYH_NATURAL_TRIGGER_GROUPS', label: '志愿汇自然触发群', type: 'text', section: 'features' },
+  { key: 'HBU_SECOND_CLASS_ALLOWED_GROUPS', label: '二课白名单群', type: 'text', section: 'features' },
+  { key: 'HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED', label: '二课自然触发', type: 'toggle', section: 'features' },
+  { key: 'HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS', label: '二课自然触发群', type: 'text', section: 'features' },
   { key: 'GENSHIN_ALLOWED_GROUPS', label: '原神白名单群', type: 'text', section: 'features' },
   { key: 'GENSHIN_PUBLIC_BASE_URL', label: '原神绑定外部地址', type: 'text', section: 'features' },
   { key: 'GENSHIN_BIND_PAGE_PATH', label: '原神绑定页路径', type: 'text', section: 'features' },
@@ -366,6 +377,10 @@ function normalizeManagedEnvValue(key: string, value: string | null | undefined)
     key === 'CHAT_NATURAL_TRIGGER_GROUPS' ||
     key === 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS' ||
     key === 'HBU_JW_ALLOWED_GROUPS' ||
+    key === 'ZYH_ALLOWED_GROUPS' ||
+    key === 'ZYH_NATURAL_TRIGGER_GROUPS' ||
+    key === 'HBU_SECOND_CLASS_ALLOWED_GROUPS' ||
+    key === 'HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS' ||
     key === 'GENSHIN_ALLOWED_GROUPS'
   ) {
     return normalizeManagedGroupList(value);

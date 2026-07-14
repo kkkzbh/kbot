@@ -141,6 +141,7 @@ export function apply(ctx: Context, config: Config): void {
   const toolDisposers = registerHbuJwCourseGuidanceTools(
     hbuCtx as unknown as HbuJwCourseGuidanceToolsContext,
     guidanceService,
+    (session) => guidanceSessions.has(session as object),
   );
   for (const dispose of toolDisposers) ctx.on?.('dispose', dispose);
   if (typeof hbuCtx.chatluna.registerAllowReplyResolver !== 'function') {
@@ -154,6 +155,7 @@ export function apply(ctx: Context, config: Config): void {
 
   const unregisterCapability = hbuCtx.nativeFeatureChat.registerCapability({
     id: 'hbu-jw',
+    isRelevant: shouldExposeHbuJwCapabilityReference,
     buildReference: (session) => buildHbuJwCapabilityReference(session, runtime),
   });
   ctx.on?.('dispose', unregisterCapability);
@@ -621,16 +623,19 @@ export function buildHbuJwCapabilityReference(session: Session, runtime: Runtime
   const invocation = direct || bareEnabled
     ? '直接发送下面的命令。'
     : '群聊中需要 @机器人 后发送下面的命令。';
+  const guidanceRequested = normalizeCommandText(session).includes('选课指导');
 
   return [
     `教务功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
     '- 总入口：“教务”，返回完整教务菜单。',
     '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务状态”、“教务解绑”。',
     '- 查询：“GPA”、“成绩”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
-    '- AI 选课指导关键词：“选课指导”。该功能只给出指导，不执行实际选课。',
-    '- 收到“选课指导”后必须严格依次调用 hbu_jw_course_guidance_context、hbu_jw_course_offerings、hbu_jw_validate_course_recommendation。禁止跳步。',
-    '- 只有最终验证返回 valid=true 才能输出方案；按缺失必修、当前方案开课、任选课组缺口、通识通选排序，以达到最低学分且不超过最低要求为原则。',
-    '- 最终 StructuredReply 第一条必须发送 context.card.assetRef 图片，随后列出课程名、课程号、课序号、学分、理由、预计完成度和开课数据时间。',
+    ...(guidanceRequested ? [
+      '- AI 选课指导关键词：“选课指导”。该功能只给出指导，不执行实际选课。',
+      '- 收到“选课指导”后必须严格依次调用 hbu_jw_course_guidance_context、hbu_jw_course_offerings、hbu_jw_validate_course_recommendation。禁止跳步。',
+      '- 只有最终验证返回 valid=true 才能输出方案；按缺失必修、当前方案开课、任选课组缺口、通识通选排序，以达到最低学分且不超过最低要求为原则。',
+      '- 最终 StructuredReply 第一条必须发送 context.card.assetRef 图片，随后列出课程名、课程号、课序号、学分、理由、预计完成度和开课数据时间。',
+    ] : []),
     '- “选课结果”代表当前选课轮次（通常是下学期），计入进行中并作为时间冲突基线；“完整课表”代表本学期。',
     '- 课程查询帮助：“课程查询”。',
     '- 课程查询严格格式：“课程查询 <课程名关键词或课程号> [学期]”；命令名后必须有空格。',
@@ -640,6 +645,17 @@ export function buildHbuJwCapabilityReference(session: Session, runtime: Runtime
       ? '- 用户写成自然语言或格式错误时，纠正并给出最贴近意图的上述准确命令。'
       : '- 当前群未开启教务功能；说明不可用，不要引导用户反复尝试。',
   ].join('\n');
+}
+
+const HBU_JW_USAGE_TOPIC_PATTERN = /(?:教务(?!处)|GPA|成绩|课程查询|课表|考试安排|选课结果|选课指导)/i;
+const HBU_JW_USAGE_INTENT_PATTERN = /(?:(?:怎么|如何|怎样|咋).{0,4}(?:查|看|用)|查(?:询)?|查看|使用|发送|输入|命令|格式|入口|菜单|功能)/;
+
+export function shouldExposeHbuJwCapabilityReference(session: Session): boolean {
+  const text = normalizeCommandText(session);
+  if (!text) return false;
+  if (parseHbuJwCommand(text)) return true;
+  if (/^(?:课程查询|教务(?:绑定|确认|确定|状态|解绑))/.test(text)) return true;
+  return HBU_JW_USAGE_TOPIC_PATTERN.test(text) && HBU_JW_USAGE_INTENT_PATTERN.test(text);
 }
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {

@@ -1,0 +1,7 @@
+{
+  "code": 200,
+  "msg": null,
+  "data": {
+    "token": "fixture-second-class-token"
+  }
+}

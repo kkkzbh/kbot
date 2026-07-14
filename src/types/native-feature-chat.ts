@@ -3,6 +3,7 @@ import type { Fragment, Session } from 'koishi';
 
 export interface NativeFeatureCapability {
   id: string;
+  isRelevant(session: Session): boolean;
   buildReference(session: Session): string;
 }
 

@@ -73,6 +73,24 @@ plugins:
     ./dist/plugins/realtime-message:realtime-message:
       maxInjectCount: ${{ +env.QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT || 12 }}
     ./dist/plugins/native-feature-chat:native-feature-chat: {}
+    ./dist/plugins/campus-auth-core:campus-auth-core:
+      publicBaseUrl: >-
+        ${{ env.CAMPUS_AUTH_PUBLIC_BASE_URL || env.HBU_JW_PUBLIC_BASE_URL ||
+        ('http://127.0.0.1:' + (+env.KOISHI_PORT || 5140)) }}
+      bindPagePath: ${{ env.CAMPUS_AUTH_BIND_PAGE_PATH || '/campus/bind' }}
+      bindTokenTtlMs: ${{ +env.CAMPUS_AUTH_BIND_TOKEN_TTL_MS || 600000 }}
+      credentialKekPath: >-
+        ${{ env.CAMPUS_AUTH_CREDENTIAL_KEK_PATH ||
+        './.runtime/campus-auth/credential-kek.key' }}
+      maxBindingAttempts: ${{ +env.CAMPUS_AUTH_MAX_BINDING_ATTEMPTS || 5 }}
+    ./dist/plugins/zyh:zyh:
+      allowedGroups: ${{ env.ZYH_ALLOWED_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.ZYH_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.ZYH_NATURAL_TRIGGER_GROUPS || '' }}
+    ./dist/plugins/hbu-second-class:hbu-second-class:
+      allowedGroups: ${{ env.HBU_SECOND_CLASS_ALLOWED_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/oj-tools:oj-tools:
       cacheTtlMs: ${{ +env.QQBOT_OJ_TOOLS_CACHE_TTL_MS || 300000 }}
       requestIntervalMs: ${{ +env.QQBOT_OJ_TOOLS_REQUEST_INTERVAL_MS || 2100 }}
@@ -94,6 +112,30 @@ plugins:
       allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
       naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
       naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
+    ./dist/plugins/chaoxing:chaoxing:
+      bindPagePath: ${{ env.CHAOXING_BIND_PAGE_PATH || '/chaoxing/bind' }}
+      publicBaseUrl: >-
+        ${{ env.CHAOXING_PUBLIC_BASE_URL || ('http://127.0.0.1:' +
+        (+env.KOISHI_PORT || 5140)) }}
+      bindTokenTtlMs: ${{ +env.CHAOXING_BIND_TOKEN_TTL_MS || 600000 }}
+      credentialKekPath: >-
+        ${{ env.CHAOXING_CREDENTIAL_KEK_PATH ||
+        './.runtime/chaoxing/credential-kek.key' }}
+      autoReloginEnabled: ${{ env.CHAOXING_AUTO_RELOGIN_ENABLED !== 'false' }}
+      sessionValidationTtlMs: ${{ +env.CHAOXING_SESSION_VALIDATION_TTL_MS || 600000 }}
+      allowedGroups: ${{ env.CHAOXING_ALLOWED_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
+      requestIntervalMs: ${{ +env.CHAOXING_REQUEST_INTERVAL_MS || 1200 }}
+      workerPollIntervalMs: ${{ +env.CHAOXING_WORKER_POLL_INTERVAL_MS || 5000 }}
+      signWatchIntervalMs: ${{ +env.CHAOXING_SIGN_WATCH_INTERVAL_MS || 15000 }}
+      deadlineSyncIntervalMs: ${{ +env.CHAOXING_DEADLINE_SYNC_INTERVAL_MS || 900000 }}
+      deadlineReminderLeadMs: ${{ +env.CHAOXING_DEADLINE_REMINDER_LEAD_MS || 86400000 }}
+      studyPlaybackRate: ${{ +env.CHAOXING_STUDY_PLAYBACK_RATE || 1 }}
+      maximumVideoReportIntervalMs: ${{ +env.CHAOXING_VIDEO_REPORT_INTERVAL_MS || 60000 }}
+      answerProviderUrl: ${{ env.CHAOXING_ANSWER_PROVIDER_URL || '' }}
+      answerProviderApiKey: ${{ env.CHAOXING_ANSWER_PROVIDER_API_KEY || '' }}
+      answerProviderTimeoutMs: ${{ +env.CHAOXING_ANSWER_PROVIDER_TIMEOUT_MS || 15000 }}
     ./dist/plugins/triggers/group-natural:natural-trigger:
       enabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
       enabledGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}

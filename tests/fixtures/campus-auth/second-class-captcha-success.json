@@ -1,0 +1,8 @@
+{
+  "code": 200,
+  "msg": null,
+  "data": {
+    "uuid": "fixture-captcha-uuid",
+    "img": "iVBORw0KGgo="
+  }
+}

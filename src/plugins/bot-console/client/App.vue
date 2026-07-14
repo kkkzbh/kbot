@@ -10,6 +10,8 @@ import ServicesPanel from './components/panels/ServicesPanel.vue'
 import FeaturesPanel from './components/panels/FeaturesPanel.vue'
 import ToolPolicyPanel from './components/panels/ToolPolicyPanel.vue'
 import HbuJwPanel from './components/panels/HbuJwPanel.vue'
+import ZyhPanel from './components/panels/ZyhPanel.vue'
+import HbuSecondClassPanel from './components/panels/HbuSecondClassPanel.vue'
 import GenshinPanel from './components/panels/GenshinPanel.vue'
 import MemoryPanel from './components/panels/MemoryPanel.vue'
 import AffinityPanel from './components/panels/AffinityPanel.vue'
@@ -42,6 +44,8 @@ const TABS = [
   { id: 'services', label: '运行控制' },
   { id: 'features', label: '功能开关' },
   { id: 'hbu-jw', label: '教务系统' },
+  { id: 'zyh', label: '志愿汇' },
+  { id: 'hbu-second-class', label: '二课' },
   { id: 'genshin', label: '原神' },
   { id: 'tools', label: '工具控制' },
   { id: 'affinity', label: '关系事件' },
@@ -58,6 +62,8 @@ const panelMap: Record<string, Component> = {
   services: ServicesPanel,
   features: FeaturesPanel,
   'hbu-jw': HbuJwPanel,
+  zyh: ZyhPanel,
+  'hbu-second-class': HbuSecondClassPanel,
   genshin: GenshinPanel,
   tools: ToolPolicyPanel,
   affinity: AffinityPanel,

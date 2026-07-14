@@ -132,6 +132,7 @@ export function apply(ctx: Context, config: Config): void {
 
   const unregisterCapability = genshinCtx.nativeFeatureChat.registerCapability({
     id: 'genshin',
+    isRelevant: shouldExposeGenshinCapabilityReference,
     buildReference: (session) => buildGenshinCapabilityReference(session, runtime),
   });
   ctx.on?.('dispose', unregisterCapability);
@@ -642,6 +643,18 @@ export function buildGenshinCapabilityReference(session: Session, runtime: Runti
       ? '- 用户写成自然语言或格式错误时，纠正并给出最贴近意图的上述准确命令。'
       : '- 当前群未开启原神功能；说明不可用，不要引导用户反复尝试。',
   ].join('\n');
+}
+
+const GENSHIN_USAGE_TOPIC_PATTERN = /(?:原神(?:功能|机器人|绑定|确认|确定|解绑|签到|兑换|抽卡记录)|抽卡记录|绑定原神)/;
+const GENSHIN_USAGE_INTENT_PATTERN = /(?:(?:怎么|如何|怎样|咋).{0,4}(?:查|看|用|绑定|签到|兑换|同步)|命令|格式|入口|菜单|查询|查看|同步|使用|发送|输入|失败|报错)/;
+
+export function shouldExposeGenshinCapabilityReference(session: Session): boolean {
+  const text = normalizeCommandText(session);
+  if (!text) return false;
+  if (parseGenshinCommand(text)) return true;
+  if (/^原神(?:确认|确定)\d{6}$/.test(text)) return true;
+  if (/^原神兑换[A-Za-z0-9]{6,32}$/.test(text)) return true;
+  return GENSHIN_USAGE_TOPIC_PATTERN.test(text) && GENSHIN_USAGE_INTENT_PATTERN.test(text);
 }
 
 function parseGenshinCommand(text: string): GenshinCommand | null {

@@ -1,0 +1,14 @@
+{
+  "errCode": "0000",
+  "data": [
+    {
+      "id": "fixture-activity-id",
+      "title": "校园志愿服务",
+      "deptname": "河北大学青年志愿者协会",
+      "city": "保定市",
+      "county": "莲池区",
+      "recruit_finish_time": 1784073600000,
+      "is_finish": 1
+    }
+  ]
+}

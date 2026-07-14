@@ -48,6 +48,17 @@ export const FIELD_LABELS: Record<string, string> = {
   HBU_JW_KEEP_ALIVE_ENABLED: '登录态保活',
   HBU_JW_KEEP_ALIVE_INTERVAL_MS: '保活周期',
   HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS: '保活最近使用窗口',
+  CAMPUS_AUTH_PUBLIC_BASE_URL: '统一绑定外部地址',
+  CAMPUS_AUTH_BIND_PAGE_PATH: '统一绑定页路径',
+  CAMPUS_AUTH_BIND_TOKEN_TTL_MS: '绑定链接有效期',
+  CAMPUS_AUTH_CREDENTIAL_KEK_PATH: '共享认证 KEK 路径',
+  CAMPUS_AUTH_MAX_BINDING_ATTEMPTS: '最多验证次数',
+  ZYH_ALLOWED_GROUPS: '志愿汇白名单群',
+  ZYH_NATURAL_TRIGGER_ENABLED: '志愿汇自然触发',
+  ZYH_NATURAL_TRIGGER_GROUPS: '志愿汇自然触发群',
+  HBU_SECOND_CLASS_ALLOWED_GROUPS: '二课白名单群',
+  HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED: '二课自然触发',
+  HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS: '二课自然触发群',
   GENSHIN_ALLOWED_GROUPS: '原神白名单群',
   GENSHIN_PUBLIC_BASE_URL: '绑定外部地址',
   GENSHIN_BIND_PAGE_PATH: '绑定页路径',
@@ -102,6 +113,24 @@ export const FIELD_HINTS: Record<string, string> = {
     '登录态保活检查间隔，单位毫秒。',
   HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS:
     '只对最近这段时间内验证过的登录态执行保活，单位毫秒。',
+  CAMPUS_AUTH_PUBLIC_BASE_URL:
+    '志愿汇与二课共用的 HTTPS 绑定地址，可复用现有教务 Cloudflare Tunnel 域名。',
+  CAMPUS_AUTH_BIND_PAGE_PATH:
+    '统一一次性绑定页路径，必须以 / 开头。',
+  CAMPUS_AUTH_BIND_TOKEN_TTL_MS:
+    '一次性绑定链接有效期，单位毫秒。',
+  CAMPUS_AUTH_CREDENTIAL_KEK_PATH:
+    '志愿汇凭据和两个模块 Token 的共享 KEK 文件，文件权限必须为 0600。',
+  CAMPUS_AUTH_MAX_BINDING_ATTEMPTS:
+    '单个一次性绑定链接允许提交认证信息的最大次数。',
+  ZYH_ALLOWED_GROUPS:
+    '只有填在这里的群号可以在群聊使用志愿汇；留空时私聊仍可用。',
+  ZYH_NATURAL_TRIGGER_GROUPS:
+    '允许裸触发志愿汇命令的群号列表。',
+  HBU_SECOND_CLASS_ALLOWED_GROUPS:
+    '只有填在这里的群号可以在群聊使用二课；留空时私聊仍可用。',
+  HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS:
+    '允许裸触发二课命令的群号列表。',
   GENSHIN_ALLOWED_GROUPS:
     '只有填在这里的群号才可以在群聊里使用原神绑定、签到、兑换和菜单。裸原神触发由自然触发白名单控制；留空时群聊不可用，私聊仍可用。',
   GENSHIN_PUBLIC_BASE_URL:

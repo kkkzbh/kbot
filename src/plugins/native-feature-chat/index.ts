@@ -210,21 +210,28 @@ class NativeFeatureChatService implements NativeFeatureChatServiceLike {
 
   buildCapabilityReference(session: Session): string | null {
     const sections = [...this.capabilities.values()]
+      .filter((capability) => capability.isRelevant(session))
       .map((capability) => normalizeText(capability.buildReference(session)))
       .filter(Boolean);
-    if (!sections.length) return null;
-    if (!this.capabilityContextLogged) {
+    if (sections.length && !this.capabilityContextLogged) {
       logger.info('native feature capability context active: %s', [...this.capabilities.keys()].join(', '));
       this.capabilityContextLogged = true;
     }
 
     return [
-      'QQ 内置功能使用规则：',
-      '- 这些功能由关键词插件执行，不是 Agent tool。不要声称已经代替用户执行查询或账号操作。',
-      '- 用户表达相关意图、漏写参数或写错格式时，指出问题并给出可以直接发送的准确命令。',
-      '- 用户只想查看功能列表时，引导其发送对应的总入口命令。',
-      '',
-      ...sections,
+      'QQ 内置功能边界：',
+      '- 自由聊天是默认职责，只回应当前消息本身，不主动推荐内置功能。',
+      '- 只有当前消息明确询问、尝试或要求纠正某项内置功能命令时，才可提及对应功能和命令。',
+      '- 不得仅凭历史查询记录、功能可能有用或功能确实存在，主动枚举、追问或引导用户使用功能。',
+      '- 历史中的功能查询结果只在当前消息明确引用或询问相关结果时作为上下文使用。',
+      '- 本提示只提供命令识别参考，不授予功能调用权限；不得声称已经代替用户执行查询或账号操作。',
+      ...(sections.length
+        ? [
+          '',
+          '当前消息可能涉及的只读命令参考：',
+          ...sections,
+        ]
+        : []),
     ].join('\n');
   }
 

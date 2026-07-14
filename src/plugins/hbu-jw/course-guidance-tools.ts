@@ -136,12 +136,17 @@ function runKey(identity: OwnerIdentity): string {
   return `${identity.ownerKey}:${identity.channelId}`;
 }
 
-function toolEntry(name: string, description: string, createTool: () => StructuredTool): ChatLunaTool {
+function toolEntry(
+  name: string,
+  description: string,
+  createTool: () => StructuredTool,
+  isSessionEnabled: (session: Session) => boolean,
+): ChatLunaTool {
   return {
     name,
     description,
     selector: () => true,
-    authorization: (session) => Boolean(session?.userId),
+    authorization: (session) => Boolean(session?.userId) && isSessionEnabled(session),
     createTool,
   };
 }
@@ -149,21 +154,22 @@ function toolEntry(name: string, description: string, createTool: () => Structur
 export function registerHbuJwCourseGuidanceTools(
   ctx: HbuJwCourseGuidanceToolsContext,
   service: HbuJwCourseGuidanceService,
+  isSessionEnabled: (session: Session) => boolean,
 ): Array<() => void> {
   const runs = new GuidanceRunRegistry();
   const platform = ctx.chatluna.platform;
   return [
     platform.registerTool(
       HBU_JW_COURSE_GUIDANCE_CONTEXT_TOOL,
-      toolEntry(HBU_JW_COURSE_GUIDANCE_CONTEXT_TOOL, 'Load live HBU course-guidance context and card.', () => new HbuJwCourseGuidanceContextTool(service, runs)),
+      toolEntry(HBU_JW_COURSE_GUIDANCE_CONTEXT_TOOL, 'Load live HBU course-guidance context and card.', () => new HbuJwCourseGuidanceContextTool(service, runs), isSessionEnabled),
     ),
     platform.registerTool(
       HBU_JW_COURSE_OFFERINGS_TOOL,
-      toolEntry(HBU_JW_COURSE_OFFERINGS_TOOL, 'Query filtered live HBU course offerings.', () => new HbuJwCourseOfferingsTool(service, runs)),
+      toolEntry(HBU_JW_COURSE_OFFERINGS_TOOL, 'Query filtered live HBU course offerings.', () => new HbuJwCourseOfferingsTool(service, runs), isSessionEnabled),
     ),
     platform.registerTool(
       HBU_JW_VALIDATE_COURSE_RECOMMENDATION_TOOL,
-      toolEntry(HBU_JW_VALIDATE_COURSE_RECOMMENDATION_TOOL, 'Validate a live HBU course recommendation.', () => new HbuJwValidateCourseRecommendationTool(service, runs)),
+      toolEntry(HBU_JW_VALIDATE_COURSE_RECOMMENDATION_TOOL, 'Validate a live HBU course recommendation.', () => new HbuJwValidateCourseRecommendationTool(service, runs), isSessionEnabled),
     ),
   ];
 }
