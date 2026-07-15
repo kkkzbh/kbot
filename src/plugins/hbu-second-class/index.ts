@@ -14,7 +14,12 @@ import { ensureSecondClassCacheTables, SecondClassCache } from './cache.js';
 import { SecondClassHttpClient } from './client.js';
 import { HbuSecondClassMenuService, type HbuSecondClassMenuPuppeteerLike } from './menu.js';
 import { ensureSecondClassReauthTable, SecondClassReauthStore } from './reauth-store.js';
-import { renderSecondClassRadar, renderSecondClassTranscript, type SecondClassPuppeteerLike } from './render.js';
+import {
+  renderSecondClassCredits,
+  renderSecondClassRadar,
+  renderSecondClassTranscript,
+  type SecondClassPuppeteerLike,
+} from './render.js';
 import {
   HbuSecondClassAuthProvider,
   HbuSecondClassService,
@@ -143,7 +148,8 @@ function registerMiddleware(ctx: Context, services: SecondClassContext, service:
         await reply(services.nativeFeatureChat, session, command, text, '二课续登成功，请重新发送原查询命令。', '二课验证码验证成功，登录态已续期。', true, false);
       } else if (command.kind === 'credits') {
         const result = await service.queryCredits(identity);
-        await reply(services.nativeFeatureChat, session, command, text, `${formatCredits(result.data)}${cacheNotice(result)}`, '机器人返回了二课学分。');
+        const image = await renderSecondClassCredits(services.puppeteer, result.data);
+        await reply(services.nativeFeatureChat, session, command, text, [image, h.text(cacheNotice(result))], '机器人返回了二课学分明细卡片。');
       } else if (command.kind === 'transcript') {
         const result = await service.queryTranscript(identity, command.semester);
         const image = await renderSecondClassTranscript(services.puppeteer, result.data, command.semester);
@@ -220,25 +226,6 @@ export function parseSecondClassCommand(text: string): SecondClassCommand | null
   return null;
 }
 
-function formatCredits(data: unknown): string {
-  const record = asRecord(data);
-  const lines = ['二课学分'];
-  addMetric(lines, '第一课堂', record.oneScore);
-  addMetric(lines, '第二课堂', record.twoScore);
-  addMetric(lines, '无效学分', record.invalidScore);
-  const categories = Array.isArray(record.creditCategoryDetailsList) ? record.creditCategoryDetailsList : [];
-  for (const item of categories.slice(0, 12)) {
-    const row = asRecord(item);
-    const name = textValue(row.categoryName || row.name);
-    if (!name) continue;
-    const actual = textValue(row.actualCreditScore || row.creditScore || row.score) || '0';
-    const required = textValue(row.requiredCreditScore || row.requiredScore);
-    lines.push(`${name}：${actual}${required ? ` / ${required}` : ''}${row.qualified === false ? '（未达标）' : ''}`);
-  }
-  if (lines.length === 1) lines.push('暂无学分数据。');
-  return lines.join('\n');
-}
-
 function formatPage(title: string, page: SecondClassPage): string {
   if (!page.rows.length) return `${title}\n暂无记录。`;
   return [title, ...page.rows.map((row, index) => {
@@ -263,11 +250,6 @@ function methodLabel(method: string): string {
     direct_credentials: '二课账号登录',
     token_import: '导入二课 Token',
   } as Record<string, string>)[method] ?? method;
-}
-
-function addMetric(lines: string[], label: string, value: unknown): void {
-  const text = textValue(value);
-  if (text) lines.push(`${label}：${text}`);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

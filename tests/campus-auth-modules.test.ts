@@ -39,7 +39,12 @@ import {
   HbuSecondClassService,
   SecondClassReauthRequiredError,
 } from '../src/plugins/hbu-second-class/service.js';
-import { collectRadarPoints, collectTranscriptRows } from '../src/plugins/hbu-second-class/render.js';
+import {
+  buildSecondClassCreditsView,
+  collectRadarPoints,
+  collectTranscriptRows,
+  renderSecondClassCreditsHtml,
+} from '../src/plugins/hbu-second-class/render.js';
 import {
   apply as applySecondClass,
   buildSecondClassReauthReply,
@@ -639,6 +644,67 @@ describe('versioned cache and user-facing parsers', () => {
     expect(collectRadarPoints(data)).toEqual(expect.arrayContaining([
       { name: '社会实践', value: 2 }, { name: '创新创业', value: 3 }, { name: '文体活动', value: 1 },
     ]));
+  });
+
+  it('renders every nested 二课 credit category with points and recognized-credit targets', () => {
+    const leaf = (categoryName: string, actualCredit: number, requiredCredit: number, actualCreditScore: number, requiredCreditScore: number) => ({
+      categoryName,
+      evaluationRule: 0,
+      qualified: null,
+      actualCredit,
+      requiredCredit,
+      actualCreditScore,
+      requiredCreditScore,
+      invalidCredit: 0,
+      childList: null,
+    });
+    const data = {
+      oneScore: 185.5,
+      twoScore: 46.375,
+      invalidScore: 0,
+      creditCategoryDetailsList: [
+        {
+          ...leaf('必修Ⅰ', 173.5, 160, 43.375, 40),
+          evaluationRule: 1,
+          childList: [
+            leaf('思想成长', 24, 40, 6, 10),
+            leaf('社会实践', 16, 40, 4, 10),
+            leaf('志愿公益', 57.5, 40, 14.375, 10),
+            leaf('创新创业', 76, 40, 19, 10),
+          ],
+        },
+        {
+          ...leaf('选修', 12, 60, 3, 15),
+          childList: [
+            leaf('文体活动', 3, 0, 0.75, 0),
+            leaf('工作履历', 0, 0, 0, 0),
+            leaf('技能特长', 9, 0, 2.25, 0),
+          ],
+        },
+        {
+          ...leaf('必修Ⅱ', 0, 20, 0, 5),
+          evaluationRule: 1,
+          childList: [leaf('德育答辩', 0, 20, 0, 5)],
+        },
+      ],
+    };
+
+    const view = buildSecondClassCreditsView(data);
+    expect(view).toMatchObject({ earnedPoints: 185.5, earnedCredits: 46.375, invalidPoints: 0 });
+    expect(view.categories.flatMap((category) => category.children.map((child) => child.name))).toEqual([
+      '思想成长', '社会实践', '志愿公益', '创新创业', '文体活动', '工作履历', '技能特长', '德育答辩',
+    ]);
+    expect(view.categories[0]).toMatchObject({ name: '必修Ⅰ', earnedCredits: 43.375, requiredCredits: 40 });
+
+    const html = renderSecondClassCreditsHtml(view);
+    expect(html).toContain('46.375');
+    expect(html).toContain('43.375');
+    expect(html).toContain('共 8 个细分项');
+    expect(html).toContain('0 / 3 个要求组已达标');
+    expect(html).toContain('2 / 4 个必修子项达标');
+    for (const categoryName of ['思想成长', '社会实践', '志愿公益', '创新创业', '文体活动', '工作履历', '技能特长', '德育答辩']) {
+      expect(html).toContain(categoryName);
+    }
   });
 });
 
