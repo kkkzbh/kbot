@@ -37,6 +37,8 @@ QQBOT_ADMIN_ORIGIN=https://admin.example.com
 
 `QQBOT_ADMIN_ORIGIN` must exactly match the browser-facing origin and must not include a path. The installer validates these values before replacing the active application. It reports only validation errors and never prints either secret.
 
+After the first successful token login, the admin workspace stores only a signed HttpOnly session cookie. The session lasts 90 days and renews whenever the workspace is opened. The raw access token is never stored in browser JavaScript storage.
+
 Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
 
 ```bash

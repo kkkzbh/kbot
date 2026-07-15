@@ -340,7 +340,13 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     });
   };
 
-  register('get', '/session', (koaCtx) => options.session.verify(getCookie(koaCtx)), { authenticated: false });
+  register('get', '/session', (koaCtx) => {
+    const current = options.session.verify(getCookie(koaCtx));
+    if (!current.authenticated) return current;
+    const renewed = options.session.issue();
+    setSessionCookie(koaCtx, options.session, renewed.token, renewed.expiresAt);
+    return { authenticated: true, expiresAt: renewed.expiresAt };
+  }, { authenticated: false });
   register('post', '/session', (koaCtx) => {
     const input = parseInput(loginRequestSchema, koaCtx.request.body);
     options.session.authenticateAccessToken(input.accessToken);

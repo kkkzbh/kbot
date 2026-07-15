@@ -41,7 +41,7 @@ plugins:
       sessionSecret: ${{ env.QQBOT_ADMIN_SESSION_SECRET }}
       allowedOrigins:
         - ${{ env.QQBOT_ADMIN_ORIGIN }}
-      sessionTtlSeconds: 28800
+      sessionTtlSeconds: 7776000
     cron:task: {}
     ./dist/plugins/automation:automation:
       pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}

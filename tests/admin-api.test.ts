@@ -174,6 +174,23 @@ describe('independent admin API plugin', () => {
     expect(good.cookieValues.get('qqbot_admin_session')).toMatch(/^v1\./);
   });
 
+  it('renews an authenticated persistent session when the workspace opens', async () => {
+    const { server } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const check = server.get.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({ origin: 'https://admin.example.com', body: { accessToken: config.accessToken } });
+    await login(loginCtx);
+    const originalCookie = loginCtx.cookieValues.get('qqbot_admin_session');
+
+    const checkCtx = createKoaCtx({ cookie: originalCookie });
+    await check(checkCtx);
+
+    expect(checkCtx.status).toBe(200);
+    expect(checkCtx.body).toMatchObject({ authenticated: true, expiresAt: expect.any(Number) });
+    expect(checkCtx.cookieValues.get('qqbot_admin_session')).toMatch(/^v1\./);
+    expect(checkCtx.cookieValues.get('qqbot_admin_session')).not.toBe(originalCookie);
+  });
+
   it('rejects protected domain routes without a valid session', async () => {
     const { server } = createRuntime(createTempDir());
     const overview = server.get.mock.calls.find((call) => call[0] === '/api/admin/v1/overview')?.[1];

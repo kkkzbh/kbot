@@ -63,8 +63,8 @@ export class AdminSessionService {
     if (typeof options.sessionSecret !== 'string' || options.sessionSecret.length < 32) {
       throw new Error('Admin session secret 至少需要 32 个字符。');
     }
-    if (!Number.isInteger(options.ttlSeconds) || options.ttlSeconds < 300 || options.ttlSeconds > 604_800) {
-      throw new Error('Admin session TTL 必须在 300 到 604800 秒之间。');
+    if (!Number.isInteger(options.ttlSeconds) || options.ttlSeconds < 300 || options.ttlSeconds > 31_536_000) {
+      throw new Error('Admin session TTL 必须在 300 到 31536000 秒之间。');
     }
     if (!Array.isArray(options.allowedOrigins) || options.allowedOrigins.length === 0) {
       throw new Error('Admin allowed origins 不能为空。');

@@ -33,7 +33,7 @@ export const Config: Schema<Config> = Schema.object({
   accessToken: Schema.string().role('secret').required().description('登录独立管理端使用的 access token。'),
   sessionSecret: Schema.string().role('secret').required().description('签发管理 session 的 HMAC secret。'),
   allowedOrigins: Schema.array(Schema.string()).required().description('允许访问管理端的完整 Origin 列表。'),
-  sessionTtlSeconds: Schema.natural().min(300).max(604800).default(28800).description('管理 session 有效期。'),
+  sessionTtlSeconds: Schema.natural().min(300).max(31536000).default(7776000).description('管理 session 持久化有效期；每次打开管理台会滚动续期。'),
 });
 
 type RuntimeContext = Context & {

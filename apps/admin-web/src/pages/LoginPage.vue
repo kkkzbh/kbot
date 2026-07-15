@@ -30,14 +30,14 @@ async function submit() {
       <div class="login-brand"><span>Q</span><strong>QQBot Admin</strong></div>
       <p class="eyebrow">INDEPENDENT OPERATIONS</p>
       <h1>运维工作台</h1>
-      <p class="login-description">使用服务器配置的 Admin access token 建立受保护的管理会话。</p>
+      <p class="login-description">首次使用服务器配置的 Admin access token 登录后，浏览器会通过 HttpOnly Cookie 保持会话，并在每次打开管理台时自动续期。</p>
       <el-form label-position="top" @submit.prevent="submit">
         <el-form-item label="Access token">
           <el-input v-model="accessToken" type="password" show-password size="large" autocomplete="current-password" @keyup.enter="submit" />
         </el-form-item>
         <el-button type="primary" size="large" :loading="loading" :disabled="!accessToken" style="width:100%" @click="submit">进入工作台</el-button>
       </el-form>
-      <p class="login-security">HttpOnly session · SameSite Strict · Origin protected</p>
+      <p class="login-security">90 天滚动续期 · HttpOnly · SameSite Strict · Origin protected</p>
     </section>
   </main>
 </template>

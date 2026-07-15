@@ -32,5 +32,6 @@ describe('admin session security boundary', () => {
     expect(() => new AdminSessionService({ accessToken: 'short', sessionSecret: 'x'.repeat(32), allowedOrigins: ['https://admin.example.com'], ttlSeconds: 3600 })).toThrow(/16/);
     expect(() => new AdminSessionService({ accessToken: 'x'.repeat(16), sessionSecret: 'short', allowedOrigins: ['https://admin.example.com'], ttlSeconds: 3600 })).toThrow(/32/);
     expect(() => new AdminSessionService({ accessToken: 'x'.repeat(16), sessionSecret: 'x'.repeat(32), allowedOrigins: [], ttlSeconds: 3600 })).toThrow(/不能为空/);
+    expect(() => new AdminSessionService({ accessToken: 'x'.repeat(16), sessionSecret: 'x'.repeat(32), allowedOrigins: ['https://admin.example.com'], ttlSeconds: 31_536_001 })).toThrow(/31536000/);
   });
 });
