@@ -31,7 +31,7 @@ export class AdminLogService {
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Admin log capacity 必须是正整数。');
     this.secretValues = configuredSecretValues(env);
     this.target = {
-      levels: { base: Logger.DEBUG },
+      levels: { base: Logger.DEBUG, sqlite: Logger.INFO },
       record: (record) => this.capture(record),
     };
     Logger.targets.push(this.target);

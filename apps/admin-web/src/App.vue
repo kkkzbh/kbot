@@ -19,6 +19,7 @@ import {
   MonitorPlay,
   RotateCw,
   School,
+  ScrollText,
   Server,
   ShieldCheck,
   SlidersHorizontal,
@@ -41,6 +42,7 @@ const groups: NavGroup[] = [
   { label: '总览', items: [{ key: 'overview', label: '运行总览', path: '/', icon: LayoutDashboard }] },
   { label: '运行与监控', items: [
     { key: 'services', label: '服务管理', path: '/runtime/services', icon: Server },
+    { key: 'logs', label: '运行日志', path: '/runtime/logs', icon: ScrollText },
   ] },
   { label: '对话智能', items: [
     { key: 'models', label: '模型接口', path: '/intelligence/models', icon: Cpu },
@@ -196,7 +198,7 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
           <el-button text @click="logout">退出</el-button>
         </div>
       </header>
-      <main class="content" :class="{ 'content-overview': route.name === 'overview' }">
+      <main class="content" :class="{ 'content-logs': route.name === 'logs' }">
         <router-view />
       </main>
     </div>

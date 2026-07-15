@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AdminLogEntry, AdminLogsResponse } from '@contracts';
 import { api } from '@/api/client';
 
-const MAX_VISIBLE_ENTRIES = 400;
+const MAX_VISIBLE_ENTRIES = 1_000;
 const POLL_INTERVAL_MS = 1_500;
 
 const entries = ref<AdminLogEntry[]>([]);
@@ -11,7 +11,8 @@ const cursor = ref(0);
 const loading = ref(false);
 const paused = ref(false);
 const autoFollow = ref(true);
-const level = ref<'all' | AdminLogEntry['level']>('all');
+type LogLevelFilter = 'standard' | 'all' | AdminLogEntry['level'];
+const level = ref<LogLevelFilter>('standard');
 const query = ref('');
 const errorMessage = ref('');
 const viewport = ref<HTMLElement | null>(null);
@@ -20,7 +21,8 @@ let timer: number | undefined;
 const filteredEntries = computed(() => {
   const needle = query.value.trim().toLowerCase();
   return entries.value.filter((entry) => {
-    if (level.value !== 'all' && entry.level !== level.value) return false;
+    if (level.value === 'standard' && entry.level === 'debug') return false;
+    if (level.value !== 'standard' && level.value !== 'all' && entry.level !== level.value) return false;
     if (!needle) return true;
     return `${entry.namespace} ${entry.content}`.toLowerCase().includes(needle);
   });
@@ -94,7 +96,8 @@ onBeforeUnmount(() => window.clearInterval(timer));
       <div class="log-toolbar">
         <el-input v-model="query" clearable placeholder="搜索 namespace 或内容" class="log-search" />
         <el-select v-model="level" class="log-level" aria-label="日志级别">
-          <el-option label="全部级别" value="all" />
+          <el-option label="常规日志" value="standard" />
+          <el-option label="全部日志" value="all" />
           <el-option label="Error" value="error" />
           <el-option label="Warn" value="warn" />
           <el-option label="Info" value="info" />
@@ -125,31 +128,45 @@ onBeforeUnmount(() => window.clearInterval(timer));
 </template>
 
 <style scoped>
-.log-panel { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.log-panel-head { min-height: 50px; align-items: center; padding: 9px 14px; }
+.log-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.log-panel-head { min-height: 68px; align-items: center; padding: 12px 16px; }
 .log-title-line { display: flex; align-items: center; gap: 10px; }
-.live-state { display: inline-flex; align-items: center; gap: 5px; color: #29785f; font-size: 10px; font-weight: 650; }
-.live-state i { width: 6px; height: 6px; border-radius: 50%; background: #22a77b; box-shadow: 0 0 0 3px rgba(34,167,123,.12); }
+.log-title-line h2 { font-size: 16px; }
+.live-state { display: inline-flex; align-items: center; gap: 6px; color: #29785f; font-size: 12px; font-weight: 650; }
+.live-state i { width: 7px; height: 7px; border-radius: 50%; background: #22a77b; box-shadow: 0 0 0 3px rgba(34,167,123,.12); }
 .live-state.paused { color: #8a6470; }
 .live-state.paused i { background: #a7818b; box-shadow: none; }
-.log-toolbar { display: flex; align-items: center; gap: 8px; }
-.log-search { width: 240px; }
-.log-level { width: 126px; }
-.log-error { padding: 8px 18px; color: #a23649; background: #fff2f4; border-bottom: 1px solid #f2d8de; font-size: 11px; }
-.log-viewport { height: 300px; min-height: 260px; flex: none; overflow: auto; background: #fbfcfe; scrollbar-color: #ccd4df transparent; }
-.log-list { min-width: 760px; padding: 8px 0; }
-.log-row { display: grid; grid-template-columns: 92px 62px 150px minmax(320px, 1fr); align-items: start; min-height: 25px; padding: 4px 14px; border-left: 2px solid transparent; color: #4b5565; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; line-height: 1.5; }
-.log-row:hover { background: #f2f5f9; border-left-color: #aabbe8; }
-.log-row time { color: #929cab; font-variant-numeric: tabular-nums; }
-.log-level-chip { width: fit-content; min-width: 48px; padding: 1px 6px; border-radius: 4px; color: #526072; background: #edf0f4; text-align: center; text-transform: uppercase; font-size: 9px; font-weight: 750; }
+.log-toolbar { display: flex; align-items: center; gap: 10px; }
+.log-search { width: 320px; }
+.log-level { width: 138px; }
+.log-error { padding: 10px 18px; color: #a23649; background: #fff2f4; border-bottom: 1px solid #f2d8de; font-size: 12px; }
+.log-viewport { min-height: 0; flex: 1; overflow: auto; background: #fff; scrollbar-color: #c5ceda transparent; }
+.log-list { min-width: 980px; padding: 6px 0; }
+.log-row {
+  display: grid;
+  grid-template-columns: 116px 78px 210px minmax(480px, 1fr);
+  align-items: start;
+  min-height: 34px;
+  padding: 6px 16px;
+  border-bottom: 1px solid #f0f2f5;
+  color: #374151;
+  font-family: "JetBrains Mono", "Cascadia Code", "Noto Sans Mono", "Liberation Mono", monospace;
+  font-size: 13px;
+  font-variant-ligatures: none;
+  line-height: 1.65;
+}
+.log-row:nth-child(even) { background: #fbfcfd; }
+.log-row:hover { background: #f1f5fb; }
+.log-row time { padding-top: 1px; color: #7b8798; font-variant-numeric: tabular-nums; }
+.log-level-chip { width: fit-content; min-width: 64px; padding: 2px 8px; border-radius: 6px; color: #526072; background: #edf0f4; text-align: center; text-transform: uppercase; font-size: 11px; font-weight: 750; line-height: 18px; }
 .log-level-chip.error { color: #b13d50; background: #feecef; }
 .log-level-chip.warn { color: #9b661d; background: #fff3dd; }
 .log-level-chip.success { color: #24755d; background: #e7f7f1; }
 .log-level-chip.debug { color: #6b5ba6; background: #f0ecfb; }
-.log-namespace { overflow: hidden; padding-right: 16px; color: #375786; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.log-row pre { margin: 0; overflow-wrap: anywhere; color: #3e4755; font: inherit; white-space: pre-wrap; }
-.log-empty { height: 100%; display: grid; place-items: center; color: #9aa3b1; font-size: 11px; }
-.log-footer { min-height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 4px 14px; border-top: 1px solid var(--line); color: #8a93a2; background: #fff; font-size: 10px; }
+.log-namespace { overflow: hidden; padding: 1px 20px 0 0; color: #2f568a; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.log-row pre { margin: 0; overflow-wrap: anywhere; color: #283548; font: inherit; white-space: pre-wrap; }
+.log-empty { height: 100%; display: grid; place-items: center; color: #8b95a5; font-size: 13px; }
+.log-footer { min-height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 6px 16px; border-top: 1px solid var(--line); color: #737f90; background: #fff; font-size: 12px; }
 .log-footer label { display: flex; align-items: center; gap: 6px; }
 
 @media (max-width: 960px) {
@@ -161,8 +178,8 @@ onBeforeUnmount(() => window.clearInterval(timer));
 @media (max-width: 600px) {
   .log-search { width: 100%; flex-basis: 100%; }
   .log-level { flex: 1; }
-  .log-viewport { height: 340px; }
-  .log-row { grid-template-columns: 78px 56px minmax(112px, .5fr) minmax(280px, 1fr); padding-inline: 10px; }
+  .log-list { min-width: 900px; }
+  .log-row { grid-template-columns: 108px 72px 180px minmax(420px, 1fr); padding-inline: 12px; }
   .log-footer span { display: none; }
 }
 </style>

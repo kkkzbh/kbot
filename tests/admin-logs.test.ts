@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('koishi', () => ({
   Logger: class {
     static DEBUG = 3;
-    static targets: Array<{ record?: (record: unknown) => void }> = [];
+    static INFO = 2;
+    static targets: Array<{ levels?: Record<string, number>; record?: (record: unknown) => void }> = [];
   },
 }));
 
@@ -22,6 +23,7 @@ describe('admin runtime logs', () => {
     services.push(service);
     const target = Logger.targets.at(-1);
     expect(target?.record).toBeTypeOf('function');
+    expect(target?.levels).toEqual({ base: Logger.DEBUG, sqlite: Logger.INFO });
 
     target?.record?.({ id: 10, timestamp: 1000, level: 2, type: 'info', name: 'alpha', content: 'one', meta: {} });
     target?.record?.({ id: 11, timestamp: 2000, level: 2, type: 'warn', name: 'beta', content: 'two', meta: {} });

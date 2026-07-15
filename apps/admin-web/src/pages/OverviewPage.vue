@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import EmptyState from '@/components/EmptyState.vue';
-import RuntimeLogPanel from '@/components/RuntimeLogPanel.vue';
 import { api } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
@@ -81,7 +80,6 @@ onBeforeUnmount(() => window.clearInterval(timer));
           <EmptyState v-else title="当前没有待处理事项" description="轮询每 10 秒更新一次。" />
       </article>
     </section>
-    <RuntimeLogPanel class="overview-log" />
   </div>
 </template>
 
@@ -115,13 +113,6 @@ onBeforeUnmount(() => window.clearInterval(timer));
 .issue-list strong, .issue-list small { display: block; }
 .issue-list strong { color: #374151; font-size: 11px; }
 .issue-list small { margin-top: 2px; color: #8b94a3; font-size: 9px; }
-:deep(.overview-log) { min-height: 0; }
-
-@media (min-width: 1101px) {
-  .overview-page { height: 100%; grid-template-rows: auto auto minmax(0, 1fr); }
-  :deep(.overview-log .log-viewport) { height: auto; min-height: 0; flex: 1; }
-}
-
 @media (max-width: 1100px) {
   .overview-summary { grid-template-columns: repeat(4, minmax(0, 1fr)) 64px; }
   .summary-item { align-items: flex-start; flex-direction: column; gap: 5px; }
