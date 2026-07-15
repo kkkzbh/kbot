@@ -110,6 +110,10 @@ export interface ChaoxingSignInfo {
   raw: Record<string, unknown>;
 }
 
+export interface ChaoxingAttendance {
+  status: number;
+}
+
 export class ChaoxingClient {
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
@@ -448,6 +452,21 @@ export class ChaoxingClient {
       },
       cookieJar: jar.serialize(),
     };
+  }
+
+  async getAttendInfo(serialized: SerializedChaoxingCookieJar, activityId: string): Promise<{ attendance: ChaoxingAttendance; cookieJar: SerializedChaoxingCookieJar }> {
+    const jar = ChaoxingCookieJar.from(serialized);
+    const url = new URL('/v2/apis/sign/getAttendInfo', MOBILE_LEARN_ORIGIN);
+    url.searchParams.set('activeId', activityId);
+    const response = await this.request(url.href, { jar });
+    assertOk(response, 'sign_attendance');
+    const payload = parseJsonObject(response.text, 'sign_attendance_json');
+    const data = objectValue(payload.data);
+    const status = nullableNumber(data.status);
+    if (numberValue(payload.result) !== 1 || status === null || !Number.isInteger(status)) {
+      throw new ChaoxingProtocolError('sign_attendance_fields', '学习通签到状态响应缺少有效状态。', excerpt(response.text));
+    }
+    return { attendance: { status }, cookieJar: jar.serialize() };
   }
 
   async prepareSign(serialized: SerializedChaoxingCookieJar, args: { activity: ChaoxingActivity; profile: ChaoxingProfile }): Promise<{ pageText: string; cookieJar: SerializedChaoxingCookieJar }> {

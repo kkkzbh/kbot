@@ -237,6 +237,7 @@ async function executeCommand(command: ChaoxingCommand, identity: OwnerIdentity,
     const title = command.kind === 'works' ? '学习通作业' : command.kind === 'exams' ? '学习通考试' : '学习通待办';
     return formatTaskList(await services.deadline.query(identity, kind), title);
   }
+  if (command.kind === 'sign_quick') return services.sign.quickSign(identity);
   if (command.kind === 'sign_list') return formatDetectedSigns(await services.sign.scanOpenSigns(identity));
   if (command.kind === 'sign_execute') {
     const detected = await services.sign.resolveDetectedSign(identity, command.activityId);
@@ -391,7 +392,7 @@ export function buildChaoxingCapabilityReference(session: Session, runtime: Pick
     `学习通功能（当前会话${enabled ? '可用' : '未启用'}）：`,
     '- 账号：学习通绑定、学习通确认 <确认码>、学习通状态、学习通解绑。',
     '- 查询：学习通课程、学习通章节 <课程>、学习通待办、学习通作业、学习通考试。',
-    '- 签到：学习通签到、学习通签到 <活动ID> [签到码]、学习通签到监听 [课程]、学习通停止签到。',
+    '- 签到：学习通签到（一键处理唯一普通签到）、学习通签到状态、学习通签到 <活动ID> [签到码]、学习通签到监听 [课程]、学习通停止签到。',
     '- 刷课：学习通刷课 <课程>、学习通刷课状态、学习通停止刷课。',
     '- 答题：学习通答题 <课程>，收到预览后使用补充、保存、提交或停止命令；学习通错题查看记录。',
     enabled ? '- 命令参数缺失时给出正确格式。' : '- 当前群未开启学习通功能。',

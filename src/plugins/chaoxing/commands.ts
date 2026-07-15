@@ -1,5 +1,5 @@
 export type ChaoxingCommand =
-  | { kind: 'menu' | 'bind' | 'confirm_help' | 'status' | 'unbind' | 'courses' | 'todo' | 'works' | 'exams' | 'sign_list' | 'sign_stop' | 'job_status' | 'study_status' | 'study_stop' | 'answer_stop' | 'wrong_answers' }
+  | { kind: 'menu' | 'bind' | 'confirm_help' | 'status' | 'unbind' | 'courses' | 'todo' | 'works' | 'exams' | 'sign_quick' | 'sign_list' | 'sign_stop' | 'job_status' | 'study_status' | 'study_stop' | 'answer_stop' | 'wrong_answers' }
   | { kind: 'confirm'; code: string }
   | { kind: 'chapters' | 'sign_watch' | 'study_start' | 'answer_start'; courseQuery: string }
   | { kind: 'sign_execute'; activityId: string; code?: string }
@@ -20,7 +20,8 @@ export function parseChaoxingCommand(text: string): ChaoxingCommand | null {
   if (text === '学习通待办') return { kind: 'todo' };
   if (text === '学习通作业') return { kind: 'works' };
   if (text === '学习通考试') return { kind: 'exams' };
-  if (text === '学习通签到') return { kind: 'sign_list' };
+  if (text === '学习通签到') return { kind: 'sign_quick' };
+  if (text === '学习通签到状态') return { kind: 'sign_list' };
   if (text === '学习通签到监听') return { kind: 'sign_watch', courseQuery: '' };
   const watch = text.match(/^学习通签到监听\s+(.+)$/u);
   if (watch?.[1]) return { kind: 'sign_watch', courseQuery: watch[1].trim() };

@@ -15,10 +15,35 @@ import {
 import { parseChaoxingCommand } from '../src/plugins/chaoxing/commands.js';
 import { ChaoxingDeadlineService, filterPendingTasks } from '../src/plugins/chaoxing/deadline-service.js';
 import { ChaoxingOwnerCoordinator } from '../src/plugins/chaoxing/owner-coordinator.js';
-import { ChaoxingSignService, classifySignType, filterPendingSigns, formatDetectedSigns } from '../src/plugins/chaoxing/sign-service.js';
+import {
+  ChaoxingSignService,
+  classifySignType,
+  filterPendingSigns,
+  formatDetectedSigns,
+  type ChaoxingSignType,
+  type DetectedSign,
+} from '../src/plugins/chaoxing/sign-service.js';
 import { selectResumableStudyJob } from '../src/plugins/chaoxing/study-runner.js';
 import type { ChaoxingQuestion } from '../src/plugins/chaoxing/types.js';
 import { renderChaoxingBindPage } from '../src/plugins/chaoxing/web/bind-page.js';
+
+function makeDetectedSign(signType: ChaoxingSignType, activityId: string, officialStatus: number): DetectedSign {
+  return {
+    course: {
+      courseId: '100', classId: '200', cpi: '300', name: '签到测试课', className: '', teacherName: '', schoolName: '', imageUrl: '', state: 1, isRetired: 0,
+    },
+    activity: {
+      activityId, courseId: '100', classId: '200', title: '普通签到', activityType: 2,
+      signTypeCode: '0', status: 1, userStatus: 1, startAt: null, endAt: null, ext: '{}', raw: {},
+    },
+    signType,
+    info: {
+      otherId: '0', ifPhoto: false, ifNeedVCode: false, openCheckFaceFlag: false,
+      startAt: null, endAt: null, raw: {},
+    },
+    attendance: { status: officialStatus },
+  };
+}
 
 describe('chaoxing protocol parsers', () => {
   it('normalizes remote course class identifiers at the client boundary', () => {
@@ -113,6 +138,21 @@ describe('chaoxing protocol parsers', () => {
     const result = await client.getSignInfo({ cookies: [] }, '900');
 
     expect(result.info).toMatchObject({ otherId: '0', ifPhoto: true, ifNeedVCode: false, openCheckFaceFlag: false });
+  });
+
+  it('reads the authoritative attendance status and rejects malformed responses', async () => {
+    const validClient = new ChaoxingClient({
+      fetchImpl: vi.fn().mockResolvedValue(new Response(JSON.stringify({ result: 1, data: { status: 0 } }), { status: 200 })) as typeof fetch,
+    });
+    await expect(validClient.getAttendInfo({ cookies: [] }, '900')).resolves.toMatchObject({ attendance: { status: 0 } });
+
+    const malformedClient = new ChaoxingClient({
+      fetchImpl: vi.fn().mockResolvedValue(new Response(JSON.stringify({ result: 1, data: {} }), { status: 200 })) as typeof fetch,
+    });
+    await expect(malformedClient.getAttendInfo({ cookies: [] }, '900')).rejects.toMatchObject({
+      name: 'ChaoxingProtocolError',
+      code: 'sign_attendance_fields',
+    });
   });
 
   it('uses course-declared routes and current navigation fields for academic tasks', async () => {
@@ -212,7 +252,7 @@ describe('chaoxing protocol parsers', () => {
 });
 
 describe('chaoxing local contracts', () => {
-  it('scans open signs from retired courses and keeps display status separate from pending execution', async () => {
+  it('scans retired courses and derives pending state only from the attendance endpoint', async () => {
     const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
     const retiredCourse = {
       courseId: '100', classId: '200', cpi: '300', name: '签到测试课', className: '', teacherName: '', schoolName: '', imageUrl: '', state: 0, isRetired: 1,
@@ -220,11 +260,11 @@ describe('chaoxing local contracts', () => {
     const activities = [
       {
         activityId: 'open-signed', courseId: '100', classId: '200', title: '普通签到', activityType: 2,
-        signTypeCode: '0', status: 1, userStatus: 1, startAt: null, endAt: null, ext: '{}', raw: {},
+        signTypeCode: '0', status: 1, userStatus: 0, startAt: null, endAt: null, ext: '{}', raw: {},
       },
       {
         activityId: 'open-pending', courseId: '100', classId: '200', title: '普通签到', activityType: 2,
-        signTypeCode: '0', status: 1, userStatus: 0, startAt: null, endAt: null, ext: '{}', raw: {},
+        signTypeCode: '0', status: 1, userStatus: 1, startAt: null, endAt: null, ext: '{}', raw: {},
       },
       {
         activityId: 'closed', courseId: '100', classId: '200', title: '已结束签到', activityType: 2,
@@ -244,13 +284,17 @@ describe('chaoxing local contracts', () => {
       },
       cookieJar: { cookies: [] },
     }));
+    const getAttendInfo = vi.fn().mockImplementation(async (_cookieJar, activityId: string) => ({
+      attendance: { status: activityId === 'open-signed' ? 1 : 0 },
+      cookieJar: { cookies: [] },
+    }));
     const service = new ChaoxingSignService(
       {
         getAuthenticatedSession: vi.fn().mockResolvedValue(auth),
         persistCookies: vi.fn().mockImplementation(async (current, cookieJar) => ({ ...current, cookieJar })),
       } as never,
       { listCourses: vi.fn().mockResolvedValue([retiredCourse]) } as never,
-      { getActivities, getSignInfo } as never,
+      { getActivities, getSignInfo, getAttendInfo } as never,
       {} as never,
       { requestIntervalMs: 0 },
     );
@@ -258,15 +302,110 @@ describe('chaoxing local contracts', () => {
     const signs = await service.scanOpenSigns(identity);
 
     expect(getActivities).toHaveBeenCalledWith({ cookies: [] }, retiredCourse);
+    expect(getAttendInfo).toHaveBeenCalledTimes(2);
     expect(signs.map((sign) => sign.activity.activityId)).toEqual(['open-signed', 'open-pending']);
     expect(signs.every((sign) => sign.signType === 'normal')).toBe(true);
     expect(filterPendingSigns(signs).map((sign) => sign.activity.activityId)).toEqual(['open-pending']);
     expect(formatDetectedSigns(signs)).toContain('普通签到，已签到，活动ID open-signed');
     expect(formatDetectedSigns(signs)).toContain('普通签到，待签到，活动ID open-pending');
-    await expect(service.resolveDetectedSign(identity, 'open-signed')).rejects.toThrow('没有找到进行中的签到活动 open-signed');
+    await expect(service.resolveDetectedSign(identity, 'open-signed')).rejects.toThrow('没有找到待签到活动 open-signed');
     await expect(service.resolveDetectedSign(identity, 'open-pending')).resolves.toMatchObject({
       activity: { activityId: 'open-pending' },
     });
+  });
+
+  it('requires official post-submit confirmation before reporting sign success', async () => {
+    const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
+    const auth = {
+      ownerKey: identity.ownerKey, cookieJar: { cookies: [] },
+      profile: { uid: '1', puid: '2', fid: '3', name: '测试', schoolName: '学校', username: 'user', deviceCode: 'device' },
+      credentialVersion: 1,
+    };
+    const addSignRecord = vi.fn().mockResolvedValue(undefined);
+    const getAttendInfo = vi.fn()
+      .mockResolvedValueOnce({ attendance: { status: 0 }, cookieJar: { cookies: [] } })
+      .mockResolvedValue({ attendance: { status: 0 }, cookieJar: { cookies: [] } });
+    const service = new ChaoxingSignService(
+      {
+        getAuthenticatedSession: vi.fn().mockResolvedValue(auth),
+        persistCookies: vi.fn().mockImplementation(async (current, cookieJar) => ({ ...current, cookieJar })),
+      } as never,
+      {} as never,
+      {
+        getAttendInfo,
+        prepareSign: vi.fn().mockResolvedValue({ pageText: '', cookieJar: { cookies: [] } }),
+        submitSign: vi.fn().mockResolvedValue({ status: 'succeeded', responseText: 'success', cookieJar: { cookies: [] } }),
+      } as never,
+      { addSignRecord } as never,
+      { requestIntervalMs: 0 },
+    );
+    const detected = makeDetectedSign('normal', 'activity-1', 0);
+
+    await expect(service.execute(identity, detected)).rejects.toMatchObject({
+      code: 'sign_verification_failed',
+      message: expect.stringContaining('本次不报告成功'),
+    });
+    expect(getAttendInfo).toHaveBeenCalledTimes(4);
+    expect(addSignRecord).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'failed' }));
+  });
+
+  it('reports success only after the attendance endpoint confirms it', async () => {
+    const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
+    const auth = {
+      ownerKey: identity.ownerKey, cookieJar: { cookies: [] },
+      profile: { uid: '1', puid: '2', fid: '3', name: '测试', schoolName: '学校', username: 'user', deviceCode: 'device' },
+      credentialVersion: 1,
+    };
+    const addSignRecord = vi.fn().mockResolvedValue(undefined);
+    const service = new ChaoxingSignService(
+      {
+        getAuthenticatedSession: vi.fn().mockResolvedValue(auth),
+        persistCookies: vi.fn().mockImplementation(async (current, cookieJar) => ({ ...current, cookieJar })),
+      } as never,
+      {} as never,
+      {
+        getAttendInfo: vi.fn()
+          .mockResolvedValueOnce({ attendance: { status: 0 }, cookieJar: { cookies: [] } })
+          .mockResolvedValueOnce({ attendance: { status: 1 }, cookieJar: { cookies: [] } }),
+        prepareSign: vi.fn().mockResolvedValue({ pageText: '', cookieJar: { cookies: [] } }),
+        submitSign: vi.fn().mockResolvedValue({ status: 'succeeded', responseText: 'success', cookieJar: { cookies: [] } }),
+      } as never,
+      { addSignRecord } as never,
+      { requestIntervalMs: 0 },
+    );
+
+    await expect(service.execute(identity, makeDetectedSign('normal', 'activity-1', 0))).resolves.toMatchObject({
+      status: 'succeeded',
+      officialStatus: 1,
+      message: expect.stringContaining('签到成功（官方状态：已签到）'),
+    });
+    expect(addSignRecord).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'succeeded',
+      responseText: JSON.stringify({ submitResponse: 'success', officialStatus: 1 }),
+    }));
+  });
+
+  it('one-click signs the only safe normal activity and gives actionable steps for the rest', async () => {
+    const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
+    const service = new ChaoxingSignService({} as never, {} as never, {} as never, {} as never, { requestIntervalMs: 0 });
+    const signs = [
+      makeDetectedSign('normal', 'normal-1', 0),
+      makeDetectedSign('gesture', 'gesture-1', 0),
+      makeDetectedSign('qrcode', 'qr-1', 0),
+      makeDetectedSign('location', 'location-1', 0),
+    ];
+    vi.spyOn(service, 'scanOpenSigns').mockResolvedValue(signs);
+    const execute = vi.spyOn(service, 'execute').mockResolvedValue({
+      status: 'succeeded', officialStatus: 1, message: '签到测试课 / 普通签到：签到成功（官方状态：已签到）。',
+    });
+
+    const result = await service.quickSign(identity);
+
+    expect(execute).toHaveBeenCalledWith(identity, signs[0]);
+    expect(result).toContain('签到成功（官方状态：已签到）');
+    expect(result).toContain('学习通签到 gesture-1 <手势顺序>');
+    expect(result).toContain('学习通 App 扫描教师展示的动态二维码');
+    expect(result).toContain('学习通 App 授权定位');
   });
 
   it('classifies ordinary and photo signs using both remote fields', () => {
@@ -375,6 +514,8 @@ describe('chaoxing local contracts', () => {
   });
 
   it('routes specific sign and answer commands before generic commands', () => {
+    expect(parseChaoxingCommand('学习通签到')).toEqual({ kind: 'sign_quick' });
+    expect(parseChaoxingCommand('学习通签到状态')).toEqual({ kind: 'sign_list' });
     expect(parseChaoxingCommand('学习通签到监听 软件工程')).toEqual({ kind: 'sign_watch', courseQuery: '软件工程' });
     expect(parseChaoxingCommand('学习通签到 900 1234')).toEqual({ kind: 'sign_execute', activityId: '900', code: '1234' });
     expect(parseChaoxingCommand('学习通答题补充 8 2 B')).toEqual({ kind: 'answer_supplement', jobId: 8, questionPosition: 2, answer: 'B' });

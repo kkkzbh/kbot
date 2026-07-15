@@ -59,8 +59,9 @@ export function buildChaoxingMenuView(): FeatureMenuView {
         title: '签到',
         icon: 'check',
         items: [
-          { keyword: '学习通签到', description: '检测当前开放的签到活动', icon: 'search' },
-          { keyword: '学习通签到 <活动ID> [签到码]', description: '执行普通、手势或签到码签到', icon: 'check', accent: true },
+          { keyword: '学习通签到', description: '一键处理唯一的普通签到', icon: 'check', accent: true },
+          { keyword: '学习通签到状态', description: '查看官方签到状态及活动 ID', icon: 'search' },
+          { keyword: '学习通签到 <活动ID> [签到码]', description: '执行指定的普通、手势或签到码签到', icon: 'check' },
           { keyword: '学习通签到监听 [课程]', description: '持续检测签到并发送结果通知', icon: 'bell' },
           { keyword: '学习通停止签到', description: '停止当前签到监听任务', icon: 'stop' },
         ],

@@ -2,7 +2,7 @@ import { formatAnswerDraft } from './answer-service.js';
 import { Logger } from 'koishi';
 import type { ChaoxingAuthService } from './auth-service.js';
 import type { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
-import { filterPendingSigns, type ChaoxingSignService, type DetectedSign } from './sign-service.js';
+import { filterPendingSigns, isAutomaticallyExecutable, signActionInstruction, signTypeLabel, type ChaoxingSignService, type DetectedSign } from './sign-service.js';
 import { JobCancelledError, type ChaoxingAnswerJobProgress, type ChaoxingStudyRunner } from './study-runner.js';
 import type { ChaoxingTaskStore } from './store.js';
 import {
@@ -164,7 +164,7 @@ export class ChaoxingWorker {
   }
 
   private async handleNewSign(job: ChaoxingJob, identity: OwnerIdentity, sign: DetectedSign): Promise<void> {
-    if (sign.signType === 'normal') {
+    if (isAutomaticallyExecutable(sign)) {
       const result = await this.signService.execute(identity, sign, undefined, job.id);
       await this.store.appendJobEvent(job.id, job.ownerKey, 'sign_executed', {
         activityId: sign.activity.activityId, signType: sign.signType, status: result.status,
@@ -172,13 +172,11 @@ export class ChaoxingWorker {
       await this.sendNotification(job, identity, result.message);
       return;
     }
-    const label = sign.signType === 'gesture' ? '手势签到' : sign.signType === 'code' ? '签到码签到' : `${sign.signType} 签到`;
+    const label = signTypeLabel(sign.signType);
     await this.store.appendJobEvent(job.id, job.ownerKey, 'sign_input_required', {
       activityId: sign.activity.activityId, signType: sign.signType,
     }, this.now());
-    const instruction = sign.signType === 'gesture' || sign.signType === 'code'
-      ? `请发送：学习通签到 ${sign.activity.activityId} <签到码或手势顺序>`
-      : '该类型将在第二阶段支持，本次不执行。';
+    const instruction = signActionInstruction(sign);
     await this.sendNotification(job, identity, `检测到 ${label}：${sign.course.name} / ${sign.activity.title}（活动ID ${sign.activity.activityId}）\n${instruction}`);
   }
 
