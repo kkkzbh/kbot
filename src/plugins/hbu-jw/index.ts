@@ -155,8 +155,12 @@ export function apply(ctx: Context, config: Config): void {
 
   const unregisterCapability = hbuCtx.nativeFeatureChat.registerCapability({
     id: 'hbu-jw',
-    isRelevant: shouldExposeHbuJwCapabilityReference,
-    buildReference: (session) => buildHbuJwCapabilityReference(session, runtime),
+    isRelevant: (session) => guidanceSessions.has(session as object) || shouldExposeHbuJwCapabilityReference(session),
+    buildReference: (session) => buildHbuJwCapabilityReference(
+      session,
+      runtime,
+      guidanceSessions.has(session as object),
+    ),
   });
   ctx.on?.('dispose', unregisterCapability);
 
@@ -612,7 +616,11 @@ async function sendHbuJwError(
   });
 }
 
-export function buildHbuJwCapabilityReference(session: Session, runtime: RuntimeConfig): string {
+export function buildHbuJwCapabilityReference(
+  session: Session,
+  runtime: RuntimeConfig,
+  guidanceActive = false,
+): string {
   const enabled = canUseHbuJwInSession(session, runtime.allowedGroups);
   const direct = session.isDirect === true;
   const groupId = normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
@@ -623,7 +631,7 @@ export function buildHbuJwCapabilityReference(session: Session, runtime: Runtime
   const invocation = direct || bareEnabled
     ? '直接发送下面的命令。'
     : '群聊中需要 @机器人 后发送下面的命令。';
-  const guidanceRequested = normalizeCommandText(session).includes('选课指导');
+  const guidanceRequested = guidanceActive || normalizeCommandText(session).includes('选课指导');
 
   return [
     `教务功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,

@@ -31,6 +31,7 @@ vi.mock('koishi', () => ({
 }));
 
 vi.mock('koishi-plugin-chatluna/utils/string', () => ({
+  getMessageContent: (content: unknown) => typeof content === 'string' ? content : '',
   getImageMimeType: () => 'image/jpeg',
   getMimeTypeFromSource: () => 'image/jpeg',
   isMessageContentImageUrl: (value: unknown) =>
@@ -40,7 +41,7 @@ vi.mock('koishi-plugin-chatluna/utils/string', () => ({
 vi.mock('koishi-plugin-chatluna', () => ({
   Config: class {},
   ConversationRoom: class {},
-  logger: { warn: vi.fn() },
+  logger: { error: vi.fn(), warn: vi.fn() },
 }));
 
 vi.mock('koishi-plugin-chatluna/llm-core/utils/count_tokens', () => ({
@@ -49,6 +50,10 @@ vi.mock('koishi-plugin-chatluna/llm-core/utils/count_tokens', () => ({
 
 vi.mock('koishi-plugin-chatluna/services/chat', () => ({
   ChatLunaPlugin: class {},
+}));
+
+vi.mock('koishi-plugin-chatluna/utils/logger', () => ({
+  trackLogToLocal: vi.fn(),
 }));
 
 type LangchainMessageToResponseInput = (
@@ -62,12 +67,42 @@ type ResponsesUtilsModule = {
   langchainMessageToResponseInput: LangchainMessageToResponseInput;
 };
 
+type ResponsesRequesterModule = {
+  responseToChatGeneration: (response: unknown) => Promise<unknown>;
+};
+
 async function loadResponsesUtils(): Promise<ResponsesUtilsModule> {
   const moduleUrl = pathToFileURL(join(process.cwd(), '..', 'chatluna', 'packages', 'shared-adapter', 'src', 'utils.js')).href;
   return import(moduleUrl) as Promise<ResponsesUtilsModule>;
 }
 
+async function loadResponsesRequester(): Promise<ResponsesRequesterModule> {
+  const moduleUrl = pathToFileURL(join(process.cwd(), '..', 'chatluna', 'packages', 'shared-adapter', 'src', 'requester.js')).href;
+  return import(moduleUrl) as Promise<ResponsesRequesterModule>;
+}
+
 describe('chatluna responses input regression', () => {
+  it('rejects incomplete Responses output before it reaches reply parsing', async () => {
+    const { responseToChatGeneration } = await loadResponsesRequester();
+
+    await expect(responseToChatGeneration({
+      id: 'resp-incomplete',
+      object: 'response',
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '{"decision":"reply"' }],
+      }],
+    })).rejects.toMatchObject({
+      errorCode: 103,
+      originError: {
+        message: 'Responses API returned an incomplete response: max_output_tokens',
+      },
+    });
+  });
+
   it('serializes assistant history as text and user arrays as input content', async () => {
     const { langchainMessageToResponseInput } = await loadResponsesUtils();
     const input = await langchainMessageToResponseInput(

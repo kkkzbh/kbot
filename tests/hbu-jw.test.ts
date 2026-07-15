@@ -1134,6 +1134,17 @@ describe('hbu-jw menu module', () => {
       naturalTriggerGroups: new Set<string>(),
     } as never);
     expect(guidanceReference).toContain('hbu_jw_course_guidance_context');
+
+    const routedGuidanceReference = buildHbuJwCapabilityReference({
+      isDirect: false,
+      content: 'saki 选课指导',
+      stripped: { content: 'saki 选课指导' },
+    } as never, {
+      allowedGroups: new Set(['100']),
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: new Set(['100']),
+    } as never, true);
+    expect(routedGuidanceReference).toContain('hbu_jw_course_guidance_context');
   });
 
   it('builds the academic affairs menu with all exposed keywords', () => {

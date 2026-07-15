@@ -24,6 +24,7 @@ const DEFAULT_COPILOT_API_BASE_URL = 'https://api.individual.githubcopilot.com';
 const SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1000;
 const AUTO_ROUTER_TIMEOUT_MS = 10_000;
 const COPILOT_AUTO_MIN_OUTPUT_TOKENS = 512;
+const COPILOT_AUTO_DEFAULT_OUTPUT_TOKENS = 4096;
 const proxyAgents = new Map<string, ProxyAgent>();
 
 type ResolvedEnvFiles = {
@@ -1153,7 +1154,7 @@ function normalizeCopilotAutoResponsesBody(body: unknown): unknown {
   const normalized = { ...(body as Record<string, unknown>) };
   const maxOutputTokens = normalized.max_output_tokens;
   if (maxOutputTokens == null) {
-    normalized.max_output_tokens = COPILOT_AUTO_MIN_OUTPUT_TOKENS;
+    normalized.max_output_tokens = COPILOT_AUTO_DEFAULT_OUTPUT_TOKENS;
   } else if (typeof maxOutputTokens !== 'number' || !Number.isFinite(maxOutputTokens) || maxOutputTokens <= 0) {
     throw new CopilotBridgeHttpError(400, 'GitHub Copilot Responses 请求的 max_output_tokens 必须是正数。');
   } else if (maxOutputTokens < COPILOT_AUTO_MIN_OUTPUT_TOKENS) {
