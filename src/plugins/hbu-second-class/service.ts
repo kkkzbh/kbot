@@ -3,6 +3,8 @@ import type { VersionedQueryResult } from '../shared/versioned-json-cache.js';
 import {
   CAMPUS_AUTH_PROVIDER_SECOND_CLASS,
   CampusAuthUserError,
+  type CampusLocation,
+  type CampusLocationActionPrepared,
   type CampusAuthMethodView,
   type CampusAuthProvider,
   type CampusAuthProviderAuthenticateInput,
@@ -12,11 +14,14 @@ import {
 import { SecondClassCache } from './cache.js';
 import { SecondClassHttpClient } from './client.js';
 import { SecondClassReauthStore } from './reauth-store.js';
+import { nearestRange, requireUsableLocation, wgs84ToBd09 } from '../shared/location.js';
 import type {
   SecondClassCaptcha,
   SecondClassCredentialPayload,
   SecondClassPage,
   SecondClassSessionPayload,
+  SecondClassSignCodeInfo,
+  SecondClassSignOperation,
 } from './types.js';
 import {
   SecondClassApiError,
@@ -116,7 +121,27 @@ export interface SecondClassAuthenticatedContext {
   sessionVersion: number;
 }
 
+interface SecondClassSignActionPayload {
+  code: string;
+  operation: SecondClassSignOperation;
+}
+
+interface SecondClassPreparedSign {
+  activityId: string;
+  activityName: string;
+  operation: SecondClassSignOperation;
+}
+
+export interface SecondClassSignCommandResult {
+  message?: string;
+  locationLink?: string;
+  expiresAt?: number;
+}
+
 export class HbuSecondClassService {
+  readonly id = CAMPUS_AUTH_PROVIDER_SECOND_CLASS;
+  readonly label = '河北大学二课';
+
   constructor(
     private readonly campusAuth: CampusAuthServiceLike,
     private readonly client: SecondClassHttpClient,
@@ -198,6 +223,79 @@ export class HbuSecondClassService {
     }
   }
 
+  async signWithCode(
+    identity: CampusOwnerIdentity,
+    operation: SecondClassSignOperation,
+    code: string,
+  ): Promise<SecondClassSignCommandResult> {
+    const normalizedCode = code.trim();
+    if (!/^\d{6}$/.test(normalizedCode)) throw new CampusAuthUserError('二课签到码应为 6 位数字。');
+    const auth = await this.ensureAuthenticated(identity);
+    const info = await userFacingSecondClassCall(() => this.client.getSignCodeInfo(auth.session.token, normalizedCode));
+    assertSignOperation(info, operation);
+    if (info.locationRequired) {
+      const action = await this.campusAuth.startLocationAction(identity, this.id, operation, {
+        code: normalizedCode,
+        operation,
+      } satisfies SecondClassSignActionPayload);
+      return { locationLink: action.link, expiresAt: action.expiresAt };
+    }
+    const result = await userFacingSecondClassCall(() => this.client.submitSignCode(auth.session.token, info, normalizedCode));
+    validateSignResult(info, result.signType);
+    return { message: `${info.activityName}${operationLabel(operation)}成功。` };
+  }
+
+  async prepare(input: {
+    identity: CampusOwnerIdentity;
+    actionId: string;
+    payload: unknown;
+    location: CampusLocation;
+  }): Promise<CampusLocationActionPrepared<SecondClassPreparedSign>> {
+    const payload = requireSignActionPayload(input.payload, input.actionId);
+    const auth = await this.ensureAuthenticated(input.identity);
+    const info = await userFacingSecondClassCall(() => this.client.getSignCodeInfo(auth.session.token, payload.code));
+    assertSignOperation(info, payload.operation);
+    const details = [`操作：${operationLabel(payload.operation)}`];
+    if (info.locationRequired) {
+      const match = await this.validateLocation(auth.session.token, info, input.location);
+      details.push(`签到点：${match.address}`);
+      details.push(`距签到点约 ${Math.round(match.distance)} 米（允许 ${Math.round(match.radius)} 米）`);
+      details.push(`手机定位精度约 ${Math.round(input.location.accuracy)} 米`);
+    } else {
+      details.push('活动当前不要求定位。');
+    }
+    return {
+      title: info.activityName,
+      actionLabel: operationLabel(payload.operation),
+      details,
+      payload: {
+        activityId: info.activityId,
+        activityName: info.activityName,
+        operation: payload.operation,
+      },
+    };
+  }
+
+  async commit(input: {
+    identity: CampusOwnerIdentity;
+    actionId: string;
+    payload: unknown;
+    prepared: unknown;
+    location: CampusLocation;
+  }): Promise<{ message: string }> {
+    const payload = requireSignActionPayload(input.payload, input.actionId);
+    const prepared = requirePreparedSign(input.prepared);
+    if (prepared.operation !== payload.operation) throw new CampusAuthUserError('待提交的二课操作类型已变化，请重新发起。');
+    const auth = await this.ensureAuthenticated(input.identity);
+    const info = await userFacingSecondClassCall(() => this.client.getSignCodeInfo(auth.session.token, payload.code));
+    assertSignOperation(info, payload.operation);
+    if (info.activityId !== prepared.activityId) throw new CampusAuthUserError('签到码对应的活动已变化，请重新发起。');
+    if (info.locationRequired) await this.validateLocation(auth.session.token, info, input.location);
+    const result = await userFacingSecondClassCall(() => this.client.submitSignCode(auth.session.token, info, payload.code));
+    validateSignResult(info, result.signType);
+    return { message: `${info.activityName}${operationLabel(payload.operation)}成功。` };
+  }
+
   queryCredits(identity: CampusOwnerIdentity): Promise<VersionedQueryResult<unknown>> {
     return this.query(identity, 'credits', 'current', (token) => this.client.getCreditDetails(token));
   }
@@ -241,6 +339,76 @@ export class HbuSecondClassService {
     const captcha = await this.client.getCaptcha();
     const challenge = await this.reauthStore.replace(identity, credential.row.id, captcha.uuid);
     return { message, captcha, expiresAt: challenge.expiresAt };
+  }
+
+  private async validateLocation(token: string, info: SecondClassSignCodeInfo, location: CampusLocation): Promise<{
+    address: string;
+    distance: number;
+    radius: number;
+  }> {
+    requireUsableLocation(location);
+    const point = wgs84ToBd09(location);
+    const locations = await userFacingSecondClassCall(() => this.client.getSignLocations(token, info.activityId));
+    const nearest = nearestRange(point, locations.map((item) => ({
+      latitude: item.latitude,
+      longitude: item.longitude,
+      radius: item.radius,
+      label: item.address,
+    })));
+    if (nearest.distance > nearest.range.radius) {
+      throw new CampusAuthUserError(`当前位置距“${nearest.range.label}”约 ${Math.round(nearest.distance)} 米，超出 ${Math.round(nearest.range.radius)} 米签到范围。`);
+    }
+    return { address: nearest.range.label, distance: nearest.distance, radius: nearest.range.radius };
+  }
+}
+
+function requireSignActionPayload(value: unknown, actionId: string): SecondClassSignActionPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid second-class sign action payload.');
+  const payload = value as Record<string, unknown>;
+  const operation = payload.operation;
+  const code = String(payload.code ?? '').trim();
+  if ((operation !== 'sign_in' && operation !== 'sign_out') || actionId !== operation || !/^\d{6}$/.test(code)) {
+    throw new Error('invalid second-class sign action payload.');
+  }
+  return { code, operation };
+}
+
+function requirePreparedSign(value: unknown): SecondClassPreparedSign {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid prepared second-class sign action.');
+  const row = value as Record<string, unknown>;
+  const operation = row.operation;
+  const activityId = String(row.activityId ?? '').trim();
+  const activityName = String(row.activityName ?? '').trim();
+  if (!activityId || !activityName || (operation !== 'sign_in' && operation !== 'sign_out')) {
+    throw new Error('invalid prepared second-class sign action.');
+  }
+  return { activityId, activityName, operation };
+}
+
+function assertSignOperation(info: SecondClassSignCodeInfo, expected: SecondClassSignOperation): void {
+  if (info.operation !== expected) {
+    throw new CampusAuthUserError(`该签到码当前用于${operationLabel(info.operation)}，请发送“二课${operationLabel(info.operation)} <签到码>”。`);
+  }
+}
+
+function validateSignResult(info: SecondClassSignCodeInfo, signType: number | null): void {
+  if (signType == null) return;
+  const actual: SecondClassSignOperation = signType === 1 ? 'sign_out' : 'sign_in';
+  if (actual !== info.operation) throw new CampusAuthUserError('二课返回的签到状态与请求不一致，请在官方页面确认结果。');
+}
+
+function operationLabel(operation: SecondClassSignOperation): '签到' | '签退' {
+  return operation === 'sign_in' ? '签到' : '签退';
+}
+
+async function userFacingSecondClassCall<T>(loader: () => Promise<T>): Promise<T> {
+  try {
+    return await loader();
+  } catch (error) {
+    if (error instanceof SecondClassApiError && !(error instanceof SecondClassSessionExpiredError)) {
+      throw new CampusAuthUserError(error.message);
+    }
+    throw error;
   }
 }
 

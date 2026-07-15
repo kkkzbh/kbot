@@ -62,6 +62,7 @@ export function apply(ctx: Context, config: Config): void {
   const service = new ZyhService(serviceCtx.campusAuth, client, cache);
   const menuService = new ZyhMenuService(serviceCtx.puppeteer);
   const unregisterProvider = serviceCtx.campusAuth.registerProvider(new ZyhAuthProvider(client));
+  const unregisterLocationActions = serviceCtx.campusAuth.registerLocationActionProvider(service);
   const unregisterCapability = serviceCtx.nativeFeatureChat.registerCapability({
     id: 'zyh',
     isRelevant: shouldExposeZyhCapabilityReference,
@@ -74,6 +75,7 @@ export function apply(ctx: Context, config: Config): void {
   registerMiddleware(ctx, serviceCtx, service, menuService, runtime);
   ctx.on?.('dispose', () => {
     unregisterProvider();
+    unregisterLocationActions();
     unregisterCapability();
     unregisterLifecycle();
   });
@@ -101,7 +103,9 @@ function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhServ
     }
     try {
       const identity = resolveCampusOwnerIdentity(session);
-      if (command.kind === 'menu') {
+      if ((command.kind === 'sign_in' || command.kind === 'sign_out') && session.isDirect !== true) {
+        await reply(services.nativeFeatureChat, session, command, text, '签到和签退会读取手机定位，请私聊机器人发起。', '机器人要求在私聊中发起志愿汇签到操作。', false, false);
+      } else if (command.kind === 'menu') {
         await reply(services.nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), '机器人返回了志愿汇功能菜单图片。');
       } else if (command.kind === 'bind') {
         const result = await services.campusAuth.startBinding(identity, CAMPUS_AUTH_PROVIDER_ZYH);
@@ -142,11 +146,19 @@ function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhServ
       } else if (command.kind === 'records') {
         const result = await service.queryRecords(identity, command.page);
         await reply(services.nativeFeatureChat, session, command, text, `${formatActivities(`志愿记录（第 ${command.page} 页）`, result.data)}${cacheNotice(result, '\n')}`, '机器人返回了已完成志愿活动记录。');
+      } else if (command.kind === 'sign_in' || command.kind === 'sign_out') {
+        const operation = command.kind === 'sign_in' ? 'sign_in' : 'sign_out';
+        const result = await service.startSignAction(identity, operation, command.code);
+        await reply(services.nativeFeatureChat, session, command, text,
+          `请打开一次性链接，授权手机精确定位并确认${operation === 'sign_in' ? '签到' : '签退'}：\n${result.link}\n链接 5 分钟内有效。`,
+          `机器人提供了志愿汇${operation === 'sign_in' ? '签到' : '签退'}定位确认链接。`, true, false);
+      } else if (command.kind === 'sign_out_help') {
+        await reply(services.nativeFeatureChat, session, command, text, '请发送：志愿汇签退 <签到时使用的6位活动码>。', '机器人说明了志愿汇签退命令。');
       }
     } catch (error) {
       const message = error instanceof CampusAuthUserError || error instanceof CampusOwnerError ? error.message : '志愿汇功能处理失败，请稍后重试。';
       if (!(error instanceof CampusAuthUserError) && !(error instanceof CampusOwnerError)) logger.warn('zyh command failed: %s', error instanceof Error ? error.message : String(error));
-      await reply(services.nativeFeatureChat, session, command, text, message, `志愿汇功能未完成：${message}`, false, command.kind !== 'confirm');
+      await reply(services.nativeFeatureChat, session, command, text, message, `志愿汇功能未完成：${message}`, false, !['confirm', 'sign_in', 'sign_out'].includes(command.kind));
     }
   });
 }
@@ -166,7 +178,10 @@ type ZyhCommand =
   | { kind: 'hours' }
   | { kind: 'records'; page: number }
   | { kind: 'activities'; keyword?: string }
-  | { kind: 'my_activities'; page: number };
+  | { kind: 'my_activities'; page: number }
+  | { kind: 'sign_in'; code: string }
+  | { kind: 'sign_out_help' }
+  | { kind: 'sign_out'; code: string };
 
 export function parseZyhCommand(text: string): ZyhCommand | null {
   if (text === '志愿汇') return { kind: 'menu' };
@@ -183,6 +198,11 @@ export function parseZyhCommand(text: string): ZyhCommand | null {
   if (myActivities) return { kind: 'my_activities', page: positivePage(myActivities[1]) };
   const activities = text.match(/^志愿活动(?:\s+(.+))?$/);
   if (activities) return { kind: 'activities', keyword: activities[1]?.trim() || undefined };
+  const signIn = text.match(/^志愿汇签到\s+([A-Za-z0-9]{6})$/);
+  if (signIn?.[1]) return { kind: 'sign_in', code: signIn[1] };
+  if (text === '志愿汇签退') return { kind: 'sign_out_help' };
+  const signOut = text.match(/^志愿汇签退\s+([A-Za-z0-9]{6})$/);
+  if (signOut?.[1]) return { kind: 'sign_out', code: signOut[1] };
   return null;
 }
 
@@ -233,6 +253,7 @@ function buildZyhCapabilityReference(session: Session, runtime: RuntimeConfig): 
     '- 总入口：“志愿汇”。',
     '- 账号：“志愿汇绑定”、“志愿汇确认 <6位确认码>”、“志愿汇状态”、“志愿汇解绑”。',
     '- 查询：“志愿时长”、“志愿记录 [页码]”、“志愿活动 [关键词]”、“我的志愿活动 [页码]”。',
+    '- 签到：“志愿汇签到 <6位活动码>”、“志愿汇签退 <同一活动码>”；仅限私聊，使用手机真实定位并校验活动范围。',
   ].join('\n');
 }
 
@@ -260,7 +281,11 @@ async function reply(
   await nativeFeatureChat.sendReply(session, {
     featureId: 'zyh',
     commandId: command.kind,
-    userText: command.kind === 'confirm' ? '志愿汇确认 <确认码已隐藏>' : text,
+    userText: command.kind === 'confirm'
+      ? '志愿汇确认 <确认码已隐藏>'
+      : command.kind === 'sign_in'
+        ? '志愿汇签到 <活动码已隐藏>'
+        : command.kind === 'sign_out' ? '志愿汇签退 <活动码已隐藏>' : text,
     reply: content,
     summary,
     success,

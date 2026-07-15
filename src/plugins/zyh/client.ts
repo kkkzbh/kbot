@@ -1,9 +1,17 @@
 import { CampusAuthUserError } from '../campus-auth-core/index.js';
-import type { ZyhActivity, ZyhProfile, ZyhSessionPayload } from './types.js';
+import type {
+  ZyhActivity,
+  ZyhProfile,
+  ZyhSessionPayload,
+  ZyhSignActivity,
+  ZyhSignOperation,
+  ZyhSignState,
+} from './types.js';
 import { ZyhApiError, ZyhSessionExpiredError } from './types.js';
 import { zyhEnvelopeSchema, zyhListEnvelopeSchema, zyhProfileEnvelopeSchema } from './protocol.js';
 
 const ZYH_API_BASE = 'https://ogmapi.zyh365.com';
+const ZYH_APP_API_BASE = 'https://appapi.zyh365.com';
 const ZYH_H5_ACCESS_KEY_ID = '92ae62f25d4d4ac8a58d58e2476a4e5b';
 
 export interface ZyhHttpRequest {
@@ -115,6 +123,90 @@ export class ZyhHttpClient {
     }
   }
 
+  async getSignState(session: ZyhSessionPayload): Promise<ZyhSignState> {
+    const response = await this.postH5('activity/isSignForApp', {
+      mobile_unique: session.userId,
+      zyzid: session.userId,
+    }, session);
+    requireSuccess(response.body, response.status, '获取志愿汇签到状态失败。');
+    const data = record(response.body.data);
+    const status = number(data.status);
+    if (status !== 1 && status !== 2) {
+      throw new CampusAuthUserError('当前没有可签到或签退的志愿活动。');
+    }
+    const cardActivityId = string(data.card_activityid);
+    if (status === 2 && !cardActivityId) throw new ZyhApiError('志愿汇签退状态缺少活动记录 ID。', 'invalid_sign_state', response.status);
+    return {
+      operation: status === 1 ? 'sign_in' : 'sign_out',
+      cardActivityId,
+      signTime: string(data.sign_time),
+    };
+  }
+
+  async getSignActivity(
+    session: ZyhSessionPayload,
+    state: ZyhSignState,
+    activityCode: string,
+    point: { latitude: number; longitude: number },
+  ): Promise<ZyhSignActivity> {
+    const response = await this.postH5('activity/detailRevampedForApp', {
+      zyzid: session.userId,
+      mobile_unique: session.userId,
+      activity_code: state.operation === 'sign_in' ? activityCode : '',
+      card_activityid: state.operation === 'sign_out' ? state.cardActivityId : '',
+      earth_lng: String(point.longitude),
+      earth_lat: String(point.latitude),
+    }, session);
+    requireSuccess(response.body, response.status, '获取志愿汇签到活动失败。');
+    const data = record(response.body.data);
+    if (!Array.isArray(data.position)) throw new ZyhApiError('志愿汇活动未配置签到范围。', 'invalid_sign_position', response.status);
+    const activityId = string(data.card_activityid);
+    if (!activityId) throw new ZyhApiError('志愿汇签到活动响应缺少活动 ID。', 'invalid_sign_activity', response.status);
+    const status = number(data.status);
+    if (status == null) throw new ZyhApiError('志愿汇签到活动响应缺少活动状态。', 'invalid_sign_activity', response.status);
+    return {
+      activityId,
+      title: string(data.title) || `志愿活动 ${activityId}`,
+      status,
+      faceRequired: Number(data.isface) === 1,
+      positions: data.position.map((value) => {
+        const item = record(value);
+        const latitude = number(item.earth_lat);
+        const longitude = number(item.earth_lng);
+        const radius = number(item.range);
+        if (latitude == null || longitude == null || radius == null || radius <= 0) {
+          throw new ZyhApiError('志愿汇签到范围坐标无效。', 'invalid_sign_position', response.status);
+        }
+        return {
+          latitude,
+          longitude,
+          radius,
+          address: string(item.address || item.position_name) || '活动签到点',
+        };
+      }),
+    };
+  }
+
+  async submitSign(
+    session: ZyhSessionPayload,
+    operation: ZyhSignOperation,
+    activity: ZyhSignActivity,
+    activityCode: string,
+    point: { latitude: number; longitude: number },
+  ): Promise<void> {
+    const response = await this.postH5(operation === 'sign_in' ? 'activity/signIn' : 'activity/sign', {
+      activityid: activity.activityId,
+      activityCode,
+      zyzid: session.userId,
+      mobile_unique: session.userId,
+      type: operation === 'sign_in' ? '1' : '2',
+      isface: '0',
+      earth_lng: String(point.longitude),
+      earth_lat: String(point.latitude),
+    }, session);
+    requireSuccess(response.body, response.status, operation === 'sign_in' ? '志愿汇签到失败。' : '志愿汇签退失败。');
+  }
+
   private async post(
     api: string,
     fields: Record<string, string>,
@@ -134,6 +226,36 @@ export class ZyhHttpClient {
       url: `${ZYH_API_BASE}/api/${api}.do`,
       method: 'POST',
       headers,
+      body: data.toString(),
+    });
+    if (response.status === 401) throw new ZyhSessionExpiredError();
+    let body: unknown;
+    try {
+      body = JSON.parse(response.text);
+    } catch {
+      throw new ZyhApiError('志愿汇返回了无法解析的响应。', 'invalid_json', response.status);
+    }
+    const parsed = zyhEnvelopeSchema.safeParse(body);
+    if (!parsed.success) throw new ZyhApiError('志愿汇响应结构无效。', 'invalid_envelope', response.status);
+    return { status: response.status, headers: response.headers, body: parsed.data };
+  }
+
+  private async postH5(
+    api: string,
+    fields: Record<string, string>,
+    session: ZyhSessionPayload,
+  ): Promise<{ status: number; headers: Headers; body: Record<string, unknown> }> {
+    const data = new URLSearchParams({ api, apimode: 'vmsapi', ...fields });
+    const response = await this.transport({
+      url: `${ZYH_APP_API_BASE}/common/api-public?app_id=h5`,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'user-agent': 'qqbot-zyh/1.0',
+        Authorization: session.authorization,
+        'User-Id': session.userId,
+        'Platform-Id': session.platformId,
+      },
       body: data.toString(),
     });
     if (response.status === 401) throw new ZyhSessionExpiredError();

@@ -16,6 +16,10 @@ import type {
   CampusAuthConfirmedBinding,
   CampusAuthMethod,
   CampusAuthLifecycleListener,
+  CampusLocation,
+  CampusLocationActionChallenge,
+  CampusLocationActionPrepared,
+  CampusLocationActionProvider,
   CampusAuthPendingResult,
   CampusAuthProvider,
   CampusAuthProviderId,
@@ -30,6 +34,8 @@ export interface CampusAuthRuntimeConfig {
   publicBaseUrl: string;
   bindPagePath: string;
   bindTokenTtlMs: number;
+  actionPagePath: string;
+  actionTokenTtlMs: number;
   maxBindingAttempts: number;
 }
 
@@ -44,8 +50,16 @@ export interface CampusAuthBindPageState {
   confirmCode?: string;
 }
 
+export interface CampusLocationActionPageState {
+  challenge: CampusLocationActionChallenge;
+  provider: CampusLocationActionProvider;
+  state: 'locate' | 'pending' | 'ready' | 'completed';
+  prepared?: CampusLocationActionPrepared;
+}
+
 export class CampusAuthService {
   private readonly providers = new Map<CampusAuthProviderId, CampusAuthProvider>();
+  private readonly locationActionProviders = new Map<CampusAuthProviderId, CampusLocationActionProvider>();
   private readonly lifecycleListeners = new Set<CampusAuthLifecycleListener>();
 
   constructor(
@@ -64,6 +78,15 @@ export class CampusAuthService {
     return () => this.providers.delete(provider.id);
   }
 
+  registerLocationActionProvider(provider: CampusLocationActionProvider): () => void {
+    if (this.locationActionProviders.has(provider.id)) {
+      throw new Error(`campus location action provider is already registered: ${provider.id}`);
+    }
+    this.locationActionProviders.set(provider.id, provider);
+    logger.info('campus location action provider registered: %s', provider.id);
+    return () => this.locationActionProviders.delete(provider.id);
+  }
+
   registerLifecycleListener(listener: CampusAuthLifecycleListener): () => void {
     this.lifecycleListeners.add(listener);
     return () => this.lifecycleListeners.delete(listener);
@@ -73,6 +96,149 @@ export class CampusAuthService {
     const provider = this.providers.get(providerId);
     if (!provider) throw new CampusAuthUserError('该校园账号模块尚未启用。');
     return provider;
+  }
+
+  private getLocationActionProvider(providerId: CampusAuthProviderId): CampusLocationActionProvider {
+    const provider = this.locationActionProviders.get(providerId);
+    if (!provider) throw new CampusAuthUserError('该模块暂不支持定位操作。');
+    return provider;
+  }
+
+  async startLocationAction(
+    identity: CampusOwnerIdentity,
+    providerId: CampusAuthProviderId,
+    actionId: string,
+    payload: unknown,
+  ): Promise<{ link: string; expiresAt: number }> {
+    this.getLocationActionProvider(providerId);
+    const normalizedActionId = actionId.trim();
+    if (!normalizedActionId) throw new Error('campus location action id cannot be empty.');
+    const now = this.now();
+    await this.store.cleanupExpiredLocationActions(now);
+    await this.store.cancelActiveLocationActions(identity.ownerKey, providerId, now);
+    const token = createRandomToken();
+    const expiresAt = now + this.config.actionTokenTtlMs;
+    const row = await this.store.createLocationAction(
+      identity,
+      providerId,
+      normalizedActionId,
+      sha256Hex(token),
+      expiresAt,
+      now,
+    );
+    try {
+      const encrypted = encryptEnvelopeJson(payload, locationActionPayloadAad(row), this.kek);
+      await this.store.updateLocationActionPayload(row.id, encrypted.cipherText, encrypted.meta, now);
+    } catch (error) {
+      await this.store.clearLocationAction(row.id, 'cancelled', now);
+      throw error;
+    }
+    await this.audit(identity.ownerKey, providerId, 'location_action_started', 'ok');
+    return {
+      link: `${this.config.publicBaseUrl}${this.config.actionPagePath}?token=${encodeURIComponent(token)}`,
+      expiresAt,
+    };
+  }
+
+  async resolveLocationActionPage(token: string): Promise<CampusLocationActionPageState> {
+    const challenge = await this.requireUsableLocationAction(token, true);
+    const provider = this.getLocationActionProvider(challenge.providerId);
+    if (challenge.status === 'completed' || challenge.status === 'uncertain') return { challenge, provider, state: 'completed' };
+    if (challenge.status === 'preparing' || challenge.status === 'committing') {
+      return { challenge, provider, state: 'pending' };
+    }
+    if (challenge.status === 'ready') {
+      return { challenge, provider, state: 'ready', prepared: this.decryptLocationActionPrepared(challenge) };
+    }
+    return { challenge, provider, state: 'locate' };
+  }
+
+  async prepareLocationAction(token: string, location: CampusLocation): Promise<void> {
+    validateLocation(location);
+    const challenge = await this.requireUsableLocationAction(token);
+    if (challenge.status !== 'created') throw new CampusAuthUserError('操作状态已经变化，请刷新页面。');
+    const attemptId = createRandomToken(16);
+    const claimed = await this.store.claimLocationAction(challenge.id, 'created', 'preparing', attemptId, this.now());
+    if (!claimed) throw new CampusAuthUserError('操作状态已经变化，请刷新页面。');
+    let sensitiveValues: string[] = [];
+    try {
+      const payload = this.decryptLocationActionPayload(claimed);
+      sensitiveValues = collectSensitiveStrings(payload);
+      const prepared = await this.getLocationActionProvider(claimed.providerId).prepare({
+        identity: locationActionIdentity(claimed),
+        actionId: claimed.actionId,
+        payload,
+        location,
+      });
+      if (!prepared.title.trim() || !prepared.actionLabel.trim()) {
+        throw new Error('campus location action provider returned incomplete confirmation details.');
+      }
+      const encrypted = encryptEnvelopeJson(prepared, locationActionPreparedAad(claimed), this.kek);
+      const completed = await this.store.completeLocationPreparation(
+        claimed.id,
+        attemptId,
+        encrypted.cipherText,
+        encrypted.meta,
+        this.now(),
+      );
+      if (!completed) throw new CampusAuthUserError('操作状态已经变化，请重新发起。');
+    } catch (error) {
+      const reason = diagnostic(error, sensitiveValues);
+      const displayMessage = error instanceof CampusAuthUserError
+        ? redactSensitiveText(error.message, sensitiveValues)
+        : '活动和定位校验失败，请稍后重试。';
+      await this.store.failLocationActionAttempt(claimed.id, attemptId, 'preparing', 'created', displayMessage, this.now());
+      await this.audit(claimed.ownerKey, claimed.providerId, 'location_action_prepare_failed', 'failed', reason);
+      if (error instanceof CampusAuthUserError) throw new CampusAuthUserError(displayMessage);
+      logger.warn('campus location action preparation failed: provider=%s owner=%s reason=%s', claimed.providerId, claimed.ownerKey, reason);
+      throw new CampusAuthUserError('活动和定位校验失败，请稍后重试。');
+    }
+  }
+
+  async commitLocationAction(token: string, location: CampusLocation): Promise<string> {
+    validateLocation(location);
+    const challenge = await this.requireUsableLocationAction(token);
+    if (challenge.status !== 'ready') throw new CampusAuthUserError('请先完成定位和活动校验。');
+    const attemptId = createRandomToken(16);
+    const claimed = await this.store.claimLocationAction(challenge.id, 'ready', 'committing', attemptId, this.now());
+    if (!claimed) throw new CampusAuthUserError('操作正在提交，请勿重复点击。');
+    let sensitiveValues: string[] = [];
+    let result: { message: string };
+    try {
+      const payload = this.decryptLocationActionPayload(claimed);
+      sensitiveValues = collectSensitiveStrings(payload);
+      const prepared = this.decryptLocationActionPrepared(claimed);
+      result = await this.getLocationActionProvider(claimed.providerId).commit({
+        identity: locationActionIdentity(claimed),
+        actionId: claimed.actionId,
+        payload,
+        prepared: prepared.payload,
+        location,
+      });
+    } catch (error) {
+      const reason = diagnostic(error, sensitiveValues);
+      if (error instanceof CampusAuthUserError) {
+        const displayMessage = redactSensitiveText(error.message, sensitiveValues);
+        await this.store.failLocationActionAttempt(claimed.id, attemptId, 'committing', 'ready', displayMessage, this.now());
+        await this.audit(claimed.ownerKey, claimed.providerId, 'location_action_failed', 'failed', reason);
+        throw new CampusAuthUserError(displayMessage);
+      }
+      const uncertainMessage = '提交结果暂时无法确认。请先在官方 App 或网页核对，确认未完成后再重新发起。';
+      await this.store.finishLocationActionUncertain(claimed.id, attemptId, uncertainMessage, this.now());
+      await this.audit(claimed.ownerKey, claimed.providerId, 'location_action_uncertain', 'uncertain', reason);
+      logger.warn('campus location action failed: provider=%s owner=%s reason=%s', claimed.providerId, claimed.ownerKey, reason);
+      throw new CampusAuthUserError(uncertainMessage);
+    }
+    const message = result.message.trim();
+    if (!message) {
+      const uncertainMessage = '远端已响应，但结果内容不完整。请在官方 App 或网页核对。';
+      await this.store.finishLocationActionUncertain(claimed.id, attemptId, uncertainMessage, this.now());
+      throw new CampusAuthUserError(uncertainMessage);
+    }
+    const completed = await this.store.completeLocationAction(claimed.id, attemptId, message, this.now());
+    if (!completed) throw new CampusAuthUserError('操作已经提交，但本地状态保存失败，请在官方 App 或网页核对结果。');
+    await this.audit(claimed.ownerKey, claimed.providerId, 'location_action_completed', 'ok');
+    return message;
   }
 
   async startBinding(identity: CampusOwnerIdentity, providerId: CampusAuthProviderId): Promise<{ link: string; expiresAt: number }> {
@@ -315,7 +481,11 @@ export class CampusAuthService {
   }
 
   cleanupExpiredChallenges(): Promise<void> {
-    return this.store.cleanupExpiredChallenges(this.now());
+    const now = this.now();
+    return Promise.all([
+      this.store.cleanupExpiredChallenges(now),
+      this.store.cleanupExpiredLocationActions(now),
+    ]).then(() => undefined);
   }
 
   markSessionInvalid(ownerKey: string, providerId: CampusAuthProviderId, reason: string): Promise<void> {
@@ -336,6 +506,7 @@ export class CampusAuthService {
     await this.store.removeSession(identity.ownerKey, providerId);
     await this.store.revokeCredential(identity.ownerKey, providerId, now);
     await this.store.cancelActiveChallenges(identity.ownerKey, providerId, now);
+    await this.store.cancelActiveLocationActions(identity.ownerKey, providerId, now);
     await this.audit(identity.ownerKey, providerId, 'unbind', 'ok');
     await this.emitLifecycle({
       ownerKey: identity.ownerKey,
@@ -358,6 +529,44 @@ export class CampusAuthService {
       throw new CampusAuthUserError('绑定链接已失效，请重新发起绑定。');
     }
     return challenge;
+  }
+
+  private async requireUsableLocationAction(token: string, allowCompleted = false): Promise<CampusLocationActionChallenge> {
+    const normalized = token.trim();
+    if (!normalized) throw new CampusAuthUserError('操作链接无效。');
+    const challenge = await this.store.findLocationActionByTokenHash(sha256Hex(normalized));
+    if (!challenge) throw new CampusAuthUserError('操作链接无效，请重新发起。');
+    if (challenge.expiresAt <= this.now()) {
+      await this.store.clearLocationAction(challenge.id, 'expired', this.now());
+      throw new CampusAuthUserError('操作链接已过期，请重新发起。');
+    }
+    if (['completed', 'uncertain'].includes(challenge.status) && allowCompleted) return challenge;
+    if (['completed', 'uncertain', 'expired', 'cancelled'].includes(challenge.status)) {
+      throw new CampusAuthUserError('操作链接已失效，请重新发起。');
+    }
+    if (!challenge.payloadCipher || !challenge.payloadMeta) throw new Error('campus location action is missing its encrypted payload.');
+    return challenge;
+  }
+
+  private decryptLocationActionPayload(challenge: CampusLocationActionChallenge): unknown {
+    return decryptEnvelopeJson(
+      challenge.payloadCipher,
+      challenge.payloadMeta,
+      locationActionPayloadAad(challenge),
+      this.kek,
+    );
+  }
+
+  private decryptLocationActionPrepared(challenge: CampusLocationActionChallenge): CampusLocationActionPrepared {
+    if (!challenge.preparedCipher || !challenge.preparedMeta) {
+      throw new Error('prepared campus location action is missing its encrypted state.');
+    }
+    return decryptEnvelopeJson<CampusLocationActionPrepared>(
+      challenge.preparedCipher,
+      challenge.preparedMeta,
+      locationActionPreparedAad(challenge),
+      this.kek,
+    );
   }
 
   private decryptPendingConfirmCode(challenge: CampusAuthChallenge): PendingConfirmCodePayload {
@@ -399,6 +608,45 @@ function credentialAad(ownerKey: string, providerId: CampusAuthProviderId, id: n
 
 function sessionAad(ownerKey: string, providerId: CampusAuthProviderId, id: number): string {
   return `campus-auth:session:v${CURRENT_SCHEMA_VERSION}:${providerId}:${ownerKey}:${id}`;
+}
+
+function locationActionPayloadAad(challenge: Pick<CampusLocationActionChallenge, 'id' | 'ownerKey' | 'providerId' | 'actionId'>): string {
+  return `campus-auth:location-action-payload:v${CURRENT_SCHEMA_VERSION}:${challenge.providerId}:${challenge.ownerKey}:${challenge.id}:${challenge.actionId}`;
+}
+
+function locationActionPreparedAad(challenge: Pick<CampusLocationActionChallenge, 'id' | 'ownerKey' | 'providerId' | 'actionId'>): string {
+  return `campus-auth:location-action-prepared:v${CURRENT_SCHEMA_VERSION}:${challenge.providerId}:${challenge.ownerKey}:${challenge.id}:${challenge.actionId}`;
+}
+
+function locationActionIdentity(challenge: CampusLocationActionChallenge): CampusOwnerIdentity {
+  return {
+    ownerKey: challenge.ownerKey,
+    platform: challenge.platform,
+    qqUserId: challenge.qqUserId,
+    channelId: challenge.channelId,
+  };
+}
+
+function validateLocation(location: CampusLocation): void {
+  if (!Number.isFinite(location.latitude) || location.latitude < -90 || location.latitude > 90) {
+    throw new CampusAuthUserError('定位纬度无效，请重新获取定位。');
+  }
+  if (!Number.isFinite(location.longitude) || location.longitude < -180 || location.longitude > 180) {
+    throw new CampusAuthUserError('定位经度无效，请重新获取定位。');
+  }
+  if (!Number.isFinite(location.accuracy) || location.accuracy < 0 || location.accuracy > 5000) {
+    throw new CampusAuthUserError('定位精度无效，请重新获取定位。');
+  }
+}
+
+function collectSensitiveStrings(value: unknown, depth = 0): string[] {
+  if (depth > 4 || value == null) return [];
+  if (typeof value === 'string') return value.length >= 4 ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectSensitiveStrings(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).flatMap((item) => collectSensitiveStrings(item, depth + 1));
+  }
+  return [];
 }
 
 function hashConfirmCode(challenge: Pick<CampusAuthChallenge, 'id' | 'ownerKey' | 'providerId'>, code: string): string {

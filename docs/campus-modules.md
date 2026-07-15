@@ -15,6 +15,8 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 - `志愿记录 [页码]`
 - `志愿活动 [关键词]`
 - `我的志愿活动 [页码]`
+- `志愿汇签到 <6位活动码>`（仅私聊）
+- `志愿汇签退 <签到时使用的6位活动码>`（仅私聊）
 
 河北大学二课：
 
@@ -28,8 +30,20 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 - `二课雷达`
 - `二课活动`
 - `二课记录`
+- `二课签到 <6位签到码>`（仅私聊）
+- `二课签退 <6位签到码>`（仅私聊，复用签到码）
 
-两个模块只执行查询。报名、取消报名、签到、签退等写操作均未注册。
+两个模块提供签到与签退。报名、取消报名等其他写操作仍未注册。
+
+## 签到与定位
+
+`campus-auth-core` 统一管理 5 分钟一次性定位操作链接。操作数据使用 KEK envelope encryption 保存，数据库只记录 token hash；页面完成后清除签到码和待确认数据。状态机依次为创建、定位校验、待确认、提交和完成，并通过原子 claim 阻止重复点击触发两次远端写入。
+
+定位页只读取手机浏览器 `navigator.geolocation` 返回的实时坐标，没有手工坐标输入。坐标从 WGS-84 确定性转换为百度 BD-09，服务端计算与活动签到点的球面距离。定位精度差于 200 米、超出活动半径或活动状态变化时终止操作。坐标只参与当前请求，不写入数据库。
+
+二课先通过签到码查询当前操作类型。同一个 6 位码在活动开始时用于签到，在活动结束时用于签退。普通活动在私聊命令中直接提交；`locationOpenStatus` 开启的活动会进入定位确认页，服务端按 `signAddressList` 再次执行范围校验。提交前重新查询签到码，避免页面停留期间活动状态变化。
+
+志愿汇签到使用 6 位活动码，签退复用同一活动码并根据账号当前 `card_activityid` 确定活动。定位确认前后分别调用当前状态和活动详情接口，并按 `position` 中的坐标与半径校验。人脸核验活动提示用户使用官方 App。系统不提供强制签退、坐标注入或虚拟定位能力。
 
 ## 绑定方式
 
@@ -50,6 +64,8 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 - `CAMPUS_AUTH_PUBLIC_BASE_URL`
 - `CAMPUS_AUTH_BIND_PAGE_PATH`
 - `CAMPUS_AUTH_BIND_TOKEN_TTL_MS`
+- `CAMPUS_AUTH_ACTION_PAGE_PATH`
+- `CAMPUS_AUTH_ACTION_TOKEN_TTL_MS`
 - `CAMPUS_AUTH_CREDENTIAL_KEK_PATH`
 - `CAMPUS_AUTH_MAX_BINDING_ATTEMPTS`
 
@@ -62,11 +78,11 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 - `HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED`
 - `HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS`
 
-生产环境继续使用 `cloudflared-qqbot-hbu-jw.service` 的 token-file Tunnel。将 `CAMPUS_AUTH_PUBLIC_BASE_URL` 指向现有教务域名，并让 Tunnel 的 ingress 将 `/campus/bind` 转发到 Koishi；无需创建 credentials JSON 或新的 CLI 管理 Tunnel。
+生产环境继续使用 `cloudflared-qqbot-hbu-jw.service` 的 token-file Tunnel。将 `CAMPUS_AUTH_PUBLIC_BASE_URL` 指向现有教务域名，并让 Tunnel 的 ingress 将 `/campus/bind` 与 `/campus/action` 转发到 Koishi；无需创建 credentials JSON 或新的 CLI 管理 Tunnel。
 
 ## 数据与撤销
 
-统一认证表为 `campus_auth_challenge`、`campus_auth_credential`、`campus_auth_session`、`campus_auth_audit`。业务缓存分别使用 `zyh_sync_state` / `zyh_data_item` 和 `hbu_second_class_sync_state` / `hbu_second_class_data_item`。
+统一认证表为 `campus_auth_challenge`、`campus_location_action_challenge`、`campus_auth_credential`、`campus_auth_session`、`campus_auth_audit`。业务缓存分别使用 `zyh_sync_state` / `zyh_data_item` 和 `hbu_second_class_sync_state` / `hbu_second_class_data_item`。
 
 缓存按会话凭据版本隔离。远端临时网络故障时，模块只返回同一版本的历史数据并明确标注抓取时间。重新绑定和解绑会清理对应缓存。二课运行时不依赖 QQBot 的志愿汇账号会话；二课直接登录和 Token 导入生成的二课会话均独立保存。
 
@@ -76,6 +92,7 @@ QQBot 通过 `campus-auth-core` 提供统一的一次性绑定页、确认码、
 
 1. 使用授权测试账号验证志愿汇登录响应头、个人信息、活动与记录。
 2. 验证二课验证码、SM2 登录和河北大学两个租户 ID。
-3. 将脱敏后的成功响应固化为 fixtures，清除抓包、临时授权码、测试 Token 和临时绑定挑战。
-4. 执行 `pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm runtime:check`。
-5. 先开放测试群，验证重启后解密、解绑和聊天历史脱敏，再扩大白名单。
+3. 使用已授权的测试活动分别验证二课无定位签到、二课定位签到/签退、志愿汇定位签到/签退和范围外拒绝。
+4. 将脱敏后的成功响应固化为 fixtures，清除抓包、临时授权码、测试 Token、签到码和临时操作挑战。
+5. 执行 `pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm runtime:check`。
+6. 先开放测试群，验证重启后解密、解绑、重复提交保护和聊天历史脱敏，再扩大白名单。

@@ -50,6 +50,29 @@ export interface ZyhActivity {
   statusText?: string | null;
 }
 
+export type ZyhSignOperation = 'sign_in' | 'sign_out';
+
+export interface ZyhSignState {
+  operation: ZyhSignOperation;
+  cardActivityId: string;
+  signTime: string;
+}
+
+export interface ZyhSignPosition {
+  latitude: number;
+  longitude: number;
+  radius: number;
+  address: string;
+}
+
+export interface ZyhSignActivity {
+  activityId: string;
+  title: string;
+  status: number;
+  faceRequired: boolean;
+  positions: ZyhSignPosition[];
+}
+
 export class ZyhApiError extends Error {
   constructor(
     message: string,

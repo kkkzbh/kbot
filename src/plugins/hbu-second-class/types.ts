@@ -55,6 +55,29 @@ export interface SecondClassPage {
   raw: unknown;
 }
 
+export type SecondClassSignOperation = 'sign_in' | 'sign_out';
+
+export interface SecondClassSignCodeInfo {
+  activityId: string;
+  activityName: string;
+  activityType: number;
+  locationRequired: boolean;
+  operation: SecondClassSignOperation;
+}
+
+export interface SecondClassSignLocation {
+  latitude: number;
+  longitude: number;
+  radius: number;
+  address: string;
+}
+
+export interface SecondClassSignResult {
+  operation: SecondClassSignOperation;
+  signType: number | null;
+  message: string;
+}
+
 export interface SecondClassQuerySnapshot<T = unknown> {
   data: T;
   source: 'remote' | 'database';

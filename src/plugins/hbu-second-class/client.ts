@@ -5,6 +5,9 @@ import type {
   SecondClassLoginInput,
   SecondClassPage,
   SecondClassSessionPayload,
+  SecondClassSignCodeInfo,
+  SecondClassSignLocation,
+  SecondClassSignResult,
   SecondClassUserInfo,
 } from './types.js';
 import {
@@ -131,6 +134,53 @@ export class SecondClassHttpClient {
 
   async listCreditRecords(token: string, page = 1): Promise<SecondClassPage> {
     return normalizePage(await this.data('/app/h5/creditRecord/page', token, { current: page, size: 10 }));
+  }
+
+  async getSignCodeInfo(token: string, code: string): Promise<SecondClassSignCodeInfo> {
+    const envelope = await this.request(`/app/h5/activity/getByCode/v2/${encodeURIComponent(code)}`, { token });
+    const raw = requireRecord(envelope.data, '二课签到码响应缺少活动数据。');
+    const activitySignCode = requireRecord(raw.activitySignCode, '二课签到码响应缺少签到类型。');
+    const activityId = text(raw.id);
+    if (!activityId) throw new SecondClassApiError('二课签到码响应缺少活动 ID。', 0, 200);
+    const activityType = finiteNumber(raw.activityType);
+    if (activityType == null) throw new SecondClassApiError('二课签到码响应缺少活动类型。', 0, 200);
+    return {
+      activityId,
+      activityName: text(raw.activityName) || `二课活动 ${activityId}`,
+      activityType,
+      locationRequired: booleanFlag(raw.locationOpenStatus),
+      operation: Number(activitySignCode.type) === 1 ? 'sign_out' : 'sign_in',
+    };
+  }
+
+  async getSignLocations(token: string, activityId: string): Promise<SecondClassSignLocation[]> {
+    const envelope = await this.request(`/app/h5/activity/editDetail/${encodeURIComponent(activityId)}`, { token });
+    const raw = requireRecord(envelope.data, '二课活动详情响应缺少数据。');
+    if (!Array.isArray(raw.signAddressList)) throw new SecondClassApiError('二课活动未配置签到地址。', 0, 200);
+    return raw.signAddressList.map((value) => {
+      const item = requireRecord(value, '二课签到地址结构无效。');
+      const latitude = finiteNumber(item.latitude);
+      const longitude = finiteNumber(item.longitude);
+      const radius = finiteNumber(item.radius);
+      if (latitude == null || longitude == null || radius == null || radius <= 0) {
+        throw new SecondClassApiError('二课签到地址坐标或范围无效。', 0, 200);
+      }
+      return { latitude, longitude, radius, address: text(item.address) || '活动签到点' };
+    });
+  }
+
+  async submitSignCode(token: string, info: SecondClassSignCodeInfo, code: string): Promise<SecondClassSignResult> {
+    const path = info.activityType === 1
+      ? '/app/h5/tBizSignActivity/signOrSignOut'
+      : '/app/h5/activitySign/signActivity';
+    const envelope = await this.request(path, { method: 'POST', token, body: { code } });
+    const data = asRecord(envelope.data);
+    const signType = finiteNumber(data.signType);
+    return {
+      operation: info.operation,
+      signType,
+      message: envelope.message,
+    };
   }
 
   private async data(path: string, token: string, query?: Record<string, string | number>): Promise<unknown> {
@@ -264,4 +314,8 @@ function text(value: unknown): string {
 function finiteNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function booleanFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === '1' || value === 'true';
 }

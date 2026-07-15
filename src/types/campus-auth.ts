@@ -3,6 +3,7 @@ import type {
   CampusAuthAudit,
   CampusAuthChallenge,
   CampusAuthCredential,
+  CampusLocationActionChallenge,
   CampusAuthProvider,
   CampusAuthSession,
 } from '../plugins/campus-auth-core/types.js';
@@ -18,6 +19,7 @@ declare module 'koishi' {
   }
 
   interface Tables {
+    campus_location_action_challenge: CampusLocationActionChallenge;
     campus_auth_challenge: CampusAuthChallenge;
     campus_auth_credential: CampusAuthCredential;
     campus_auth_session: CampusAuthSession;

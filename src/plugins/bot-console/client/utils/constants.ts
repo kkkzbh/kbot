@@ -51,6 +51,8 @@ export const FIELD_LABELS: Record<string, string> = {
   CAMPUS_AUTH_PUBLIC_BASE_URL: '统一绑定外部地址',
   CAMPUS_AUTH_BIND_PAGE_PATH: '统一绑定页路径',
   CAMPUS_AUTH_BIND_TOKEN_TTL_MS: '绑定链接有效期',
+  CAMPUS_AUTH_ACTION_PAGE_PATH: '定位操作页路径',
+  CAMPUS_AUTH_ACTION_TOKEN_TTL_MS: '定位链接有效期',
   CAMPUS_AUTH_CREDENTIAL_KEK_PATH: '共享认证 KEK 路径',
   CAMPUS_AUTH_MAX_BINDING_ATTEMPTS: '最多验证次数',
   ZYH_ALLOWED_GROUPS: '志愿汇白名单群',
@@ -136,6 +138,10 @@ export const FIELD_HINTS: Record<string, string> = {
     '统一一次性绑定页路径，必须以 / 开头。',
   CAMPUS_AUTH_BIND_TOKEN_TTL_MS:
     '一次性绑定链接有效期，单位毫秒。',
+  CAMPUS_AUTH_ACTION_PAGE_PATH:
+    '二课与志愿汇共用的一次性定位确认页路径，必须以 / 开头。',
+  CAMPUS_AUTH_ACTION_TOKEN_TTL_MS:
+    '一次性定位确认链接有效期，单位毫秒。',
   CAMPUS_AUTH_CREDENTIAL_KEK_PATH:
     '志愿汇凭据和两个模块 Token 的共享 KEK 文件，文件权限必须为 0600。',
   CAMPUS_AUTH_MAX_BINDING_ATTEMPTS:

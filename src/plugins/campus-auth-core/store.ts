@@ -9,6 +9,8 @@ import type {
   CampusAuthProviderId,
   CampusAuthSession,
   CampusAuthSessionStatus,
+  CampusLocationActionChallenge,
+  CampusLocationActionStatus,
   CampusOwnerIdentity,
 } from './types.js';
 
@@ -20,7 +22,40 @@ const ACTIVE_CHALLENGE_STATUSES: CampusAuthChallengeStatus[] = [
   'failed',
 ];
 
+const ACTIVE_LOCATION_ACTION_STATUSES: CampusLocationActionStatus[] = [
+  'created',
+  'preparing',
+  'ready',
+  'committing',
+];
+
 export function ensureCampusAuthTables(ctx: Context): void {
+  ctx.model.extend('campus_location_action_challenge', {
+    id: 'unsigned',
+    tokenHash: 'string',
+    ownerKey: 'string',
+    platform: 'string',
+    qqUserId: 'string',
+    channelId: 'string',
+    providerId: 'string',
+    actionId: 'string',
+    status: 'string',
+    attemptId: { type: 'string', nullable: true },
+    payloadCipher: 'text',
+    payloadMeta: 'text',
+    preparedCipher: { type: 'text', nullable: true },
+    preparedMeta: { type: 'text', nullable: true },
+    resultMessage: { type: 'text', nullable: true },
+    errorMessage: { type: 'text', nullable: true },
+    expiresAt: 'double',
+    createdAt: 'double',
+    updatedAt: 'double',
+  }, {
+    autoInc: true,
+    unique: ['tokenHash'],
+    indexes: [['ownerKey', 'providerId', 'status'], ['expiresAt']],
+  });
+
   ctx.model.extend('campus_auth_challenge', {
     id: 'unsigned',
     tokenHash: 'string',
@@ -111,6 +146,163 @@ export function ensureCampusAuthTables(ctx: Context): void {
 
 export class CampusAuthStore {
   constructor(private readonly database: CampusAuthDatabase) {}
+
+  createLocationAction(
+    identity: CampusOwnerIdentity,
+    providerId: CampusAuthProviderId,
+    actionId: string,
+    tokenHash: string,
+    expiresAt: number,
+    now: number,
+  ): Promise<CampusLocationActionChallenge> {
+    return this.database.create<CampusLocationActionChallenge>('campus_location_action_challenge', {
+      tokenHash,
+      ownerKey: identity.ownerKey,
+      platform: identity.platform,
+      qqUserId: identity.qqUserId,
+      channelId: identity.channelId,
+      providerId,
+      actionId,
+      status: 'created',
+      attemptId: null,
+      payloadCipher: '',
+      payloadMeta: '',
+      preparedCipher: null,
+      preparedMeta: null,
+      resultMessage: null,
+      errorMessage: null,
+      expiresAt,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async updateLocationActionPayload(id: number, payloadCipher: string, payloadMeta: string, now: number): Promise<void> {
+    await this.database.set('campus_location_action_challenge', { id, status: 'created' }, {
+      payloadCipher,
+      payloadMeta,
+      updatedAt: now,
+    });
+  }
+
+  async findLocationActionByTokenHash(tokenHash: string): Promise<CampusLocationActionChallenge | null> {
+    const [row] = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', { tokenHash });
+    return row ?? null;
+  }
+
+  async cancelActiveLocationActions(ownerKey: string, providerId: CampusAuthProviderId, now: number): Promise<void> {
+    const rows = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', { ownerKey, providerId });
+    for (const row of rows) {
+      if (ACTIVE_LOCATION_ACTION_STATUSES.includes(row.status)) await this.clearLocationAction(row.id, 'cancelled', now);
+    }
+  }
+
+  async cleanupExpiredLocationActions(now: number): Promise<void> {
+    const rows = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', {});
+    for (const row of rows) {
+      if (!['expired', 'cancelled'].includes(row.status) && row.expiresAt <= now) {
+        await this.clearLocationAction(row.id, 'expired', now);
+      }
+    }
+  }
+
+  async claimLocationAction(
+    id: number,
+    expectedStatus: CampusLocationActionStatus,
+    nextStatus: 'preparing' | 'committing',
+    attemptId: string,
+    now: number,
+  ): Promise<CampusLocationActionChallenge | null> {
+    const [current] = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', { id, status: expectedStatus });
+    if (!current) return null;
+    await this.database.set('campus_location_action_challenge', { id, status: expectedStatus }, {
+      status: nextStatus,
+      attemptId,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    const [row] = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', { id });
+    return row?.status === nextStatus && row.attemptId === attemptId ? row : null;
+  }
+
+  async completeLocationPreparation(
+    id: number,
+    attemptId: string,
+    preparedCipher: string,
+    preparedMeta: string,
+    now: number,
+  ): Promise<boolean> {
+    await this.database.set('campus_location_action_challenge', { id, status: 'preparing', attemptId }, {
+      status: 'ready',
+      attemptId: null,
+      preparedCipher,
+      preparedMeta,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    const [row] = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', { id });
+    return row?.status === 'ready' && row.preparedCipher === preparedCipher;
+  }
+
+  async failLocationActionAttempt(
+    id: number,
+    attemptId: string,
+    currentStatus: 'preparing' | 'committing',
+    nextStatus: 'created' | 'ready',
+    reason: string,
+    now: number,
+  ): Promise<void> {
+    await this.database.set('campus_location_action_challenge', { id, status: currentStatus, attemptId }, {
+      status: nextStatus,
+      attemptId: null,
+      errorMessage: reason,
+      updatedAt: now,
+    });
+  }
+
+  async completeLocationAction(id: number, attemptId: string, resultMessage: string, now: number): Promise<boolean> {
+    await this.database.set('campus_location_action_challenge', { id, status: 'committing', attemptId }, {
+      status: 'completed',
+      attemptId: null,
+      payloadCipher: '',
+      payloadMeta: '',
+      preparedCipher: null,
+      preparedMeta: null,
+      resultMessage,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    const [row] = await this.database.get<CampusLocationActionChallenge>('campus_location_action_challenge', { id });
+    return row?.status === 'completed';
+  }
+
+  async finishLocationActionUncertain(id: number, attemptId: string, resultMessage: string, now: number): Promise<void> {
+    await this.database.set('campus_location_action_challenge', { id, status: 'committing', attemptId }, {
+      status: 'uncertain',
+      attemptId: null,
+      payloadCipher: '',
+      payloadMeta: '',
+      preparedCipher: null,
+      preparedMeta: null,
+      resultMessage,
+      errorMessage: null,
+      updatedAt: now,
+    });
+  }
+
+  async clearLocationAction(id: number, status: 'expired' | 'cancelled', now: number): Promise<void> {
+    await this.database.set('campus_location_action_challenge', { id }, {
+      status,
+      attemptId: null,
+      payloadCipher: '',
+      payloadMeta: '',
+      preparedCipher: null,
+      preparedMeta: null,
+      resultMessage: null,
+      errorMessage: null,
+      updatedAt: now,
+    });
+  }
 
   createChallenge(
     identity: CampusOwnerIdentity,

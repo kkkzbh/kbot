@@ -6,7 +6,7 @@ import CampusModulePanel from './CampusModulePanel.vue'
 <template>
   <CampusModulePanel
     title="志愿汇"
-    description="管理志愿汇绑定、志愿时长与活动查询、群白名单和统一认证入口。"
+    description="管理志愿汇绑定、活动查询、签到定位入口和群白名单。"
     :env-keys="ZYH_ENV_KEYS"
     group-key="ZYH_ALLOWED_GROUPS"
     natural-trigger-key="ZYH_NATURAL_TRIGGER_ENABLED"

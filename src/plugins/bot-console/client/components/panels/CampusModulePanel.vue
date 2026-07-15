@@ -26,6 +26,7 @@ const textKeys = computed(() => props.envKeys.filter(key => !toggleKeys.value.in
 const allowedGroups = computed(() => normalizeGroupList(envDraft[props.groupKey] ?? '') || '未配置群聊白名单')
 const publicBaseUrl = computed(() => (envDraft.CAMPUS_AUTH_PUBLIC_BASE_URL ?? '').trim() || '跟随教务绑定地址')
 const bindPath = computed(() => (envDraft.CAMPUS_AUTH_BIND_PAGE_PATH ?? '').trim() || '/campus/bind')
+const actionPath = computed(() => (envDraft.CAMPUS_AUTH_ACTION_PAGE_PATH ?? '').trim() || '/campus/action')
 
 function normalizeGroupList(value: string): string {
   return value.split(/[,\s，、]+/).map(part => part.trim()).filter(Boolean).join(',')
@@ -43,8 +44,10 @@ function placeholder(key: string): string {
   if (key.endsWith('_ALLOWED_GROUPS') || key.endsWith('_TRIGGER_GROUPS')) return '829573670,921554872'
   if (key === 'CAMPUS_AUTH_PUBLIC_BASE_URL') return 'https://jw.example.com'
   if (key === 'CAMPUS_AUTH_BIND_PAGE_PATH') return '/campus/bind'
+  if (key === 'CAMPUS_AUTH_ACTION_PAGE_PATH') return '/campus/action'
   if (key === 'CAMPUS_AUTH_CREDENTIAL_KEK_PATH') return './.runtime/campus-auth/credential-kek.key'
   if (key === 'CAMPUS_AUTH_BIND_TOKEN_TTL_MS') return '600000'
+  if (key === 'CAMPUS_AUTH_ACTION_TOKEN_TTL_MS') return '300000'
   if (key === 'CAMPUS_AUTH_MAX_BINDING_ATTEMPTS') return '5'
   return ''
 }
@@ -84,7 +87,7 @@ async function handleSave(restartAfter = false): Promise<void> {
     <div class="bc-status-grid">
       <div class="bc-status-card"><span class="bc-status-label">群聊白名单</span><strong>{{ allowedGroups }}</strong><p class="bc-muted">私聊始终可用。</p></div>
       <div class="bc-status-card"><span class="bc-status-label">自然触发</span><strong>{{ String(envDraft[naturalTriggerKey] ?? '').toLowerCase() === 'true' ? '已开启' : '已关闭' }}</strong><p class="bc-muted">群聊 at 触发不受此开关影响。</p></div>
-      <div class="bc-status-card"><span class="bc-status-label">统一绑定入口</span><strong>{{ bindPath }}</strong><p class="bc-muted">{{ publicBaseUrl }}</p></div>
+      <div class="bc-status-card"><span class="bc-status-label">统一网页入口</span><strong>{{ bindPath }}</strong><p class="bc-muted">定位确认：{{ actionPath }} · {{ publicBaseUrl }}</p></div>
       <div class="bc-status-card"><span class="bc-status-label">认证存储</span><strong>KEK envelope encryption</strong><p class="bc-muted">Token、凭据和待确认状态均加密保存。</p></div>
     </div>
 

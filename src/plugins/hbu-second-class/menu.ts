@@ -24,7 +24,7 @@ export function buildHbuSecondClassMenuView(): FeatureMenuView {
     title: '河北大学二课菜单',
     subtitle: '发送 二课 查看本菜单',
     triggerKeyword: '二课',
-    footer: 'QQBot · 河北大学第二课堂 · 当前功能仅提供查询',
+    footer: 'QQBot · 河北大学第二课堂',
     columns: 2,
     theme: {
       primary: '#4c68b1',
@@ -43,6 +43,14 @@ export function buildHbuSecondClassMenuView(): FeatureMenuView {
           { keyword: '二课状态', description: '检查当前绑定方式与登录状态', icon: 'id-card' },
           { keyword: '二课验证 [验证码]', description: 'Token 失效后获取图片或提交验证码续登', icon: 'check' },
           { keyword: '二课解绑', description: '清除二课绑定和历史查询缓存', icon: 'link-off' },
+        ],
+      },
+      {
+        title: '签到',
+        icon: 'check',
+        items: [
+          { keyword: '二课签到 <签到码>', description: '私聊提交 6 位签到码；定位活动需网页确认', icon: 'check', accent: true },
+          { keyword: '二课签退 <签到码>', description: '复用活动签到码完成签退', icon: 'clock' },
         ],
       },
       {

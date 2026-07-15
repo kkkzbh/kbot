@@ -79,6 +79,8 @@ plugins:
         ('http://127.0.0.1:' + (+env.KOISHI_PORT || 5140)) }}
       bindPagePath: ${{ env.CAMPUS_AUTH_BIND_PAGE_PATH || '/campus/bind' }}
       bindTokenTtlMs: ${{ +env.CAMPUS_AUTH_BIND_TOKEN_TTL_MS || 600000 }}
+      actionPagePath: ${{ env.CAMPUS_AUTH_ACTION_PAGE_PATH || '/campus/action' }}
+      actionTokenTtlMs: ${{ +env.CAMPUS_AUTH_ACTION_TOKEN_TTL_MS || 300000 }}
       credentialKekPath: >-
         ${{ env.CAMPUS_AUTH_CREDENTIAL_KEK_PATH ||
         './.runtime/campus-auth/credential-kek.key' }}

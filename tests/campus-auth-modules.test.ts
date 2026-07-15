@@ -30,6 +30,7 @@ import {
   type CampusOwnerIdentity,
 } from '../src/plugins/campus-auth-core/types.js';
 import { renderCampusBindPage } from '../src/plugins/campus-auth-core/bind-page.js';
+import { renderCampusLocationActionPage } from '../src/plugins/campus-auth-core/action-page.js';
 import { SecondClassHttpClient } from '../src/plugins/hbu-second-class/client.js';
 import { SecondClassCache } from '../src/plugins/hbu-second-class/cache.js';
 import { SecondClassReauthStore } from '../src/plugins/hbu-second-class/reauth-store.js';
@@ -90,7 +91,14 @@ function createAuthService(maxBindingAttempts = 5) {
   const service = new CampusAuthService(
     new CampusAuthStore(database as never),
     { id: 'fixture-kek', key: Buffer.alloc(32, 7) },
-    { publicBaseUrl: 'https://bind.example', bindPagePath: '/campus/bind', bindTokenTtlMs: 600_000, maxBindingAttempts },
+    {
+      publicBaseUrl: 'https://bind.example',
+      bindPagePath: '/campus/bind',
+      bindTokenTtlMs: 600_000,
+      actionPagePath: '/campus/action',
+      actionTokenTtlMs: 300_000,
+      maxBindingAttempts,
+    },
     () => now,
   );
   return { service, database, advance: (ms: number) => { now += ms; } };
@@ -244,6 +252,22 @@ describe('campus auth core contracts', () => {
     expect(html).toContain('navigator.clipboard.writeText');
   });
 
+  it('collects location through the browser API without exposing coordinate inputs', () => {
+    const html = renderCampusLocationActionPage({
+      providerLabel: '志愿汇',
+      token: 'one-time-token',
+      preparePath: '/campus/action/prepare',
+      commitPath: '/campus/action/commit',
+      state: 'locate',
+    });
+    expect(html).toContain('navigator.geolocation.getCurrentPosition');
+    expect(html).toContain('enableHighAccuracy:true');
+    expect(html).toContain('name="latitude"');
+    expect(html).toContain('name="longitude"');
+    expect(html).not.toContain('type="text" name="latitude"');
+    expect(html).not.toContain('type="text" name="longitude"');
+  });
+
   it('redacts credential, token, captcha, and bearer values from diagnostics', () => {
     const value = diagnostic(new Error('password=plain Authorization:auth-token token=api-token captcha=1234 Bearer bearer-token'));
     expect(value).not.toContain('plain');
@@ -251,6 +275,59 @@ describe('campus auth core contracts', () => {
     expect(value).not.toContain('api-token');
     expect(value).not.toContain('1234');
     expect(value).not.toContain('bearer-token');
+  });
+
+  it('encrypts location-action payloads and commits a one-time action exactly once', async () => {
+    const { service, database } = createAuthService();
+    const prepare = vi.fn(async ({ payload }: { payload: unknown }) => ({
+      title: '测试活动',
+      actionLabel: '签到',
+      details: ['距签到点 10 米'],
+      payload: { activityId: 'activity-1', received: payload },
+    }));
+    const commit = vi.fn(async () => ({ message: '测试活动签到成功。' }));
+    service.registerLocationActionProvider({
+      id: CAMPUS_AUTH_PROVIDER_SECOND_CLASS,
+      label: '河北大学二课',
+      prepare,
+      commit,
+    });
+    const started = await service.startLocationAction(owner(), CAMPUS_AUTH_PROVIDER_SECOND_CLASS, 'sign_in', { code: '123456' });
+    const token = new URL(started.link).searchParams.get('token')!;
+    const storedBefore = JSON.stringify(database.tables.get('campus_location_action_challenge'));
+    expect(storedBefore).not.toContain('123456');
+    expect(storedBefore).not.toContain(token);
+
+    await service.prepareLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 15 });
+    const ready = await service.resolveLocationActionPage(token);
+    expect(ready).toMatchObject({ state: 'ready', prepared: { title: '测试活动', actionLabel: '签到' } });
+    await expect(service.prepareLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 15 })).rejects.toThrow('状态已经变化');
+    await expect(service.commitLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 10 })).resolves.toBe('测试活动签到成功。');
+    await expect(service.commitLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 10 })).rejects.toThrow('已失效');
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledTimes(1);
+    const storedAfter = JSON.stringify(database.tables.get('campus_location_action_challenge'));
+    expect(storedAfter).not.toContain('123456');
+    expect(storedAfter).not.toContain('activity-1');
+  });
+
+  it('makes an indeterminate remote submission terminal so it cannot be replayed', async () => {
+    const { service } = createAuthService();
+    const commit = vi.fn(async () => { throw new TypeError('network response lost'); });
+    service.registerLocationActionProvider({
+      id: CAMPUS_AUTH_PROVIDER_ZYH,
+      label: '志愿汇',
+      prepare: async () => ({ title: '测试活动', actionLabel: '签到', details: [], payload: { activityId: '1' } }),
+      commit,
+    });
+    const started = await service.startLocationAction(owner(), CAMPUS_AUTH_PROVIDER_ZYH, 'sign_in', { code: 'ABC123' });
+    const token = new URL(started.link).searchParams.get('token')!;
+    await service.prepareLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 15 });
+    await expect(service.commitLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 10 })).rejects.toThrow('官方 App');
+    const page = await service.resolveLocationActionPage(token);
+    expect(page).toMatchObject({ state: 'completed', challenge: { status: 'uncertain' } });
+    await expect(service.commitLocationAction(token, { latitude: 38.8, longitude: 115.5, accuracy: 10 })).rejects.toThrow('已失效');
+    expect(commit).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -275,6 +352,53 @@ describe('志愿汇 protocol client', () => {
     expect(activities).toEqual([expect.objectContaining({ id: 'fixture-activity-id', title: '校园志愿服务', isFinished: true })]);
     expect(requests[1]?.headers.Authorization).toBe('fixture-at');
     expect(requests.every((request) => request.url.endsWith('.do'))).toBe(true);
+  });
+
+  it('uses the official location sign-in and sign-out H5 contracts', async () => {
+    const requests: Array<{ url: string; body: string }> = [];
+    let state: 'in' | 'out' = 'in';
+    const client = new ZyhHttpClient(async (request) => {
+      requests.push(request);
+      const body = new URLSearchParams(request.body);
+      if (body.get('api') === 'activity/isSignForApp') {
+        return {
+          status: 200,
+          headers: new Headers(),
+          text: JSON.stringify(state === 'in'
+            ? { errCode: '0000', data: { status: 1 } }
+            : { errCode: '0000', data: { status: 2, card_activityid: 'card-1', sign_time: '08:00' } }),
+        };
+      }
+      if (body.get('api') === 'activity/detailRevampedForApp') {
+        return {
+          status: 200,
+          headers: new Headers(),
+          text: JSON.stringify({ errCode: '0000', data: {
+            card_activityid: 'activity-1', title: '测试志愿活动', status: 2, isface: 0,
+            position: [{ earth_lat: '38.8', earth_lng: '115.5', range: '100', address: '河北大学' }],
+          } }),
+        };
+      }
+      return { status: 200, headers: new Headers(), text: JSON.stringify({ errCode: '0000' }) };
+    });
+    const session = { authorization: 'at', userId: 'user-1', platformId: '3' };
+    const signInState = await client.getSignState(session);
+    const activity = await client.getSignActivity(session, signInState, '123456', { latitude: 38.8, longitude: 115.5 });
+    await client.submitSign(session, 'sign_in', activity, '123456', { latitude: 38.8, longitude: 115.5 });
+    state = 'out';
+    const signOutState = await client.getSignState(session);
+    await client.getSignActivity(session, signOutState, '', { latitude: 38.8, longitude: 115.5 });
+    await client.submitSign(session, 'sign_out', activity, '123456', { latitude: 38.8, longitude: 115.5 });
+
+    expect(requests.every((request) => request.url === 'https://appapi.zyh365.com/common/api-public?app_id=h5')).toBe(true);
+    const bodies = requests.map((request) => new URLSearchParams(request.body));
+    expect(bodies[1]?.get('activity_code')).toBe('123456');
+    expect(bodies[4]?.get('card_activityid')).toBe('card-1');
+    expect(bodies[2]?.get('api')).toBe('activity/signIn');
+    expect(bodies[2]?.get('type')).toBe('1');
+    expect(bodies[5]?.get('api')).toBe('activity/sign');
+    expect(bodies[5]?.get('type')).toBe('2');
+    expect(bodies[5]?.get('activityCode')).toBe('123456');
   });
 });
 
@@ -333,6 +457,37 @@ describe('河北大学二课 protocol client', () => {
     const httpClient = new SecondClassHttpClient(async () => ({ status: 401, text: JSON.stringify({ code: 401, msg: 'expired' }) }));
     await expect(httpClient.importToken('expired')).rejects.toBeInstanceOf(SecondClassSessionExpiredError);
   });
+
+  it('preflights a reused sign code, loads configured locations, and calls the matching endpoint', async () => {
+    const requests: Array<{ path: string; method: string; body?: string }> = [];
+    const client = new SecondClassHttpClient(async (request) => {
+      const path = new URL(request.url).pathname;
+      requests.push({ path, method: request.method, body: request.body });
+      if (path.includes('/getByCode/v2/')) {
+        return { status: 200, text: JSON.stringify({ code: 200, data: {
+          id: 'activity-1', activityName: '测试二课活动', activityType: 1, locationOpenStatus: 1, activitySignCode: { type: 0 },
+        } }) };
+      }
+      if (path.includes('/editDetail/')) {
+        return { status: 200, text: JSON.stringify({ code: 200, data: {
+          signAddressList: [{ latitude: '38.8', longitude: '115.5', radius: '100', address: '河北大学' }],
+        } }) };
+      }
+      return { status: 200, text: JSON.stringify({ code: 200, message: '成功', data: { signType: 0 } }) };
+    });
+    const info = await client.getSignCodeInfo('token', '123456');
+    expect(info).toMatchObject({ activityId: 'activity-1', operation: 'sign_in', locationRequired: true });
+    expect(await client.getSignLocations('token', info.activityId)).toEqual([
+      { latitude: 38.8, longitude: 115.5, radius: 100, address: '河北大学' },
+    ]);
+    await client.submitSignCode('token', info, '123456');
+    expect(requests.map((request) => request.path)).toEqual([
+      '/app/h5/activity/getByCode/v2/123456',
+      '/app/h5/activity/editDetail/activity-1',
+      '/app/h5/tBizSignActivity/signOrSignOut',
+    ]);
+    expect(JSON.parse(requests[2]!.body!)).toEqual({ code: '123456' });
+  });
 });
 
 describe('versioned cache and user-facing parsers', () => {
@@ -351,12 +506,17 @@ describe('versioned cache and user-facing parsers', () => {
     expect(parseZyhCommand('志愿记录 2')).toEqual({ kind: 'records', page: 2 });
     expect(parseZyhCommand('志愿汇确认 123456')).toEqual({ kind: 'confirm', code: '123456' });
     expect(parseZyhCommand('志愿汇确认 12345')).toBeNull();
+    expect(parseZyhCommand('志愿汇签到 123456')).toEqual({ kind: 'sign_in', code: '123456' });
+    expect(parseZyhCommand('志愿汇签退')).toEqual({ kind: 'sign_out_help' });
+    expect(parseZyhCommand('志愿汇签退 123456')).toEqual({ kind: 'sign_out', code: '123456' });
     expect(parseSecondClassCommand('二课成绩单 2025-2026-2')).toEqual({ kind: 'transcript', semester: '2025-2026-2' });
     expect(parseSecondClassCommand('二课确认 654321')).toEqual({ kind: 'confirm', code: '654321' });
     expect(parseSecondClassCommand('二课确认 abcdef')).toBeNull();
     expect(parseSecondClassCommand('二课验证')).toEqual({ kind: 'reauth_request' });
     expect(parseSecondClassCommand('二课验证 a1B2')).toEqual({ kind: 'reauth_submit', code: 'a1B2' });
     expect(parseSecondClassCommand('二课验证 1234!')).toBeNull();
+    expect(parseSecondClassCommand('二课签到 123456')).toEqual({ kind: 'sign_in', code: '123456' });
+    expect(parseSecondClassCommand('二课签退 123456')).toEqual({ kind: 'sign_out', code: '123456' });
   });
 
   it('converts a captcha data URL into a chat image fragment', () => {

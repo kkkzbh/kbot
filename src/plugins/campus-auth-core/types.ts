@@ -28,6 +28,44 @@ export type CampusAuthChallengeStatus =
 
 export type CampusAuthSessionStatus = 'active' | 'expired' | 'invalid' | 'revoked';
 
+export type CampusLocationActionStatus =
+  | 'created'
+  | 'preparing'
+  | 'ready'
+  | 'committing'
+  | 'completed'
+  | 'uncertain'
+  | 'expired'
+  | 'cancelled';
+
+export interface CampusLocation {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+}
+
+export interface CampusLocationActionChallenge {
+  id: number;
+  tokenHash: string;
+  ownerKey: string;
+  platform: string;
+  qqUserId: string;
+  channelId: string;
+  providerId: CampusAuthProviderId;
+  actionId: string;
+  status: CampusLocationActionStatus;
+  attemptId?: string | null;
+  payloadCipher: string;
+  payloadMeta: string;
+  preparedCipher?: string | null;
+  preparedMeta?: string | null;
+  resultMessage?: string | null;
+  errorMessage?: string | null;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface CampusAuthChallenge {
   id: number;
   tokenHash: string;
@@ -148,6 +186,31 @@ export interface CampusAuthProvider {
   confirmCommandPrefix: string;
   getBindingMethods(): Promise<CampusAuthMethodView[]>;
   authenticate(input: CampusAuthProviderAuthenticateInput): Promise<CampusAuthPendingResult>;
+}
+
+export interface CampusLocationActionPrepared<T = unknown> {
+  title: string;
+  actionLabel: string;
+  details: string[];
+  payload: T;
+}
+
+export interface CampusLocationActionProvider {
+  id: CampusAuthProviderId;
+  label: string;
+  prepare(input: {
+    identity: CampusOwnerIdentity;
+    actionId: string;
+    payload: unknown;
+    location: CampusLocation;
+  }): Promise<CampusLocationActionPrepared>;
+  commit(input: {
+    identity: CampusOwnerIdentity;
+    actionId: string;
+    payload: unknown;
+    prepared: unknown;
+    location: CampusLocation;
+  }): Promise<{ message: string }>;
 }
 
 export interface CampusAuthActiveSession<T = unknown> {

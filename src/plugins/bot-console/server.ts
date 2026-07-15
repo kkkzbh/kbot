@@ -228,6 +228,8 @@ export const BOT_CONSOLE_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'CAMPUS_AUTH_PUBLIC_BASE_URL', label: '校园绑定外部地址', type: 'text', section: 'features' },
   { key: 'CAMPUS_AUTH_BIND_PAGE_PATH', label: '校园绑定页路径', type: 'text', section: 'features' },
   { key: 'CAMPUS_AUTH_BIND_TOKEN_TTL_MS', label: '校园绑定链接有效期', type: 'number', section: 'features' },
+  { key: 'CAMPUS_AUTH_ACTION_PAGE_PATH', label: '校园定位操作页路径', type: 'text', section: 'features' },
+  { key: 'CAMPUS_AUTH_ACTION_TOKEN_TTL_MS', label: '校园定位操作链接有效期', type: 'number', section: 'features' },
   { key: 'CAMPUS_AUTH_CREDENTIAL_KEK_PATH', label: '校园认证 KEK 路径', type: 'text', section: 'features' },
   { key: 'CAMPUS_AUTH_MAX_BINDING_ATTEMPTS', label: '校园绑定最多尝试次数', type: 'number', section: 'features' },
   { key: 'ZYH_ALLOWED_GROUPS', label: '志愿汇白名单群', type: 'text', section: 'features' },

@@ -71,6 +71,7 @@ export function apply(ctx: Context, config: Config): void {
   const service = new HbuSecondClassService(services.campusAuth, client, cache, reauthStore);
   const menuService = new HbuSecondClassMenuService(services.puppeteer);
   const unregisterProvider = services.campusAuth.registerProvider(new HbuSecondClassAuthProvider(client));
+  const unregisterLocationActions = services.campusAuth.registerLocationActionProvider(service);
   const unregisterCapability = services.nativeFeatureChat.registerCapability({
     id: 'hbu-second-class',
     isRelevant: shouldExposeSecondClassCapabilityReference,
@@ -86,6 +87,7 @@ export function apply(ctx: Context, config: Config): void {
   registerMiddleware(ctx, services, service, menuService, runtime);
   ctx.on?.('dispose', () => {
     unregisterProvider();
+    unregisterLocationActions();
     unregisterCapability();
     unregisterLifecycle();
   });
@@ -113,7 +115,9 @@ function registerMiddleware(ctx: Context, services: SecondClassContext, service:
     }
     try {
       const identity = resolveCampusOwnerIdentity(session);
-      if (command.kind === 'menu') {
+      if ((command.kind === 'sign_in' || command.kind === 'sign_out') && session.isDirect !== true) {
+        await reply(services.nativeFeatureChat, session, command, text, '签到码属于活动安全信息，请私聊机器人发送该命令。', '机器人要求在私聊中提交二课签到码。', false, false);
+      } else if (command.kind === 'menu') {
         await reply(services.nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), '机器人返回了二课功能菜单图片。');
       } else if (command.kind === 'bind') {
         const result = await services.campusAuth.startBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
@@ -156,6 +160,13 @@ function registerMiddleware(ctx: Context, services: SecondClassContext, service:
       } else if (command.kind === 'records') {
         const result = await service.queryRecords(identity);
         await reply(services.nativeFeatureChat, session, command, text, `${formatPage('二课学分记录', result.data)}${cacheNotice(result)}`, '机器人返回了二课学分记录。');
+      } else if (command.kind === 'sign_in' || command.kind === 'sign_out') {
+        const operation = command.kind === 'sign_in' ? 'sign_in' : 'sign_out';
+        const result = await service.signWithCode(identity, operation, command.code);
+        const content = result.locationLink
+          ? `请打开一次性链接，授权手机定位并确认${operation === 'sign_in' ? '签到' : '签退'}：\n${result.locationLink}\n链接 5 分钟内有效。`
+          : result.message ?? '二课操作已完成。';
+        await reply(services.nativeFeatureChat, session, command, text, content, `机器人已处理二课${operation === 'sign_in' ? '签到' : '签退'}。`, true, false);
       }
     } catch (error) {
       if (error instanceof SecondClassReauthRequiredError) {
@@ -165,7 +176,7 @@ function registerMiddleware(ctx: Context, services: SecondClassContext, service:
       }
       const message = error instanceof CampusAuthUserError || error instanceof CampusOwnerError ? error.message : '二课功能处理失败，请稍后重试。';
       if (!(error instanceof CampusAuthUserError) && !(error instanceof CampusOwnerError)) logger.warn('second-class command failed: %s', error instanceof Error ? error.message : String(error));
-      await reply(services.nativeFeatureChat, session, command, text, message, `二课功能未完成：${message}`, false, command.kind !== 'confirm');
+      await reply(services.nativeFeatureChat, session, command, text, message, `二课功能未完成：${message}`, false, !['confirm', 'sign_in', 'sign_out'].includes(command.kind));
     }
   });
 }
@@ -183,7 +194,9 @@ type SecondClassCommand =
   | { kind: 'transcript'; semester?: string }
   | { kind: 'radar' }
   | { kind: 'activities' }
-  | { kind: 'records' };
+  | { kind: 'records' }
+  | { kind: 'sign_in'; code: string }
+  | { kind: 'sign_out'; code: string };
 
 export function parseSecondClassCommand(text: string): SecondClassCommand | null {
   if (text === '二课') return { kind: 'menu' };
@@ -202,6 +215,10 @@ export function parseSecondClassCommand(text: string): SecondClassCommand | null
   if (text === '二课雷达') return { kind: 'radar' };
   if (text === '二课活动') return { kind: 'activities' };
   if (text === '二课记录') return { kind: 'records' };
+  const signIn = text.match(/^二课签到\s+(\d{6})$/);
+  if (signIn?.[1]) return { kind: 'sign_in', code: signIn[1] };
+  const signOut = text.match(/^二课签退\s+(\d{6})$/);
+  if (signOut?.[1]) return { kind: 'sign_out', code: signOut[1] };
   return null;
 }
 
@@ -293,7 +310,7 @@ function buildCapabilityReference(session: Session, runtime: RuntimeConfig): str
     '- 账号：“二课绑定”、“二课确认 <6位确认码>”、“二课状态”、“二课解绑”。',
     '- 续登：“二课验证”获取验证码图片，“二课验证 <验证码>”提交。',
     '- 查询：“二课学分”、“二课成绩单 [学期]”、“二课雷达”、“二课活动”、“二课记录”。',
-    '- 只读功能，不执行报名、取消、签到或签退。',
+    '- 签到：“二课签到 <6位签到码>”、“二课签退 <6位签到码>”；签到码仅在私聊提交，定位活动会返回一次性确认链接。',
   ].join('\n');
 }
 
@@ -322,7 +339,11 @@ async function reply(
     commandId: command.kind,
     userText: command.kind === 'confirm'
       ? '二课确认 <确认码已隐藏>'
-      : command.kind === 'reauth_submit' ? '二课验证 <验证码已隐藏>' : text,
+      : command.kind === 'reauth_submit'
+        ? '二课验证 <验证码已隐藏>'
+        : command.kind === 'sign_in'
+          ? '二课签到 <签到码已隐藏>'
+          : command.kind === 'sign_out' ? '二课签退 <签到码已隐藏>' : text,
     reply: content,
     summary,
     success,

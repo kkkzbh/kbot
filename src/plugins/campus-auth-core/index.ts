@@ -3,6 +3,7 @@ import type { CampusAuthServiceLike } from '../../types/campus-auth.js';
 import '../../types/campus-auth.js';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
 import { renderCampusBindPage } from './bind-page.js';
+import { renderCampusLocationActionPage } from './action-page.js';
 import { CampusAuthService } from './service.js';
 import { ensureCampusAuthTables, CampusAuthStore } from './store.js';
 import type { CampusAuthDatabase, CampusAuthMethod } from './types.js';
@@ -17,12 +18,16 @@ export const inject = ['server', 'database'] as const;
 const logger = new Logger(name);
 const DEFAULT_BIND_PAGE_PATH = '/campus/bind';
 const DEFAULT_BIND_TOKEN_TTL_MS = 600_000;
+const DEFAULT_ACTION_PAGE_PATH = '/campus/action';
+const DEFAULT_ACTION_TOKEN_TTL_MS = 300_000;
 const DEFAULT_MAX_BINDING_ATTEMPTS = 5;
 
 export interface Config {
   publicBaseUrl?: string;
   bindPagePath?: string;
   bindTokenTtlMs?: number;
+  actionPagePath?: string;
+  actionTokenTtlMs?: number;
   credentialKekPath?: string;
   maxBindingAttempts?: number;
 }
@@ -31,6 +36,8 @@ export const Config: Schema<Config> = Schema.object({
   publicBaseUrl: Schema.string().description('校园账号绑定页的外部 HTTPS 基础地址。'),
   bindPagePath: Schema.string().default(DEFAULT_BIND_PAGE_PATH).description('统一校园账号绑定页路径。'),
   bindTokenTtlMs: Schema.natural().role('time').default(DEFAULT_BIND_TOKEN_TTL_MS).description('一次性绑定链接有效期。'),
+  actionPagePath: Schema.string().default(DEFAULT_ACTION_PAGE_PATH).description('统一校园定位操作页路径。'),
+  actionTokenTtlMs: Schema.natural().role('time').default(DEFAULT_ACTION_TOKEN_TTL_MS).description('一次性定位操作链接有效期。'),
   credentialKekPath: Schema.string().description('校园账号凭据 KEK 文件路径，权限必须为 0600。'),
   maxBindingAttempts: Schema.natural().default(DEFAULT_MAX_BINDING_ATTEMPTS).description('单个绑定链接最多允许的验证次数。'),
 });
@@ -48,6 +55,9 @@ export function apply(ctx: Context, config: Config): void {
   const bindPagePath = requireAbsolutePath(config.bindPagePath ?? DEFAULT_BIND_PAGE_PATH, 'campus-auth-core.bindPagePath');
   const publicBaseUrl = normalizeBaseUrl(config.publicBaseUrl ?? `http://127.0.0.1:${process.env.KOISHI_PORT || '5140'}`);
   const bindTokenTtlMs = positiveInteger(config.bindTokenTtlMs ?? DEFAULT_BIND_TOKEN_TTL_MS, 'campus-auth-core.bindTokenTtlMs');
+  const actionPagePath = requireAbsolutePath(config.actionPagePath ?? DEFAULT_ACTION_PAGE_PATH, 'campus-auth-core.actionPagePath');
+  const actionTokenTtlMs = positiveInteger(config.actionTokenTtlMs ?? DEFAULT_ACTION_TOKEN_TTL_MS, 'campus-auth-core.actionTokenTtlMs');
+  if (actionPagePath === bindPagePath) throw new Error('campus-auth-core.actionPagePath 不能与 bindPagePath 相同。');
   const maxBindingAttempts = positiveInteger(config.maxBindingAttempts ?? DEFAULT_MAX_BINDING_ATTEMPTS, 'campus-auth-core.maxBindingAttempts');
   const baseDir = String((ctx as { baseDir?: string }).baseDir ?? process.cwd());
   const kekPath = resolveKekPath(baseDir, config.credentialKekPath ?? './.runtime/campus-auth/credential-kek.key');
@@ -56,12 +66,13 @@ export function apply(ctx: Context, config: Config): void {
   const service = new CampusAuthService(
     new CampusAuthStore(serviceCtx.database),
     loadOrCreateKek(kekPath),
-    { publicBaseUrl, bindPagePath, bindTokenTtlMs, maxBindingAttempts },
+    { publicBaseUrl, bindPagePath, bindTokenTtlMs, actionPagePath, actionTokenTtlMs, maxBindingAttempts },
   );
   provideService(ctx, service);
-  registerRoutes(serviceCtx, service, bindPagePath);
+  registerRoutes(serviceCtx, service, bindPagePath, actionPagePath);
   ctx.on?.('ready', () => service.cleanupExpiredChallenges());
   logger.info('campus auth bind page registered at %s.', bindPagePath);
+  logger.info('campus location action page registered at %s.', actionPagePath);
 }
 
 function provideService(ctx: Context, service: CampusAuthServiceLike): void {
@@ -77,7 +88,7 @@ function provideService(ctx: Context, service: CampusAuthServiceLike): void {
   }
 }
 
-function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bindPagePath: string): void {
+function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bindPagePath: string, actionPagePath: string): void {
   ctx.server.get(bindPagePath, async (koaCtx: any) => {
     const token = queryToken(koaCtx);
     try {
@@ -138,6 +149,50 @@ function registerRoutes(ctx: CampusAuthContext, service: CampusAuthService, bind
       }
     }
   });
+
+  ctx.server.get(actionPagePath, async (koaCtx: any) => {
+    const token = queryToken(koaCtx);
+    try {
+      const state = await service.resolveLocationActionPage(token);
+      writeHtml(koaCtx, 200, renderCampusLocationActionPage({
+        providerLabel: state.provider.label,
+        token,
+        preparePath: `${actionPagePath}/prepare`,
+        commitPath: `${actionPagePath}/commit`,
+        state: state.state,
+        prepared: state.prepared,
+        message: state.state === 'completed' ? state.challenge.resultMessage ?? undefined : state.challenge.errorMessage ?? undefined,
+      }));
+    } catch (error) {
+      writeHtml(koaCtx, 400, renderCampusLocationActionPage({
+        providerLabel: '校园活动',
+        state: 'invalid',
+        message: userMessage(error, '定位操作页面加载失败，请稍后重试。'),
+      }));
+    }
+  });
+
+  ctx.server.post(`${actionPagePath}/prepare`, async (koaCtx: any) => {
+    const body = await readRequestBody(koaCtx);
+    const token = String(body.token ?? '').trim();
+    try {
+      await service.prepareLocationAction(token, parseLocation(body));
+    } catch (error) {
+      if (!(error instanceof CampusAuthUserError)) logger.warn('campus action prepare route failed: %s', error instanceof Error ? error.message : String(error));
+    }
+    writeRedirect(koaCtx, `${actionPagePath}?token=${encodeURIComponent(token)}`);
+  });
+
+  ctx.server.post(`${actionPagePath}/commit`, async (koaCtx: any) => {
+    const body = await readRequestBody(koaCtx);
+    const token = String(body.token ?? '').trim();
+    try {
+      await service.commitLocationAction(token, parseLocation(body));
+    } catch (error) {
+      if (!(error instanceof CampusAuthUserError)) logger.warn('campus action commit route failed: %s', error instanceof Error ? error.message : String(error));
+    }
+    writeRedirect(koaCtx, `${actionPagePath}?token=${encodeURIComponent(token)}`);
+  });
 }
 
 function queryToken(koaCtx: any): string {
@@ -171,17 +226,25 @@ async function readRequestBody(koaCtx: any): Promise<Record<string, unknown>> {
   for await (const chunk of stream) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > 65_536) throw new CampusAuthUserError('绑定请求内容过大。');
+    if (size > 65_536) throw new CampusAuthUserError('请求内容过大。');
     chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
   return Object.fromEntries(new URLSearchParams(raw));
 }
 
-function userMessage(error: unknown): string {
+function userMessage(error: unknown, fallback = '绑定处理失败，请稍后重试。'): string {
   if (error instanceof CampusAuthUserError) return error.message;
   logger.warn('campus auth route failed: %s', error instanceof Error ? error.message : String(error));
-  return '绑定处理失败，请稍后重试。';
+  return fallback;
+}
+
+function parseLocation(body: Record<string, unknown>): { latitude: number; longitude: number; accuracy: number } {
+  return {
+    latitude: Number(body.latitude),
+    longitude: Number(body.longitude),
+    accuracy: Number(body.accuracy),
+  };
 }
 
 function requireAbsolutePath(value: string, key: string): string {
