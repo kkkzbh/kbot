@@ -1,4 +1,3 @@
-import QRCode from 'qrcode';
 import { describe, expect, it, vi } from 'vitest';
 import { ChaoxingOwnerCoordinator } from '../src/plugins/chaoxing/owner-coordinator.js';
 import {
@@ -66,7 +65,7 @@ describe('chaoxing activity-scoped sign actions', () => {
     expect(signService.execute).toHaveBeenCalledTimes(2);
   });
 
-  it('decodes a photographed dynamic QR and validates its activity binding', async () => {
+  it('requires an armed fast path and validates the decoded dynamic QR text', async () => {
     const store = createMemoryActionStore();
     const detected = makeDetectedSign('qrcode', { ifRefreshQr: true });
     const signService = {
@@ -76,10 +75,16 @@ describe('chaoxing activity-scoped sign actions', () => {
     const service = makeActionService(store, signService);
     const [link] = await service.createActions(identity, [detected]);
     const token = new URL(link!.link).searchParams.get('token')!;
-    const bytes = await QRCode.toBuffer('SIGNIN:aid=activity-1&source=15&Code=live-code&enc=live-enc', { type: 'png', width: 420 });
 
-    await service.submit(token, { image: { bytes, contentType: 'image/png', filename: 'qr.png' } });
+    await expect(service.submit(token, {
+      body: { qrText: 'SIGNIN:aid=activity-1&source=15&Code=live-code&enc=live-enc' },
+    })).rejects.toThrow('连续扫码准备已过期');
+    await expect(service.armQr(token)).resolves.toMatchObject({ armedAt: NOW, expiresAt: NOW + 120_000 });
+    await service.submit(token, {
+      body: { qrText: 'SIGNIN:aid=activity-1&source=15&Code=live-code&enc=live-enc' },
+    });
 
+    expect(signService.resolveDetectedSignForAction).toHaveBeenCalledTimes(1);
     expect(signService.execute).toHaveBeenCalledWith(identity, detected, {
       kind: 'qrcode', enc: 'live-enc', code: 'live-code', location: undefined,
     });
@@ -92,6 +97,8 @@ describe('chaoxing activity-scoped sign actions', () => {
     const html = renderChaoxingSignActionPage({
       token: 't'.repeat(43),
       submitPath: '/chaoxing/sign-action',
+      armPath: '/chaoxing/sign-action/arm',
+      qrDecoderPath: '/chaoxing/sign-action/qr-decoder-1.4.0.js',
       nonce: 'nonce-value',
       state: {
         action,
@@ -104,13 +111,19 @@ describe('chaoxing activity-scoped sign actions', () => {
     });
 
     expect(html).toContain('<video id="qr-video" autoplay playsinline muted>');
-    expect(html).toContain('打开后置摄像头');
-    expect(html).toContain('扫描当前画面并签到');
+    expect(html).toContain('开始连续扫码');
+    expect(html).toContain('二维码连续扫描器');
+    expect(html).toContain('识别成功会立即提交');
     expect(html).toContain('动态二维码');
     expect(html).toContain('河北大学坤舆园');
     expect(html).toContain('转发此签到链接');
     expect(html).toContain("navigator.mediaDevices?.getUserMedia");
+    expect(html).toContain('globalThis.BarcodeDetector');
+    expect(html).toContain('globalThis.jsQR');
+    expect(html).toContain('/chaoxing/sign-action/arm');
+    expect(html).toContain('src="/chaoxing/sign-action/qr-decoder-1.4.0.js"');
     expect(html).not.toContain('id="qr-image"');
+    expect(html).not.toContain('qr-camera-capture');
     expect(html).not.toContain(action.ownerKey);
     expect(html).not.toContain(action.qqUserId);
     expect(html).not.toContain(action.tokenHash);
@@ -121,6 +134,8 @@ describe('chaoxing activity-scoped sign actions', () => {
     const html = renderChaoxingSignActionPage({
       token: 't'.repeat(43),
       submitPath: '/chaoxing/sign-action',
+      armPath: '/chaoxing/sign-action/arm',
+      qrDecoderPath: '/chaoxing/sign-action/qr-decoder-1.4.0.js',
       nonce: 'nonce-value',
       state: {
         action: makeActionRow('gesture'),

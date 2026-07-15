@@ -365,6 +365,51 @@ describe('chaoxing local contracts', () => {
     });
   });
 
+  it('refreshes only the activity referenced by an armed sign action', async () => {
+    const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
+    const course = {
+      courseId: '100', classId: '200', cpi: '300', name: '签到测试课', className: '', teacherName: '', schoolName: '', imageUrl: '', state: 1, isRetired: 0,
+    };
+    const target = makeDetectedSign('qrcode', 'target-activity', 0).activity;
+    const other = makeDetectedSign('normal', 'other-activity', 0).activity;
+    const auth = {
+      ownerKey: identity.ownerKey, cookieJar: { cookies: [] },
+      profile: { uid: '1', puid: '2', fid: '3', name: '测试', schoolName: '学校', username: 'user', deviceCode: 'device' },
+      credentialVersion: 1,
+    };
+    const getSignInfo = vi.fn().mockResolvedValue({
+      info: {
+        otherId: '2', ifPhoto: false, ifNeedVCode: false, openCheckFaceFlag: false,
+        ifRefreshQr: true, locationText: '', locationLatitude: null, locationLongitude: null, locationRangeMeters: null,
+        startAt: null, endAt: null, raw: {},
+      },
+      cookieJar: { cookies: [] },
+    });
+    const getAttendInfo = vi.fn().mockResolvedValue({ attendance: { status: 0 }, cookieJar: { cookies: [] } });
+    const service = new ChaoxingSignService(
+      {
+        getAuthenticatedSession: vi.fn().mockResolvedValue(auth),
+        persistCookies: vi.fn().mockImplementation(async (current, cookieJar) => ({ ...current, cookieJar })),
+      } as never,
+      { listCourses: vi.fn().mockResolvedValue([course]) } as never,
+      {
+        getActivities: vi.fn().mockResolvedValue({ activities: [other, target], cookieJar: { cookies: [] } }),
+        getSignInfo,
+        getAttendInfo,
+      } as never,
+      {} as never,
+      { requestIntervalMs: 1_200 },
+    );
+
+    await expect(service.resolveDetectedSignForAction(identity, {
+      activityId: target.activityId, courseId: course.courseId, classId: course.classId,
+    })).resolves.toMatchObject({ activity: { activityId: target.activityId }, signType: 'qrcode' });
+    expect(getSignInfo).toHaveBeenCalledOnce();
+    expect(getSignInfo).toHaveBeenCalledWith({ cookies: [] }, target.activityId);
+    expect(getAttendInfo).toHaveBeenCalledOnce();
+    expect(getAttendInfo).toHaveBeenCalledWith({ cookies: [] }, target.activityId);
+  });
+
   it('requires official post-submit confirmation before reporting sign success', async () => {
     const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
     const auth = {

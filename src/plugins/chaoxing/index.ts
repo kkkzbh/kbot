@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { Context, Logger, Schema, type Fragment, type Session } from 'koishi';
 import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
 import '../../types/native-feature-chat.js';
@@ -32,6 +33,8 @@ export const inject = { required: ['server', 'database', 'nativeFeatureChat', 'p
 const logger = new Logger(name);
 const DEFAULT_BIND_PAGE_PATH = '/chaoxing/bind';
 const DEFAULT_SIGN_ACTION_PAGE_PATH = '/chaoxing/sign-action';
+const QR_DECODER_ASSET_NAME = 'qr-decoder-1.4.0.js';
+const QR_DECODER_SOURCE = readFileSync(require.resolve('jsqr'), 'utf8');
 
 export interface Config {
   bindPagePath?: string;
@@ -355,6 +358,8 @@ function registerWebRoutes(
   signAction: ChaoxingSignActionService,
   runtime: RuntimeConfig,
 ): void {
+  const qrArmPath = `${runtime.signActionPagePath}/arm`;
+  const qrDecoderPath = `${runtime.signActionPagePath}/${QR_DECODER_ASSET_NAME}`;
   ctx.server.get(runtime.bindPagePath, async (koaCtx: any) => {
     const token = requestToken(koaCtx);
     try {
@@ -405,6 +410,8 @@ function registerWebRoutes(
       writeHtml(koaCtx, 200, renderChaoxingSignActionPage({
         token,
         submitPath: runtime.signActionPagePath,
+        armPath: qrArmPath,
+        qrDecoderPath,
         nonce,
         state,
       }));
@@ -412,9 +419,27 @@ function registerWebRoutes(
       writeHtml(koaCtx, 400, renderChaoxingSignActionPage({
         token: '',
         submitPath: runtime.signActionPagePath,
+        armPath: qrArmPath,
+        qrDecoderPath,
         nonce,
         message: actionErrorMessage(error),
       }));
+    }
+  });
+  ctx.server.get(qrDecoderPath, (koaCtx: any) => {
+    koaCtx.status = 200;
+    koaCtx.set('content-type', 'application/javascript; charset=utf-8');
+    koaCtx.set('cache-control', 'public, max-age=31536000, immutable');
+    koaCtx.set('x-content-type-options', 'nosniff');
+    koaCtx.body = QR_DECODER_SOURCE;
+  });
+  ctx.server.post(qrArmPath, async (koaCtx: any) => {
+    try {
+      const body = await readRequestBody(koaCtx);
+      const armed = await signAction.armQr(String(body.token ?? '').trim());
+      writeJson(koaCtx, 200, { ok: true, ...armed });
+    } catch (error) {
+      writeJson(koaCtx, 400, { ok: false, message: actionErrorMessage(error) });
     }
   });
   ctx.server.post(runtime.signActionPagePath, async (koaCtx: any) => {

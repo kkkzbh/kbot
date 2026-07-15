@@ -1,6 +1,4 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
-import jsQR from 'jsqr';
 import type { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
 import type { ChaoxingSignService, ChaoxingSignInput, ChaoxingSignType, DetectedSign } from './sign-service.js';
 import type { ChaoxingTaskStore } from './store.js';
@@ -12,9 +10,9 @@ import {
 } from './types.js';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_IMAGE_EDGE = 4096;
-const MAX_IMAGE_PIXELS = 16_000_000;
 const MAX_QR_TEXT_LENGTH = 4096;
+const QR_ARM_TTL_MS = 120_000;
+const QR_ARM_REFRESH_THRESHOLD_MS = 30_000;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const UNCERTAIN_ERROR_CODES = new Set(['sign_outcome_unknown', 'sign_verification_failed']);
 
@@ -49,6 +47,11 @@ export interface ChaoxingSignActionPageState {
   metadata: ChaoxingSignActionMetadata;
 }
 
+export interface ChaoxingQrArmState {
+  armedAt: number;
+  expiresAt: number;
+}
+
 export interface ChaoxingSignActionSubmission {
   body?: Record<string, unknown>;
   image?: {
@@ -59,6 +62,8 @@ export interface ChaoxingSignActionSubmission {
 }
 
 export class ChaoxingSignActionService {
+  private readonly armedQrActions = new Map<number, { detected: DetectedSign; armedAt: number; expiresAt: number }>();
+
   constructor(
     private readonly store: ChaoxingTaskStore,
     private readonly signService: ChaoxingSignService,
@@ -79,6 +84,29 @@ export class ChaoxingSignActionService {
     return { action, metadata: parseMetadata(action.metadataJson) };
   }
 
+  async armQr(token: string): Promise<ChaoxingQrArmState> {
+    const action = await this.requireAction(token);
+    if (action.status !== 'created') throw new ChaoxingUserError('这个签到链接正在处理或已经失效。');
+    if (action.signType !== 'qrcode') throw new ChaoxingUserError('这个链接不属于二维码签到。');
+    return this.coordinator.run(action.ownerKey, async () => {
+      const now = this.now();
+      const cached = this.armedQrActions.get(action.id);
+      if (cached && cached.expiresAt - now > QR_ARM_REFRESH_THRESHOLD_MS) {
+        return { armedAt: cached.armedAt, expiresAt: cached.expiresAt };
+      }
+      this.armedQrActions.delete(action.id);
+      const detected = await this.signService.resolveDetectedSignForAction(actionIdentity(action), action);
+      if (detected.signType !== 'qrcode') throw new ChaoxingUserError('签到活动类型已经变化，请重新获取链接。');
+      assertActionSupported(detected);
+      const current = await this.requireAction(token);
+      if (current.id !== action.id || current.status !== 'created') throw new ChaoxingUserError('这个签到链接正在处理或已经失效。');
+      const armedAt = this.now();
+      const expiresAt = Math.min(current.expiresAt, armedAt + QR_ARM_TTL_MS);
+      this.armedQrActions.set(action.id, { detected, armedAt, expiresAt });
+      return { armedAt, expiresAt };
+    });
+  }
+
   async submit(token: string, submission: ChaoxingSignActionSubmission): Promise<ChaoxingSignActionPageState> {
     const action = await this.requireAction(token);
     if (action.status === 'completed' || action.status === 'uncertain') {
@@ -92,17 +120,21 @@ export class ChaoxingSignActionService {
     try {
       const result = await this.coordinator.run(claimed.ownerKey, async () => {
         const identity = actionIdentity(claimed);
-        const detected = await this.signService.resolveDetectedSignForAction(identity, claimed);
+        const detected = claimed.signType === 'qrcode'
+          ? this.requireArmedQr(claimed)
+          : await this.signService.resolveDetectedSignForAction(identity, claimed);
         if (detected.signType !== claimed.signType) throw new ChaoxingUserError('签到活动类型已经变化，请重新获取链接。');
         const input = await buildSignInput(detected, submission);
         return this.signService.execute(identity, detected, input);
       });
       const completed = await this.store.completeSignAction(claimed.id, attemptId, result.message, this.now());
       if (!completed) throw new Error('sign action completion lost ownership');
+      this.armedQrActions.delete(claimed.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof ChaoxingProtocolError && UNCERTAIN_ERROR_CODES.has(error.code)) {
         await this.store.finishSignActionUncertain(claimed.id, attemptId, message, this.now());
+        this.armedQrActions.delete(claimed.id);
       } else {
         await this.store.releaseSignAction(claimed.id, attemptId, message, this.now());
       }
@@ -111,6 +143,19 @@ export class ChaoxingSignActionService {
     const completedAction = await this.store.findSignActionByTokenHash(hashToken(token));
     if (!completedAction) throw new Error('completed sign action disappeared');
     return { action: completedAction, metadata: parseMetadata(completedAction.metadataJson) };
+  }
+
+  private requireArmedQr(action: ChaoxingSignAction): DetectedSign {
+    const armed = this.armedQrActions.get(action.id);
+    if (!armed || armed.expiresAt <= this.now()) {
+      this.armedQrActions.delete(action.id);
+      throw new ChaoxingUserError('连续扫码准备已过期，请点击“开始连续扫码”重新准备。');
+    }
+    if (armed.detected.activity.activityId !== action.activityId || armed.detected.signType !== action.signType) {
+      this.armedQrActions.delete(action.id);
+      throw new Error('armed QR action does not match its activity');
+    }
+    return armed.detected;
   }
 
   private async createAction(identity: OwnerIdentity, sign: DetectedSign): Promise<ChaoxingSignActionLink> {
@@ -205,9 +250,7 @@ async function buildSignInput(detected: DetectedSign, submission: ChaoxingSignAc
     return { kind: 'photo', ...image };
   }
   if (detected.signType === 'qrcode') {
-    const qrText = submission.image
-      ? await decodeQrImage(requireImage(submission.image).bytes)
-      : requiredText(submission.body?.qrText, '请扫描或粘贴教师当前展示的二维码。', MAX_QR_TEXT_LENGTH);
+    const qrText = requiredText(submission.body?.qrText, '请扫描或粘贴教师当前展示的二维码。', MAX_QR_TEXT_LENGTH);
     const qr = parseSignQrPayload(qrText, detected.activity.activityId);
     const location = signMetadata(detected).targetLocation ? browserLocation(submission.body) : undefined;
     return { kind: 'qrcode', ...qr, location };
@@ -235,26 +278,6 @@ function qrParameters(text: string): URLSearchParams {
     if (text.includes('=') && text.includes('&')) return new URLSearchParams(text);
     throw new ChaoxingUserError('无法识别二维码内容。');
   }
-}
-
-async function decodeQrImage(bytes: Uint8Array): Promise<string> {
-  let image: Awaited<ReturnType<typeof loadImage>>;
-  try {
-    image = await loadImage(bytes);
-  } catch {
-    throw new ChaoxingUserError('无法读取二维码图片，请重新拍摄清晰画面。');
-  }
-  if (image.width < 1 || image.height < 1 || image.width > MAX_IMAGE_EDGE || image.height > MAX_IMAGE_EDGE
-    || image.width * image.height > MAX_IMAGE_PIXELS) {
-    throw new ChaoxingUserError('二维码图片尺寸无效或过大。');
-  }
-  const canvas = createCanvas(image.width, image.height);
-  const context = canvas.getContext('2d');
-  context.drawImage(image, 0, 0);
-  const pixels = context.getImageData(0, 0, image.width, image.height);
-  const decoded = jsQR(pixels.data, image.width, image.height, { inversionAttempts: 'attemptBoth' });
-  if (!decoded?.data) throw new ChaoxingUserError('图片中没有识别到二维码，请靠近二维码重新拍摄。');
-  return decoded.data;
 }
 
 function requireImage(image: ChaoxingSignActionSubmission['image']): NonNullable<ChaoxingSignActionSubmission['image']> {

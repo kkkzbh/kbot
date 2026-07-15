@@ -4,6 +4,8 @@ import { signTypeLabel, type ChaoxingSignType } from '../sign-service.js';
 export interface RenderChaoxingSignActionPageProps {
   token: string;
   submitPath: string;
+  armPath: string;
+  qrDecoderPath: string;
   nonce: string;
   state?: ChaoxingSignActionPageState;
   message?: string;
@@ -19,7 +21,10 @@ export function renderChaoxingSignActionPage(props: RenderChaoxingSignActionPage
   const clientConfig = JSON.stringify({
     token: props.token,
     submitPath: props.submitPath,
+    armPath: props.armPath,
+    activityId: action?.activityId ?? '',
     signType: action?.signType ?? '',
+    dynamicQr: Boolean(metadata?.dynamicQr),
     needsLocation: Boolean(metadata?.targetLocation && action?.signType === 'qrcode'),
   }).replace(/</gu, '\\u003c');
 
@@ -37,7 +42,7 @@ export function renderChaoxingSignActionPage(props: RenderChaoxingSignActionPage
     header{padding:24px 24px 20px;background:linear-gradient(135deg,#1c5ddd,#337cf5);color:#fff}.eyebrow{font-size:13px;opacity:.82;letter-spacing:.08em}.title{font-size:25px;font-weight:750;margin:8px 0 4px;overflow-wrap:anywhere}.course{font-size:14px;opacity:.88}.body{padding:22px 24px 26px}.row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}.pill{font-size:13px;padding:6px 10px;border-radius:999px;background:var(--soft);color:#285cae}.deadline{color:var(--muted);font-size:13px;padding-top:7px}
     .notice,.target,.status{border-radius:14px;padding:13px 14px;font-size:14px;line-height:1.55;margin:14px 0}.notice{background:#fff7e8;color:#7c4700;border:1px solid #f3d39d}.target{background:#f1f7ff;color:#244a7c;border:1px solid #cfe0fa}.status{background:#f5f7fb;border:1px solid var(--line);color:var(--ink)}.status.error{background:#fff2f0;border-color:#ffc9c2;color:var(--bad)}
     label{display:block;font-weight:650;margin:18px 0 8px}input[type=text],textarea{width:100%;border:1px solid #cbd5e4;border-radius:13px;padding:13px 14px;font:inherit;color:var(--ink);background:#fff}textarea{min-height:88px;resize:vertical}.file{display:block;width:100%;padding:15px;border:1px dashed #9cb5d8;border-radius:14px;background:#f8fbff}
-    .camera{margin-top:16px;padding:14px;border:1px solid var(--line);border-radius:16px;background:#0d1422}.camera video{display:block;width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:12px;background:#070b12}.camera canvas{display:none}.camera-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.camera-actions button{margin-top:10px}.camera-actions .wide{grid-column:1/-1}
+    .camera{position:relative;margin-top:16px;padding:14px;border:1px solid var(--line);border-radius:16px;background:#0d1422}.camera video{display:block;width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:12px;background:#070b12}.camera canvas{display:none}.scan-frame{position:absolute;inset:12% 13% 25%;border:3px solid rgba(111,192,255,.9);border-radius:20px;box-shadow:0 0 0 999px rgba(4,9,18,.28);pointer-events:none}.scan-frame::after{content:"";position:absolute;left:8%;right:8%;top:50%;height:2px;background:#4dd4ff;box-shadow:0 0 10px #4dd4ff}.camera-status{display:block;margin:10px 2px 0;color:#d7e7ff;font-size:13px;line-height:1.5;text-align:center}.camera-actions{display:grid;grid-template-columns:2fr 1fr;gap:10px}.camera-actions button{margin-top:10px}
     .gesture-board{display:block;width:min(100%,360px);margin:16px auto 8px;border-radius:20px;background:linear-gradient(145deg,#f2f6fd,#e5edf9);touch-action:none;user-select:none}.gesture-board line{stroke:var(--blue);stroke-width:14;stroke-linecap:round;opacity:.68}.gesture-board circle{fill:#fff;stroke:#8096b8;stroke-width:5}.gesture-board circle.selected{fill:var(--blue);stroke:#164fae}.gesture-board text{font-size:22px;font-weight:750;fill:#58708f;text-anchor:middle;dominant-baseline:central;pointer-events:none}.gesture-board circle.selected+text{fill:#fff}.gesture-sequence{display:block;min-height:24px;text-align:center;color:var(--muted);font-size:14px}.gesture-actions{display:grid;grid-template-columns:1fr 2fr;gap:10px}.gesture-actions button{margin-top:10px}
     button{width:100%;border:0;border-radius:14px;padding:14px 16px;font:inherit;font-weight:700;cursor:pointer;background:var(--blue);color:#fff;margin-top:12px}button:hover{background:var(--blue2)}button.secondary{background:#edf2fa;color:#29466d}button:disabled{opacity:.56;cursor:wait}.hint{color:var(--muted);font-size:13px;line-height:1.6;margin:9px 0}.terminal{text-align:center;padding:22px 2px}.terminal .mark{font-size:42px}.footer{margin-top:18px;color:var(--muted);font-size:12px;line-height:1.65;text-align:center}
   </style>
@@ -57,6 +62,7 @@ export function renderChaoxingSignActionPage(props: RenderChaoxingSignActionPage
   </section>
   <div class="footer">服务端会实时复查活动、提交签到，并以学习通官方签到状态确认结果。链接只对应当前活动，成功后自动失效。</div>
 </main>
+${active && action?.signType === 'qrcode' ? `<script nonce="${escapeHtml(props.nonce)}" src="${escapeHtml(props.qrDecoderPath)}"></script>` : ''}
 <script nonce="${escapeHtml(props.nonce)}">
 const cfg=${clientConfig};
 const statusBox=document.getElementById('status');
@@ -84,34 +90,110 @@ async function submitImage(file,location){
   const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'签到提交失败。');return data;
 }
 let cameraStream=null;
+let cameraLocation=null;
+let qrDecoder=null;
+let scannerRunning=false;
+let scannerSession=0;
+let armRefreshTimer=0;
 const cameraVideo=document.getElementById('qr-video');
 const cameraCanvas=document.getElementById('qr-canvas');
 const cameraStart=document.getElementById('qr-camera-start');
-const cameraCapture=document.getElementById('qr-camera-capture');
 const cameraStop=document.getElementById('qr-camera-stop');
-function syncCameraControls(){if(cameraStart)cameraStart.disabled=pageBusy||Boolean(cameraStream);if(cameraCapture)cameraCapture.disabled=pageBusy||!cameraStream;if(cameraStop)cameraStop.disabled=pageBusy||!cameraStream}
-function stopCamera(){if(cameraStream){cameraStream.getTracks().forEach(track=>track.stop());cameraStream=null}if(cameraVideo)cameraVideo.srcObject=null;syncCameraControls()}
+const cameraStatus=document.getElementById('qr-camera-status');
+const wait=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+function syncCameraControls(){if(cameraStart){cameraStart.disabled=pageBusy||scannerRunning;cameraStart.textContent=cameraStream?'继续连续扫码':'开始连续扫码'}if(cameraStop)cameraStop.disabled=pageBusy||!cameraStream}
+function stopScanner(){scannerRunning=false;scannerSession+=1;if(armRefreshTimer)clearTimeout(armRefreshTimer);armRefreshTimer=0}
+function stopCamera(){stopScanner();if(cameraStream){cameraStream.getTracks().forEach(track=>track.stop());cameraStream=null}if(cameraVideo)cameraVideo.srcObject=null;cameraLocation=null;qrDecoder=null;syncCameraControls()}
+async function armQrScanner(){
+  const response=await fetch(cfg.armPath,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:cfg.token})});
+  const data=await response.json();
+  if(!response.ok||!data.ok)throw new Error(data.message||'二维码签到准备失败。');
+  if(armRefreshTimer)clearTimeout(armRefreshTimer);
+  const refreshAfter=Math.max(10000,Number(data.expiresAt)-Date.now()-30000);
+  armRefreshTimer=setTimeout(()=>{if(cameraStream)void armQrScanner().catch(error=>{stopScanner();show(error instanceof Error?error.message:String(error),true);syncCameraControls()})},refreshAfter);
+}
+function localQrDecoder(){
+  if(typeof globalThis.jsQR!=='function')throw new Error('当前浏览器无法加载本地二维码识别器。');
+  return {kind:'local',label:'网页本地识别',async detect(){
+    if(!cameraVideo.videoWidth||!cameraVideo.videoHeight)return '';
+    const scale=Math.min(1,960/Math.max(cameraVideo.videoWidth,cameraVideo.videoHeight));
+    cameraCanvas.width=Math.max(1,Math.round(cameraVideo.videoWidth*scale));
+    cameraCanvas.height=Math.max(1,Math.round(cameraVideo.videoHeight*scale));
+    const context=cameraCanvas.getContext('2d',{willReadFrequently:true});
+    context.drawImage(cameraVideo,0,0,cameraCanvas.width,cameraCanvas.height);
+    const pixels=context.getImageData(0,0,cameraCanvas.width,cameraCanvas.height);
+    return globalThis.jsQR(pixels.data,pixels.width,pixels.height,{inversionAttempts:'dontInvert'})?.data||'';
+  }};
+}
+async function selectQrDecoder(){
+  try{if(typeof globalThis.BarcodeDetector==='function'&&typeof globalThis.BarcodeDetector.getSupportedFormats==='function'){
+    const formats=await globalThis.BarcodeDetector.getSupportedFormats();
+    if(formats.includes('qr_code')){const detector=new globalThis.BarcodeDetector({formats:['qr_code']});return {kind:'native',label:'系统原生识别',async detect(){return (await detector.detect(cameraVideo))[0]?.rawValue||''}}}
+  }}catch{const decoder=localQrDecoder();decoder.label='网页本地识别（系统接口初始化失败）';return decoder}
+  return localQrDecoder();
+}
+function qrParameters(text){
+  if(/^SIGNIN:/iu.test(text))return new URLSearchParams(text.slice(text.indexOf(':')+1));
+  try{return new URL(text).searchParams}catch{return new URLSearchParams(text)}
+}
+function matchingQrText(text){
+  const params=qrParameters(text.trim());
+  const activityId=['activeId','activityId','aid','id'].map(name=>params.get(name)?.trim()).find(Boolean);
+  const enc=params.get('enc')?.trim();
+  const code=(params.get('Code')||params.get('code'))?.trim();
+  return Boolean(enc&&(!activityId||activityId===cfg.activityId)&&(!cfg.dynamicQr||code));
+}
+async function submitScannedQr(qrText){
+  stopScanner();
+  busy(true);
+  show('已识别本次活动二维码，正在立即提交。',false);
+  try{
+    const data=await submitJson({qrText,...(cameraLocation||{})});
+    stopCamera();show(data.message||'签到完成。',false);setTimeout(()=>location.reload(),800);
+  }catch(error){show(error instanceof Error?error.message:String(error),true);busy(false)}
+}
+async function scanCamera(session){
+  while(scannerRunning&&session===scannerSession&&cameraStream){
+    try{
+      const qrText=await qrDecoder.detect();
+      if(!scannerRunning||session!==scannerSession||!cameraStream)return;
+      if(qrText&&matchingQrText(qrText)){await submitScannedQr(qrText);return}
+    }catch(error){
+      if(qrDecoder?.kind==='native'){
+        qrDecoder=localQrDecoder();
+        cameraStatus.textContent='原生识别不可用，已切换到网页本地连续识别。';
+        continue;
+      }
+      stopScanner();show(error instanceof Error?error.message:String(error),true);syncCameraControls();return;
+    }
+    await wait(90);
+  }
+}
 async function startCamera(){
   if(!navigator.mediaDevices?.getUserMedia)throw new Error('当前浏览器无法直接调用摄像头，请使用支持 HTTPS 摄像头权限的浏览器。');
   stopCamera();
   try{
-    cameraStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'}}});
+    cameraStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
     cameraVideo.srcObject=cameraStream;
     await cameraVideo.play();
-    syncCameraControls();
+    const [decoder,location]=await Promise.all([selectQrDecoder(),cfg.needsLocation?currentLocation():Promise.resolve(null),armQrScanner()]);
+    qrDecoder=decoder;
+    cameraLocation=location;
   }catch(error){
     stopCamera();
     if(error?.name==='NotAllowedError')throw new Error('摄像头权限被拒绝，请在浏览器设置中允许后重试。');
     if(error?.name==='NotFoundError')throw new Error('没有检测到可用摄像头。');
+    if(error instanceof Error)throw error;
     throw new Error('无法启动摄像头，请检查浏览器权限和设备占用情况。');
   }
 }
-async function captureCameraFrame(){
-  if(!cameraStream||!cameraVideo?.videoWidth||!cameraVideo?.videoHeight)throw new Error('摄像头画面尚未准备好，请稍候重试。');
-  cameraCanvas.width=cameraVideo.videoWidth;
-  cameraCanvas.height=cameraVideo.videoHeight;
-  cameraCanvas.getContext('2d').drawImage(cameraVideo,0,0,cameraCanvas.width,cameraCanvas.height);
-  return await new Promise((resolve,reject)=>cameraCanvas.toBlob(blob=>blob?resolve(blob):reject(new Error('无法读取当前摄像头画面。')),'image/jpeg',.92));
+function beginCameraScan(){
+  if(!cameraStream||!qrDecoder)throw new Error('摄像头尚未准备好。');
+  scannerRunning=true;
+  const session=++scannerSession;
+  cameraStatus.textContent=qrDecoder.label+'已就绪；识别到本次活动二维码后会立即提交。';
+  syncCameraControls();
+  void scanCamera(session);
 }
 const gestureBoard=document.getElementById('gesture-board');
 const gestureLines=document.getElementById('gesture-lines');
@@ -153,10 +235,9 @@ gestureBoard?.addEventListener('pointermove',event=>{if(!gestureDrawing)return;e
 gestureBoard?.addEventListener('pointerup',event=>{if(!gestureDrawing)return;event.preventDefault();appendGesturePoint(gesturePointAt(event));gestureDrawing=false;gestureBoard.releasePointerCapture(event.pointerId)});
 gestureBoard?.addEventListener('pointercancel',()=>{gestureDrawing=false});
 document.getElementById('location-form')?.addEventListener('submit',event=>{event.preventDefault();void run(async()=>submitJson(await currentLocation()))});
-document.getElementById('qr-text-form')?.addEventListener('submit',event=>{event.preventDefault();void run(async()=>submitJson({qrText:document.getElementById('qr-text').value,...(cfg.needsLocation?await currentLocation():{})}))});
-cameraStart?.addEventListener('click',()=>{busy(true);show('正在请求摄像头权限。',false);void startCamera().then(()=>show('摄像头已开启，请将二维码完整放入画面。',false)).catch(error=>show(error instanceof Error?error.message:String(error),true)).finally(()=>{busy(false);syncCameraControls()})});
+document.getElementById('qr-text-form')?.addEventListener('submit',event=>{event.preventDefault();void run(async()=>{await armQrScanner();return submitJson({qrText:document.getElementById('qr-text').value,...(cfg.needsLocation?await currentLocation():{})})})});
+cameraStart?.addEventListener('click',()=>{busy(true);show(cameraStream?'正在恢复连续扫码准备。':'正在请求摄像头权限并预热签到链路。',false);const prepare=cameraStream?armQrScanner():startCamera();void prepare.then(()=>{busy(false);beginCameraScan();show('连续扫码已就绪，请保持二维码完整出现在蓝色框内。',false)}).catch(error=>{show(error instanceof Error?error.message:String(error),true);busy(false)})});
 cameraStop?.addEventListener('click',()=>{stopCamera();show('摄像头已关闭。',false)});
-cameraCapture?.addEventListener('click',()=>{void run(async()=>{const frame=await captureCameraFrame();const data=await submitImage(frame,cfg.needsLocation?await currentLocation():undefined);stopCamera();return data})});
 document.getElementById('photo-form')?.addEventListener('submit',event=>{event.preventDefault();void run(()=>submitImage(document.getElementById('photo').files[0]))});
 document.getElementById('share')?.addEventListener('click',async()=>{try{if(navigator.share)await navigator.share({title:document.title,url:location.href});else await navigator.clipboard.writeText(location.href);show('链接已准备好，可以发送给现场协助者。',false)}catch(error){if(error?.name!=='AbortError')show('无法自动复制，请从地址栏复制链接。',true)}});
 window.addEventListener('pagehide',stopCamera);
@@ -173,7 +254,7 @@ function actionForm(signType: ChaoxingSignType, dynamicQr: boolean): string {
   if (signType === 'location') return '<form id="location-form"><p class="hint">请由位于签到范围内的人打开本页。点击后浏览器会获取当前真实位置。</p><button type="submit">获取现场位置并签到</button></form>';
   if (signType === 'photo') return '<form id="photo-form"><label for="photo">现场照片</label><input class="file" id="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" required><p class="hint">照片会直接上传到绑定账号的学习通云盘并用于本次签到。</p><button type="submit">拍照并签到</button></form>';
   if (signType === 'qrcode') {
-    return `<p class="hint">${dynamicQr ? '这是动态二维码，请使用后置摄像头对准教师当前正在展示的码并立即提交。' : '请使用后置摄像头对准教师展示的签到二维码。'}</p><section class="camera" aria-label="二维码摄像头"><video id="qr-video" autoplay playsinline muted></video><canvas id="qr-canvas"></canvas><div class="camera-actions"><button id="qr-camera-start" type="button" class="wide">打开后置摄像头</button><button id="qr-camera-capture" type="button" disabled>扫描当前画面并签到</button><button id="qr-camera-stop" type="button" class="secondary" disabled>关闭摄像头</button></div></section><form id="qr-text-form"><label for="qr-text">粘贴二维码内容</label><textarea id="qr-text" maxlength="4096" placeholder="也可以粘贴扫码得到的完整 URL 或 SIGNIN 内容"></textarea><button type="submit" class="secondary">使用二维码内容签到</button></form>`;
+    return `<p class="hint">${dynamicQr ? '这是动态二维码。请提前启动连续扫码，教师展示新码后保持画面稳定；识别成功会立即提交。' : '请启动连续扫码并将教师展示的二维码完整放入蓝色框。'}</p><section class="camera" aria-label="二维码连续扫描器"><video id="qr-video" autoplay playsinline muted></video><canvas id="qr-canvas"></canvas><div class="scan-frame" aria-hidden="true"></div><output id="qr-camera-status" class="camera-status" aria-live="polite">摄像头尚未启动</output><div class="camera-actions"><button id="qr-camera-start" type="button">开始连续扫码</button><button id="qr-camera-stop" type="button" class="secondary" disabled>关闭摄像头</button></div></section><form id="qr-text-form"><label for="qr-text">粘贴二维码内容</label><textarea id="qr-text" maxlength="4096" placeholder="也可以粘贴扫码得到的完整 URL 或 SIGNIN 内容"></textarea><button type="submit" class="secondary">使用二维码内容签到</button></form>`;
   }
   return '<div class="terminal"><div class="mark">!</div><p>当前签到类型无法处理。</p></div>';
 }

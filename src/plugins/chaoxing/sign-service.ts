@@ -77,10 +77,25 @@ export class ChaoxingSignService {
     const courses = await this.catalogService.listCourses(identity);
     const course = courses.find((candidate) => candidate.courseId === reference.courseId && candidate.classId === reference.classId);
     if (!course) throw new ChaoxingUserError('签到链接对应的课程已不在当前账号中。');
-    const signs = filterPendingSigns(await this.scanCourses(identity, [course]));
-    const matched = signs.find((sign) => sign.activity.activityId === reference.activityId);
-    if (!matched) throw new ChaoxingUserError('这个签到已经完成、结束或不再可用。');
-    return matched;
+    let auth = await this.authService.getAuthenticatedSession(identity);
+    const activityResult = await this.client.getActivities(auth.cookieJar, course);
+    auth = await this.authService.persistCookies(auth, activityResult.cookieJar);
+    const activity = activityResult.activities.find((candidate) => (
+      candidate.activityId === reference.activityId && candidate.status === 1
+    ));
+    if (!activity) throw new ChaoxingUserError('这个签到已经完成、结束或不再可用。');
+    const infoResult = await this.client.getSignInfo(auth.cookieJar, activity.activityId);
+    auth = await this.authService.persistCookies(auth, infoResult.cookieJar);
+    const attendanceResult = await this.client.getAttendInfo(auth.cookieJar, activity.activityId);
+    await this.authService.persistCookies(auth, attendanceResult.cookieJar);
+    if (attendanceResult.attendance.status !== 0) throw new ChaoxingUserError('这个签到已经完成、结束或不再可用。');
+    return {
+      course,
+      activity,
+      info: infoResult.info,
+      signType: classifySignType(infoResult.info),
+      attendance: attendanceResult.attendance,
+    };
   }
 
   private async scanCourses(identity: OwnerIdentity, courses: ChaoxingCourse[]): Promise<DetectedSign[]> {
