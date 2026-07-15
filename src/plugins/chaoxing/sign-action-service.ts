@@ -266,7 +266,7 @@ export function parseSignQrPayload(raw: string, expectedActivityId: string): { e
   if (activityId && activityId !== expectedActivityId) throw new ChaoxingUserError('二维码属于另一个签到活动。');
   const enc = firstParam(params, ['enc']);
   if (!enc || enc.length > 1024) throw new ChaoxingUserError('二维码缺少有效的 enc 参数。');
-  const code = firstParam(params, ['Code', 'code']);
+  const code = firstParam(params, ['Code', 'code', 'c']);
   return { enc, ...(code ? { code } : {}) };
 }
 

@@ -81,14 +81,18 @@ describe('chaoxing activity-scoped sign actions', () => {
     })).rejects.toThrow('连续扫码准备已过期');
     await expect(service.armQr(token)).resolves.toMatchObject({ armedAt: NOW, expiresAt: NOW + 120_000 });
     await service.submit(token, {
-      body: { qrText: 'SIGNIN:aid=activity-1&source=15&Code=live-code&enc=live-enc' },
+      body: {
+        qrText: 'https://mobilelearn.chaoxing.com/widget/sign/e?id=activity-1&c=529773&enc=live-enc&DB_STRATEGY=PRIMARY_KEY&STRATEGY_PARA=id',
+      },
     });
 
     expect(signService.resolveDetectedSignForAction).toHaveBeenCalledTimes(1);
     expect(signService.execute).toHaveBeenCalledWith(identity, detected, {
-      kind: 'qrcode', enc: 'live-enc', code: 'live-code', location: undefined,
+      kind: 'qrcode', enc: 'live-enc', code: '529773', location: undefined,
     });
     expect(parseSignQrPayload('https://example.com/sign?activeId=activity-1&enc=e&Code=c', 'activity-1')).toEqual({ enc: 'e', code: 'c' });
+    expect(parseSignQrPayload('https://mobilelearn.chaoxing.com/widget/sign/e?id=activity-1&c=529773&enc=e', 'activity-1'))
+      .toEqual({ enc: 'e', code: '529773' });
     expect(() => parseSignQrPayload('SIGNIN:aid=other&enc=e', 'activity-1')).toThrow('另一个签到活动');
   });
 
@@ -120,6 +124,8 @@ describe('chaoxing activity-scoped sign actions', () => {
     expect(html).toContain("navigator.mediaDevices?.getUserMedia");
     expect(html).toContain('globalThis.BarcodeDetector');
     expect(html).toContain('globalThis.jsQR');
+    expect(html).toContain('粘贴官方签到链接');
+    expect(html).toContain('mobilelearn.chaoxing.com/widget/sign/e?id=...&c=...&enc=...');
     expect(html).toContain('/chaoxing/sign-action/arm');
     expect(html).toContain('src="/chaoxing/sign-action/qr-decoder-1.4.0.js"');
     expect(html).not.toContain('id="qr-image"');

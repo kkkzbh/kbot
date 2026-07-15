@@ -22,9 +22,6 @@ export function renderChaoxingSignActionPage(props: RenderChaoxingSignActionPage
     token: props.token,
     submitPath: props.submitPath,
     armPath: props.armPath,
-    activityId: action?.activityId ?? '',
-    signType: action?.signType ?? '',
-    dynamicQr: Boolean(metadata?.dynamicQr),
     needsLocation: Boolean(metadata?.targetLocation && action?.signType === 'qrcode'),
   }).replace(/</gu, '\\u003c');
 
@@ -132,21 +129,10 @@ async function selectQrDecoder(){
   }}catch{const decoder=localQrDecoder();decoder.label='网页本地识别（系统接口初始化失败）';return decoder}
   return localQrDecoder();
 }
-function qrParameters(text){
-  if(/^SIGNIN:/iu.test(text))return new URLSearchParams(text.slice(text.indexOf(':')+1));
-  try{return new URL(text).searchParams}catch{return new URLSearchParams(text)}
-}
-function matchingQrText(text){
-  const params=qrParameters(text.trim());
-  const activityId=['activeId','activityId','aid','id'].map(name=>params.get(name)?.trim()).find(Boolean);
-  const enc=params.get('enc')?.trim();
-  const code=(params.get('Code')||params.get('code'))?.trim();
-  return Boolean(enc&&(!activityId||activityId===cfg.activityId)&&(!cfg.dynamicQr||code));
-}
 async function submitScannedQr(qrText){
   stopScanner();
   busy(true);
-  show('已识别本次活动二维码，正在立即提交。',false);
+  show('已读取二维码内容，正在核验本次活动并立即提交。',false);
   try{
     const data=await submitJson({qrText,...(cameraLocation||{})});
     stopCamera();show(data.message||'签到完成。',false);setTimeout(()=>location.reload(),800);
@@ -157,7 +143,7 @@ async function scanCamera(session){
     try{
       const qrText=await qrDecoder.detect();
       if(!scannerRunning||session!==scannerSession||!cameraStream)return;
-      if(qrText&&matchingQrText(qrText)){await submitScannedQr(qrText);return}
+      if(qrText){await submitScannedQr(qrText);return}
     }catch(error){
       if(qrDecoder?.kind==='native'){
         qrDecoder=localQrDecoder();
@@ -254,7 +240,7 @@ function actionForm(signType: ChaoxingSignType, dynamicQr: boolean): string {
   if (signType === 'location') return '<form id="location-form"><p class="hint">请由位于签到范围内的人打开本页。点击后浏览器会获取当前真实位置。</p><button type="submit">获取现场位置并签到</button></form>';
   if (signType === 'photo') return '<form id="photo-form"><label for="photo">现场照片</label><input class="file" id="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" required><p class="hint">照片会直接上传到绑定账号的学习通云盘并用于本次签到。</p><button type="submit">拍照并签到</button></form>';
   if (signType === 'qrcode') {
-    return `<p class="hint">${dynamicQr ? '这是动态二维码。请提前启动连续扫码，教师展示新码后保持画面稳定；识别成功会立即提交。' : '请启动连续扫码并将教师展示的二维码完整放入蓝色框。'}</p><section class="camera" aria-label="二维码连续扫描器"><video id="qr-video" autoplay playsinline muted></video><canvas id="qr-canvas"></canvas><div class="scan-frame" aria-hidden="true"></div><output id="qr-camera-status" class="camera-status" aria-live="polite">摄像头尚未启动</output><div class="camera-actions"><button id="qr-camera-start" type="button">开始连续扫码</button><button id="qr-camera-stop" type="button" class="secondary" disabled>关闭摄像头</button></div></section><form id="qr-text-form"><label for="qr-text">粘贴二维码内容</label><textarea id="qr-text" maxlength="4096" placeholder="也可以粘贴扫码得到的完整 URL 或 SIGNIN 内容"></textarea><button type="submit" class="secondary">使用二维码内容签到</button></form>`;
+    return `<p class="hint">${dynamicQr ? '这是动态二维码。请提前启动连续扫码，教师展示新码后保持画面稳定；识别成功会立即提交。' : '请启动连续扫码并将教师展示的二维码完整放入蓝色框。'}</p><section class="camera" aria-label="二维码连续扫描器"><video id="qr-video" autoplay playsinline muted></video><canvas id="qr-canvas"></canvas><div class="scan-frame" aria-hidden="true"></div><output id="qr-camera-status" class="camera-status" aria-live="polite">摄像头尚未启动</output><div class="camera-actions"><button id="qr-camera-start" type="button">开始连续扫码</button><button id="qr-camera-stop" type="button" class="secondary" disabled>关闭摄像头</button></div></section><form id="qr-text-form"><label for="qr-text">粘贴官方签到链接</label><p class="hint">也可以使用系统相机或微信扫码；若能复制链接，请把完整的 mobilelearn.chaoxing.com 地址粘贴到这里。</p><textarea id="qr-text" maxlength="4096" placeholder="https://mobilelearn.chaoxing.com/widget/sign/e?id=...&c=...&enc=..."></textarea><button type="submit" class="secondary">使用官方链接签到</button></form>`;
   }
   return '<div class="terminal"><div class="mark">!</div><p>当前签到类型无法处理。</p></div>';
 }
