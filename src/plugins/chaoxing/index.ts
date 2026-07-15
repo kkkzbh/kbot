@@ -681,7 +681,7 @@ async function readRawBody(koaCtx: any, maximumBytes: number): Promise<Uint8Arra
 }
 
 function setSignActionSecurityHeaders(koaCtx: any, nonce: string): void {
-  koaCtx.set('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`);
+  koaCtx.set('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self' blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`);
   koaCtx.set('x-frame-options', 'DENY');
   koaCtx.set('referrer-policy', 'no-referrer');
   koaCtx.set('permissions-policy', 'camera=(self), geolocation=(self)');

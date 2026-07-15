@@ -103,14 +103,39 @@ describe('chaoxing activity-scoped sign actions', () => {
       },
     });
 
-    expect(html).toContain('扫描二维码');
+    expect(html).toContain('<video id="qr-video" autoplay playsinline muted>');
+    expect(html).toContain('打开后置摄像头');
+    expect(html).toContain('扫描当前画面并签到');
     expect(html).toContain('动态二维码');
     expect(html).toContain('河北大学坤舆园');
     expect(html).toContain('转发此签到链接');
-    expect(html).toContain('capture="environment"');
+    expect(html).toContain("navigator.mediaDevices?.getUserMedia");
+    expect(html).not.toContain('id="qr-image"');
     expect(html).not.toContain(action.ownerKey);
     expect(html).not.toContain(action.qqUserId);
     expect(html).not.toContain(action.tokenHash);
+    expect(() => new Function(inlineClientScript(html))).not.toThrow();
+  });
+
+  it('renders a drawable nine-point gesture board that submits the point sequence', () => {
+    const html = renderChaoxingSignActionPage({
+      token: 't'.repeat(43),
+      submitPath: '/chaoxing/sign-action',
+      nonce: 'nonce-value',
+      state: {
+        action: makeActionRow('gesture'),
+        metadata: { dynamicQr: false, targetLocation: null, activityEndAt: null },
+      },
+    });
+
+    expect(html).toContain('aria-label="九宫格手势板"');
+    expect(html).toContain('data-point="1"');
+    expect(html).toContain('data-point="9"');
+    expect(html).toContain('跨过中间圆点时会自动补入');
+    expect(html).toContain("signCode:gesturePattern.join('')");
+    expect(html).toContain('清除重画');
+    expect(html).toContain('校验手势并签到');
+    expect(html).not.toContain('id="sign-code"');
   });
 });
 
@@ -122,6 +147,12 @@ function makeActionService(store: ReturnType<typeof createMemoryActionStore>, si
     { publicBaseUrl: 'https://jw.example.com', actionPagePath: '/chaoxing/sign-action', actionTokenTtlMs: 600_000 },
     () => NOW,
   );
+}
+
+function inlineClientScript(html: string): string {
+  const match = html.match(/<script nonce="[^"]+">([\s\S]+)<\/script>/u);
+  expect(match).not.toBeNull();
+  return match![1]!;
 }
 
 function makeDetectedSign(signType: ChaoxingSignType, overrides: { ifRefreshQr?: boolean } = {}): DetectedSign {
