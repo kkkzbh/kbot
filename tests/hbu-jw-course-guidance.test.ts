@@ -8,7 +8,10 @@ import {
   selectNearestFreshTrainingPlan,
   type HbuJwGuidanceContext,
 } from '../src/plugins/hbu-jw/course-guidance.js';
-import { registerHbuJwCourseGuidanceTools } from '../src/plugins/hbu-jw/course-guidance-tools.js';
+import {
+  GuidanceRunRegistry,
+  registerHbuJwCourseGuidanceTools,
+} from '../src/plugins/hbu-jw/course-guidance-tools.js';
 import { HbuJwHttpClient } from '../src/plugins/hbu-jw/jw-client.js';
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
 import type {
@@ -24,24 +27,59 @@ import type {
 const EMPTY_JAR: SerializedCookieJar = { cookies: [] };
 
 describe('hbu-jw course guidance tool boundary', () => {
-  it('authorizes tools only while the explicit guidance session gate is active', () => {
-    const registered: Array<{ authorization: (session: { userId?: string }) => boolean }> = [];
-    const registerTool = vi.fn((_name: string, tool: { authorization: (session: { userId?: string }) => boolean }) => {
+  it('keeps one message-scoped run and enforces the context-offerings-validation state machine', async () => {
+    type ToolEntry = {
+      authorization: (session: Record<string, unknown>) => boolean;
+      createTool: () => {
+        _call: (input: unknown, manager: unknown, config: unknown) => Promise<string>;
+      };
+    };
+    const registered: ToolEntry[] = [];
+    const registerTool = vi.fn((_name: string, tool: ToolEntry) => {
       registered.push(tool);
       return () => undefined;
     });
-    let active = false;
+    const service = {
+      getContext: vi.fn(async () => ({ plan: { requiredCredits: 167 } })),
+      getOfferings: vi.fn(async () => ({ sections: [{ courseNumber: 'CS101' }] })),
+      validateRecommendation: vi.fn(async () => ({ valid: true })),
+    };
+    let now = 1_000;
+    const runs = new GuidanceRunRegistry(() => now);
     registerHbuJwCourseGuidanceTools(
       { chatluna: { platform: { registerTool } } } as never,
-      {} as never,
-      () => active,
+      service as never,
+      runs,
     );
+    const session = {
+      platform: 'onebot',
+      userId: '10001',
+      channelId: 'group:100',
+      messageId: 'message-1',
+    };
+    const nextMessage = { ...session, messageId: 'message-2' };
+    const config = { configurable: { session } };
 
     expect(registered).toHaveLength(3);
-    expect(registered.map((tool) => tool.authorization({ userId: '10001' }))).toEqual([false, false, false]);
-    active = true;
-    expect(registered.map((tool) => tool.authorization({ userId: '10001' }))).toEqual([true, true, true]);
-    expect(registered.map((tool) => tool.authorization({}))).toEqual([false, false, false]);
+    expect(registered.map((tool) => tool.authorization(session))).toEqual([false, false, false]);
+    runs.activate(session as never);
+    expect(runs.phase(session as never)).toBe('activated');
+    expect(registered.map((tool) => tool.authorization(session))).toEqual([true, true, true]);
+    expect(registered.map((tool) => tool.authorization(nextMessage))).toEqual([false, false, false]);
+
+    await expect(registered[1].createTool()._call({}, undefined, config)).rejects.toThrow('获取本轮实时上下文');
+    await registered[0].createTool()._call({}, undefined, config);
+    expect(runs.phase(session as never)).toBe('context-loaded');
+    await registered[1].createTool()._call({ includeGeneralElectives: false }, undefined, config);
+    expect(runs.phase(session as never)).toBe('offerings-loaded');
+    await registered[2].createTool()._call({
+      sections: [{ executionPlanNumber: '2026-2027-1', courseNumber: 'CS101', sequenceNumber: '01' }],
+    }, undefined, config);
+    expect(runs.phase(session as never)).toBe('validated');
+    expect(registered.map((tool) => tool.authorization(session))).toEqual([true, true, true]);
+
+    now += 15 * 60_000;
+    expect(registered.map((tool) => tool.authorization(session))).toEqual([false, false, false]);
   });
 });
 

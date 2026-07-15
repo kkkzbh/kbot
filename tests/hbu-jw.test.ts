@@ -78,6 +78,7 @@ import {
   buildHbuJwCapabilityReference,
   shouldExposeHbuJwCapabilityReference,
 } from '../src/plugins/hbu-jw/index.js';
+import { HbuJwCourseGuidanceService } from '../src/plugins/hbu-jw/course-guidance.js';
 import {
   HbuJwAcademicCache,
   hbuJwDatabaseFallbackPolicy,
@@ -2813,6 +2814,94 @@ describe('hbu-jw bind page rendering', () => {
 });
 
 describe('hbu-jw plugin integration', () => {
+  it('keeps guidance authorization on the triggering message and attaches the mandatory tool workflow', async () => {
+    vi.spyOn(HbuJwCourseGuidanceService.prototype, 'assertBound').mockResolvedValue(undefined);
+    const dir = createTempDir();
+    const database = createDatabase();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const registeredTools: Array<{ authorization: (session: Record<string, unknown>) => boolean }> = [];
+    const registerTool = vi.fn((_name: string, tool: { authorization: (session: Record<string, unknown>) => boolean }) => {
+      registeredTools.push(tool);
+      return () => undefined;
+    });
+    const eventHandlers = new Map<string, Array<() => unknown>>();
+    const on = vi.fn((event: string, handler: () => unknown) => {
+      const handlers = eventHandlers.get(event) ?? [];
+      handlers.push(handler);
+      eventHandlers.set(event, handlers);
+    });
+    let workflowMiddleware: ((session: unknown, context: unknown) => Promise<number>) | undefined;
+    const builder = {
+      after: vi.fn(() => builder),
+      before: vi.fn(() => builder),
+    };
+    const chatChain = {
+      middleware: vi.fn((_name: string, handler: (session: unknown, context: unknown) => Promise<number>) => {
+        workflowMiddleware = handler;
+        return builder;
+      }),
+    };
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on,
+      puppeteer,
+      chatluna: {
+        platform: { registerTool },
+        registerAllowReplyResolver: vi.fn(() => () => undefined),
+        chatChain,
+      },
+      chatluna_storage: { createTempFile: vi.fn() },
+    };
+
+    apply(ctx as never, {
+      bindPagePath: '/jw/bind',
+      publicBaseUrl: 'https://bot.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
+    });
+    for (const handler of eventHandlers.get('chatluna/chat-chain-added') ?? []) handler();
+
+    const session = {
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      messageId: 'message-1',
+      content: '选课指导',
+    };
+    const inputMessage = {
+      additional_kwargs: {
+        overrideRequestParams: { text: { format: { type: 'json_schema' } } },
+      },
+    };
+    const next = vi.fn(async () => {
+      expect(registeredTools.map((tool) => tool.authorization(session))).toEqual([true, true, true]);
+      expect(registeredTools.map((tool) => tool.authorization({ ...session, messageId: 'message-2' })))
+        .toEqual([false, false, false]);
+      await workflowMiddleware?.(session, { options: { inputMessage } });
+      return 'agent-result';
+    });
+
+    await expect(middleware.mock.calls[0]?.[0](session, next)).resolves.toBe('agent-result');
+    expect(workflowMiddleware).toBeTypeOf('function');
+    expect(inputMessage.additional_kwargs.overrideRequestParams).toEqual({
+      text: { format: { type: 'json_schema' } },
+      qqbot_required_tool_sequence: [
+        'hbu_jw_course_guidance_context',
+        'hbu_jw_course_offerings',
+        'hbu_jw_validate_course_recommendation',
+      ],
+      qqbot_required_tool_terminal: 'hbu_jw_validate_course_recommendation',
+    });
+  });
+
   it('registers the three guidance tools and blocks an unbound guidance keyword before Agent handoff', async () => {
     const dir = createTempDir();
     const database = createDatabase();

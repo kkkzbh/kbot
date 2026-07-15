@@ -8,6 +8,9 @@ import { HbuJwAcademicCache } from './academic-cache.js';
 import { HbuJwCourseQueryService } from './course-query.js';
 import { HbuJwCourseGuidanceService, type HbuJwGuidanceStorageLike } from './course-guidance.js';
 import {
+  GuidanceRunRegistry,
+  HBU_JW_COURSE_GUIDANCE_TOOL_SEQUENCE,
+  HBU_JW_VALIDATE_COURSE_RECOMMENDATION_TOOL,
   registerHbuJwCourseGuidanceTools,
   type HbuJwCourseGuidanceToolsContext,
 } from './course-guidance-tools.js';
@@ -23,6 +26,10 @@ import { ensureHbuJwTables, HbuJwStore } from './store.js';
 import { HbuJwTermScoresService, type HbuJwTermScoresMode } from './term-scores.js';
 import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.js';
 import { renderBindPage } from './web/bind-page.js';
+
+const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
+  ChainMiddlewareRunStatus: { CONTINUE: number };
+};
 
 export const name = 'hbu-jw';
 export const inject = { required: ['server', 'database', 'puppeteer', 'nativeFeatureChat', 'chatluna', 'chatluna_storage'] } as const;
@@ -78,12 +85,31 @@ interface HbuJwServicesLike {
   };
   chatluna: {
     platform: HbuJwCourseGuidanceToolsContext['chatluna']['platform'];
+    chatChain?: {
+      middleware: (
+        name: string,
+        middleware: (session: unknown, context: unknown) => Promise<number>,
+      ) => ChatLunaChainBuilderLike;
+    };
     registerAllowReplyResolver?: (
       name: string,
       resolver: (arg: { session: Session; context: unknown }) => boolean | void | Promise<boolean | void>,
     ) => () => void;
   };
   chatluna_storage: HbuJwGuidanceStorageLike;
+}
+
+interface ChatLunaChainBuilderLike {
+  after(name: string): ChatLunaChainBuilderLike;
+  before(name: string): ChatLunaChainBuilderLike;
+}
+
+interface GuidanceChainContextLike {
+  options?: {
+    inputMessage?: {
+      additional_kwargs?: Record<string, unknown>;
+    };
+  };
 }
 
 interface RuntimeConfig {
@@ -136,12 +162,12 @@ export function apply(ctx: Context, config: Config): void {
     hbuCtx.puppeteer,
     hbuCtx.chatluna_storage,
   );
-  const guidanceSessions = new WeakSet<object>();
+  const guidanceRuns = new GuidanceRunRegistry();
 
   const toolDisposers = registerHbuJwCourseGuidanceTools(
     hbuCtx as unknown as HbuJwCourseGuidanceToolsContext,
     guidanceService,
-    (session) => guidanceSessions.has(session as object),
+    guidanceRuns,
   );
   for (const dispose of toolDisposers) ctx.on?.('dispose', dispose);
   if (typeof hbuCtx.chatluna.registerAllowReplyResolver !== 'function') {
@@ -149,17 +175,18 @@ export function apply(ctx: Context, config: Config): void {
   }
   const disposeAllowResolver = hbuCtx.chatluna.registerAllowReplyResolver(
     'qqbot-hbu-jw-course-guidance',
-    ({ session }) => guidanceSessions.has(session as object) ? true : undefined,
+    ({ session }) => guidanceRuns.isActive(session) ? true : undefined,
   );
   ctx.on?.('dispose', disposeAllowResolver);
+  registerCourseGuidanceWorkflowMiddleware(ctx, hbuCtx, guidanceRuns);
 
   const unregisterCapability = hbuCtx.nativeFeatureChat.registerCapability({
     id: 'hbu-jw',
-    isRelevant: (session) => guidanceSessions.has(session as object) || shouldExposeHbuJwCapabilityReference(session),
+    isRelevant: (session) => guidanceRuns.isActive(session) || shouldExposeHbuJwCapabilityReference(session),
     buildReference: (session) => buildHbuJwCapabilityReference(
       session,
       runtime,
-      guidanceSessions.has(session as object),
+      guidanceRuns.isActive(session),
     ),
   });
   ctx.on?.('dispose', unregisterCapability);
@@ -176,7 +203,7 @@ export function apply(ctx: Context, config: Config): void {
     examScheduleService,
     menuService,
     guidanceService,
-    guidanceSessions,
+    guidanceRuns,
     hbuCtx.nativeFeatureChat,
     runtime,
   );
@@ -187,6 +214,61 @@ export function apply(ctx: Context, config: Config): void {
   });
 
   logger.info('HBU JW bind page registered at %s.', runtime.bindPagePath);
+}
+
+function registerCourseGuidanceWorkflowMiddleware(
+  ctx: Context,
+  hbuCtx: HbuJwServicesLike,
+  guidanceRuns: GuidanceRunRegistry,
+): void {
+  let registered = false;
+  const ensureRegistered = (): boolean => {
+    if (registered) return true;
+    const chain = hbuCtx.chatluna.chatChain;
+    if (!chain) return false;
+
+    chain
+      .middleware('qqbot_hbu_jw_course_guidance_workflow', async (rawSession, rawContext) => {
+        const session = rawSession as Session;
+        if (!guidanceRuns.isActive(session)) {
+          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        }
+
+        const context = rawContext as GuidanceChainContextLike;
+        const inputMessage = context.options?.inputMessage;
+        if (!inputMessage) {
+          throw new Error('hbu-jw course guidance requires the current ChatLuna input message.');
+        }
+        const existingOverride = asPlainRecord(inputMessage.additional_kwargs?.overrideRequestParams);
+        inputMessage.additional_kwargs = {
+          ...(inputMessage.additional_kwargs ?? {}),
+          overrideRequestParams: {
+            ...(existingOverride ?? {}),
+            qqbot_required_tool_sequence: [...HBU_JW_COURSE_GUIDANCE_TOOL_SEQUENCE],
+            qqbot_required_tool_terminal: HBU_JW_VALIDATE_COURSE_RECOMMENDATION_TOOL,
+          },
+        };
+        return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+      })
+      .after('qqbot_reply_prompt_compiler')
+      .before('lifecycle-handle_command');
+
+    registered = true;
+    logger.info('HBU JW course-guidance workflow middleware registered.');
+    return true;
+  };
+
+  ctx.on?.('ready', () => {
+    ensureRegistered();
+  });
+  ctx.on?.('chatluna/chat-chain-added', () => {
+    ensureRegistered();
+  });
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
@@ -290,7 +372,7 @@ function registerKeywordMiddleware(
   examScheduleService: HbuJwExamScheduleService,
   menuService: HbuJwMenuService,
   guidanceService: HbuJwCourseGuidanceService,
-  guidanceSessions: WeakSet<object>,
+  guidanceRuns: GuidanceRunRegistry,
   nativeFeatureChat: NativeFeatureChatServiceLike,
   runtime: RuntimeConfig,
 ): void {
@@ -315,12 +397,8 @@ function registerKeywordMiddleware(
       try {
         const identity = resolveOwnerIdentity(session);
         await guidanceService.assertBound(identity);
-        guidanceSessions.add(session as object);
-        try {
-          return await next();
-        } finally {
-          guidanceSessions.delete(session as object);
-        }
+        guidanceRuns.activate(session);
+        return await next();
       } catch (error) {
         await sendHbuJwError(nativeFeatureChat, session, command, text, error);
         return;

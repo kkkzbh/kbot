@@ -69,6 +69,12 @@ type ResponsesUtilsModule = {
 
 type ResponsesRequesterModule = {
   responseToChatGeneration: (response: unknown) => Promise<unknown>;
+  buildResponseParams: (params: Record<string, unknown>, plugin: unknown) => Promise<Record<string, unknown>>;
+  buildChatCompletionParams: (
+    params: Record<string, unknown>,
+    plugin: unknown,
+    enableGoogleSearch: boolean,
+  ) => Promise<Record<string, unknown>>;
 };
 
 async function loadResponsesUtils(): Promise<ResponsesUtilsModule> {
@@ -82,6 +88,117 @@ async function loadResponsesRequester(): Promise<ResponsesRequesterModule> {
 }
 
 describe('chatluna responses input regression', () => {
+  const workflowOverride = {
+    qqbot_request_mode: 'responses',
+    qqbot_required_tool_sequence: [
+      'hbu_jw_course_guidance_context',
+      'hbu_jw_course_offerings',
+      'hbu_jw_validate_course_recommendation',
+    ],
+    qqbot_required_tool_terminal: 'hbu_jw_validate_course_recommendation',
+  };
+  const tools = workflowOverride.qqbot_required_tool_sequence.map((name) => ({
+    name,
+    description: name,
+    schema: { type: 'object', properties: {} },
+  }));
+  const workflowHumanMessage = () => new HumanMessage({
+    content: '选课指导',
+    additional_kwargs: { overrideRequestParams: workflowOverride },
+  });
+  const toolStep = (name: string, id: string, result: Record<string, unknown>) => [
+    new AIMessage({
+      content: '',
+      tool_calls: [{ id, name, args: {}, type: 'tool_call' }],
+    }),
+    new ToolMessage({ content: JSON.stringify(result), name, tool_call_id: id }),
+  ];
+  const requestParams = (input: unknown[], availableTools: unknown[] = tools) => ({
+    model: 'gpt-5.4',
+    input,
+    tools: availableTools,
+    maxTokens: 4096,
+    overrideRequestParams: workflowOverride,
+  });
+
+  it('forces each required Responses tool in order and strips internal workflow metadata', async () => {
+    const { buildResponseParams } = await loadResponsesRequester();
+    const initial = await buildResponseParams(requestParams([workflowHumanMessage()]), {});
+    const afterContext = await buildResponseParams(requestParams([
+      workflowHumanMessage(),
+      ...toolStep('hbu_jw_course_guidance_context', 'context-1', { plan: { requiredCredits: 167 } }),
+    ]), {});
+    const afterOfferings = await buildResponseParams(requestParams([
+      workflowHumanMessage(),
+      ...toolStep('hbu_jw_course_guidance_context', 'context-1', { plan: { requiredCredits: 167 } }),
+      ...toolStep('hbu_jw_course_offerings', 'offerings-1', { sections: [] }),
+    ]), {});
+
+    expect(initial).toMatchObject({
+      tool_choice: { type: 'function', name: 'hbu_jw_course_guidance_context' },
+      parallel_tool_calls: false,
+    });
+    expect(afterContext).toMatchObject({
+      tool_choice: { type: 'function', name: 'hbu_jw_course_offerings' },
+      parallel_tool_calls: false,
+    });
+    expect(afterOfferings).toMatchObject({
+      tool_choice: { type: 'function', name: 'hbu_jw_validate_course_recommendation' },
+      parallel_tool_calls: false,
+    });
+    expect(initial).not.toHaveProperty('qqbot_required_tool_sequence');
+    expect(initial).not.toHaveProperty('qqbot_required_tool_terminal');
+    expect(initial).not.toHaveProperty('qqbot_request_mode');
+  });
+
+  it('retries invalid terminal validation and disables tools only after valid=true', async () => {
+    const { buildResponseParams } = await loadResponsesRequester();
+    const completedPrefix = [
+      workflowHumanMessage(),
+      ...toolStep('hbu_jw_course_guidance_context', 'context-1', { plan: {} }),
+      ...toolStep('hbu_jw_course_offerings', 'offerings-1', { sections: [{ courseNumber: 'CS101' }] }),
+    ];
+    const invalid = await buildResponseParams(requestParams([
+      ...completedPrefix,
+      ...toolStep('hbu_jw_validate_course_recommendation', 'validate-1', { valid: false, errors: ['full'] }),
+    ]), {});
+    const valid = await buildResponseParams(requestParams([
+      ...completedPrefix,
+      ...toolStep('hbu_jw_validate_course_recommendation', 'validate-1', { valid: false, errors: ['full'] }),
+      ...toolStep('hbu_jw_validate_course_recommendation', 'validate-2', { valid: true }),
+    ]), {});
+
+    expect(invalid.tool_choice).toEqual({
+      type: 'function',
+      name: 'hbu_jw_validate_course_recommendation',
+    });
+    expect(valid).toMatchObject({ tool_choice: 'none', parallel_tool_calls: false });
+  });
+
+  it('fails closed when the next required workflow tool is unavailable', async () => {
+    const { buildResponseParams } = await loadResponsesRequester();
+    await expect(buildResponseParams(
+      requestParams([workflowHumanMessage()], tools.slice(1)),
+      {},
+    )).rejects.toThrow('Required tool workflow tool is unavailable: hbu_jw_course_guidance_context.');
+  });
+
+  it('enforces the same staged workflow for Chat Completions adapters', async () => {
+    const { buildChatCompletionParams } = await loadResponsesRequester();
+    const request = await buildChatCompletionParams(
+      requestParams([workflowHumanMessage()]),
+      {},
+      false,
+    );
+    expect(request).toMatchObject({
+      tool_choice: {
+        type: 'function',
+        function: { name: 'hbu_jw_course_guidance_context' },
+      },
+      parallel_tool_calls: false,
+    });
+  });
+
   it('rejects incomplete Responses output before it reaches reply parsing', async () => {
     const { responseToChatGeneration } = await loadResponsesRequester();
 
