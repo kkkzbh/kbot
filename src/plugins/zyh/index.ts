@@ -103,9 +103,7 @@ function registerMiddleware(ctx: Context, services: ZyhContext, service: ZyhServ
     }
     try {
       const identity = resolveCampusOwnerIdentity(session);
-      if ((command.kind === 'sign_in' || command.kind === 'sign_out') && session.isDirect !== true) {
-        await reply(services.nativeFeatureChat, session, command, text, '签到和签退会读取手机定位，请私聊机器人发起。', '机器人要求在私聊中发起志愿汇签到操作。', false, false);
-      } else if (command.kind === 'menu') {
+      if (command.kind === 'menu') {
         await reply(services.nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), '机器人返回了志愿汇功能菜单图片。');
       } else if (command.kind === 'bind') {
         const result = await services.campusAuth.startBinding(identity, CAMPUS_AUTH_PROVIDER_ZYH);
@@ -253,7 +251,7 @@ function buildZyhCapabilityReference(session: Session, runtime: RuntimeConfig): 
     '- 总入口：“志愿汇”。',
     '- 账号：“志愿汇绑定”、“志愿汇确认 <6位确认码>”、“志愿汇状态”、“志愿汇解绑”。',
     '- 查询：“志愿时长”、“志愿记录 [页码]”、“志愿活动 [关键词]”、“我的志愿活动 [页码]”。',
-    '- 签到：“志愿汇签到 <6位活动码>”、“志愿汇签退 <同一活动码>”；仅限私聊，使用手机真实定位并校验活动范围。',
+    '- 签到：“志愿汇签到 <6位活动码>”、“志愿汇签退 <同一活动码>”；私聊和控制台已启用的群聊均可使用，通过手机定位校验活动范围。',
   ].join('\n');
 }
 

@@ -49,7 +49,7 @@ export function buildHbuSecondClassMenuView(): FeatureMenuView {
         title: '签到',
         icon: 'check',
         items: [
-          { keyword: '二课签到 <签到码>', description: '私聊提交 6 位签到码；定位活动需网页确认', icon: 'check', accent: true },
+          { keyword: '二课签到 <签到码>', description: '提交 6 位签到码；定位活动需网页确认', icon: 'check', accent: true },
           { keyword: '二课签退 <签到码>', description: '复用活动签到码完成签退', icon: 'clock' },
         ],
       },

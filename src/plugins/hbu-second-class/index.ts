@@ -115,9 +115,7 @@ function registerMiddleware(ctx: Context, services: SecondClassContext, service:
     }
     try {
       const identity = resolveCampusOwnerIdentity(session);
-      if ((command.kind === 'sign_in' || command.kind === 'sign_out') && session.isDirect !== true) {
-        await reply(services.nativeFeatureChat, session, command, text, '签到码属于活动安全信息，请私聊机器人发送该命令。', '机器人要求在私聊中提交二课签到码。', false, false);
-      } else if (command.kind === 'menu') {
+      if (command.kind === 'menu') {
         await reply(services.nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), '机器人返回了二课功能菜单图片。');
       } else if (command.kind === 'bind') {
         const result = await services.campusAuth.startBinding(identity, CAMPUS_AUTH_PROVIDER_SECOND_CLASS);
@@ -310,7 +308,7 @@ function buildCapabilityReference(session: Session, runtime: RuntimeConfig): str
     '- 账号：“二课绑定”、“二课确认 <6位确认码>”、“二课状态”、“二课解绑”。',
     '- 续登：“二课验证”获取验证码图片，“二课验证 <验证码>”提交。',
     '- 查询：“二课学分”、“二课成绩单 [学期]”、“二课雷达”、“二课活动”、“二课记录”。',
-    '- 签到：“二课签到 <6位签到码>”、“二课签退 <6位签到码>”；签到码仅在私聊提交，定位活动会返回一次性确认链接。',
+    '- 签到：“二课签到 <6位签到码>”、“二课签退 <6位签到码>”；私聊和控制台已启用的群聊均可使用，定位活动会返回一次性确认链接。',
   ].join('\n');
 }
 

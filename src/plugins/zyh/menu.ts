@@ -48,7 +48,7 @@ export function buildZyhMenuView(): FeatureMenuView {
         title: '签到',
         icon: 'check',
         items: [
-          { keyword: '志愿汇签到 <活动码>', description: '私聊发起，使用手机精确定位校验活动范围', icon: 'check', accent: true },
+          { keyword: '志愿汇签到 <活动码>', description: '使用手机精确定位校验活动范围', icon: 'check', accent: true },
           { keyword: '志愿汇签退 <活动码>', description: '复用签到活动码签退，并再次校验定位', icon: 'clock' },
         ],
       },
