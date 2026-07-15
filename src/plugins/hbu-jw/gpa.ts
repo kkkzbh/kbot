@@ -50,13 +50,6 @@ const PROFESSIONAL_COURSE_NAME_PATTERNS = [
   /(?:大学物理|普通物理|理论力学|材料力学|电路|电子技术|通信原理|信号与系统|自动控制|自动化|机械设计|材料科学|无机化学|有机化学|分析化学|生物学|地质学|测绘学|土木工程|建筑学|环境工程)/,
 ] as const;
 
-const GENERAL_COURSE_NAME_PATTERNS = [
-  /^(?:思想道德与法治|毛泽东思想和中国特色社会主义理论体系概论|马克思主义基本原理|中国近现代史纲要|习近平新时代中国特色社会主义思想概论|形势与政策|军事理论|国家安全教育)/,
-  /^(?:大学语文|应用文写作|中国文学|外国文学|古代汉语|现代汉语)/,
-  /^(?:大学英语|英语听说|英语读写|综合英语|大学日语|大学俄语|大学法语|大学德语|公共外语)/,
-  /^(?:大学体育|体育|体能训练|足球|篮球|排球|乒乓球|羽毛球|网球|武术|健美操|游泳)/,
-] as const;
-
 export interface HbuJwGpaCourseSummary {
   courseNumber: string;
   courseName: string;
@@ -77,7 +70,7 @@ export type HbuJwGpaCourseEvaluation =
   | { kind: 'included'; course: HbuJwIncludedGpaCourse }
   | { kind: 'excluded'; reason: HbuJwGpaExclusionReason; course: HbuJwGpaCourseSummary };
 
-export type HbuJwGpaCourseMask = 'professional' | 'general' | 'unclassified';
+export type HbuJwGpaCourseMask = 'professional' | 'general';
 
 export interface HbuJwGpaTotals {
   includedCredits: number;
@@ -114,7 +107,6 @@ export interface HbuJwGpaResult {
   coveredTerms: string[];
   professional: HbuJwGpaCategorySummary;
   general: HbuJwGpaCategorySummary;
-  unclassified: HbuJwGpaCategorySummary;
   termTrend: HbuJwGpaTermPoint[];
 }
 
@@ -253,7 +245,6 @@ export function calculateHbuJwGpa(rows: HbuJwScoreRow[]): HbuJwGpaResult {
     coveredTerms: termTrend.map(({ label }) => label),
     professional: summarizeHbuJwGpaCategory(classifiedCourses, 'professional'),
     general: summarizeHbuJwGpaCategory(classifiedCourses, 'general'),
-    unclassified: summarizeHbuJwGpaCategory(classifiedCourses, 'unclassified'),
     termTrend,
   };
 }
@@ -289,17 +280,9 @@ export function evaluateHbuJwGpaCourse(row: HbuJwScoreRow): HbuJwGpaCourseEvalua
 
 export function classifyHbuJwGpaCourse(courseName: string): HbuJwGpaCourseMask {
   const normalizedName = normalizeCourseName(courseName);
-  const matches: HbuJwGpaCourseMask[] = [];
-  if (PROFESSIONAL_COURSE_NAME_PATTERNS.some((pattern) => pattern.test(normalizedName))) {
-    matches.push('professional');
-  }
-  if (GENERAL_COURSE_NAME_PATTERNS.some((pattern) => pattern.test(normalizedName))) {
-    matches.push('general');
-  }
-  if (matches.length > 1) {
-    throw new Error(`课程 ${normalizedName} 同时匹配多个 GPA 分类。`);
-  }
-  return matches[0] ?? 'unclassified';
+  return PROFESSIONAL_COURSE_NAME_PATTERNS.some((pattern) => pattern.test(normalizedName))
+    ? 'professional'
+    : 'general';
 }
 
 export function createHbuJwGpaTotals(courses: HbuJwIncludedGpaCourse[]): HbuJwGpaTotals {
@@ -576,7 +559,7 @@ export function renderHbuJwGpaHtml(view: HbuJwGpaView): string {
         <div class="stat">
           <div class="stat-head"><span class="mask mask-general"></span><span>公共基础 GPA</span></div>
           <div class="stat-value">${escapeHtml(view.generalGpaText)}</div>
-          <div class="stat-note">思政 · 语文 · 外语 · 体育 · ${escapeHtml(view.generalCreditsText)} 学分</div>
+          <div class="stat-note">其他计入必修课程 · ${escapeHtml(view.generalCreditsText)} 学分</div>
         </div>
       </section>
       <section class="trend">

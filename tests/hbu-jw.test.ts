@@ -1233,11 +1233,10 @@ describe('hbu-jw GPA calculation', () => {
     expect(result.professional.gpaRounded).toBe('4.59');
     expect(result.professional.includedCredits).toBe(7);
     expect(result.general.gpaRounded).toBeNull();
-    expect(result.unclassified.includedCredits).toBe(0);
     expect(result.termTrend.map((point) => point.cumulativeGpaRounded)).toEqual(['4.50', '4.65', '4.59']);
   });
 
-  it('classifies course masks and sorts cumulative GPA points chronologically', () => {
+  it('partitions included courses into professional and general masks', () => {
     const result = calculateHbuJwGpa([
       scoreRow({ id: { courseNumber: 'MAJOR02' }, courseName: '程序设计', credit: 3, gradePointScore: 4.8, academicYearCode: '2024-2025', termName: '春' }),
       scoreRow({ id: { courseNumber: 'MAJOR01' }, courseName: '高等数学', credit: 4, gradePointScore: 4.5, academicYearCode: '2023-2024', termName: '秋' }),
@@ -1252,15 +1251,11 @@ describe('hbu-jw GPA calculation', () => {
       includedCourseCount: 2,
     });
     expect(result.general).toMatchObject({
-      gpaRounded: '3.83',
-      includedCredits: 3,
-      includedCourseCount: 2,
+      gpaRounded: '3.98',
+      includedCredits: 5,
+      includedCourseCount: 3,
     });
-    expect(result.unclassified).toMatchObject({
-      gpaRounded: '4.20',
-      includedCredits: 2,
-      includedCourseCount: 1,
-    });
+    expect(result.professional.includedCredits + result.general.includedCredits).toBe(result.includedCredits);
     expect(result.termTrend.map((point) => point.label)).toEqual([
       '2023-2024 秋',
       '2023-2024 春',
@@ -1285,6 +1280,7 @@ describe('hbu-jw GPA calculation', () => {
     expect(html).toContain('累计加权 GPA');
     expect(html).toContain('专业课 GPA');
     expect(html).toContain('公共基础 GPA');
+    expect(html).toContain('其他计入必修课程');
     expect(html).toContain('累计 GPA 走势');
     expect(html).toContain('class="chart-grid" x1="68"');
     expect(html).toContain('class="chart-value-label" x="94"');
