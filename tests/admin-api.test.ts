@@ -93,7 +93,7 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
   const cookies = new Map<string, string>();
   if (options.cookie) cookies.set('qqbot_admin_session', options.cookie);
   return {
-    status: 0,
+    status: 404,
     body: undefined as unknown,
     type: '',
     path: options.path ?? '/',

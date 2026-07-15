@@ -328,7 +328,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
         if (routeOptions.mutation) options.session.assertMutationOrigin(requestOrigin(koaCtx));
         if (routeOptions.authenticated !== false) options.session.require(getCookie(koaCtx));
         const body = await handler(koaCtx);
-        if (koaCtx.body === undefined && body !== undefined) writeJson(koaCtx, koaCtx.status || 200, body);
+        if (koaCtx.body === undefined && body !== undefined) writeJson(koaCtx, 200, body);
       } catch (error) {
         if (error instanceof AdminHttpError) {
           writeError(koaCtx, error, requestId);
