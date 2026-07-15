@@ -31,6 +31,15 @@ import {
   renderChaoxingMenuImage,
 } from '../src/plugins/chaoxing/menu.js';
 import {
+  apply as applyFeatureMenu,
+  isFeatureMenuCommandText,
+} from '../src/plugins/feature-menu/index.js';
+import {
+  buildFeatureIndexMenuView,
+  FeatureIndexMenuService,
+  renderFeatureIndexMenuImage,
+} from '../src/plugins/feature-menu/menu.js';
+import {
   buildHbuSecondClassMenuView,
   HbuSecondClassMenuService,
   renderHbuSecondClassMenuImage,
@@ -42,6 +51,17 @@ import {
 } from '../src/plugins/zyh/menu.js';
 
 describe('campus feature HTML menus', () => {
+  it('lists every top-level feature keyword in the feature index', () => {
+    expect(keywords(buildFeatureIndexMenuView())).toEqual([
+      '教务',
+      '学习通',
+      '志愿汇',
+      '二课',
+      '原神',
+      '好感',
+    ]);
+  });
+
   it('lists every public entry point in the corresponding menu', () => {
     expect(keywords(buildZyhMenuView())).toEqual(expect.arrayContaining([
       '志愿汇绑定',
@@ -78,6 +98,7 @@ describe('campus feature HTML menus', () => {
   });
 
   it.each([
+    ['功能', buildFeatureIndexMenuView(), renderFeatureIndexMenuImage],
     ['志愿汇', buildZyhMenuView(), renderZyhMenuImage],
     ['二课', buildHbuSecondClassMenuView(), renderHbuSecondClassMenuImage],
     ['学习通', buildChaoxingMenuView(), renderChaoxingMenuImage],
@@ -98,6 +119,7 @@ describe('campus feature HTML menus', () => {
   });
 
   it.each([
+    ['功能', new FeatureIndexMenuService(createPuppeteerHarness().puppeteer)],
     ['志愿汇', new ZyhMenuService(createPuppeteerHarness().puppeteer)],
     ['二课', new HbuSecondClassMenuService(createPuppeteerHarness().puppeteer)],
     ['学习通', new ChaoxingMenuService(createPuppeteerHarness().puppeteer)],
@@ -106,6 +128,77 @@ describe('campus feature HTML menus', () => {
 
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
+  });
+});
+
+describe('top-level feature menu keyword', () => {
+  it('matches only the exact 功能 keyword after trimming', () => {
+    expect(isFeatureMenuCommandText(' 功能 ')).toBe(true);
+    expect(isFeatureMenuCommandText('功能介绍')).toBe(false);
+    expect(isFeatureMenuCommandText('有什么功能')).toBe(false);
+  });
+
+  it('returns the menu for an exact bare group keyword', async () => {
+    const renderHarness = createPuppeteerHarness();
+    const sendReply = vi.fn(async (_session: unknown, _input: { reply: unknown }) => null);
+    let middleware: ((session: any, next: () => Promise<unknown>) => Promise<unknown>) | undefined;
+    const ctx = {
+      puppeteer: renderHarness.puppeteer,
+      nativeFeatureChat: { sendReply },
+      middleware: vi.fn((handler) => {
+        middleware = handler;
+      }),
+    };
+    applyFeatureMenu(ctx as never);
+    const next = vi.fn(async () => undefined);
+    const session = {
+      userId: '1405359129',
+      isDirect: false,
+      guildId: '829573670',
+      channelId: '829573670',
+      content: '功能',
+      stripped: { content: '功能', atSelf: false },
+    };
+
+    await middleware!(session, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(sendReply).toHaveBeenCalledWith(session, expect.objectContaining({
+      featureId: 'feature-menu',
+      commandId: 'menu',
+      userText: '功能',
+      summary: '机器人返回了顶级功能菜单图片。',
+      success: true,
+      includeReplyPayload: true,
+    }));
+    const input = sendReply.mock.calls[0]?.[1];
+    expect(extractAtIds(input?.reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(input?.reply)).toContain('image/png');
+  });
+
+  it('passes non-matching messages to later middleware', async () => {
+    const renderHarness = createPuppeteerHarness();
+    const sendReply = vi.fn(async (_session: unknown, _input: { reply: unknown }) => null);
+    let middleware: ((session: any, next: () => Promise<unknown>) => Promise<unknown>) | undefined;
+    const ctx = {
+      puppeteer: renderHarness.puppeteer,
+      nativeFeatureChat: { sendReply },
+      middleware: vi.fn((handler) => {
+        middleware = handler;
+      }),
+    };
+    applyFeatureMenu(ctx as never);
+    const next = vi.fn(async () => 'next-result');
+
+    await expect(middleware!({
+      userId: '1405359129',
+      content: '功能介绍',
+      stripped: { content: '功能介绍' },
+    }, next)).resolves.toBe('next-result');
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(sendReply).not.toHaveBeenCalled();
+    expect(renderHarness.page.screenshot).not.toHaveBeenCalled();
   });
 });
 

@@ -73,6 +73,7 @@ plugins:
     ./dist/plugins/realtime-message:realtime-message:
       maxInjectCount: ${{ +env.QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT || 12 }}
     ./dist/plugins/native-feature-chat:native-feature-chat: {}
+    ./dist/plugins/feature-menu:feature-menu: {}
     ./dist/plugins/campus-auth-core:campus-auth-core:
       publicBaseUrl: >-
         ${{ env.CAMPUS_AUTH_PUBLIC_BASE_URL || env.HBU_JW_PUBLIC_BASE_URL ||
