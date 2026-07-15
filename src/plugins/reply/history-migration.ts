@@ -1,5 +1,7 @@
 import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
+import type { MessageContent, MessageContentComplex } from '@langchain/core/messages';
+import { buildNativeFeatureAssistantHistoryText } from '../shared/native-feature-history.js';
 import { decodeStoredMessageJson } from '../shared/stored-message.js';
 import { ChatReplyV1Parser } from './pipeline/chat-reply-v1.js';
 import type { StructuredReply, StructuredReplyMessage } from './pipeline/types.js';
@@ -260,6 +262,33 @@ async function decodeStoredJsonObject(content: unknown): Promise<Record<string, 
   }
 }
 
+async function normalizeNativeFeatureAssistantHistoryRow(
+  row: Record<string, unknown>,
+): Promise<string | null> {
+  const additionalKwargs = await decodeStoredJsonObject(row.additional_kwargs_binary);
+  const nativeFeature = additionalKwargs?.qqbot_native_feature;
+  if (!nativeFeature || typeof nativeFeature !== 'object' || Array.isArray(nativeFeature)) return null;
+
+  const metadata = nativeFeature as Record<string, unknown>;
+  if (metadata.role !== 'result') return null;
+  const summary = normalizeText(metadata.summary);
+  if (!summary) return null;
+
+  let storedContent: unknown;
+  try {
+    storedContent = await decodeStoredMessageJson(row.content);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(storedContent)) return null;
+  if (!storedContent.every(
+    (part): part is MessageContentComplex =>
+      Boolean(part && typeof part === 'object' && typeof (part as { type?: unknown }).type === 'string'),
+  )) return null;
+
+  return buildNativeFeatureAssistantHistoryText(summary, storedContent as MessageContent);
+}
+
 async function decodeStructuredReplyHistoryContent(content: unknown): Promise<string | null> {
   const storedContent = await decodeStoredStringContent(content);
   if (storedContent == null) return null;
@@ -515,7 +544,11 @@ async function renderLegacyToolActionHistory(row: Record<string, unknown>): Prom
 export async function migrateStructuredReplyHistoryRows(
   database: StructuredReplyHistoryDatabaseLike,
 ): Promise<StructuredReplyHistoryMigrationResult> {
-  const aiRows = await database.get('chatluna_message', { role: 'ai' }, ['id', 'role', 'content']);
+  const aiRows = await database.get(
+    'chatluna_message',
+    { role: 'ai' },
+    ['id', 'role', 'content', 'additional_kwargs_binary'],
+  );
   let structuredRowsMigrated = 0;
 
   for (const row of aiRows) {
@@ -527,6 +560,19 @@ export async function migrateStructuredReplyHistoryRows(
 
     await database.set('chatluna_message', { id }, {
       content: await gzipAsync(JSON.stringify(visibleHistory)),
+    });
+    structuredRowsMigrated += 1;
+  }
+
+  for (const row of aiRows) {
+    const id = normalizeId(row.id);
+    if (!id) continue;
+
+    const semanticHistory = await normalizeNativeFeatureAssistantHistoryRow(row);
+    if (!semanticHistory) continue;
+
+    await database.set('chatluna_message', { id }, {
+      content: await gzipAsync(JSON.stringify(semanticHistory)),
     });
     structuredRowsMigrated += 1;
   }

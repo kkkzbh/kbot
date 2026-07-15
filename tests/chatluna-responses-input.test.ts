@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
+import { AIMessage, FunctionMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
 import { resolveChatlunaSiblingPackageRoot } from './helpers/chatluna-paths.js';
 
 vi.mock('koishi', () => ({
@@ -40,6 +40,7 @@ vi.mock('koishi-plugin-chatluna/utils/string', () => ({
 vi.mock('koishi-plugin-chatluna', () => ({
   Config: class {},
   ConversationRoom: class {},
+  logger: { warn: vi.fn() },
 }));
 
 vi.mock('koishi-plugin-chatluna/llm-core/utils/count_tokens', () => ({
@@ -50,7 +51,12 @@ vi.mock('koishi-plugin-chatluna/services/chat', () => ({
   ChatLunaPlugin: class {},
 }));
 
-type LangchainMessageToResponseInput = (messages: unknown[], model: unknown) => Promise<unknown[]>;
+type LangchainMessageToResponseInput = (
+  messages: unknown[],
+  plugin: unknown,
+  model?: string,
+  supportImageInput?: boolean,
+) => Promise<unknown[]>;
 
 type ResponsesUtilsModule = {
   langchainMessageToResponseInput: LangchainMessageToResponseInput;
@@ -62,7 +68,7 @@ async function loadResponsesUtils(): Promise<ResponsesUtilsModule> {
 }
 
 describe('chatluna responses input regression', () => {
-  it('uses output_text for assistant history and input_text for user input', async () => {
+  it('serializes assistant history as text and user arrays as input content', async () => {
     const { langchainMessageToResponseInput } = await loadResponsesUtils();
     const input = await langchainMessageToResponseInput(
       [
@@ -81,7 +87,112 @@ describe('chatluna responses input regression', () => {
       {
         type: 'message',
         role: 'assistant',
-        content: [{ type: 'output_text', text: 'hi' }],
+        content: 'hi',
+      },
+    ]);
+  });
+
+  it('keeps assistant transport media out of Responses history', async () => {
+    const { langchainMessageToResponseInput } = await loadResponsesUtils();
+    const plugin = { fetch: vi.fn() };
+    const input = await langchainMessageToResponseInput(
+      [
+        new AIMessage({
+          content: [
+            { type: 'text', text: '机器人返回了课程卡片。' },
+            { type: 'image_url', image_url: { url: 'https://storage.example/card.png' } },
+            { type: 'file_url', file_url: { url: 'https://storage.example/result.pdf' } },
+            { type: 'audio_url', audio_url: { url: 'https://storage.example/result.mp3' } },
+          ],
+        }),
+        new AIMessage({
+          content: [
+            { type: 'image_url', image_url: { url: 'https://storage.example/image-only.png' } },
+          ],
+        }),
+        new HumanMessage('继续'),
+      ],
+      plugin,
+      'gpt-5.4',
+      true,
+    );
+
+    expect(input).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: '机器人返回了课程卡片。',
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: '继续',
+      },
+    ]);
+    expect(plugin.fetch).not.toHaveBeenCalled();
+  });
+
+  it('preserves supported user image and file inputs', async () => {
+    const { langchainMessageToResponseInput } = await loadResponsesUtils();
+    const input = await langchainMessageToResponseInput(
+      [
+        new HumanMessage({
+          content: [
+            { type: 'text', text: '查看附件' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+            { type: 'file_url', file_url: { url: 'https://storage.example/guide.pdf', filename: 'guide.pdf' } },
+          ],
+        }),
+      ],
+      {},
+      'gpt-5.4',
+      true,
+    );
+
+    expect(input).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: '查看附件' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AA==', detail: 'auto' },
+          {
+            type: 'input_file',
+            file_url: 'https://storage.example/guide.pdf',
+            filename: 'guide.pdf',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('drops empty unsupported input content and emits legacy function messages once', async () => {
+    const { langchainMessageToResponseInput } = await loadResponsesUtils();
+    const input = await langchainMessageToResponseInput(
+      [
+        new FunctionMessage({ content: '函数结果', name: 'legacy_lookup' }),
+        new HumanMessage({
+          content: [
+            { type: 'audio_url', audio_url: { url: 'https://storage.example/input.mp3' } },
+          ],
+        }),
+        new HumanMessage('继续'),
+      ],
+      {},
+      'gpt-5.4',
+      true,
+    );
+
+    expect(input).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: '函数结果',
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: '继续',
       },
     ]);
   });

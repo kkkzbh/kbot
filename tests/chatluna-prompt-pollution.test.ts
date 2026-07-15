@@ -322,6 +322,55 @@ describe('chatluna prompt pollution regression', () => {
     await expect(gunzipAsync(rows[1].content).then((value) => value.toString())).resolves.toBe(JSON.stringify('普通历史'));
   });
 
+  it('migrates native feature assistant media into semantic text history', async () => {
+    const rows = [
+      {
+        id: 'native-feature-result-ai',
+        role: 'ai',
+        content: await gzipAsync(JSON.stringify([
+          { type: 'text', text: '机器人返回了本学期成绩查询结果图片。' },
+          { type: 'text', text: '[image:http://127.0.0.1:5140/storage/result.png]' },
+          {
+            type: 'image_url',
+            image_url: { url: 'http://127.0.0.1:5140/storage/result.png' },
+          },
+        ])),
+        additional_kwargs_binary: await gzipAsync(JSON.stringify({
+          qqbot_native_feature: {
+            version: 'v1',
+            featureId: 'hbu-jw',
+            commandId: 'term_scores',
+            role: 'result',
+            summary: '机器人返回了本学期成绩查询结果图片。',
+          },
+        })),
+      },
+    ];
+    const database = {
+      get: async () => rows,
+      set: async (_table: string, query: Record<string, unknown>, update: Record<string, unknown>) => {
+        const row = rows.find((item) => item.id === query.id);
+        Object.assign(row ?? {}, update);
+      },
+      remove: async () => undefined,
+    };
+
+    await expect(migrateStructuredReplyHistoryRows(database)).resolves.toMatchObject({
+      scanned: 1,
+      migrated: 1,
+      structuredRowsMigrated: 1,
+    });
+    await expect(gunzipAsync(rows[0].content).then((value) => value.toString())).resolves.toBe(
+      JSON.stringify('机器人返回了本学期成绩查询结果图片。'),
+    );
+
+    await expect(migrateStructuredReplyHistoryRows(database)).resolves.toMatchObject({
+      scanned: 1,
+      migrated: 0,
+      structuredRowsMigrated: 0,
+    });
+  });
+
   it('migrates legacy rich-text reply history rows to visible text', async () => {
     const rows = [
       {

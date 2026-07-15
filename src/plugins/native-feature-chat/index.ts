@@ -2,7 +2,6 @@ import {
   AIMessage,
   HumanMessage,
   type MessageContent,
-  type MessageContentComplex,
 } from '@langchain/core/messages';
 import { randomUUID } from 'node:crypto';
 import { Context, h, Logger, type Fragment, type Session } from 'koishi';
@@ -23,6 +22,7 @@ import {
   type QqbotChatLunaContextOptionsLike,
 } from '../shared/chatluna-conversation.js';
 import { registerPromptFragment } from '../shared/prompt-context/index.js';
+import { buildNativeFeatureAssistantHistoryText } from '../shared/native-feature-history.js';
 import { resolveSessionDisplayName } from '../shared/session/index.js';
 import { discardRealtimeMessageForSession } from '../realtime-message/index.js';
 
@@ -84,38 +84,6 @@ function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function isTextPart(part: MessageContentComplex): part is MessageContentComplex & { type: 'text'; text: string } {
-  return part.type === 'text' && typeof (part as { text?: unknown }).text === 'string';
-}
-
-function mergeSummaryIntoContent(summary: string, content: MessageContent): MessageContent {
-  const normalizedSummary = normalizeText(summary);
-  if (!normalizedSummary) return content;
-
-  if (typeof content === 'string') {
-    const normalizedContent = content.trim();
-    if (!normalizedContent) return normalizedSummary;
-    if (normalizedContent.includes(normalizedSummary)) return normalizedContent;
-    return `${normalizedSummary}\n${normalizedContent}`;
-  }
-
-  const parts = Array.isArray(content)
-    ? content.filter((part): part is MessageContentComplex => Boolean(part && typeof part === 'object'))
-    : [];
-  const textIndex = parts.findIndex(isTextPart);
-  if (textIndex < 0) {
-    return [{ type: 'text', text: normalizedSummary }, ...parts];
-  }
-
-  return parts.map((part, index) => {
-    if (index !== textIndex || !isTextPart(part)) return part;
-    const visibleText = part.text.trim();
-    if (!visibleText) return { ...part, text: normalizedSummary };
-    if (visibleText.includes(normalizedSummary)) return part;
-    return { ...part, text: `${normalizedSummary}\n${visibleText}` };
-  });
-}
-
 function buildSpeakerTaggedText(session: Session, text: string): string {
   const userId = normalizeText(session.userId);
   if (!userId) {
@@ -127,63 +95,6 @@ function buildSpeakerTaggedText(session: Session, text: string): string {
 
 function normalizedReplyElements(reply: Fragment): unknown[] {
   return h.normalize(reply).filter((element) => element.type !== 'at');
-}
-
-type HistoryElement = {
-  type?: unknown;
-  attrs?: Record<string, unknown>;
-  children?: unknown;
-};
-
-function collectReplyImageUrls(elements: unknown[]): string[] {
-  const urls: string[] = [];
-  const seen = new Set<string>();
-  const visit = (value: unknown): void => {
-    if (!value || typeof value !== 'object') return;
-    const element = value as HistoryElement;
-    if (element.type === 'img' || element.type === 'image') {
-      const attrs = element.attrs ?? {};
-      const url = normalizeText(attrs.imageUrl) || normalizeText(attrs.src) || normalizeText(attrs.url);
-      if (url && !seen.has(url)) {
-        seen.add(url);
-        urls.push(url);
-      }
-    }
-    if (Array.isArray(element.children)) {
-      for (const child of element.children) visit(child);
-    }
-  };
-  for (const element of elements) visit(element);
-  return urls;
-}
-
-function resolveContentImageUrl(part: MessageContentComplex): string | null {
-  if (part.type !== 'image_url') return null;
-  const raw = (part as { image_url?: unknown }).image_url;
-  if (typeof raw === 'string') return normalizeText(raw) || null;
-  if (!raw || typeof raw !== 'object') return null;
-  return normalizeText((raw as { url?: unknown }).url) || null;
-}
-
-function appendReplyImagesToContent(content: MessageContent, elements: unknown[]): MessageContent {
-  const imageUrls = collectReplyImageUrls(elements);
-  if (!imageUrls.length) return content;
-
-  const parts: MessageContentComplex[] = typeof content === 'string'
-    ? content.trim()
-      ? [{ type: 'text', text: content.trim() }]
-      : []
-    : content.filter((part): part is MessageContentComplex => Boolean(part && typeof part === 'object'));
-  const existingUrls = new Set(parts.map(resolveContentImageUrl).filter((url): url is string => Boolean(url)));
-  let missingImageCount = Math.max(0, imageUrls.length - existingUrls.size);
-
-  for (const url of imageUrls) {
-    if (missingImageCount < 1 || existingUrls.has(url)) continue;
-    parts.push({ type: 'image_url', image_url: { url } });
-    existingUrls.add(url);
-    missingImageCount -= 1;
-  }
-  return parts;
 }
 
 class NativeFeatureChatService implements NativeFeatureChatServiceLike {
@@ -354,9 +265,9 @@ class NativeFeatureChatService implements NativeFeatureChatServiceLike {
       if (typeof transformed.content !== 'string' && !Array.isArray(transformed.content)) {
         throw new Error('native feature reply transformer returned no history content.');
       }
-      assistantContent = appendReplyImagesToContent(
-        mergeSummaryIntoContent(summary, transformed.content as MessageContent),
-        replyElements,
+      assistantContent = buildNativeFeatureAssistantHistoryText(
+        summary,
+        transformed.content as MessageContent,
       );
     }
 

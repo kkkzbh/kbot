@@ -156,7 +156,7 @@ afterEach(() => {
 });
 
 describe('native feature chat integration', () => {
-  it('stores a complete multimodal feature exchange and consumes the realtime duplicate', async () => {
+  it('stores semantic feature history without transport media and consumes the realtime duplicate', async () => {
     const harness = createHarness();
     const session = createSession();
 
@@ -191,17 +191,14 @@ describe('native feature chat integration', () => {
       commandId: 'course_query',
       role: 'request',
     });
-    expect(assistant.content).toEqual([
-      {
-        type: 'text',
-        text: '机器人返回了“模式识别”的课程分项成绩查询结果图片（学期参数：-1）。\n查询结果正文',
-      },
-      { type: 'image_url', image_url: { url: 'https://storage.example/result.png' } },
-    ]);
+    expect(assistant.content).toBe(
+      '机器人返回了“模式识别”的课程分项成绩查询结果图片（学期参数：-1）。\n查询结果正文',
+    );
+    expect(JSON.stringify(assistant.content)).not.toContain('storage.example');
     expect(realtimeMocks.discardRealtimeMessageForSession).toHaveBeenCalledWith(session);
   });
 
-  it('stores reply images even when the active model transformer emits text markers only', async () => {
+  it('removes image markers from semantic history when the transformer emits no text', async () => {
     const harness = createHarness();
     harness.transform.mockImplementationOnce(async (...args: unknown[]) => {
       const elements = args[1];
@@ -228,16 +225,7 @@ describe('native feature chat integration', () => {
     });
 
     const assistant = (historyBatches[0] as any[])[1];
-    expect(assistant.content).toEqual([
-      {
-        type: 'text',
-        text: '机器人返回了教务功能菜单图片。\n[image:https://storage.example/model-independent.png]',
-      },
-      {
-        type: 'image_url',
-        image_url: { url: 'https://storage.example/model-independent.png' },
-      },
-    ]);
+    expect(assistant.content).toBe('机器人返回了教务功能菜单图片。');
   });
 
   it('stores only the sanitized summary when a reply contains a one-time secret', async () => {
