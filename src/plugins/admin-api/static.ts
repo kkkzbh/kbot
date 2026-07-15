@@ -16,12 +16,21 @@ const MIME_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-const ADMIN_DOCUMENT_PATHS = new Set(['/', '/index.html', '/login', '/policies']);
-const ADMIN_PATH_PREFIXES = ['/assets/', '/runtime/', '/intelligence/', '/extensions/', '/system/'];
-
-function isAdminPath(path: string): boolean {
-  return ADMIN_DOCUMENT_PATHS.has(path) || ADMIN_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
-}
+const ADMIN_ROUTES = [
+  '/',
+  '/index.html',
+  '/login',
+  '/policies',
+  '/assets/(.*)',
+  '/runtime',
+  '/runtime/(.*)',
+  '/intelligence',
+  '/intelligence/(.*)',
+  '/extensions',
+  '/extensions/(.*)',
+  '/system',
+  '/system/(.*)',
+] as const;
 
 function fileExists(filePath: string): boolean {
   try {
@@ -40,9 +49,8 @@ export function registerAdminStatic(options: {
   const assetDir = resolve(options.assetDir);
   const indexPath = join(assetDir, 'index.html');
 
-  (options.ctx.server as any).use(async (koaCtx: any, next: () => Promise<unknown>) => {
+  const serveAdminAsset = async (koaCtx: any) => {
     const path = String(koaCtx.path || '');
-    if (!isAdminPath(path)) return next();
     const requestId = createRequestId();
     try {
       options.session.assertHost(String(koaCtx.host || koaCtx.request?.host || koaCtx.get?.('host') || '').trim().toLowerCase());
@@ -84,5 +92,10 @@ export function registerAdminStatic(options: {
       koaCtx.type = 'application/json';
       koaCtx.body = { error: { code: adminError.code, message: adminError.message, requestId } };
     }
-  });
+  };
+
+  const router = options.ctx.server as any;
+  for (const route of ADMIN_ROUTES) {
+    router.get(route, serveAdminAsset);
+  }
 }

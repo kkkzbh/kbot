@@ -119,42 +119,39 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
 }
 
 describe('independent admin API plugin', () => {
-  it('registers domain HTTP routes, static middleware and no console IPC', () => {
+  it('registers domain HTTP routes, explicit SPA routes and no console IPC', () => {
     const { server } = createRuntime(createTempDir());
     const getPaths = server.get.mock.calls.map((call) => call[0]);
     const postPaths = server.post.mock.calls.map((call) => call[0]);
     expect(getPaths).toContain('/api/admin/v1/overview');
     expect(getPaths).toContain('/api/admin/v1/memory/users');
     expect(getPaths).toContain('/api/admin/v1/logs');
+    expect(getPaths).toContain('/');
+    expect(getPaths).toContain('/assets/(.*)');
+    expect(getPaths).toContain('/extensions/(.*)');
     expect(postPaths).toContain('/api/admin/v1/session');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
-    expect(server.use).toHaveBeenCalledTimes(1);
+    expect(server.use).not.toHaveBeenCalled();
   });
 
-  it('serves root SPA routes without intercepting API or public bot routes', async () => {
+  it('serves root and nested SPA routes from explicit router handlers', async () => {
     const dir = createTempDir();
     mkdirSync(join(dir, 'dist/admin-web'), { recursive: true });
     writeFileSync(join(dir, 'dist/admin-web/index.html'), '<div id="app"></div>\n', 'utf8');
     const { server } = createRuntime(dir);
-    const staticMiddleware = server.use.mock.calls[0]?.[0];
+    const routes = new Map(server.get.mock.calls.map((call) => [call[0], call[1]]));
 
-    for (const path of ['/', '/extensions/campus/auth']) {
+    for (const [route, path] of [['/', '/'], ['/extensions/(.*)', '/extensions/campus/auth']]) {
       const request = createKoaCtx({ path });
-      const next = vi.fn(async () => undefined);
-      await staticMiddleware(request, next);
+      await routes.get(route)?.(request);
       expect(request.status).toBe(200);
       expect(request.type).toBe('text/html; charset=utf-8');
-      expect(next).not.toHaveBeenCalled();
       (request.body as { destroy: () => void }).destroy();
     }
 
-    for (const path of ['/admin', '/api/admin/v1/session', '/api/internal/copilot/v1/responses', '/campus/bind', '/chatluna-storage/temp/file']) {
-      const request = createKoaCtx({ path });
-      const next = vi.fn(async () => undefined);
-      await staticMiddleware(request, next);
-      expect(next).toHaveBeenCalledOnce();
-      expect(request.status).toBe(0);
+    for (const path of ['/admin', '/api/(.*)', '/campus/(.*)', '/chatluna-storage/(.*)']) {
+      expect(routes.has(path)).toBe(false);
     }
   });
 
