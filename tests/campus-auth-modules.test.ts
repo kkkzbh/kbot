@@ -41,6 +41,7 @@ import {
 } from '../src/plugins/hbu-second-class/service.js';
 import { collectRadarPoints, collectTranscriptRows } from '../src/plugins/hbu-second-class/render.js';
 import {
+  apply as applySecondClass,
   buildSecondClassReauthReply,
   parseSecondClassCommand,
   secondClassCaptchaImage,
@@ -48,7 +49,7 @@ import {
 } from '../src/plugins/hbu-second-class/index.js';
 import { SecondClassApiError, SecondClassSessionExpiredError } from '../src/plugins/hbu-second-class/types.js';
 import { VersionedJsonCache } from '../src/plugins/shared/versioned-json-cache.js';
-import { parseZyhCommand, shouldExposeZyhCapabilityReference } from '../src/plugins/zyh/index.js';
+import { apply as applyZyh, parseZyhCommand, shouldExposeZyhCapabilityReference } from '../src/plugins/zyh/index.js';
 import { ZyhHttpClient } from '../src/plugins/zyh/client.js';
 import { ZyhCache } from '../src/plugins/zyh/cache.js';
 import { ZyhService } from '../src/plugins/zyh/service.js';
@@ -78,6 +79,50 @@ function createDatabase() {
     remove: vi.fn(async (table: string, query: Record<string, any>) => {
       tables.set(table, rows(table).filter((row) => !matches(row, query)));
     }),
+  };
+}
+
+type CampusModuleMiddleware = (session: Record<string, any>, next: () => Promise<unknown>) => Promise<unknown>;
+
+function createCampusModuleHarness() {
+  let middleware: CampusModuleMiddleware | undefined;
+  const nativeFeatureChat = {
+    registerCapability: vi.fn(() => () => undefined),
+    sendReply: vi.fn(async (_session: unknown, _payload: unknown) => undefined),
+  };
+  const campusAuth = {
+    registerProvider: vi.fn(() => () => undefined),
+    registerLocationActionProvider: vi.fn(() => () => undefined),
+    registerLifecycleListener: vi.fn(() => () => undefined),
+  };
+  const ctx: Record<string, any> = {
+    model: { extend: vi.fn() },
+    database: createDatabase(),
+    campusAuth,
+    nativeFeatureChat,
+    puppeteer: {},
+    middleware: vi.fn((handler: CampusModuleMiddleware) => { middleware = handler; }),
+    on: vi.fn(),
+  };
+  return {
+    ctx,
+    nativeFeatureChat,
+    middleware: () => {
+      if (!middleware) throw new Error('campus module middleware was not registered.');
+      return middleware;
+    },
+  };
+}
+
+function groupSession(content: string, groupId = '100'): Record<string, any> {
+  return {
+    platform: 'onebot',
+    userId: '10001',
+    channelId: groupId,
+    guildId: groupId,
+    isDirect: false,
+    content,
+    stripped: { content, atSelf: true },
   };
 }
 
@@ -517,6 +562,44 @@ describe('versioned cache and user-facing parsers', () => {
     expect(parseSecondClassCommand('二课验证 1234!')).toBeNull();
     expect(parseSecondClassCommand('二课签到 123456')).toEqual({ kind: 'sign_in', code: '123456' });
     expect(parseSecondClassCommand('二课签退 123456')).toEqual({ kind: 'sign_out', code: '123456' });
+  });
+
+  it('allows 二课签到 and 签退 in console-enabled groups and rejects unlisted groups', async () => {
+    const harness = createCampusModuleHarness();
+    applySecondClass(harness.ctx as never, { allowedGroups: '100', naturalTriggerEnabled: false });
+    const signWithCode = vi.spyOn(harness.ctx.hbuSecondClass as HbuSecondClassService, 'signWithCode')
+      .mockResolvedValue({ message: '二课操作成功。' });
+    const middleware = harness.middleware();
+
+    await middleware(groupSession('二课签到 123456'), async () => undefined);
+    await middleware(groupSession('二课签退 123456'), async () => undefined);
+    expect(signWithCode.mock.calls.map((call) => call.slice(1))).toEqual([
+      ['sign_in', '123456'],
+      ['sign_out', '123456'],
+    ]);
+
+    await middleware(groupSession('二课签到 123456', '200'), async () => undefined);
+    expect(signWithCode).toHaveBeenCalledTimes(2);
+    expect(harness.nativeFeatureChat.sendReply.mock.lastCall?.[1]).toMatchObject({ reply: '当前群未开启二课功能。' });
+  });
+
+  it('allows 志愿汇签到 and 签退 in console-enabled groups and rejects unlisted groups', async () => {
+    const harness = createCampusModuleHarness();
+    applyZyh(harness.ctx as never, { allowedGroups: '100', naturalTriggerEnabled: false });
+    const startSignAction = vi.spyOn(harness.ctx.zyh as ZyhService, 'startSignAction')
+      .mockResolvedValue({ link: 'https://action.example/once', expiresAt: 300_000 });
+    const middleware = harness.middleware();
+
+    await middleware(groupSession('志愿汇签到 123456'), async () => undefined);
+    await middleware(groupSession('志愿汇签退 123456'), async () => undefined);
+    expect(startSignAction.mock.calls.map((call) => call.slice(1))).toEqual([
+      ['sign_in', '123456'],
+      ['sign_out', '123456'],
+    ]);
+
+    await middleware(groupSession('志愿汇签退 123456', '200'), async () => undefined);
+    expect(startSignAction).toHaveBeenCalledTimes(2);
+    expect(harness.nativeFeatureChat.sendReply.mock.lastCall?.[1]).toMatchObject({ reply: '当前群未开启志愿汇功能。' });
   });
 
   it('converts a captcha data URL into a chat image fragment', () => {
