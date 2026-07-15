@@ -102,6 +102,7 @@ export interface ChaoxingVideoStatus {
 
 export interface ChaoxingSignInfo {
   otherId: string;
+  ifPhoto: boolean;
   ifNeedVCode: boolean;
   openCheckFaceFlag: boolean;
   startAt: number | null;
@@ -438,6 +439,7 @@ export class ChaoxingClient {
     return {
       info: {
         otherId: idValue(data.otherId),
+        ifPhoto: numberValue(data.ifphoto ?? data.ifPhoto) === 1,
         ifNeedVCode: numberValue(data.ifNeedVCode) === 1,
         openCheckFaceFlag: numberValue(data.openCheckFaceFlag) === 1,
         startAt: timestampValue(data.starttime),

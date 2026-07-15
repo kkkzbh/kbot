@@ -38,20 +38,19 @@ export class ChaoxingSignService {
   async scanOpenSigns(identity: OwnerIdentity, courseQuery?: string): Promise<DetectedSign[]> {
     const courses = courseQuery
       ? [await this.catalogService.resolveCourse(identity, courseQuery)]
-      : (await this.catalogService.listCourses(identity)).filter((course) => course.isRetired === 0);
+      : await this.catalogService.listCourses(identity);
     let auth = await this.authService.getAuthenticatedSession(identity);
     const detected: DetectedSign[] = [];
     for (const course of courses) {
       const activityResult = await this.client.getActivities(auth.cookieJar, course);
       auth = await this.authService.persistCookies(auth, activityResult.cookieJar);
-      const openActivities = activityResult.activities.filter((activity) => activity.status === 1 && activity.userStatus !== 1);
+      const openActivities = activityResult.activities.filter((activity) => activity.status === 1);
       for (const activity of openActivities) {
         const infoResult = await this.client.getSignInfo(auth.cookieJar, activity.activityId);
         auth = await this.authService.persistCookies(auth, infoResult.cookieJar);
-        detected.push({ course, activity, info: infoResult.info, signType: classifySignType(infoResult.info.otherId) });
+        detected.push({ course, activity, info: infoResult.info, signType: classifySignType(infoResult.info) });
         await delay(this.config.requestIntervalMs);
       }
-      await delay(this.config.requestIntervalMs);
     }
     return detected;
   }
@@ -111,7 +110,7 @@ export class ChaoxingSignService {
   }
 
   async resolveDetectedSign(identity: OwnerIdentity, activityId: string, courseQuery?: string): Promise<DetectedSign> {
-    const signs = await this.scanOpenSigns(identity, courseQuery);
+    const signs = filterPendingSigns(await this.scanOpenSigns(identity, courseQuery));
     if (activityId) {
       const matched = signs.find((sign) => sign.activity.activityId === activityId);
       if (!matched) throw new ChaoxingUserError(`没有找到进行中的签到活动 ${activityId}。`);
@@ -123,22 +122,27 @@ export class ChaoxingSignService {
   }
 }
 
-export function classifySignType(otherId: string): ChaoxingSignType {
-  if (!otherId || otherId === '1') return 'normal';
-  if (otherId === '3') return 'gesture';
-  if (otherId === '5') return 'code';
-  if (otherId === '0') return 'photo';
-  if (otherId === '2') return 'qrcode';
-  if (otherId === '4') return 'location';
+export function classifySignType(info: Pick<ChaoxingSignInfo, 'otherId' | 'ifPhoto'>): ChaoxingSignType {
+  if (info.otherId === '0') return info.ifPhoto ? 'photo' : 'normal';
+  if (info.otherId === '1') return 'photo';
+  if (info.otherId === '2') return 'qrcode';
+  if (info.otherId === '3') return 'gesture';
+  if (info.otherId === '4') return 'location';
+  if (info.otherId === '5') return 'code';
   return 'unknown';
+}
+
+export function filterPendingSigns(signs: DetectedSign[]): DetectedSign[] {
+  return signs.filter((sign) => sign.activity.userStatus !== 1);
 }
 
 export function formatDetectedSigns(signs: DetectedSign[]): string {
   if (signs.length === 0) return '当前没有进行中的签到。';
   return signs.map((sign) => {
     const type = signTypeLabel(sign.signType);
+    const status = sign.activity.userStatus === 1 ? '已签到' : '待签到';
     const end = sign.info.endAt ? `，截止 ${formatDate(sign.info.endAt)}` : '';
-    return `- ${sign.course.name} / ${sign.activity.title || '签到'}（${type}，活动ID ${sign.activity.activityId}${end}）`;
+    return `- ${sign.course.name} / ${sign.activity.title || '签到'}（${type}，${status}，活动ID ${sign.activity.activityId}${end}）`;
   }).join('\n');
 }
 

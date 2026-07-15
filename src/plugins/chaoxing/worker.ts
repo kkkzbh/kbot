@@ -2,7 +2,7 @@ import { formatAnswerDraft } from './answer-service.js';
 import { Logger } from 'koishi';
 import type { ChaoxingAuthService } from './auth-service.js';
 import type { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
-import type { ChaoxingSignService, DetectedSign } from './sign-service.js';
+import { filterPendingSigns, type ChaoxingSignService, type DetectedSign } from './sign-service.js';
 import { JobCancelledError, type ChaoxingAnswerJobProgress, type ChaoxingStudyRunner } from './study-runner.js';
 import type { ChaoxingTaskStore } from './store.js';
 import {
@@ -153,7 +153,7 @@ export class ChaoxingWorker {
     const courseQuery = typeof payload.courseQuery === 'string' && payload.courseQuery.trim() ? payload.courseQuery.trim() : undefined;
     const progress = parseSignWatchProgress(job.progressJson);
     const seen = new Set(progress.seenActivityIds);
-    const signs = await this.signService.scanOpenSigns(identity, courseQuery);
+    const signs = filterPendingSigns(await this.signService.scanOpenSigns(identity, courseQuery));
     for (const sign of signs) {
       if (seen.has(sign.activity.activityId)) continue;
       await this.handleNewSign(job, identity, sign);

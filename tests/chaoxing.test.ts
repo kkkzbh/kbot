@@ -15,6 +15,7 @@ import {
 import { parseChaoxingCommand } from '../src/plugins/chaoxing/commands.js';
 import { ChaoxingDeadlineService, filterPendingTasks } from '../src/plugins/chaoxing/deadline-service.js';
 import { ChaoxingOwnerCoordinator } from '../src/plugins/chaoxing/owner-coordinator.js';
+import { ChaoxingSignService, classifySignType, filterPendingSigns, formatDetectedSigns } from '../src/plugins/chaoxing/sign-service.js';
 import { selectResumableStudyJob } from '../src/plugins/chaoxing/study-runner.js';
 import type { ChaoxingQuestion } from '../src/plugins/chaoxing/types.js';
 import { renderChaoxingBindPage } from '../src/plugins/chaoxing/web/bind-page.js';
@@ -99,6 +100,19 @@ describe('chaoxing protocol parsers', () => {
       data: { activeList: [{ id: 900, nameOne: '课堂签到', activeType: 2, otherId: 5, status: 1, userStatus: 0, startTime: 1_721_000_000 }] },
     }), course);
     expect(activities).toEqual([expect.objectContaining({ activityId: '900', classId: '200', signTypeCode: '5', status: 1 })]);
+  });
+
+  it('reads the photo requirement used to distinguish normal and photo signs', async () => {
+    const client = new ChaoxingClient({
+      fetchImpl: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        result: 1,
+        data: { id: 900, otherId: 0, ifphoto: 1, ifNeedVCode: 0, openCheckFaceFlag: 0 },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    const result = await client.getSignInfo({ cookies: [] }, '900');
+
+    expect(result.info).toMatchObject({ otherId: '0', ifPhoto: true, ifNeedVCode: false, openCheckFaceFlag: false });
   });
 
   it('uses course-declared routes and current navigation fields for academic tasks', async () => {
@@ -198,6 +212,74 @@ describe('chaoxing protocol parsers', () => {
 });
 
 describe('chaoxing local contracts', () => {
+  it('scans open signs from retired courses and keeps display status separate from pending execution', async () => {
+    const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
+    const retiredCourse = {
+      courseId: '100', classId: '200', cpi: '300', name: '签到测试课', className: '', teacherName: '', schoolName: '', imageUrl: '', state: 0, isRetired: 1,
+    };
+    const activities = [
+      {
+        activityId: 'open-signed', courseId: '100', classId: '200', title: '普通签到', activityType: 2,
+        signTypeCode: '0', status: 1, userStatus: 1, startAt: null, endAt: null, ext: '{}', raw: {},
+      },
+      {
+        activityId: 'open-pending', courseId: '100', classId: '200', title: '普通签到', activityType: 2,
+        signTypeCode: '0', status: 1, userStatus: 0, startAt: null, endAt: null, ext: '{}', raw: {},
+      },
+      {
+        activityId: 'closed', courseId: '100', classId: '200', title: '已结束签到', activityType: 2,
+        signTypeCode: '0', status: 2, userStatus: 0, startAt: null, endAt: null, ext: '{}', raw: {},
+      },
+    ];
+    const auth = {
+      ownerKey: identity.ownerKey, cookieJar: { cookies: [] },
+      profile: { uid: '1', puid: '2', fid: '3', name: '测试', schoolName: '学校', username: 'user', deviceCode: 'device' },
+      credentialVersion: 1,
+    };
+    const getActivities = vi.fn().mockResolvedValue({ activities, cookieJar: { cookies: [] } });
+    const getSignInfo = vi.fn().mockImplementation(async (_cookieJar, activityId: string) => ({
+      info: {
+        otherId: '0', ifPhoto: false, ifNeedVCode: false, openCheckFaceFlag: false,
+        startAt: null, endAt: null, raw: { id: activityId },
+      },
+      cookieJar: { cookies: [] },
+    }));
+    const service = new ChaoxingSignService(
+      {
+        getAuthenticatedSession: vi.fn().mockResolvedValue(auth),
+        persistCookies: vi.fn().mockImplementation(async (current, cookieJar) => ({ ...current, cookieJar })),
+      } as never,
+      { listCourses: vi.fn().mockResolvedValue([retiredCourse]) } as never,
+      { getActivities, getSignInfo } as never,
+      {} as never,
+      { requestIntervalMs: 0 },
+    );
+
+    const signs = await service.scanOpenSigns(identity);
+
+    expect(getActivities).toHaveBeenCalledWith({ cookies: [] }, retiredCourse);
+    expect(signs.map((sign) => sign.activity.activityId)).toEqual(['open-signed', 'open-pending']);
+    expect(signs.every((sign) => sign.signType === 'normal')).toBe(true);
+    expect(filterPendingSigns(signs).map((sign) => sign.activity.activityId)).toEqual(['open-pending']);
+    expect(formatDetectedSigns(signs)).toContain('普通签到，已签到，活动ID open-signed');
+    expect(formatDetectedSigns(signs)).toContain('普通签到，待签到，活动ID open-pending');
+    await expect(service.resolveDetectedSign(identity, 'open-signed')).rejects.toThrow('没有找到进行中的签到活动 open-signed');
+    await expect(service.resolveDetectedSign(identity, 'open-pending')).resolves.toMatchObject({
+      activity: { activityId: 'open-pending' },
+    });
+  });
+
+  it('classifies ordinary and photo signs using both remote fields', () => {
+    expect(classifySignType({ otherId: '0', ifPhoto: false })).toBe('normal');
+    expect(classifySignType({ otherId: '0', ifPhoto: true })).toBe('photo');
+    expect(classifySignType({ otherId: '1', ifPhoto: false })).toBe('photo');
+    expect(classifySignType({ otherId: '2', ifPhoto: false })).toBe('qrcode');
+    expect(classifySignType({ otherId: '3', ifPhoto: false })).toBe('gesture');
+    expect(classifySignType({ otherId: '4', ifPhoto: false })).toBe('location');
+    expect(classifySignType({ otherId: '5', ifPhoto: false })).toBe('code');
+    expect(classifySignType({ otherId: '', ifPhoto: false })).toBe('unknown');
+  });
+
   it('does not report expired or closed remote tasks as pending', () => {
     expect(filterPendingTasks([
       { status: '已过期', endAt: null } as never,
