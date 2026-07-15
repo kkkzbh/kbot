@@ -16,6 +16,8 @@ import { buildMemoryExtractProviderProfile, extractMemoryCandidates, isMemoryPro
 import { runMemoryJobTick, processMaintenanceJob } from './pipeline.js';
 import { extractPlainText, MemoryStore } from './store.js';
 export { MemoryStore } from './store.js';
+import { MemoryAdminService } from './admin.js';
+export { MemoryAdminService } from './admin.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
@@ -243,6 +245,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ensureMemoryTables(ctx);
   const store = new MemoryStore(database);
+  const adminService = new MemoryAdminService(database, store);
   const statusService = new MemoryStatusService(
     runtime,
     store,
@@ -289,6 +292,8 @@ export function apply(ctx: Context, config: Config): void {
   );
   ctx.provide('memoryStatus');
   ctx.set('memoryStatus', statusService);
+  ctx.provide('memoryAdmin');
+  ctx.set('memoryAdmin', adminService);
   registerMemoryCommands(ctx, store, statusService);
 
   let processing = false;

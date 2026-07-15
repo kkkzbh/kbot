@@ -2,7 +2,7 @@ import { Context, Logger, type Session } from 'koishi';
 import type {
   ClearConversationHistoryResult,
   ClearConversationHistoryTarget,
-  ConsoleFeatureScope,
+  AdminFeatureScope,
   ConversationTarget,
   DeleteConversationRoomResult,
   DeleteConversationRoomTarget,
@@ -230,7 +230,7 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
     return override ?? defaultEnabled;
   }
 
-  async listConsoleFeatureScopes(): Promise<ConsoleFeatureScope[]> {
+  async listAdminFeatureScopes(): Promise<AdminFeatureScope[]> {
     const [rooms, groupMembers] = await Promise.all([
       this.database.get('chathub_room', {} as Record<string, never>) as Promise<RoomRow[]>,
       this.database.get('chathub_room_group_member', {} as Record<string, never>) as Promise<RoomGroupMemberRow[]>,
@@ -243,7 +243,7 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
       roomById.set(roomId, room);
     }
 
-    const groupScopes = new Map<string, ConsoleFeatureScope>();
+    const groupScopes = new Map<string, AdminFeatureScope>();
     for (const member of groupMembers) {
       const groupId = normalizeText(member.groupId);
       const roomId = toPositiveInteger(member.roomId);
@@ -251,7 +251,7 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
       const room = roomById.get(roomId);
       if (!room) continue;
 
-      const candidate: ConsoleFeatureScope = {
+      const candidate: AdminFeatureScope = {
         scopeKind: 'group',
         scopeId: groupId,
         roomId,

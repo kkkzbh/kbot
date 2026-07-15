@@ -27,7 +27,7 @@ export interface FeatureOverrideInput {
   enabled: boolean;
 }
 
-export interface ConsoleFeatureScope {
+export interface AdminFeatureScope {
   scopeKind: FeatureScopeKind;
   scopeId: string;
   roomId: number | null;
@@ -79,7 +79,7 @@ export interface DeleteConversationRoomResult {
 
 export interface FeaturePolicyServiceLike {
   resolveFeatureEnabled(session: Session, featureKey: ScopedFeatureKey): Promise<boolean>;
-  listConsoleFeatureScopes(): Promise<ConsoleFeatureScope[]>;
+  listAdminFeatureScopes(): Promise<AdminFeatureScope[]>;
   listConversationTargets(): Promise<ConversationTarget[]>;
   getFeatureOverrides(): Promise<FeatureScopeOverrideRecord[]>;
   saveFeatureOverrides(overrides: FeatureOverrideInput[]): Promise<FeatureScopeOverrideRecord[]>;

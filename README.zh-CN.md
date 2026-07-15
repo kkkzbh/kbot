@@ -59,7 +59,7 @@ pnpm build
 
 `pnpm build` 会把运行产物写入 `dist/`。`dist/` 已被忽略，不应提交。
 
-如果只修改 console 前端，`pnpm console:build` 足够覆盖前端检查。涉及 runtime backend、shared runtime types、console IPC，或 `koishi.yml` 使用的 managed env key 时，需要运行 `pnpm build`。
+只修改独立管理端前端时，需要同时运行 `pnpm admin:typecheck` 与 `pnpm admin:build`。涉及 runtime backend、shared runtime types、Admin API contract，或 `koishi.yml` 使用的 managed env key 时，需要运行 `pnpm build`。
 
 ## 运行命令
 
@@ -100,6 +100,20 @@ LLONEBOT_DATA_DIR=./.runtime/llonebot
 ```
 
 服务器默认关闭语音输入。如果在服务器启用语音输出，`QQ_VOICE_TTS_BASE_URL` 必须指向 Tailnet 可访问的 TTS 服务，不能指向服务器本机的 `127.0.0.1`。
+
+## 独立管理端
+
+管理工作台由 Koishi 进程直接通过根路径 `/` 提供静态 SPA，并通过同源 `/api/admin/v1` 访问运行时能力。它不依赖 Koishi Console。`/api/**`、校园绑定页和 Storage 等机器人 HTTP 路由继续由各自插件处理。
+
+启动前必须显式配置：
+
+```dotenv
+QQBOT_ADMIN_ACCESS_TOKEN=至少16个字符
+QQBOT_ADMIN_SESSION_SECRET=至少32个随机字符
+QQBOT_ADMIN_ORIGIN=https://实际管理端域名
+```
+
+`QQBOT_ADMIN_ORIGIN` 必须是浏览器实际使用的完整 Origin。Admin API 会校验 Host；所有变更请求还会校验 Origin。登录成功后只设置 HttpOnly、SameSite=Strict session cookie，Secret 字段只返回是否已配置。
 
 ## 运行辅助脚本
 

@@ -4,5 +4,5 @@ export {
   normalizeCopilotModelId,
   resolveCopilotStateDir,
   type CopilotBridgeStateProvider,
-  type CopilotConsoleStatus,
+  type CopilotAdminStatus,
 } from './service.js';

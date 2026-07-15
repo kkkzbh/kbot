@@ -1,7 +1,7 @@
 import { Context, Logger, type Session } from 'koishi';
 import type { ConversationTarget, FeaturePolicyServiceLike } from '../../types/feature-policy.js';
 import type {
-  BotConsoleToolPolicyState,
+  AdminToolPolicyState,
   ResolveAllowedToolsOptions,
   ResolveAllowedToolsResult,
   ToolCatalogEntry,
@@ -166,7 +166,7 @@ export class ToolPolicyService implements ToolPolicyServiceLike {
     private readonly fileSystemAllowedGroupIds = parseGroupSet(process.env[FILE_SYSTEM_ALLOWED_GROUPS_ENV]),
   ) {}
 
-  async getToolPolicyState(): Promise<BotConsoleToolPolicyState> {
+  async getToolPolicyState(): Promise<AdminToolPolicyState> {
     const conversationTargets = await this.listConversationTargets();
     const runtimeTools = new Set(this.getRuntimeToolNames());
     return {

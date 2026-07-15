@@ -321,7 +321,7 @@ export interface AffinityManualRandomPlanResponse {
 }
 
 export interface AffinityServiceLike {
-  getConsoleState(): Promise<AffinityStateSummary>;
+  getAdminState(): Promise<AffinityStateSummary>;
   buildPanelView(session: import('koishi').Session, now?: number): Promise<AffinityPanelView>;
   syncPanelCommandToChatHistory(
     session: import('koishi').Session,

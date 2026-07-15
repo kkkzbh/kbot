@@ -5,6 +5,6 @@ export {
   filterCodexModelCatalog,
   resolveCodexStateDir,
   type CodexBridgeStateProvider,
-  type CodexConsoleStatus,
+  type CodexAdminStatus,
   type CodexModelOption,
 } from './service.js';

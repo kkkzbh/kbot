@@ -3,10 +3,10 @@ import { mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { ProxyAgent, type Dispatcher } from 'undici';
 import type {
-  BotConsoleAuthStatus,
+  AdminAuthStatus,
   CopilotAuthAttempt,
   CopilotAuthState,
-} from '../../types/bot-console.js';
+} from '../../types/admin.js';
 import {
   COPILOT_AUTO_MODEL_ID,
   COPILOT_MODEL_OPTIONS,
@@ -115,14 +115,14 @@ type FetchInitWithDispatcher = RequestInit & {
   dispatcher?: Dispatcher;
 };
 
-export type CopilotConsoleStatus = Pick<
+export type CopilotAdminStatus = Pick<
   CopilotAuthState,
   'authKind' | 'authStatus' | 'accountLabel' | 'authError' | 'attempt'
 >;
 
 export interface CopilotBridgeStateProvider {
   getRuntimeConfig(): Promise<CopilotBridgeRuntimeConfig>;
-  getConsoleStatus(options?: { probe?: boolean }): Promise<CopilotConsoleStatus>;
+  getAdminStatus(options?: { probe?: boolean }): Promise<CopilotAdminStatus>;
   proxyModels?(): Promise<{ status: number; headers: Record<string, string>; body: string }>;
 }
 
@@ -395,7 +395,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     };
   }
 
-  async getConsoleStatus(options: { probe?: boolean } = {}): Promise<CopilotConsoleStatus> {
+  async getAdminStatus(options: { probe?: boolean } = {}): Promise<CopilotAdminStatus> {
     const attempt = [...this.attempts.values()].find((item) => item.state === 'pending') ?? null;
     if (attempt) {
       return {
@@ -449,7 +449,7 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     }
   }
 
-  async startLogin(): Promise<CopilotConsoleStatus> {
+  async startLogin(): Promise<CopilotAdminStatus> {
     const payload = await this.requestDeviceCode();
     const now = Date.now();
     const attempt: DeviceLoginAttempt = {
@@ -474,14 +474,14 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     };
   }
 
-  async pollLogin(attemptId: string): Promise<CopilotConsoleStatus> {
+  async pollLogin(attemptId: string): Promise<CopilotAdminStatus> {
     const attempt = this.attempts.get(attemptId);
     if (!attempt) {
-      return this.getConsoleStatus();
+      return this.getAdminStatus();
     }
     if (attempt.state !== 'pending') {
       this.attempts.delete(attemptId);
-      return this.getConsoleStatus();
+      return this.getAdminStatus();
     }
     if (Date.now() >= attempt.expiresAt) {
       attempt.state = 'expired';
@@ -587,17 +587,17 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     };
   }
 
-  async cancelLogin(attemptId: string): Promise<CopilotConsoleStatus> {
+  async cancelLogin(attemptId: string): Promise<CopilotAdminStatus> {
     const attempt = this.attempts.get(attemptId);
     if (attempt) {
       attempt.state = 'cancelled';
       attempt.error = '已取消本次 GitHub 设备登录。';
       this.attempts.delete(attemptId);
     }
-    return this.getConsoleStatus();
+    return this.getAdminStatus();
   }
 
-  async logout(): Promise<CopilotConsoleStatus> {
+  async logout(): Promise<CopilotAdminStatus> {
     this.attempts.clear();
     this.invalidateAutoSession();
     await Promise.all([
@@ -1114,7 +1114,7 @@ function formatAccountLabel(record: CopilotOAuthRecord): string | null {
   return record.accountLogin ?? record.accountId ?? null;
 }
 
-function classifyAuthErrorStatus(error: unknown): BotConsoleAuthStatus {
+function classifyAuthErrorStatus(error: unknown): AdminAuthStatus {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('HTTP 401') || message.includes('HTTP 403')) return 'expired';
   return 'error';

@@ -14,11 +14,12 @@ describe('affinity configuration', () => {
     expect(content).toContain('randomWindowEndHour: ${{ +env.AFFINITY_RANDOM_WINDOW_END_HOUR || 22 }}');
   });
 
-  it('adds the relationship events console tab', () => {
-    const content = readFileSync(resolve(process.cwd(), 'src/plugins/bot-console/client/App.vue'), 'utf8');
+  it('exposes relationship events in the independent admin workspace', () => {
+    const router = readFileSync(resolve(process.cwd(), 'apps/admin-web/src/router.ts'), 'utf8');
+    const page = readFileSync(resolve(process.cwd(), 'apps/admin-web/src/pages/AffinityPage.vue'), 'utf8');
 
-    expect(content).toContain("import AffinityPanel from './components/panels/AffinityPanel.vue'");
-    expect(content).toContain("{ id: 'affinity', label: '关系事件' }");
-    expect(content).toContain('affinity: AffinityPanel');
+    expect(router).toContain("path: '/intelligence/affinity'");
+    expect(router).toContain("title: '关系事件'");
+    expect(page).toContain("api('/affinity')");
   });
 });

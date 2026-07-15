@@ -157,7 +157,7 @@ vi.mock('../src/plugins/shared/prompt-context/index.js', async () => {
   };
 });
 
-import { sendVoiceByBridge } from '../src/plugins/bot-console/voice-bridge.js';
+import { sendVoiceByBridge } from '../src/plugins/admin-api/voice-bridge.js';
 import { apply, deliverStandaloneReplyPlan, ensureCanSendRecord, inject } from '../src/plugins/reply/index.js';
 import { ReplyRuntime } from '../src/plugins/reply/runtime/index.js';
 import { resolveMainChatRuntimeProfileFromEnv } from '../src/plugins/shared/llm/index.js';

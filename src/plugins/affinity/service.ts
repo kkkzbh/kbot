@@ -1071,10 +1071,10 @@ export class AffinityService implements AffinityServiceLike {
     }
     this.settingsCache = this.applyRuntimeGate(next);
     this.scheduleRefresh();
-    return this.getConsoleState();
+    return this.getAdminState();
   }
 
-  async getConsoleState(): Promise<AffinityStateSummary> {
+  async getAdminState(): Promise<AffinityStateSummary> {
     const [settings, scopes, users, recentEvents, randomPlans, audit] = await Promise.all([
       this.getSettings(),
       this.database.get('affinity_scope_config', { characterId: CHARACTER_ID }) as Promise<AffinityScopeConfigRecord[]>,
@@ -1234,7 +1234,7 @@ export class AffinityService implements AffinityServiceLike {
       }
     }
     this.scheduleRefresh();
-    return this.getConsoleState();
+    return this.getAdminState();
   }
 
   async createManualRandomPlan(input: AffinityManualRandomPlanInput, now = Date.now()): Promise<AffinityManualRandomPlanResponse> {
@@ -1311,7 +1311,7 @@ export class AffinityService implements AffinityServiceLike {
       userKey,
       detail: { reason: input.reason, patch },
     });
-    return this.getConsoleState();
+    return this.getAdminState();
   }
 
   async resolveScope(session: Session): Promise<AffinityScopeConfigRecord | null> {
@@ -2494,6 +2494,6 @@ export function createUnavailableAffinityState(): AffinityStateSummary {
 export async function affinityMutationResponse(service: AffinityServiceLike, ok = true): Promise<AffinityMutationResponse> {
   return {
     ok,
-    affinity: await service.getConsoleState(),
+    affinity: await service.getAdminState(),
   };
 }

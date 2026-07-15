@@ -32,7 +32,7 @@ export interface BuiltinTabDefinition {
 
 export type MainChatReplyOutputContract = ReplyOutputContract;
 
-export interface MainChatConsoleDescription {
+export interface MainChatAdminDescription {
   description: string;
   modelHint: string;
 }
@@ -73,7 +73,7 @@ export interface MainChatProviderStrategy {
   transportModel: (model?: string | null) => string | null;
   resolveRequestMode: (model?: string | null) => MainChatRequestMode;
   resolveStructuredOutputProtocol: (model?: string | null) => StructuredOutputProtocol;
-  describeForConsole: (model?: string | null, options?: MainChatStrategyOptions) => MainChatConsoleDescription;
+  describeForAdmin: (model?: string | null, options?: MainChatStrategyOptions) => MainChatAdminDescription;
 }
 
 export interface MainChatStrategyOptions {
@@ -358,7 +358,7 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
     resolveStructuredOutputProtocol() {
       return 'native_chat_json_schema';
     },
-    describeForConsole() {
+    describeForAdmin() {
       return {
         description: '当前主聊天固定走硅基流动 provider，接口地址锁定为官方 API，默认使用 Kimi-K2.5。',
         modelHint: '当前仅支持 Pro/moonshotai/Kimi-K2.5。',
@@ -401,7 +401,7 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
     resolveStructuredOutputProtocol() {
       return 'native_chat_json_schema';
     },
-    describeForConsole() {
+    describeForAdmin() {
       return {
         description: '当前按 OpenAI 兼容 provider 处理，默认预填 wyzai + gpt-5.4-medium-thinking，并走 chat/completions 结构化输出。',
         modelHint: '推荐填写 openai/gpt-5.4-medium-thinking。当前 OpenAI Tab 默认接入 wyzai。',
@@ -446,7 +446,7 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
     resolveStructuredOutputProtocol() {
       return 'native_responses_json_schema';
     },
-    describeForConsole(model, options) {
+    describeForAdmin(model, options) {
       const option = getCodexModelOption(model);
       const effort = normalizeCodexReasoningEffort(options?.reasoningEffort) ?? CODEX_DEFAULT_REASONING_EFFORT;
       return {
@@ -493,7 +493,7 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
     resolveStructuredOutputProtocol(model) {
       return getCopilotStructuredOutputProtocol(model);
     },
-    describeForConsole(model) {
+    describeForAdmin(model) {
       const option = getCopilotModelOption(model);
       const mode = this.resolveRequestMode(model) === 'responses' ? 'Responses API' : 'chat/completions';
       return {
@@ -537,7 +537,7 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
     resolveStructuredOutputProtocol() {
       return 'chat_reply_v1';
     },
-    describeForConsole(model) {
+    describeForAdmin(model) {
       const option = getDeepSeekOfficialModelOption(model);
       return {
         description: '当前按 DeepSeek 官方 OpenAI 兼容接口接入，走 chat/completions + CHAT_REPLY_V1 纯文本结构化协议。',
@@ -580,7 +580,7 @@ export const MAIN_CHAT_PROVIDER_STRATEGIES: readonly MainChatProviderStrategy[] 
     resolveStructuredOutputProtocol() {
       return 'native_chat_json_schema';
     },
-    describeForConsole(model) {
+    describeForAdmin(model) {
       const option = getMimoChatModelOption(model);
       return {
         description: '当前按 Xiaomi MIMO Token Plan 的 OpenAI 兼容 chat/completions 接口接入，聊天模型限定为已验证列表。',
@@ -624,7 +624,7 @@ export function resolveMainChatRuntimeProfileFromEnv(env: Record<string, string>
   const activeTab = resolveMainChatActiveTabFromEnv(env);
   return resolveMainChatRuntimeProfileFromTabConfig(
     activeTab,
-    MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => resolveMainChatTabStateFromEnv(id, env)),
+    [resolveMainChatTabStateFromEnv(activeTab, env)],
   );
 }
 
@@ -661,7 +661,7 @@ export function resolveMainChatTabStateFromEnv(
   const reasoningEffort = id === 'codex'
     ? normalizeCodexReasoningEffort(definition.envKeys.reasoningEffort ? env[definition.envKeys.reasoningEffort] : null) ?? CODEX_DEFAULT_REASONING_EFFORT
     : null;
-  const { description, modelHint } = strategy.describeForConsole(canonicalModel, { reasoningEffort });
+  const { description, modelHint } = strategy.describeForAdmin(canonicalModel, { reasoningEffort });
 
   return {
     id,
@@ -703,7 +703,7 @@ export function resolveMainChatRuntimeProfileFromTabConfig(
   const reasoningEffort = activeTab === 'codex'
     ? normalizeCodexReasoningEffort((activeConfig as { reasoningEffort?: unknown }).reasoningEffort) ?? CODEX_DEFAULT_REASONING_EFFORT
     : null;
-  const { description, modelHint } = strategy.describeForConsole(canonicalModel, { reasoningEffort });
+  const { description, modelHint } = strategy.describeForAdmin(canonicalModel, { reasoningEffort });
 
   return {
     tabId: activeTab,
@@ -1011,7 +1011,7 @@ export function resolveMainChatModelDescriptor(args: {
   };
 }
 
-// ─── UI schema (single source of truth for the bot-console Models tab) ────────
+// ─── Admin model UI schema (single source of truth) ──────────────────────────
 
 export type ModelInputKind = 'select-static' | 'select-dynamic' | 'free-text';
 export type SecondaryActionKind = 'codex-oauth' | 'copilot-oauth' | 'deepseek-refresh' | 'mimo-refresh' | null;

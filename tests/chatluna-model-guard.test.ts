@@ -490,6 +490,21 @@ describe('resolveMainChatRuntimeProfileFromEnv', () => {
     });
   });
 
+  it('does not initialize inactive provider configuration', () => {
+    expect(
+      resolveMainChatRuntimeProfileFromEnv({
+        CHATLUNA_ACTIVE_TAB: 'openai',
+        CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
+        CHATLUNA_OPENAI_API_KEY: 'sk-openai',
+        CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
+        CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/removed-model',
+      }),
+    ).toMatchObject({
+      tabId: 'openai',
+      defaultModel: 'openai/gpt-5.4-medium-thinking',
+    });
+  });
+
   it('normalizes legacy siliconflow model ids and locks the siliconflow base url', () => {
     expect(
       resolveMainChatRuntimeProfileFromEnv({

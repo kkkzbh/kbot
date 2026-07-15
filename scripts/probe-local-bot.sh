@@ -276,8 +276,7 @@ async function main() {
     throw new Error('no inspector target found')
   }
 
-  const consolePkg = require.resolve('@koishijs/plugin-console/package.json', { paths: [process.cwd()] })
-  const WebSocket = require(require.resolve('ws', { paths: [consolePkg, process.cwd()] }))
+  const WebSocket = require(require.resolve('ws', { paths: [process.cwd()] }))
   const ws = new WebSocket(target.webSocketDebuggerUrl)
   const pending = new Map()
   let seq = 0

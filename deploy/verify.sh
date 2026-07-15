@@ -25,4 +25,6 @@ load_env_file() {
 load_env_file "${ENV_SERVER}"
 load_env_file "${ENV_RUNTIME}"
 
+node "${APP_DIR}/scripts/validate-admin-config.mjs"
+
 exec bash "${APP_DIR}/scripts/verify-qqbot-host-runtime.sh" "${SCOPE}"

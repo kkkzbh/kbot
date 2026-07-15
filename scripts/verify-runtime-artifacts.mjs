@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import YAML from 'yaml';
 
@@ -59,6 +59,14 @@ function fileExists(filePath) {
   }
 }
 
+function directoryHasFile(dirPath, pattern) {
+  try {
+    return readdirSync(dirPath).some((name) => pattern.test(name) && fileExists(join(dirPath, name)));
+  } catch {
+    return false;
+  }
+}
+
 function artifactPathForSpec(distDir, spec) {
   const localPath = spec.split(':')[0];
   const relativePath = localPath.replace(/^\.\/dist\//, '');
@@ -86,15 +94,17 @@ function main() {
     }
   }
 
-  if (specs.some((spec) => spec.split(':')[0] === './dist/plugins/bot-console')) {
+  if (specs.some((spec) => spec.split(':')[0] === './dist/plugins/admin-api')) {
     for (const assetPath of [
-      join(distDir, 'node_modules/@qqbot/bot-console-client/index.js'),
-      join(distDir, 'node_modules/@qqbot/bot-console-client/style.css'),
+      join(distDir, 'admin-web/index.html'),
     ]) {
       if (!fileExists(assetPath)) {
         missing.push(assetPath);
       }
     }
+    const adminAssetsDir = join(distDir, 'admin-web/assets');
+    if (!directoryHasFile(adminAssetsDir, /\.js$/)) missing.push(`${adminAssetsDir}/*.js`);
+    if (!directoryHasFile(adminAssetsDir, /\.css$/)) missing.push(`${adminAssetsDir}/*.css`);
   }
 
   if (missing.length > 0) {

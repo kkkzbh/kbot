@@ -91,7 +91,7 @@ describe('copilot oauth bridge helpers', () => {
       },
     });
 
-    expect(await service.getConsoleStatus()).toMatchObject({
+    expect(await service.getAdminStatus()).toMatchObject({
       authKind: 'oauth_device',
       authStatus: 'unauthenticated',
       accountLabel: null,

@@ -3,10 +3,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile, rename, rm, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
-  BotConsoleAuthStatus,
+  AdminAuthStatus,
   CodexAuthAttempt,
   CodexAuthState,
-} from '../../types/bot-console.js';
+} from '../../types/admin.js';
 
 const DEFAULT_KOISHI_PORT = '5140';
 const DEFAULT_CODEX_BACKEND_BASE_URL = 'https://chatgpt.com/backend-api/codex';
@@ -106,18 +106,18 @@ export interface CodexModelOption {
   label: string;
 }
 
-export type CodexConsoleStatus = Pick<
+export type CodexAdminStatus = Pick<
   CodexAuthState,
   'authKind' | 'authStatus' | 'accountLabel' | 'authError' | 'tokenExpiresAt' | 'attempt'
 >;
 
 export interface CodexBridgeStateProvider {
   getRuntimeConfig(): Promise<CodexBridgeRuntimeConfig>;
-  getConsoleStatus(options?: { probe?: boolean }): Promise<CodexConsoleStatus>;
-  startLogin?: () => Promise<CodexConsoleStatus>;
-  pollLogin?: (attemptId: string) => Promise<CodexConsoleStatus>;
-  cancelLogin?: (attemptId: string) => Promise<CodexConsoleStatus>;
-  logout?: () => Promise<CodexConsoleStatus>;
+  getAdminStatus(options?: { probe?: boolean }): Promise<CodexAdminStatus>;
+  startLogin?: () => Promise<CodexAdminStatus>;
+  pollLogin?: (attemptId: string) => Promise<CodexAdminStatus>;
+  cancelLogin?: (attemptId: string) => Promise<CodexAdminStatus>;
+  logout?: () => Promise<CodexAdminStatus>;
   proxyModels?: () => Promise<{ status: number; headers: Record<string, string>; body: string }>;
   proxyResponses?: (body: unknown) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
 }
@@ -365,7 +365,7 @@ function assertCodexBackendAccount(auth: CodexAuthRecord): string {
   return accountId;
 }
 
-function classifyAuthErrorStatus(error: unknown): BotConsoleAuthStatus {
+function classifyAuthErrorStatus(error: unknown): AdminAuthStatus {
   const message = error instanceof Error ? error.message : String(error);
   if (/ChatGPT account id/i.test(message)) return 'error';
   if (/尚未登录|缺少|not found|enoent/i.test(message)) return 'unauthenticated';
@@ -773,7 +773,7 @@ function publicAttempt(attempt: StoredCodexAuthAttempt | null | undefined): Code
   };
 }
 
-function buildAttemptStatus(attempt: StoredCodexAuthAttempt): CodexConsoleStatus {
+function buildAttemptStatus(attempt: StoredCodexAuthAttempt): CodexAdminStatus {
   return {
     authKind: 'codex_oauth',
     authStatus: attempt.state === 'pending' ? 'pending' : attempt.state === 'authorized' ? 'ready' : attempt.state === 'expired' ? 'expired' : 'error',
@@ -814,7 +814,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     };
   }
 
-  async getConsoleStatus(options: { probe?: boolean } = {}): Promise<CodexConsoleStatus> {
+  async getAdminStatus(options: { probe?: boolean } = {}): Promise<CodexAdminStatus> {
     const pending = [...this.loginAttempts.values()].find((attempt) => attempt.state === 'pending');
     if (pending) {
       if (pending.expiresAt <= Date.now()) {
@@ -862,7 +862,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     }
   }
 
-  async startLogin(): Promise<CodexConsoleStatus> {
+  async startLogin(): Promise<CodexAdminStatus> {
     const response = await this.requestDeviceCode();
     const attemptId = randomUUID();
     const now = Date.now();
@@ -892,10 +892,10 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     return buildAttemptStatus(attempt);
   }
 
-  async pollLogin(attemptId: string): Promise<CodexConsoleStatus> {
+  async pollLogin(attemptId: string): Promise<CodexAdminStatus> {
     const attempt = this.loginAttempts.get(String(attemptId ?? ''));
     if (!attempt) {
-      return this.getConsoleStatus();
+      return this.getAdminStatus();
     }
     if (attempt.state !== 'pending') {
       return buildAttemptStatus(attempt);
@@ -957,17 +957,17 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     }
   }
 
-  async cancelLogin(attemptId: string): Promise<CodexConsoleStatus> {
+  async cancelLogin(attemptId: string): Promise<CodexAdminStatus> {
     const attempt = this.loginAttempts.get(String(attemptId ?? ''));
     if (attempt) {
       attempt.state = 'cancelled';
       attempt.error = 'Codex OAuth 登录已取消。';
       this.loginAttempts.delete(attempt.attemptId);
     }
-    return this.getConsoleStatus();
+    return this.getAdminStatus();
   }
 
-  async logout(): Promise<CodexConsoleStatus> {
+  async logout(): Promise<CodexAdminStatus> {
     this.loginAttempts.clear();
     await rm(this.authFilePath, { force: true });
     return {

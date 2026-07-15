@@ -260,7 +260,7 @@ describe('feature policy service', () => {
     });
     const service = ctx.featurePolicy as NonNullable<typeof ctx.featurePolicy>;
 
-    await expect(service.listConsoleFeatureScopes()).resolves.toEqual([
+    await expect(service.listAdminFeatureScopes()).resolves.toEqual([
       expect.objectContaining({ scopeKind: 'private_default', scopeId: PRIVATE_DEFAULT_SCOPE_ID }),
       expect.objectContaining({ scopeKind: 'group', scopeId: '20002', roomId: 2 }),
     ]);

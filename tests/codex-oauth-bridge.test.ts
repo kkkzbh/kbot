@@ -99,7 +99,7 @@ describe('codex oauth bridge helpers', () => {
 
   it('reports missing Codex ChatGPT auth without token material', async () => {
     const dir = createTempDir();
-    const status = await createService(dir).getConsoleStatus({ probe: true });
+    const status = await createService(dir).getAdminStatus({ probe: true });
 
     expect(status).toMatchObject({
       authKind: 'codex_oauth',
@@ -291,7 +291,7 @@ describe('codex oauth bridge helpers', () => {
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const status = await createService(dir).getConsoleStatus({ probe: true });
+    const status = await createService(dir).getAdminStatus({ probe: true });
     const persisted = readCodexAuth(dir);
 
     expect(status).toMatchObject({
@@ -687,7 +687,7 @@ describe('codex oauth bridge helpers', () => {
     globalThis.fetch = fetchMock as typeof fetch;
 
     const service = createService(dir);
-    const status = await service.getConsoleStatus({ probe: true });
+    const status = await service.getAdminStatus({ probe: true });
     const result = await service.proxyResponses({
       model: 'openai/gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],

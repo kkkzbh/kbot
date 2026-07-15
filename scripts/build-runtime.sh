@@ -9,7 +9,7 @@ mkdir -p "$TMP_ROOT"
 
 BUILD_ROOT="$(mktemp -d "${TMP_ROOT}/runtime-build-XXXXXX")"
 STAGE_DIST="${BUILD_ROOT}/dist"
-STAGE_CONSOLE_DIR="${STAGE_DIST}/node_modules/@qqbot/bot-console-client"
+STAGE_ADMIN_DIR="${STAGE_DIST}/admin-web"
 NEXT_DIST="${TMP_ROOT}/dist-next-$$"
 PREVIOUS_DIST="${TMP_ROOT}/dist-previous-$$"
 SWAP_STARTED=0
@@ -30,7 +30,7 @@ cd "$ROOT_DIR"
 
 ./scripts/ensure-chatluna-build.sh
 pnpm exec tsc -p tsconfig.build.json --outDir "$STAGE_DIST"
-QQBOT_CONSOLE_OUT_DIR="$STAGE_CONSOLE_DIR" pnpm console:build
+QQBOT_ADMIN_OUT_DIR="$STAGE_ADMIN_DIR" pnpm admin:build
 mkdir -p "$STAGE_DIST/plugins/affinity/assets"
 cp -R "$ROOT_DIR/src/plugins/affinity/assets/." "$STAGE_DIST/plugins/affinity/assets/"
 mkdir -p "$STAGE_DIST/plugins/hbu-jw/assets"

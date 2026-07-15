@@ -47,12 +47,12 @@ describe('runtime startup contract', () => {
 
   it('builds runtime artifacts in a staging directory before replacing dist', () => {
     const buildScript = readRepoFile('scripts/build-runtime.sh');
-    const viteConfig = readRepoFile('src/plugins/bot-console/client/vite.config.ts');
-    const botConsolePlugin = readRepoFile('src/plugins/bot-console/index.ts');
+    const viteConfig = readRepoFile('apps/admin-web/vite.config.ts');
+    const adminPlugin = readRepoFile('src/plugins/admin-api/index.ts');
 
     expect(buildScript).toContain('mktemp -d "${TMP_ROOT}/runtime-build-XXXXXX"');
     expect(buildScript).toContain('pnpm exec tsc -p tsconfig.build.json --outDir "$STAGE_DIST"');
-    expect(buildScript).toContain('QQBOT_CONSOLE_OUT_DIR="$STAGE_CONSOLE_DIR" pnpm console:build');
+    expect(buildScript).toContain('QQBOT_ADMIN_OUT_DIR="$STAGE_ADMIN_DIR" pnpm admin:build');
     expect(buildScript).toContain('cp -R "$ROOT_DIR/src/plugins/affinity/assets/." "$STAGE_DIST/plugins/affinity/assets/"');
     expect(buildScript).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml --dist "$STAGE_DIST"');
     expect(buildScript).toContain('mv "$STAGE_DIST" "$NEXT_DIST"');
@@ -60,13 +60,13 @@ describe('runtime startup contract', () => {
     expect(buildScript).not.toMatch(/rm -rf\s+dist\b/);
     expect(buildScript).not.toMatch(/rm -rf\s+"\$DIST_DIR"/);
 
-    expect(viteConfig).toContain('process.env.QQBOT_CONSOLE_OUT_DIR');
-    expect(viteConfig).toContain('../../../../dist/node_modules/@qqbot/bot-console-client');
-    expect(botConsolePlugin).toContain("CONSOLE_CLIENT_ASSET_DIR = 'dist/node_modules/@qqbot/bot-console-client'");
-    expect(botConsolePlugin).not.toContain('node_modules/.cache/qqbot-bot-console');
+    expect(viteConfig).toContain('process.env.QQBOT_ADMIN_OUT_DIR');
+    expect(viteConfig).toContain("base: '/'");
+    expect(adminPlugin).toContain("assetDir: join(ctx.baseDir, 'dist/admin-web')");
+    expect(adminPlugin).not.toContain('ctx.console');
   });
 
-  it('verifies local dist plugin artifacts and bot-console client assets', () => {
+  it('verifies local dist plugin artifacts and independent admin SPA assets', () => {
     const dir = createTempDir();
     const configPath = join(dir, 'koishi.yml');
     const distDir = join(dir, 'dist');
@@ -77,15 +77,15 @@ describe('runtime startup contract', () => {
       [
         'plugins:',
         '  group:entry:',
-        '    ./dist/plugins/bot-console:bot-console: {}',
+        '    ./dist/plugins/admin-api:admin-api: {}',
         '    ./dist/plugins/reply:voice: {}',
       ].join('\n'),
       'utf8',
     );
 
-    mkdirSync(join(distDir, 'plugins/bot-console'), { recursive: true });
+    mkdirSync(join(distDir, 'plugins/admin-api'), { recursive: true });
     mkdirSync(join(distDir, 'plugins/reply'), { recursive: true });
-    writeFileSync(join(distDir, 'plugins/bot-console/index.js'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'plugins/admin-api/index.js'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'plugins/reply/index.js'), 'export {}\n', 'utf8');
 
     const missingClient = spawnSync(process.execPath, [scriptPath, '--config', configPath, '--dist', distDir], {
@@ -95,12 +95,14 @@ describe('runtime startup contract', () => {
 
     expect(missingClient.status).toBe(1);
     expect(missingClient.stderr).toContain('Runtime artifacts are missing');
-    expect(missingClient.stderr).toContain('node_modules/@qqbot/bot-console-client/index.js');
+    expect(missingClient.stderr).toContain('admin-web/index.html');
     expect(missingClient.stderr).toContain('Run: pnpm build');
 
-    mkdirSync(join(distDir, 'node_modules/@qqbot/bot-console-client'), { recursive: true });
-    writeFileSync(join(distDir, 'node_modules/@qqbot/bot-console-client/index.js'), 'export {}\n', 'utf8');
-    writeFileSync(join(distDir, 'node_modules/@qqbot/bot-console-client/style.css'), 'body{}\n', 'utf8');
+    mkdirSync(join(distDir, 'admin-web'), { recursive: true });
+    writeFileSync(join(distDir, 'admin-web/index.html'), '<div id="app"></div>\n', 'utf8');
+    mkdirSync(join(distDir, 'admin-web/assets'), { recursive: true });
+    writeFileSync(join(distDir, 'admin-web/assets/app.js'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'admin-web/assets/app.css'), 'body{}\n', 'utf8');
 
     const ok = spawnSync(process.execPath, [scriptPath, '--config', configPath, '--dist', distDir], {
       cwd: dir,

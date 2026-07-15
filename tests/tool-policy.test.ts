@@ -246,7 +246,7 @@ describe('tool policy service', () => {
     });
   });
 
-  it('filters unknown tools and exposes state for bot-console', async () => {
+  it('filters unknown tools and exposes state for admin', async () => {
     const { ctx } = createHarness();
     const service = ctx.toolPolicy!;
 

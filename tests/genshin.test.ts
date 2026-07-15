@@ -1118,13 +1118,13 @@ describe('genshin plugin routes and middleware', () => {
     expect(server.post).toHaveBeenCalledWith('/genshin/bind/submit', expect.any(Function));
     const guard = server.use.mock.calls[0]?.[0];
     const next = vi.fn(async () => undefined);
-    const forbidden = { host: 'genshin.example', path: '/console', status: 200, body: '' };
+    const forbidden = { host: 'genshin.example', path: '/', status: 200, body: '' };
     await guard(forbidden, next);
     expect(forbidden).toMatchObject({ status: 404, body: 'Not Found' });
     expect(next).not.toHaveBeenCalled();
     await guard({ host: 'genshin.example', path: '/genshin/bind' }, next);
     await guard({ host: 'genshin.example', path: '/genshin/bind/status' }, next);
-    await guard({ host: 'other.example', path: '/console' }, next);
+    await guard({ host: 'other.example', path: '/' }, next);
     expect(next).toHaveBeenCalledTimes(3);
     const handler = middleware.mock.calls[0]?.[0];
     const send = vi.fn();

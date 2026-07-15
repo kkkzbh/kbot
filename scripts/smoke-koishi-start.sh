@@ -28,6 +28,7 @@ export CHATLUNA_PLATFORM="${CHATLUNA_PLATFORM:-siliconflow}"
 export CHATLUNA_BASE_URL="${CHATLUNA_BASE_URL:-https://api.siliconflow.cn/v1}"
 export CHATLUNA_API_KEY="${CHATLUNA_API_KEY:-sk-ci-smoke}"
 export CHATLUNA_DEFAULT_MODEL="${CHATLUNA_DEFAULT_MODEL:-Pro/moonshotai/Kimi-K2.5}"
+export CHATLUNA_COPILOT_DEFAULT_MODEL="openai/auto"
 export TASK_AUTOMATION_INTENT_ENABLED="${TASK_AUTOMATION_INTENT_ENABLED:-false}"
 export CHATLUNA_SEARCH_SERVICE_ENABLED="${CHATLUNA_SEARCH_SERVICE_ENABLED:-true}"
 export CHATLUNA_SEARCH_SERVICE_TOPK="${CHATLUNA_SEARCH_SERVICE_TOPK:-5}"
@@ -36,6 +37,9 @@ export CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL="${CHATLUNA_SEARCH_SERVICE_SUMMARY_
 export CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY="${CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY:-tvly-ci-smoke}"
 export QQ_VOICE_INPUT_ENABLED="${QQ_VOICE_INPUT_ENABLED:-false}"
 export QQ_VOICE_OUTPUT_ENABLED="${QQ_VOICE_OUTPUT_ENABLED:-false}"
+export QQBOT_ADMIN_ACCESS_TOKEN="${QQBOT_ADMIN_ACCESS_TOKEN:-smoke-admin-access-token}"
+export QQBOT_ADMIN_SESSION_SECRET="${QQBOT_ADMIN_SESSION_SECRET:-smoke-admin-session-secret-at-least-32-characters}"
+export QQBOT_ADMIN_ORIGIN="${QQBOT_ADMIN_ORIGIN:-http://127.0.0.1:${KOISHI_PORT}}"
 
 LOG_FILE="$(mktemp)"
 TMP_KOISHI_YML="$(mktemp "$ROOT_DIR/koishi-smoke-XXXXXX.yml")"
@@ -61,8 +65,7 @@ if (!entry || typeof entry !== 'object') {
 
 const keep = new Set([
   'server:0b8t2q',
-  'console:9xw6ka',
-  './dist/plugins/bot-console:bot-console',
+  './dist/plugins/admin-api:admin-api',
   'database-sqlite:8jr5yp',
   'cron:task',
   './dist/plugins/automation:automation',
@@ -97,7 +100,7 @@ if [[ "$exit_code" -ne 0 && "$exit_code" -ne 124 ]]; then
   exit "$exit_code"
 fi
 
-if grep -nE "cannot resolve plugin|property database is not registered|TypeError: Cannot read properties of undefined|\\[E\\] app .*TypeError|\\[E\\] app .*ReferenceError|\\[E\\] app .*SyntaxError" "$LOG_FILE" >/dev/null; then
+if grep -nE "cannot resolve plugin|property database is not registered|TypeError: Cannot read properties of undefined|\\[W\\] app Error:|\\[E\\] app .*TypeError|\\[E\\] app .*ReferenceError|\\[E\\] app .*SyntaxError" "$LOG_FILE" >/dev/null; then
   echo "Koishi smoke startup detected runtime errors in logs." >&2
   exit 1
 fi
@@ -127,8 +130,13 @@ if ! grep -F "loader apply plugin ./dist/plugins/memory:memory" "$LOG_FILE" >/de
   exit 1
 fi
 
-if ! grep -F "loader apply plugin ./dist/plugins/bot-console:bot-console" "$LOG_FILE" >/dev/null; then
-  echo "Koishi smoke startup did not load bot-console plugin." >&2
+if ! grep -F "loader apply plugin ./dist/plugins/admin-api:admin-api" "$LOG_FILE" >/dev/null; then
+  echo "Koishi smoke startup did not load admin-api plugin." >&2
+  exit 1
+fi
+
+if ! grep -F "admin-api independent admin workspace registered at /" "$LOG_FILE" >/dev/null; then
+  echo "Koishi smoke startup did not complete admin-api registration." >&2
   exit 1
 fi
 

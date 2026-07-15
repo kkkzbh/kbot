@@ -33,22 +33,15 @@ plugins:
       allowedGroups: ${{ env.GENSHIN_ALLOWED_GROUPS || '' }}
       naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
       naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
-    console:9xw6ka:
-      open: false
-      uiPath: ${{ env.KOISHI_CONSOLE_UI_PATH || '/console' }}
-    status:console-status: {}
-    analytics:console-analytics: {}
-    config:console-config: {}
-    market:console-market:
-      search:
-        endpoint: https://registry.koishi.chat/index.json
-        timeout: 30000
-    sandbox:console-sandbox: {}
-    insight:console-insight: {}
-    logger:console-logger: {}
     ./dist/plugins/feature-policy:feature-policy: {}
     ./dist/plugins/tool-policy:tool-policy: {}
-    ./dist/plugins/bot-console:bot-console: {}
+    ./dist/plugins/admin-api:admin-api:
+      apiPath: /api/admin/v1
+      accessToken: ${{ env.QQBOT_ADMIN_ACCESS_TOKEN }}
+      sessionSecret: ${{ env.QQBOT_ADMIN_SESSION_SECRET }}
+      allowedOrigins:
+        - ${{ env.QQBOT_ADMIN_ORIGIN }}
+      sessionTtlSeconds: 28800
     cron:task: {}
     ./dist/plugins/automation:automation:
       pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}
@@ -386,25 +379,3 @@ plugins:
       jobLockTimeoutMs: ${{ +env.MEMORY_JOB_LOCK_TIMEOUT_MS || 300000 }}
       maxFacts: ${{ +env.MEMORY_MAX_FACTS || 8 }}
       maxEpisodes: ${{ +env.MEMORY_MAX_EPISODES || 8 }}
-    commands:qp6oxu:
-      chatluna:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
-      chatluna.room:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
-      chatluna.model:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
-      chatluna.preset:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
-      chatluna.tool:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
-      chatluna.auth:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}
-      chatluna.balance:
-        config:
-          authority: ${{ +env.CHATLUNA_COMMAND_AUTHORITY || 3 }}

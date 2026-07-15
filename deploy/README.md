@@ -27,6 +27,16 @@ cp .env.server.example .env.server
 
 Fill the real server values in `.env.server`. `deploy/deploy.sh` creates the remote `/opt/qqbot` directories and installs `.env.server` to `/opt/qqbot/shared/.env.server` when the remote file does not exist. Existing remote server env is preserved.
 
+The independent admin workspace requires three production values before deployment:
+
+```dotenv
+QQBOT_ADMIN_ACCESS_TOKEN=<at least 16 characters>
+QQBOT_ADMIN_SESSION_SECRET=<at least 32 random characters>
+QQBOT_ADMIN_ORIGIN=https://admin.example.com
+```
+
+`QQBOT_ADMIN_ORIGIN` must exactly match the browser-facing origin and must not include a path. The installer validates these values before replacing the active application. It reports only validation errors and never prints either secret.
+
 Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
 
 ```bash
@@ -69,7 +79,7 @@ qqbot.target
   cloudflared-qqbot-genshin.service
 ```
 
-PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot and console. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
+PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot, the independent admin workspace at `/`, and its authenticated HTTP API. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
 The Genshin Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-genshin.token` and exposes the bind page through `genshin.kkkzbh.cn`.
 
 Deploy installs `/etc/systemd/system/podman-restart.service.d/qqbot-no-global-stop.conf` so the Podman boot helper can start restart-policy containers without stopping unrelated root Podman containers later. PMHQ has `restart: always`; stop it through `qqbot-pmhq.service`, not through global Podman stop-all commands.

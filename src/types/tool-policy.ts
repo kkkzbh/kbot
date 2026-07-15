@@ -97,7 +97,7 @@ export interface ToolMask {
   toolCallMask?: ToolMask;
 }
 
-export interface BotConsoleToolPolicyState {
+export interface AdminToolPolicyState {
   routeProfiles: ToolRouteProfile[];
   catalog: ToolCatalogEntry[];
   routeProfileInfo: ToolRouteProfileInfo[];
@@ -108,7 +108,7 @@ export interface BotConsoleToolPolicyState {
 }
 
 export interface ToolPolicyServiceLike {
-  getToolPolicyState(): Promise<BotConsoleToolPolicyState>;
+  getToolPolicyState(): Promise<AdminToolPolicyState>;
   getToolOverrides(): Promise<ToolOverrideRecord[]>;
   saveToolOverrides(overrides: ToolOverrideInput[]): Promise<ToolOverrideRecord[]>;
   resolveAllowedTools(options: ResolveAllowedToolsOptions): Promise<ResolveAllowedToolsResult>;

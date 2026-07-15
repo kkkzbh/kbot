@@ -145,6 +145,18 @@ if [[ ! -d "${STAGE_QQBOT}/dist" ]]; then
   exit 2
 fi
 
+(
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_SERVER}"
+  if [[ -f "${ENV_RUNTIME}" ]]; then
+    # shellcheck disable=SC1090
+    . "${ENV_RUNTIME}"
+  fi
+  set +a
+  node "${STAGE_QQBOT}/scripts/validate-admin-config.mjs"
+)
+
 write_runtime_env() {
   local generated_keys=(
     SQLITE_PATH

@@ -59,7 +59,7 @@ pnpm build
 
 `pnpm build` writes runtime artifacts to `dist/`. `dist/` is ignored and should not be committed.
 
-If a change only touches the console frontend, `pnpm console:build` is enough for that frontend-only check. Runtime backend, shared runtime types, console IPC, or managed env key changes used by `koishi.yml` require `pnpm build`.
+For frontend-only admin changes, run both `pnpm admin:typecheck` and `pnpm admin:build`. Runtime backend, shared runtime types, Admin API contract, or managed env key changes used by `koishi.yml` require `pnpm build`.
 
 ## Runtime Commands
 
@@ -100,6 +100,20 @@ LLONEBOT_DATA_DIR=./.runtime/llonebot
 ```
 
 Server voice input is intentionally disabled by default. If voice output is enabled on the server, `QQ_VOICE_TTS_BASE_URL` must point to a Tailnet-reachable TTS service, not `127.0.0.1` on the server.
+
+## Independent Admin Workspace
+
+The Koishi process serves the standalone SPA directly at `/`; the SPA uses the same-origin `/api/admin/v1` runtime API and has no Koishi Console dependency. Bot-owned HTTP routes such as `/api/**`, campus binding pages, and Storage remain owned by their respective plugins.
+
+Configure these values explicitly before startup:
+
+```dotenv
+QQBOT_ADMIN_ACCESS_TOKEN=at-least-16-characters
+QQBOT_ADMIN_SESSION_SECRET=at-least-32-random-characters
+QQBOT_ADMIN_ORIGIN=https://actual-admin-origin.example
+```
+
+`QQBOT_ADMIN_ORIGIN` must match the browser's complete Origin. The API validates Host on every request and Origin on every mutation. Login creates an HttpOnly, SameSite=Strict session cookie, and Secret fields only expose whether a value is configured.
 
 ## Runtime Helpers
 
