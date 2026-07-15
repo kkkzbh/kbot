@@ -11,6 +11,7 @@ export type ChaoxingBindStatus =
   | 'cancelled';
 
 export type ChaoxingSessionStatus = 'active' | 'expired' | 'invalid';
+export type ChaoxingSignActionStatus = 'created' | 'submitting' | 'completed' | 'uncertain' | 'expired' | 'cancelled';
 export type ChaoxingTaskKind = 'work' | 'exam' | 'sign';
 export type ChaoxingJobType = 'study' | 'sign_watch' | 'answer';
 export type ChaoxingJobStatus =
@@ -245,6 +246,29 @@ export interface ChaoxingSignRecord {
   requestJson: string;
   responseText: string;
   createdAt: number;
+}
+
+export interface ChaoxingSignAction {
+  id: number;
+  tokenHash: string;
+  ownerKey: string;
+  platform: string;
+  qqUserId: string;
+  channelId: string;
+  activityId: string;
+  courseId: string;
+  classId: string;
+  courseName: string;
+  activityTitle: string;
+  signType: string;
+  status: ChaoxingSignActionStatus;
+  attemptId?: string | null;
+  metadataJson: string;
+  resultMessage?: string | null;
+  errorMessage?: string | null;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface ChaoxingQuestionOption {

@@ -9,6 +9,7 @@ import type {
   ChaoxingJob,
   ChaoxingJobEvent,
   ChaoxingSession,
+  ChaoxingSignAction,
   ChaoxingSignRecord,
   ChaoxingTaskRow,
 } from '../plugins/chaoxing/types.js';
@@ -24,6 +25,7 @@ declare module 'koishi' {
     chaoxing_job: ChaoxingJob;
     chaoxing_job_event: ChaoxingJobEvent;
     chaoxing_sign_record: ChaoxingSignRecord;
+    chaoxing_sign_action: ChaoxingSignAction;
     chaoxing_answer_cache: ChaoxingAnswerCache;
     chaoxing_answer_record: ChaoxingAnswerRecord;
   }

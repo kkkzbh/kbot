@@ -120,6 +120,8 @@ plugins:
         ${{ env.CHAOXING_PUBLIC_BASE_URL || ('http://127.0.0.1:' +
         (+env.KOISHI_PORT || 5140)) }}
       bindTokenTtlMs: ${{ +env.CHAOXING_BIND_TOKEN_TTL_MS || 600000 }}
+      signActionPagePath: ${{ env.CHAOXING_SIGN_ACTION_PAGE_PATH || '/chaoxing/sign-action' }}
+      signActionTokenTtlMs: ${{ +env.CHAOXING_SIGN_ACTION_TOKEN_TTL_MS || 600000 }}
       credentialKekPath: >-
         ${{ env.CHAOXING_CREDENTIAL_KEK_PATH ||
         './.runtime/chaoxing/credential-kek.key' }}

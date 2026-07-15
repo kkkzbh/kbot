@@ -17,6 +17,7 @@ import {
   type ChaoxingProfile,
   type ChaoxingSession,
   type ChaoxingSessionStatus,
+  type ChaoxingSignAction,
   type ChaoxingSignRecord,
   type ChaoxingTaskKind,
   type ChaoxingTaskRow,
@@ -33,7 +34,6 @@ const ACTIVE_CHALLENGE_STATUSES: ChaoxingBindStatus[] = [
 ];
 
 const ACTIVE_JOB_STATUSES: ChaoxingJobStatus[] = ['queued', 'running', 'waiting_input'];
-
 export function ensureChaoxingTables(ctx: Context): void {
   ctx.model.extend('chaoxing_bind_challenge', {
     id: 'unsigned', tokenHash: 'string', ownerKey: 'string', platform: 'string', qqUserId: 'string', channelId: 'string', status: 'string',
@@ -93,6 +93,14 @@ export function ensureChaoxingTables(ctx: Context): void {
     id: 'unsigned', ownerKey: 'string', jobId: { type: 'unsigned', nullable: true }, activityId: 'string', courseId: 'string', classId: 'string',
     signType: 'string', status: 'string', requestJson: 'text', responseText: 'text', createdAt: 'double',
   }, { autoInc: true, indexes: [['ownerKey', 'activityId'], ['jobId'], ['createdAt']] });
+
+  ctx.model.extend('chaoxing_sign_action', {
+    id: 'unsigned', tokenHash: 'string', ownerKey: 'string', platform: 'string', qqUserId: 'string', channelId: 'string',
+    activityId: 'string', courseId: 'string', classId: 'string', courseName: 'string', activityTitle: 'text', signType: 'string',
+    status: 'string', attemptId: { type: 'string', nullable: true }, metadataJson: 'text',
+    resultMessage: { type: 'text', nullable: true }, errorMessage: { type: 'text', nullable: true },
+    expiresAt: 'double', createdAt: 'double', updatedAt: 'double',
+  }, { autoInc: true, unique: ['tokenHash'], indexes: [['ownerKey', 'activityId', 'status'], ['expiresAt']] });
 
   ctx.model.extend('chaoxing_answer_cache', {
     id: 'unsigned', answerKey: 'string', questionType: 'string', title: 'text', optionsJson: 'text', answer: 'text', source: 'string',
@@ -432,6 +440,88 @@ export class ChaoxingTaskStore {
     await this.database.create('chaoxing_sign_record', row);
   }
 
+  async cleanupExpiredSignActions(now: number): Promise<void> {
+    await this.database.set('chaoxing_sign_action', {
+      status: 'created', expiresAt: { $lte: now },
+    }, { status: 'expired', attemptId: null, errorMessage: null, updatedAt: now });
+  }
+
+  async recoverInterruptedSignActions(now: number): Promise<void> {
+    await this.database.set('chaoxing_sign_action', { status: 'submitting' }, {
+      status: 'uncertain',
+      attemptId: null,
+      resultMessage: '服务在提交期间重启，结果无法安全重放。请核对学习通官方签到状态。',
+      errorMessage: null,
+      updatedAt: now,
+    });
+  }
+
+  async cancelOpenSignActions(ownerKey: string, activityId: string, now: number): Promise<void> {
+    await this.database.set('chaoxing_sign_action', {
+      ownerKey, activityId, status: 'created',
+    }, { status: 'cancelled', attemptId: null, errorMessage: null, updatedAt: now });
+  }
+
+  async findSubmittingSignAction(ownerKey: string, activityId: string): Promise<ChaoxingSignAction | null> {
+    const [row] = await this.database.get<ChaoxingSignAction>('chaoxing_sign_action', {
+      ownerKey, activityId, status: 'submitting',
+    });
+    return row ?? null;
+  }
+
+  createSignAction(
+    identity: OwnerIdentity,
+    input: Pick<ChaoxingSignAction, 'tokenHash' | 'activityId' | 'courseId' | 'classId' | 'courseName' | 'activityTitle' | 'signType' | 'metadataJson' | 'expiresAt'>,
+    now: number,
+  ): Promise<ChaoxingSignAction> {
+    return this.database.create<ChaoxingSignAction>('chaoxing_sign_action', {
+      ...input,
+      ownerKey: identity.ownerKey,
+      platform: identity.platform,
+      qqUserId: identity.qqUserId,
+      channelId: identity.channelId,
+      status: 'created',
+      attemptId: null,
+      resultMessage: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async findSignActionByTokenHash(tokenHash: string): Promise<ChaoxingSignAction | null> {
+    const [row] = await this.database.get<ChaoxingSignAction>('chaoxing_sign_action', { tokenHash });
+    return row ?? null;
+  }
+
+  async claimSignAction(id: number, attemptId: string, now: number): Promise<ChaoxingSignAction | null> {
+    await this.database.set('chaoxing_sign_action', { id, status: 'created', expiresAt: { $gt: now } }, {
+      status: 'submitting', attemptId, errorMessage: null, updatedAt: now,
+    });
+    const [row] = await this.database.get<ChaoxingSignAction>('chaoxing_sign_action', { id });
+    return row?.status === 'submitting' && row.attemptId === attemptId ? row : null;
+  }
+
+  async releaseSignAction(id: number, attemptId: string, errorMessage: string, now: number): Promise<void> {
+    await this.database.set('chaoxing_sign_action', { id, status: 'submitting', attemptId }, {
+      status: 'created', attemptId: null, errorMessage, updatedAt: now,
+    });
+  }
+
+  async completeSignAction(id: number, attemptId: string, resultMessage: string, now: number): Promise<boolean> {
+    await this.database.set('chaoxing_sign_action', { id, status: 'submitting', attemptId }, {
+      status: 'completed', attemptId: null, resultMessage, errorMessage: null, updatedAt: now,
+    });
+    const [row] = await this.database.get<ChaoxingSignAction>('chaoxing_sign_action', { id });
+    return row?.status === 'completed';
+  }
+
+  async finishSignActionUncertain(id: number, attemptId: string, resultMessage: string, now: number): Promise<void> {
+    await this.database.set('chaoxing_sign_action', { id, status: 'submitting', attemptId }, {
+      status: 'uncertain', attemptId: null, resultMessage, errorMessage: null, updatedAt: now,
+    });
+  }
+
   async getAnswerCache(answerKey: string): Promise<ChaoxingAnswerCache | null> {
     const [row] = await this.database.get<ChaoxingAnswerCache>('chaoxing_answer_cache', { answerKey });
     return row ?? null;
@@ -464,6 +554,7 @@ export class ChaoxingTaskStore {
       this.database.remove('chaoxing_job', { ownerKey }),
       this.database.remove('chaoxing_job_event', { ownerKey }),
       this.database.remove('chaoxing_sign_record', { ownerKey }),
+      this.database.remove('chaoxing_sign_action', { ownerKey }),
       this.database.remove('chaoxing_answer_record', { ownerKey }),
     ]);
   }

@@ -19,6 +19,7 @@ const PASSPORT_ORIGIN = 'https://passport2.chaoxing.com';
 const MOOC1_ORIGIN = 'https://mooc1.chaoxing.com';
 const COURSE_API_ORIGIN = 'https://mooc1-api.chaoxing.com';
 const MOBILE_LEARN_ORIGIN = 'https://mobilelearn.chaoxing.com';
+const CLOUD_DRIVE_ORIGIN = 'https://pan-yz.chaoxing.com';
 
 type RequestOptions = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> };
 
@@ -105,9 +106,28 @@ export interface ChaoxingSignInfo {
   ifPhoto: boolean;
   ifNeedVCode: boolean;
   openCheckFaceFlag: boolean;
+  ifRefreshQr: boolean;
+  locationText: string;
+  locationLatitude: number | null;
+  locationLongitude: number | null;
+  locationRangeMeters: number | null;
   startAt: number | null;
   endAt: number | null;
   raw: Record<string, unknown>;
+}
+
+export interface ChaoxingQrSignContext {
+  enc: string;
+  code?: string;
+}
+
+export interface ChaoxingSignSubmissionFields {
+  signCode?: string;
+  enc?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  objectId?: string;
 }
 
 export interface ChaoxingAttendance {
@@ -446,6 +466,11 @@ export class ChaoxingClient {
         ifPhoto: numberValue(data.ifphoto ?? data.ifPhoto) === 1,
         ifNeedVCode: numberValue(data.ifNeedVCode) === 1,
         openCheckFaceFlag: numberValue(data.openCheckFaceFlag) === 1,
+        ifRefreshQr: numberValue(data.ifrefreshewm ?? data.ifRefreshEwm) === 1,
+        locationText: stringValue(data.locationText),
+        locationLatitude: nullableNumber(data.locationLatitude),
+        locationLongitude: nullableNumber(data.locationLongitude),
+        locationRangeMeters: nullableNumber(data.locationRange),
         startAt: timestampValue(data.starttime),
         endAt: timestampValue(data.endTime),
         raw: data,
@@ -469,12 +494,19 @@ export class ChaoxingClient {
     return { attendance: { status }, cookieJar: jar.serialize() };
   }
 
-  async prepareSign(serialized: SerializedChaoxingCookieJar, args: { activity: ChaoxingActivity; profile: ChaoxingProfile }): Promise<{ pageText: string; cookieJar: SerializedChaoxingCookieJar }> {
+  async prepareSign(serialized: SerializedChaoxingCookieJar, args: {
+    activity: ChaoxingActivity;
+    profile: ChaoxingProfile;
+    qr?: ChaoxingQrSignContext;
+  }): Promise<{ pageText: string; cookieJar: SerializedChaoxingCookieJar }> {
     const jar = ChaoxingCookieJar.from(serialized);
     const url = new URL('/newsign/preSign', MOBILE_LEARN_ORIGIN);
     for (const [key, value] of Object.entries({ general: '1', sys: '1', ls: '1', appType: '15', isTeacherViewOpen: '0',
       courseId: args.activity.courseId, classId: args.activity.classId, activePrimaryId: args.activity.activityId, uid: args.profile.puid })) {
       url.searchParams.set(key, value);
+    }
+    if (args.qr) {
+      url.searchParams.set('rcode', `SIGNIN:aid=${args.activity.activityId}&source=15${args.qr.code ? `&Code=${args.qr.code}` : ''}&enc=${args.qr.enc}`);
     }
     const response = await this.request(url.href, {
       jar,
@@ -501,16 +533,24 @@ export class ChaoxingClient {
   }
 
   async submitSign(serialized: SerializedChaoxingCookieJar, args: {
-    activity: ChaoxingActivity; profile: ChaoxingProfile; deviceCode: string; signCode?: string;
+    activity: ChaoxingActivity;
+    profile: ChaoxingProfile;
+    deviceCode: string;
+    fields: ChaoxingSignSubmissionFields;
   }): Promise<{ status: 'succeeded' | 'already_signed'; responseText: string; cookieJar: SerializedChaoxingCookieJar }> {
     const jar = ChaoxingCookieJar.from(serialized);
     const url = new URL('/pptSign/stuSignajax', MOBILE_LEARN_ORIGIN);
     const params: Record<string, string> = {
-      clientip: '', appType: '15', ifTiJiao: '1', vpProbability: '-1', vpStrategy: '', latitude: '', longitude: '',
+      clientip: '', appType: '15', ifTiJiao: '1', vpProbability: '-1', vpStrategy: '', latitude: '-1', longitude: '-1',
       activeId: args.activity.activityId, uid: args.profile.puid, name: args.profile.name, fid: args.profile.fid,
       courseId: args.activity.courseId, classId: args.activity.classId, deviceCode: args.deviceCode,
     };
-    if (args.signCode) params.signCode = args.signCode;
+    if (args.fields.signCode) params.signCode = args.fields.signCode;
+    if (args.fields.enc) params.enc = args.fields.enc;
+    if (args.fields.address) params.address = args.fields.address;
+    if (args.fields.latitude !== undefined) params.latitude = String(args.fields.latitude);
+    if (args.fields.longitude !== undefined) params.longitude = String(args.fields.longitude);
+    if (args.fields.objectId) params.objectId = args.fields.objectId;
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     const response = await this.request(url.href, { jar });
     assertOk(response, 'sign_submit');
@@ -520,6 +560,37 @@ export class ChaoxingClient {
     if (text === 'validate') throw new ChaoxingCaptchaRequiredError(undefined, text);
     if (text === 'success2') throw new ChaoxingProtocolError('sign_expired', '迟到或签到已经结束。', text);
     throw new ChaoxingProtocolError('sign_rejected', `签到失败：${text || '学习通没有返回原因。'}`, text);
+  }
+
+  async uploadSignPhoto(serialized: SerializedChaoxingCookieJar, args: {
+    puid: string;
+    bytes: Uint8Array;
+    contentType: string;
+    filename: string;
+  }): Promise<{ objectId: string; cookieJar: SerializedChaoxingCookieJar }> {
+    const jar = ChaoxingCookieJar.from(serialized);
+    const tokenResponse = await this.request(`${CLOUD_DRIVE_ORIGIN}/api/token/uservalid`, { jar });
+    assertOk(tokenResponse, 'sign_photo_token');
+    const tokenPayload = parseJsonObject(tokenResponse.text, 'sign_photo_token_json');
+    const token = stringValue(tokenPayload._token);
+    if (tokenPayload.result !== true || !token) {
+      throw new ChaoxingProtocolError('sign_photo_token_fields', '学习通云盘没有返回照片上传凭据。', excerpt(tokenResponse.text));
+    }
+
+    const form = new FormData();
+    form.set('puid', args.puid);
+    form.set('_token', token);
+    const photoBytes = new Uint8Array(args.bytes.byteLength);
+    photoBytes.set(args.bytes);
+    form.set('file', new Blob([photoBytes.buffer], { type: args.contentType }), args.filename);
+    const uploadResponse = await this.request(`${CLOUD_DRIVE_ORIGIN}/upload`, { jar, method: 'POST', body: form });
+    assertOk(uploadResponse, 'sign_photo_upload');
+    const uploadPayload = parseJsonObject(uploadResponse.text, 'sign_photo_upload_json');
+    const objectId = idValue(objectValue(uploadPayload.data).objectId);
+    if (!objectId) {
+      throw new ChaoxingProtocolError('sign_photo_upload_fields', '学习通云盘没有返回照片 objectId。', excerpt(uploadResponse.text));
+    }
+    return { objectId, cookieJar: jar.serialize() };
   }
 
   async requestText(serialized: SerializedChaoxingCookieJar, url: string, options: RequestOptions = {}): Promise<{ text: string; url: string; cookieJar: SerializedChaoxingCookieJar }> {

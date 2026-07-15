@@ -1,6 +1,12 @@
 import type { ChaoxingAuthService } from './auth-service.js';
 import type { ChaoxingCatalogService } from './catalog-service.js';
-import type { ChaoxingAttendance, ChaoxingClient, ChaoxingSignInfo } from './client.js';
+import type {
+  ChaoxingAttendance,
+  ChaoxingClient,
+  ChaoxingQrSignContext,
+  ChaoxingSignInfo,
+  ChaoxingSignSubmissionFields,
+} from './client.js';
 import type { ChaoxingTaskStore } from './store.js';
 import {
   ChaoxingCaptchaRequiredError,
@@ -13,6 +19,19 @@ import {
 
 export type SupportedSignType = 'normal' | 'gesture' | 'code';
 export type ChaoxingSignType = SupportedSignType | 'photo' | 'qrcode' | 'location' | 'unknown';
+
+export interface ChaoxingBrowserLocation {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+}
+
+export type ChaoxingSignInput =
+  | { kind: 'normal' }
+  | { kind: 'code'; signCode: string }
+  | { kind: 'qrcode'; enc: string; code?: string; location?: ChaoxingBrowserLocation }
+  | { kind: 'location'; location: ChaoxingBrowserLocation }
+  | { kind: 'photo'; bytes: Uint8Array; contentType: string; filename: string };
 
 export interface DetectedSign {
   course: ChaoxingCourse;
@@ -48,6 +67,23 @@ export class ChaoxingSignService {
     const courses = courseQuery
       ? [await this.catalogService.resolveCourse(identity, courseQuery)]
       : await this.catalogService.listCourses(identity);
+    return this.scanCourses(identity, courses);
+  }
+
+  async resolveDetectedSignForAction(
+    identity: OwnerIdentity,
+    reference: { activityId: string; courseId: string; classId: string },
+  ): Promise<DetectedSign> {
+    const courses = await this.catalogService.listCourses(identity);
+    const course = courses.find((candidate) => candidate.courseId === reference.courseId && candidate.classId === reference.classId);
+    if (!course) throw new ChaoxingUserError('签到链接对应的课程已不在当前账号中。');
+    const signs = filterPendingSigns(await this.scanCourses(identity, [course]));
+    const matched = signs.find((sign) => sign.activity.activityId === reference.activityId);
+    if (!matched) throw new ChaoxingUserError('这个签到已经完成、结束或不再可用。');
+    return matched;
+  }
+
+  private async scanCourses(identity: OwnerIdentity, courses: ChaoxingCourse[]): Promise<DetectedSign[]> {
     let auth = await this.authService.getAuthenticatedSession(identity);
     const detected: DetectedSign[] = [];
     for (const course of courses) {
@@ -72,41 +108,24 @@ export class ChaoxingSignService {
     return detected;
   }
 
-  async quickSign(identity: OwnerIdentity): Promise<string> {
-    const signs = await this.scanOpenSigns(identity);
-    const pending = filterPendingSigns(signs);
-    if (pending.length === 0) {
-      return signs.length === 0 ? '当前没有进行中的签到。' : `当前没有待签到。\n${formatDetectedSigns(signs)}`;
-    }
-    const automatic = pending.filter(isAutomaticallyExecutable);
-    if (automatic.length !== 1) {
-      const heading = automatic.length > 1
-        ? '检测到多个可自动处理的普通签到，请指定活动 ID，避免批量误签：'
-        : '检测到待签到活动，请按对应方式完成：';
-      return `${heading}\n${formatSignActions(pending)}`;
-    }
-    const selected = automatic[0]!;
-    const result = await this.execute(identity, selected);
-    const remaining = pending.filter((sign) => sign.activity.activityId !== selected.activity.activityId);
-    return remaining.length === 0
-      ? result.message
-      : `${result.message}\n\n其他待处理签到：\n${formatSignActions(remaining)}`;
-  }
-
-  async execute(identity: OwnerIdentity, detected: DetectedSign, signCode?: string, jobId?: number): Promise<ChaoxingSignExecutionResult> {
+  async execute(identity: OwnerIdentity, detected: DetectedSign, input: ChaoxingSignInput, jobId?: number): Promise<ChaoxingSignExecutionResult> {
     const requestAudit = {
       activityId: detected.activity.activityId,
       courseId: detected.course.courseId,
       classId: detected.course.classId,
       signType: detected.signType,
-      hasSignCode: Boolean(signCode),
+      inputKind: input.kind,
+      hasSignCode: input.kind === 'code',
+      hasQrPayload: input.kind === 'qrcode',
+      hasLocation: input.kind === 'location' || (input.kind === 'qrcode' && Boolean(input.location)),
+      hasPhoto: input.kind === 'photo',
       discoveredOfficialStatus: detected.attendance.status,
     };
     try {
-      assertSupported(detected, signCode);
+      assertInputMatchesSign(detected, input);
       let auth = await this.authService.getAuthenticatedSession(identity);
-      if (detected.info.ifNeedVCode) throw new ChaoxingCaptchaRequiredError('本次签到要求验证码，自动签到已暂停。');
-      if (detected.info.openCheckFaceFlag) throw new ChaoxingUserError('本次签到要求人脸验证，请在学习通 App 中完成。');
+      if (detected.info.ifNeedVCode) throw new ChaoxingCaptchaRequiredError('本次签到要求验证码，交互签到已暂停。');
+      if (detected.info.openCheckFaceFlag) throw new ChaoxingUserError('本次签到要求人脸验证，当前交互链接无法代替本人验证。');
 
       const before = await this.client.getAttendInfo(auth.cookieJar, detected.activity.activityId);
       auth = await this.authService.persistCookies(auth, before.cookieJar);
@@ -128,22 +147,39 @@ export class ChaoxingSignService {
         return result;
       }
 
-      const prepared = await this.client.prepareSign(auth.cookieJar, { activity: detected.activity, profile: auth.profile });
+      const prepared = await this.client.prepareSign(auth.cookieJar, {
+        activity: detected.activity,
+        profile: auth.profile,
+        qr: qrContext(input),
+      });
       auth = await this.authService.persistCookies(auth, prepared.cookieJar);
-      if (signCode) {
-        const checked = await this.client.checkSignCode(auth.cookieJar, detected.activity.activityId, signCode);
+      if (input.kind === 'code') {
+        const checked = await this.client.checkSignCode(auth.cookieJar, detected.activity.activityId, input.signCode);
         auth = await this.authService.persistCookies(auth, checked.cookieJar);
         if (!checked.valid) throw new ChaoxingUserError('签到码或手势顺序不正确。');
       }
       if (!auth.profile.deviceCode) throw new Error('chaoxing profile is missing device code.');
-      const submitted = await this.client.submitSign(auth.cookieJar, {
-        activity: detected.activity,
-        profile: auth.profile,
-        deviceCode: auth.profile.deviceCode,
-        signCode,
-      });
-      auth = await this.authService.persistCookies(auth, submitted.cookieJar);
-      const verified = await this.verifySubmittedAttendance(auth, detected.activity.activityId);
+      const deviceCode = auth.profile.deviceCode;
+      const fieldsResult = await this.buildSubmissionFields(auth, detected, input);
+      auth = fieldsResult.auth;
+      let submitted: Awaited<ReturnType<ChaoxingClient['submitSign']>>;
+      let verified: number;
+      try {
+        submitted = await this.client.submitSign(auth.cookieJar, {
+          activity: detected.activity,
+          profile: auth.profile,
+          deviceCode,
+          fields: fieldsResult.fields,
+        });
+        auth = await this.authService.persistCookies(auth, submitted.cookieJar);
+        verified = await this.verifySubmittedAttendance(auth, detected.activity.activityId);
+      } catch (error) {
+        if (error instanceof ChaoxingProtocolError || error instanceof ChaoxingUserError) throw error;
+        throw new ChaoxingProtocolError(
+          'sign_outcome_unknown',
+          '签到请求已开始提交，但网络响应不完整。为避免重复提交，请查看官方状态后重新发起。',
+        );
+      }
       const result: ChaoxingSignExecutionResult = {
         status: submitted.status,
         officialStatus: verified,
@@ -206,6 +242,36 @@ export class ChaoxingSignService {
       `学习通提交接口已响应，但官方状态复查为“${attendanceStatusLabel(status)}”，本次不报告成功。`,
     );
   }
+
+  private async buildSubmissionFields(
+    auth: Awaited<ReturnType<ChaoxingAuthService['getAuthenticatedSession']>>,
+    detected: DetectedSign,
+    input: ChaoxingSignInput,
+  ): Promise<{
+    auth: Awaited<ReturnType<ChaoxingAuthService['getAuthenticatedSession']>>;
+    fields: ChaoxingSignSubmissionFields;
+  }> {
+    if (input.kind === 'normal') return { auth, fields: {} };
+    if (input.kind === 'code') return { auth, fields: { signCode: input.signCode } };
+    if (input.kind === 'qrcode') {
+      return {
+        auth,
+        fields: {
+          enc: input.enc,
+          ...(input.location ? locationSubmissionFields(detected.info, input.location) : {}),
+        },
+      };
+    }
+    if (input.kind === 'location') return { auth, fields: locationSubmissionFields(detected.info, input.location) };
+    const uploaded = await this.client.uploadSignPhoto(auth.cookieJar, {
+      puid: auth.profile.puid,
+      bytes: input.bytes,
+      contentType: input.contentType,
+      filename: input.filename,
+    });
+    const persisted = await this.authService.persistCookies(auth, uploaded.cookieJar);
+    return { auth: persisted, fields: { objectId: uploaded.objectId } };
+  }
 }
 
 export function classifySignType(info: Pick<ChaoxingSignInfo, 'otherId' | 'ifPhoto'>): ChaoxingSignType {
@@ -236,25 +302,6 @@ export function formatDetectedSigns(signs: DetectedSign[]): string {
   }).join('\n');
 }
 
-export function formatSignActions(signs: DetectedSign[]): string {
-  return signs.map((sign) => {
-    const prefix = `- ${sign.course.name} / ${sign.activity.title || '签到'}（${signTypeLabel(sign.signType)}，活动ID ${sign.activity.activityId}）`;
-    return `${prefix}\n  ${signActionInstruction(sign)}`;
-  }).join('\n');
-}
-
-export function signActionInstruction(sign: DetectedSign): string {
-  if (sign.info.ifNeedVCode) return '本次要求验证码，请在学习通 App 中完成。';
-  if (sign.info.openCheckFaceFlag) return '本次要求人脸验证，请在学习通 App 中完成。';
-  if (sign.signType === 'normal') return `发送：学习通签到 ${sign.activity.activityId}`;
-  if (sign.signType === 'gesture') return `发送：学习通签到 ${sign.activity.activityId} <手势顺序>`;
-  if (sign.signType === 'code') return `发送：学习通签到 ${sign.activity.activityId} <签到码>`;
-  if (sign.signType === 'qrcode') return '请在学习通 App 扫描教师展示的动态二维码。';
-  if (sign.signType === 'location') return '请在学习通 App 授权定位后完成。';
-  if (sign.signType === 'photo') return '请在学习通 App 拍照完成。';
-  return '请在学习通 App 查看活动要求。';
-}
-
 export function attendanceStatusLabel(status: number): string {
   if (status === 0) return '待签到';
   if (status === 1) return '已签到';
@@ -271,13 +318,63 @@ function isAttendedStatus(status: number): boolean {
   return status === 1 || status === 2 || status === 9;
 }
 
-function assertSupported(sign: DetectedSign, signCode?: string): asserts sign is DetectedSign & { signType: SupportedSignType } {
-  if (sign.signType === 'gesture' || sign.signType === 'code') {
-    if (!signCode?.trim()) throw new ChaoxingUserError(`${signTypeLabel(sign.signType)}需要提供签到码或手势顺序。`);
+function assertInputMatchesSign(sign: DetectedSign, input: ChaoxingSignInput): void {
+  if (sign.signType === 'unknown') throw new ChaoxingProtocolError('unsupported_sign_type', '当前签到类型无法识别。');
+  if (sign.signType === 'normal' && input.kind === 'normal') return;
+  if ((sign.signType === 'gesture' || sign.signType === 'code') && input.kind === 'code' && input.signCode.trim()) return;
+  if (sign.signType === 'qrcode' && input.kind === 'qrcode' && input.enc.trim()) {
+    if (sign.info.ifRefreshQr && !input.code?.trim()) throw new ChaoxingUserError('动态二维码缺少 Code，请重新扫描教师当前展示的二维码。');
+    if (hasTargetLocation(sign.info) && !input.location) throw new ChaoxingUserError('本次二维码签到同时要求现场定位。');
     return;
   }
-  if (sign.signType === 'normal') return;
-  throw new ChaoxingProtocolError('unsupported_sign_type', `${signTypeLabel(sign.signType)}需要在学习通 App 中完成。`);
+  if (sign.signType === 'location' && input.kind === 'location') return;
+  if (sign.signType === 'photo' && input.kind === 'photo' && input.bytes.byteLength > 0) return;
+  throw new ChaoxingUserError(`${signTypeLabel(sign.signType)}提交数据与活动要求不一致。`);
+}
+
+function qrContext(input: ChaoxingSignInput): ChaoxingQrSignContext | undefined {
+  return input.kind === 'qrcode' ? { enc: input.enc, code: input.code } : undefined;
+}
+
+function locationSubmissionFields(info: ChaoxingSignInfo, location: ChaoxingBrowserLocation): ChaoxingSignSubmissionFields {
+  assertFiniteLocation(location);
+  if (!hasTargetLocation(info)) throw new ChaoxingProtocolError('sign_location_fields', '位置签到缺少教师设置的目标位置。');
+  const distance = distanceMeters(location.latitude, location.longitude, info.locationLatitude, info.locationLongitude);
+  if (distance > info.locationRangeMeters) {
+    throw new ChaoxingUserError(`当前位置距离签到点约 ${Math.round(distance)} 米，超出 ${Math.round(info.locationRangeMeters)} 米范围。`);
+  }
+  return { address: info.locationText, latitude: location.latitude, longitude: location.longitude };
+}
+
+function hasTargetLocation(info: ChaoxingSignInfo): info is ChaoxingSignInfo & {
+  locationLatitude: number;
+  locationLongitude: number;
+  locationRangeMeters: number;
+} {
+  return Boolean(
+    info.locationText
+    && Number.isFinite(info.locationLatitude)
+    && Number.isFinite(info.locationLongitude)
+    && Number.isFinite(info.locationRangeMeters)
+    && (info.locationRangeMeters ?? 0) > 0,
+  );
+}
+
+function assertFiniteLocation(location: ChaoxingBrowserLocation): void {
+  if (!Number.isFinite(location.latitude) || location.latitude < -90 || location.latitude > 90
+    || !Number.isFinite(location.longitude) || location.longitude < -180 || location.longitude > 180
+    || !Number.isFinite(location.accuracy) || location.accuracy < 0) {
+    throw new ChaoxingUserError('浏览器返回的定位数据无效。');
+  }
+}
+
+function distanceMeters(latitude1: number, longitude1: number, latitude2: number, longitude2: number): number {
+  const radians = (degrees: number): number => degrees * Math.PI / 180;
+  const deltaLatitude = radians(latitude2 - latitude1);
+  const deltaLongitude = radians(longitude2 - longitude1);
+  const a = Math.sin(deltaLatitude / 2) ** 2
+    + Math.cos(radians(latitude1)) * Math.cos(radians(latitude2)) * Math.sin(deltaLongitude / 2) ** 2;
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 export function signTypeLabel(type: ChaoxingSignType): string {

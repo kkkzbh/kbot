@@ -2,7 +2,8 @@ import { formatAnswerDraft } from './answer-service.js';
 import { Logger } from 'koishi';
 import type { ChaoxingAuthService } from './auth-service.js';
 import type { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
-import { filterPendingSigns, isAutomaticallyExecutable, signActionInstruction, signTypeLabel, type ChaoxingSignService, type DetectedSign } from './sign-service.js';
+import type { ChaoxingSignActionService } from './sign-action-service.js';
+import { filterPendingSigns, isAutomaticallyExecutable, signTypeLabel, type ChaoxingSignService, type DetectedSign } from './sign-service.js';
 import { JobCancelledError, type ChaoxingAnswerJobProgress, type ChaoxingStudyRunner } from './study-runner.js';
 import type { ChaoxingTaskStore } from './store.js';
 import {
@@ -40,6 +41,7 @@ export class ChaoxingWorker {
     private readonly store: ChaoxingTaskStore,
     private readonly studyRunner: ChaoxingStudyRunner,
     private readonly signService: ChaoxingSignService,
+    private readonly signActionService: ChaoxingSignActionService,
     private readonly authService: ChaoxingAuthService,
     private readonly notifier: ChaoxingNotifier,
     private readonly coordinator: ChaoxingOwnerCoordinator,
@@ -165,7 +167,7 @@ export class ChaoxingWorker {
 
   private async handleNewSign(job: ChaoxingJob, identity: OwnerIdentity, sign: DetectedSign): Promise<void> {
     if (isAutomaticallyExecutable(sign)) {
-      const result = await this.signService.execute(identity, sign, undefined, job.id);
+      const result = await this.signService.execute(identity, sign, { kind: 'normal' }, job.id);
       await this.store.appendJobEvent(job.id, job.ownerKey, 'sign_executed', {
         activityId: sign.activity.activityId, signType: sign.signType, status: result.status,
       }, this.now());
@@ -176,8 +178,13 @@ export class ChaoxingWorker {
     await this.store.appendJobEvent(job.id, job.ownerKey, 'sign_input_required', {
       activityId: sign.activity.activityId, signType: sign.signType,
     }, this.now());
-    const instruction = signActionInstruction(sign);
-    await this.sendNotification(job, identity, `检测到 ${label}：${sign.course.name} / ${sign.activity.title}（活动ID ${sign.activity.activityId}）\n${instruction}`);
+    const [action] = await this.signActionService.createActions(identity, [sign]);
+    if (!action) throw new Error('sign action link was not created');
+    await this.sendNotification(
+      job,
+      identity,
+      `检测到 ${label}：${sign.course.name} / ${sign.activity.title}（活动ID ${sign.activity.activityId}）\n打开或转发活动级签到链接：\n${action.link}`,
+    );
   }
 
   private async sendNotification(job: ChaoxingJob, identity: OwnerIdentity, message: string): Promise<void> {

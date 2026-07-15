@@ -242,6 +242,8 @@ export const BOT_CONSOLE_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'CHAOXING_PUBLIC_BASE_URL', label: '学习通绑定外部地址', type: 'text', section: 'features' },
   { key: 'CHAOXING_BIND_PAGE_PATH', label: '学习通绑定页路径', type: 'text', section: 'features' },
   { key: 'CHAOXING_BIND_TOKEN_TTL_MS', label: '学习通绑定链接有效期', type: 'number', section: 'features' },
+  { key: 'CHAOXING_SIGN_ACTION_PAGE_PATH', label: '学习通签到交互页路径', type: 'text', section: 'features' },
+  { key: 'CHAOXING_SIGN_ACTION_TOKEN_TTL_MS', label: '学习通签到链接有效期', type: 'number', section: 'features' },
   { key: 'CHAOXING_CREDENTIAL_KEK_PATH', label: '学习通凭据 KEK 路径', type: 'text', section: 'features' },
   { key: 'CHAOXING_AUTO_RELOGIN_ENABLED', label: '学习通自动重新登录', type: 'toggle', section: 'features' },
   { key: 'CHAOXING_SESSION_VALIDATION_TTL_MS', label: '学习通登录态缓存时间', type: 'number', section: 'features' },

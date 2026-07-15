@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { Context, Logger, Schema, type Fragment, type Session } from 'koishi';
 import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
 import '../../types/native-feature-chat.js';
@@ -10,12 +11,19 @@ import { parseChaoxingCommand, type ChaoxingCommand } from './commands.js';
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { ChaoxingDeadlineService, formatTaskList } from './deadline-service.js';
 import { ChaoxingMenuService, type ChaoxingMenuPuppeteerLike } from './menu.js';
-import { ChaoxingSignService, formatDetectedSigns } from './sign-service.js';
+import {
+  ChaoxingSignActionService,
+  parseSignQrPayload,
+  type ChaoxingSignActionLink,
+  type ChaoxingSignActionSubmission,
+} from './sign-action-service.js';
+import { ChaoxingSignService, formatDetectedSigns, signTypeLabel } from './sign-service.js';
 import { ChaoxingOwnerCoordinator } from './owner-coordinator.js';
 import { ChaoxingTaskStore, ensureChaoxingTables } from './store.js';
 import { ChaoxingStudyRunner, selectResumableStudyJob } from './study-runner.js';
-import { ChaoxingUserError, type ChaoxingJob, type ChaoxingJobType, type DatabaseLike, type OwnerIdentity } from './types.js';
+import { ChaoxingProtocolError, ChaoxingUserError, type ChaoxingJob, type ChaoxingJobType, type DatabaseLike, type OwnerIdentity } from './types.js';
 import { renderChaoxingBindPage } from './web/bind-page.js';
+import { renderChaoxingSignActionPage } from './web/sign-action-page.js';
 import { ChaoxingWorker, formatJobStatus, parseAnswerJobProgress, type ChaoxingNotifier } from './worker.js';
 
 export const name = 'chaoxing';
@@ -23,11 +31,14 @@ export const inject = { required: ['server', 'database', 'nativeFeatureChat', 'p
 
 const logger = new Logger(name);
 const DEFAULT_BIND_PAGE_PATH = '/chaoxing/bind';
+const DEFAULT_SIGN_ACTION_PAGE_PATH = '/chaoxing/sign-action';
 
 export interface Config {
   bindPagePath?: string;
   publicBaseUrl?: string;
   bindTokenTtlMs?: number;
+  signActionPagePath?: string;
+  signActionTokenTtlMs?: number;
   credentialKekPath?: string;
   autoReloginEnabled?: boolean;
   sessionValidationTtlMs?: number;
@@ -50,6 +61,8 @@ export const Config: Schema<Config> = Schema.object({
   bindPagePath: Schema.string().default(DEFAULT_BIND_PAGE_PATH).description('学习通绑定页路径，必须以 / 开头。'),
   publicBaseUrl: Schema.string().description('QQ 回复中使用的外部可访问基础 URL。'),
   bindTokenTtlMs: Schema.natural().role('time').default(600_000).description('绑定链接有效期。'),
+  signActionPagePath: Schema.string().default(DEFAULT_SIGN_ACTION_PAGE_PATH).description('签到交互页路径，必须以 / 开头。'),
+  signActionTokenTtlMs: Schema.natural().role('time').default(600_000).description('活动级签到链接最长有效期。'),
   credentialKekPath: Schema.string().description('学习通凭据 KEK 文件路径，文件权限必须为 0600。'),
   autoReloginEnabled: Schema.boolean().default(true).description('登录态失效后是否使用已授权保存的密码自动续期。'),
   sessionValidationTtlMs: Schema.natural().role('time').default(600_000).description('登录态验证缓存时间。'),
@@ -94,6 +107,8 @@ interface RuntimeConfig {
   passwordSubmitPath: string;
   publicBaseUrl: string;
   bindTokenTtlMs: number;
+  signActionPagePath: string;
+  signActionTokenTtlMs: number;
   credentialKekPath: string;
   autoReloginEnabled: boolean;
   sessionValidationTtlMs: number;
@@ -117,6 +132,7 @@ interface Services {
   catalog: ChaoxingCatalogService;
   deadline: ChaoxingDeadlineService;
   sign: ChaoxingSignService;
+  signAction: ChaoxingSignActionService;
   answer: ChaoxingAnswerService;
   store: ChaoxingTaskStore;
   worker: ChaoxingWorker;
@@ -145,6 +161,11 @@ export function apply(ctx: Context, config: Config): void {
     reminderLeadMs: runtime.deadlineReminderLeadMs,
   });
   const sign = new ChaoxingSignService(auth, catalog, client, store, { requestIntervalMs: runtime.requestIntervalMs });
+  const signAction = new ChaoxingSignActionService(store, sign, coordinator, {
+    publicBaseUrl: runtime.publicBaseUrl,
+    actionPagePath: runtime.signActionPagePath,
+    actionTokenTtlMs: runtime.signActionTokenTtlMs,
+  });
   const answer = new ChaoxingAnswerService(auth, client, store, {
     providerUrl: runtime.answerProviderUrl,
     providerApiKey: runtime.answerProviderApiKey,
@@ -155,14 +176,14 @@ export function apply(ctx: Context, config: Config): void {
     playbackRate: runtime.studyPlaybackRate,
     maximumReportIntervalMs: runtime.maximumVideoReportIntervalMs,
   });
-  const worker = new ChaoxingWorker(store, runner, sign, auth, notifier, coordinator, {
+  const worker = new ChaoxingWorker(store, runner, sign, signAction, auth, notifier, coordinator, {
     pollIntervalMs: runtime.workerPollIntervalMs,
     signWatchIntervalMs: runtime.signWatchIntervalMs,
   });
   const menu = new ChaoxingMenuService(serviceCtx.puppeteer);
-  const services: Services = { auth, catalog, deadline, sign, answer, store, worker, coordinator, menu };
+  const services: Services = { auth, catalog, deadline, sign, signAction, answer, store, worker, coordinator, menu };
 
-  registerWebRoutes(serviceCtx, auth, runtime);
+  registerWebRoutes(serviceCtx, auth, signAction, runtime);
   registerCommands(ctx, serviceCtx.nativeFeatureChat, services, runtime);
   const unregister = serviceCtx.nativeFeatureChat.registerCapability({
     id: 'chaoxing',
@@ -175,6 +196,8 @@ export function apply(ctx: Context, config: Config): void {
   let initialSyncTimer: ReturnType<typeof setTimeout> | null = null;
   ctx.on('ready', async () => {
     await store.cleanupExpiredChallenges(Date.now());
+    await store.recoverInterruptedSignActions(Date.now());
+    await store.cleanupExpiredSignActions(Date.now());
     await store.recoverInterruptedJobs(Date.now());
     worker.start();
     const sync = (): void => { void syncDeadlines(store, deadline, coordinator); };
@@ -237,11 +260,23 @@ async function executeCommand(command: ChaoxingCommand, identity: OwnerIdentity,
     const title = command.kind === 'works' ? '学习通作业' : command.kind === 'exams' ? '学习通考试' : '学习通待办';
     return formatTaskList(await services.deadline.query(identity, kind), title);
   }
-  if (command.kind === 'sign_quick') return services.sign.quickSign(identity);
+  if (command.kind === 'sign_quick') {
+    const signs = (await services.sign.scanOpenSigns(identity)).filter((sign) => sign.attendance.status === 0);
+    if (signs.length === 0) return '当前没有待签到活动。';
+    return formatSignActionLinks(await services.signAction.createActions(identity, signs));
+  }
   if (command.kind === 'sign_list') return formatDetectedSigns(await services.sign.scanOpenSigns(identity));
   if (command.kind === 'sign_execute') {
     const detected = await services.sign.resolveDetectedSign(identity, command.activityId);
-    return (await services.sign.execute(identity, detected, command.code)).message;
+    if (!command.code) return formatSignActionLinks(await services.signAction.createActions(identity, [detected]));
+    if (detected.signType === 'gesture' || detected.signType === 'code') {
+      return (await services.sign.execute(identity, detected, { kind: 'code', signCode: command.code })).message;
+    }
+    if (detected.signType === 'qrcode') {
+      const qr = parseSignQrPayload(command.code, detected.activity.activityId);
+      return (await services.sign.execute(identity, detected, { kind: 'qrcode', ...qr })).message;
+    }
+    throw new ChaoxingUserError('这个签到类型请打开活动级签到链接完成。');
   }
   if (command.kind === 'sign_watch') {
     if (await services.store.findActiveJob(identity.ownerKey, 'sign_watch')) throw new ChaoxingUserError('已有签到监听任务，请先发送“学习通停止签到”。');
@@ -314,7 +349,12 @@ async function executeCommand(command: ChaoxingCommand, identity: OwnerIdentity,
   throw new Error(`unhandled chaoxing command: ${(command as { kind: string }).kind}`);
 }
 
-function registerWebRoutes(ctx: ChaoxingServicesContext, auth: ChaoxingAuthService, runtime: RuntimeConfig): void {
+function registerWebRoutes(
+  ctx: ChaoxingServicesContext,
+  auth: ChaoxingAuthService,
+  signAction: ChaoxingSignActionService,
+  runtime: RuntimeConfig,
+): void {
   ctx.server.get(runtime.bindPagePath, async (koaCtx: any) => {
     const token = requestToken(koaCtx);
     try {
@@ -356,17 +396,58 @@ function registerWebRoutes(ctx: ChaoxingServicesContext, auth: ChaoxingAuthServi
       }));
     }
   });
+  ctx.server.get(runtime.signActionPagePath, async (koaCtx: any) => {
+    const token = requestToken(koaCtx);
+    const nonce = randomBytes(18).toString('base64');
+    setSignActionSecurityHeaders(koaCtx, nonce);
+    try {
+      const state = await signAction.resolvePage(token);
+      writeHtml(koaCtx, 200, renderChaoxingSignActionPage({
+        token,
+        submitPath: runtime.signActionPagePath,
+        nonce,
+        state,
+      }));
+    } catch (error) {
+      writeHtml(koaCtx, 400, renderChaoxingSignActionPage({
+        token: '',
+        submitPath: runtime.signActionPagePath,
+        nonce,
+        message: actionErrorMessage(error),
+      }));
+    }
+  });
+  ctx.server.post(runtime.signActionPagePath, async (koaCtx: any) => {
+    try {
+      const submission = await readSignActionSubmission(koaCtx);
+      const token = requestToken(koaCtx) || String(submission.body?.token ?? '').trim();
+      const state = await signAction.submit(token, submission);
+      writeJson(koaCtx, 200, {
+        ok: true,
+        status: state.action.status,
+        message: state.action.resultMessage || '签到已提交。',
+      });
+    } catch (error) {
+      writeJson(koaCtx, 400, { ok: false, message: actionErrorMessage(error) });
+    }
+  });
 }
 
 function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
   const bindPagePath = absolutePath(config.bindPagePath ?? DEFAULT_BIND_PAGE_PATH, 'chaoxing.bindPagePath');
+  const signActionPagePath = absolutePath(config.signActionPagePath ?? DEFAULT_SIGN_ACTION_PAGE_PATH, 'chaoxing.signActionPagePath');
+  if (signActionPagePath === bindPagePath || signActionPagePath.startsWith(`${bindPagePath}/`)) {
+    throw new Error('chaoxing.signActionPagePath 不能与绑定页路径重叠。');
+  }
   const baseDir = String((ctx as { baseDir?: string }).baseDir ?? process.cwd());
   return {
     bindPagePath,
     bindStatusPath: `${bindPagePath}/status`,
     passwordSubmitPath: `${bindPagePath}/password`,
+    signActionPagePath,
     publicBaseUrl: baseUrl(config.publicBaseUrl ?? `http://127.0.0.1:${process.env.KOISHI_PORT || '5140'}`),
     bindTokenTtlMs: positiveInteger(config.bindTokenTtlMs ?? 600_000, 'chaoxing.bindTokenTtlMs'),
+    signActionTokenTtlMs: positiveInteger(config.signActionTokenTtlMs ?? 600_000, 'chaoxing.signActionTokenTtlMs'),
     credentialKekPath: resolveKekPath(baseDir, config.credentialKekPath ?? './.runtime/chaoxing/credential-kek.key'),
     autoReloginEnabled: config.autoReloginEnabled ?? true,
     sessionValidationTtlMs: positiveInteger(config.sessionValidationTtlMs ?? 600_000, 'chaoxing.sessionValidationTtlMs'),
@@ -392,7 +473,7 @@ export function buildChaoxingCapabilityReference(session: Session, runtime: Pick
     `学习通功能（当前会话${enabled ? '可用' : '未启用'}）：`,
     '- 账号：学习通绑定、学习通确认 <确认码>、学习通状态、学习通解绑。',
     '- 查询：学习通课程、学习通章节 <课程>、学习通待办、学习通作业、学习通考试。',
-    '- 签到：学习通签到（一键处理唯一普通签到）、学习通签到状态、学习通签到 <活动ID> [签到码]、学习通签到监听 [课程]、学习通停止签到。',
+    '- 签到：学习通签到（为每个待签到活动生成可转发的短期交互链接）、学习通签到状态、学习通签到 <活动ID> [签到码或二维码内容]、学习通签到监听 [课程]、学习通停止签到。',
     '- 刷课：学习通刷课 <课程>、学习通刷课状态、学习通停止刷课。',
     '- 答题：学习通答题 <课程>，收到预览后使用补充、保存、提交或停止命令；学习通错题查看记录。',
     enabled ? '- 命令参数缺失时给出正确格式。' : '- 当前群未开启学习通功能。',
@@ -429,6 +510,28 @@ async function syncDeadlines(store: ChaoxingTaskStore, deadline: ChaoxingDeadlin
       logger.warn('deadline sync failed: owner=%s reason=%s', identity.ownerKey, error instanceof Error ? error.message : String(error));
     }
   }
+}
+
+function formatSignActionLinks(links: ChaoxingSignActionLink[]): string {
+  const heading = links.length === 1
+    ? '已生成这个活动的签到链接。你可以自己打开，也可以转发给现场协助者：'
+    : `检测到 ${links.length} 个待签到活动，已分别生成活动级链接；每个链接都可以转发给现场协助者：`;
+  return `${heading}\n${links.map((link) => [
+    `- ${link.courseName} / ${link.activityTitle}（${signTypeLabel(link.signType)}，活动ID ${link.activityId}）`,
+    `  ${link.link}`,
+    `  有效至 ${formatSignActionDate(link.expiresAt)}`,
+  ].join('\n')).join('\n')}`;
+}
+
+function formatSignActionDate(value: number): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(value);
 }
 
 function activeLearningJob(jobs: ChaoxingJob[]): ChaoxingJob | undefined {
@@ -530,6 +633,65 @@ async function readRequestBody(koaCtx: any): Promise<Record<string, unknown>> {
     return parsed as Record<string, unknown>;
   }
   return Object.fromEntries(new URLSearchParams(raw));
+}
+
+async function readSignActionSubmission(koaCtx: any): Promise<ChaoxingSignActionSubmission> {
+  const contentType = String(koaCtx.get?.('content-type') ?? koaCtx.request?.headers?.['content-type'] ?? '')
+    .split(';', 1)[0]!.trim().toLowerCase();
+  if (!contentType.startsWith('image/')) return { body: await readRequestBody(koaCtx) };
+  const bytes = await readRawBody(koaCtx, 8 * 1024 * 1024);
+  const encodedFilename = String(koaCtx.get?.('x-file-name') ?? koaCtx.request?.headers?.['x-file-name'] ?? 'capture.jpg');
+  let decodedFilename = 'capture.jpg';
+  try {
+    decodedFilename = decodeURIComponent(encodedFilename);
+  } catch {
+    throw new ChaoxingUserError('图片文件名编码无效。');
+  }
+  const filename = decodedFilename.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 120) || 'capture.jpg';
+  const query = koaCtx.query ?? koaCtx.request?.query ?? {};
+  return {
+    body: {
+      latitude: query.latitude,
+      longitude: query.longitude,
+      accuracy: query.accuracy,
+    },
+    image: { bytes, contentType, filename },
+  };
+}
+
+async function readRawBody(koaCtx: any, maximumBytes: number): Promise<Uint8Array> {
+  const body = koaCtx.request?.body;
+  if (Buffer.isBuffer(body)) {
+    if (body.byteLength > maximumBytes) throw new ChaoxingUserError('图片不能超过 8 MiB。');
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    if (body.byteLength > maximumBytes) throw new ChaoxingUserError('图片不能超过 8 MiB。');
+    return body;
+  }
+  const chunks: Buffer[] = [];
+  let byteLength = 0;
+  for await (const chunk of (koaCtx.req ?? []) as AsyncIterable<Buffer | string>) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    byteLength += buffer.byteLength;
+    if (byteLength > maximumBytes) throw new ChaoxingUserError('图片不能超过 8 MiB。');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function setSignActionSecurityHeaders(koaCtx: any, nonce: string): void {
+  koaCtx.set('content-security-policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`);
+  koaCtx.set('x-frame-options', 'DENY');
+  koaCtx.set('referrer-policy', 'no-referrer');
+  koaCtx.set('permissions-policy', 'camera=(self), geolocation=(self)');
+  koaCtx.set('x-content-type-options', 'nosniff');
+}
+
+function actionErrorMessage(error: unknown): string {
+  if (error instanceof ChaoxingUserError || error instanceof ChaoxingProtocolError) return error.message;
+  logger.warn('chaoxing sign action failed: %s', error instanceof Error ? error.message : String(error));
+  return '签到操作失败，请稍后重试。';
 }
 
 function absolutePath(value: string, key: string): string {

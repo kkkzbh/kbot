@@ -65,6 +65,8 @@ export const FIELD_LABELS: Record<string, string> = {
   CHAOXING_PUBLIC_BASE_URL: '学习通绑定外部地址',
   CHAOXING_BIND_PAGE_PATH: '学习通绑定页路径',
   CHAOXING_BIND_TOKEN_TTL_MS: '学习通绑定链接有效期',
+  CHAOXING_SIGN_ACTION_PAGE_PATH: '学习通签到交互页路径',
+  CHAOXING_SIGN_ACTION_TOKEN_TTL_MS: '学习通签到链接有效期',
   CHAOXING_CREDENTIAL_KEK_PATH: '学习通凭据 KEK 路径',
   CHAOXING_AUTO_RELOGIN_ENABLED: '学习通自动重新登录',
   CHAOXING_SESSION_VALIDATION_TTL_MS: '登录态验证缓存时间',
@@ -162,6 +164,10 @@ export const FIELD_HINTS: Record<string, string> = {
     '学习通绑定网页路径，必须以 / 开头。留空时使用 /chaoxing/bind。',
   CHAOXING_BIND_TOKEN_TTL_MS:
     '学习通一次性绑定链接有效期，单位毫秒。',
+  CHAOXING_SIGN_ACTION_PAGE_PATH:
+    '活动级签到交互网页路径，必须以 / 开头。链接可转发给现场协助者。',
+  CHAOXING_SIGN_ACTION_TOKEN_TTL_MS:
+    '每个活动级签到链接的最长有效期，单位毫秒；活动先截止时同步失效。',
   CHAOXING_CREDENTIAL_KEK_PATH:
     '用于加密保存学习通密码和登录态的本机密钥文件，文件权限必须为 0600。',
   CHAOXING_AUTO_RELOGIN_ENABLED:

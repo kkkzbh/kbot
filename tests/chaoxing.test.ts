@@ -39,6 +39,7 @@ function makeDetectedSign(signType: ChaoxingSignType, activityId: string, offici
     signType,
     info: {
       otherId: '0', ifPhoto: false, ifNeedVCode: false, openCheckFaceFlag: false,
+      ifRefreshQr: false, locationText: '', locationLatitude: null, locationLongitude: null, locationRangeMeters: null,
       startAt: null, endAt: null, raw: {},
     },
     attendance: { status: officialStatus },
@@ -131,13 +132,19 @@ describe('chaoxing protocol parsers', () => {
     const client = new ChaoxingClient({
       fetchImpl: vi.fn().mockResolvedValue(new Response(JSON.stringify({
         result: 1,
-        data: { id: 900, otherId: 0, ifphoto: 1, ifNeedVCode: 0, openCheckFaceFlag: 0 },
+        data: {
+          id: 900, otherId: 0, ifphoto: 1, ifNeedVCode: 0, openCheckFaceFlag: 0, ifrefreshewm: 1,
+          locationText: '河北大学坤舆园', locationLatitude: '38.8894', locationLongitude: '115.5789', locationRange: '100',
+        },
       }), { status: 200 })) as typeof fetch,
     });
 
     const result = await client.getSignInfo({ cookies: [] }, '900');
 
-    expect(result.info).toMatchObject({ otherId: '0', ifPhoto: true, ifNeedVCode: false, openCheckFaceFlag: false });
+    expect(result.info).toMatchObject({
+      otherId: '0', ifPhoto: true, ifNeedVCode: false, openCheckFaceFlag: false, ifRefreshQr: true,
+      locationText: '河北大学坤舆园', locationLatitude: 38.8894, locationLongitude: 115.5789, locationRangeMeters: 100,
+    });
   });
 
   it('reads the authoritative attendance status and rejects malformed responses', async () => {
@@ -153,6 +160,49 @@ describe('chaoxing protocol parsers', () => {
       name: 'ChaoxingProtocolError',
       code: 'sign_attendance_fields',
     });
+  });
+
+  it('places the current dynamic QR payload in the pre-sign request', async () => {
+    const requests: Array<{ url: URL; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      requests.push({ url, init });
+      if (url.pathname === '/newsign/preSign') return new Response('<html><body></body></html>', { status: 200 });
+      if (url.pathname === '/pptSign/analysis') return new Response("code='+'abc123'", { status: 200 });
+      return new Response('ok', { status: 200 });
+    });
+    const client = new ChaoxingClient({ fetchImpl: fetchImpl as typeof fetch });
+
+    await client.prepareSign({ cookies: [] }, {
+      activity: {
+        activityId: '900', courseId: '100', classId: '200', title: '动态码', activityType: 2,
+        signTypeCode: '2', status: 1, ext: '{"source":1}', raw: {},
+      },
+      profile: { uid: '1', puid: '2', fid: '3', name: '测试', schoolName: '学校' },
+      qr: { enc: 'live-enc', code: 'live-code' },
+    });
+
+    expect(requests[0]?.url.searchParams.get('rcode')).toBe('SIGNIN:aid=900&source=15&Code=live-code&enc=live-enc');
+    expect(requests[0]?.init?.body).toBe('ext=%7B%22source%22%3A1%7D');
+  });
+
+  it('uploads a sign photo through the cloud token contract', async () => {
+    const requests: Array<{ url: URL; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      requests.push({ url, init });
+      if (url.pathname === '/api/token/uservalid') return new Response(JSON.stringify({ result: true, _token: 'cloud-token' }), { status: 200 });
+      return new Response(JSON.stringify({ data: { objectId: 'photo-object-1' } }), { status: 200 });
+    });
+    const client = new ChaoxingClient({ fetchImpl: fetchImpl as typeof fetch });
+
+    await expect(client.uploadSignPhoto({ cookies: [] }, {
+      puid: '2', bytes: Uint8Array.from([1, 2, 3]), contentType: 'image/png', filename: '现场.png',
+    })).resolves.toMatchObject({ objectId: 'photo-object-1' });
+    const form = requests[1]?.init?.body as FormData;
+    expect(form.get('puid')).toBe('2');
+    expect(form.get('_token')).toBe('cloud-token');
+    expect(form.get('file')).toBeInstanceOf(Blob);
   });
 
   it('uses course-declared routes and current navigation fields for academic tasks', async () => {
@@ -280,6 +330,7 @@ describe('chaoxing local contracts', () => {
     const getSignInfo = vi.fn().mockImplementation(async (_cookieJar, activityId: string) => ({
       info: {
         otherId: '0', ifPhoto: false, ifNeedVCode: false, openCheckFaceFlag: false,
+        ifRefreshQr: false, locationText: '', locationLatitude: null, locationLongitude: null, locationRangeMeters: null,
         startAt: null, endAt: null, raw: { id: activityId },
       },
       cookieJar: { cookies: [] },
@@ -341,7 +392,7 @@ describe('chaoxing local contracts', () => {
     );
     const detected = makeDetectedSign('normal', 'activity-1', 0);
 
-    await expect(service.execute(identity, detected)).rejects.toMatchObject({
+    await expect(service.execute(identity, detected, { kind: 'normal' })).rejects.toMatchObject({
       code: 'sign_verification_failed',
       message: expect.stringContaining('本次不报告成功'),
     });
@@ -374,7 +425,7 @@ describe('chaoxing local contracts', () => {
       { requestIntervalMs: 0 },
     );
 
-    await expect(service.execute(identity, makeDetectedSign('normal', 'activity-1', 0))).resolves.toMatchObject({
+    await expect(service.execute(identity, makeDetectedSign('normal', 'activity-1', 0), { kind: 'normal' })).resolves.toMatchObject({
       status: 'succeeded',
       officialStatus: 1,
       message: expect.stringContaining('签到成功（官方状态：已签到）'),
@@ -385,27 +436,52 @@ describe('chaoxing local contracts', () => {
     }));
   });
 
-  it('one-click signs the only safe normal activity and gives actionable steps for the rest', async () => {
+  it('submits the browser location only after checking the teacher-defined range', async () => {
     const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
-    const service = new ChaoxingSignService({} as never, {} as never, {} as never, {} as never, { requestIntervalMs: 0 });
-    const signs = [
-      makeDetectedSign('normal', 'normal-1', 0),
-      makeDetectedSign('gesture', 'gesture-1', 0),
-      makeDetectedSign('qrcode', 'qr-1', 0),
-      makeDetectedSign('location', 'location-1', 0),
-    ];
-    vi.spyOn(service, 'scanOpenSigns').mockResolvedValue(signs);
-    const execute = vi.spyOn(service, 'execute').mockResolvedValue({
-      status: 'succeeded', officialStatus: 1, message: '签到测试课 / 普通签到：签到成功（官方状态：已签到）。',
+    const auth = {
+      ownerKey: identity.ownerKey, cookieJar: { cookies: [] },
+      profile: { uid: '1', puid: '2', fid: '3', name: '测试', schoolName: '学校', deviceCode: 'device' },
+      credentialVersion: 1,
+    };
+    const submitSign = vi.fn().mockResolvedValue({ status: 'succeeded', responseText: 'success', cookieJar: { cookies: [] } });
+    const service = new ChaoxingSignService(
+      {
+        getAuthenticatedSession: vi.fn().mockResolvedValue(auth),
+        persistCookies: vi.fn().mockImplementation(async (current, cookieJar) => ({ ...current, cookieJar })),
+      } as never,
+      {} as never,
+      {
+        getAttendInfo: vi.fn()
+          .mockResolvedValueOnce({ attendance: { status: 0 }, cookieJar: { cookies: [] } })
+          .mockResolvedValueOnce({ attendance: { status: 1 }, cookieJar: { cookies: [] } }),
+        prepareSign: vi.fn().mockResolvedValue({ pageText: '', cookieJar: { cookies: [] } }),
+        submitSign,
+      } as never,
+      { addSignRecord: vi.fn() } as never,
+      { requestIntervalMs: 0 },
+    );
+    const detected = makeDetectedSign('location', 'location-1', 0);
+    Object.assign(detected.info, {
+      otherId: '4', locationText: '河北大学坤舆园', locationLatitude: 38.889475, locationLongitude: 115.578978, locationRangeMeters: 100,
     });
 
-    const result = await service.quickSign(identity);
+    await service.execute(identity, detected, {
+      kind: 'location', location: { latitude: 38.8895, longitude: 115.579, accuracy: 8 },
+    });
 
-    expect(execute).toHaveBeenCalledWith(identity, signs[0]);
-    expect(result).toContain('签到成功（官方状态：已签到）');
-    expect(result).toContain('学习通签到 gesture-1 <手势顺序>');
-    expect(result).toContain('学习通 App 扫描教师展示的动态二维码');
-    expect(result).toContain('学习通 App 授权定位');
+    expect(submitSign).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      fields: { address: '河北大学坤舆园', latitude: 38.8895, longitude: 115.579 },
+    }));
+  });
+
+  it('requires an explicit input contract matching the detected sign type', async () => {
+    const identity = { ownerKey: 'onebot:10001', platform: 'onebot', qqUserId: '10001', channelId: 'group:1' };
+    const service = new ChaoxingSignService(
+      {} as never, {} as never, {} as never, { addSignRecord: vi.fn() } as never, { requestIntervalMs: 0 },
+    );
+    await expect(service.execute(identity, makeDetectedSign('normal', 'normal-1', 0), {
+      kind: 'code', signCode: '1234',
+    })).rejects.toThrow('提交数据与活动要求不一致');
   });
 
   it('classifies ordinary and photo signs using both remote fields', () => {

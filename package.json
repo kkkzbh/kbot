@@ -46,6 +46,7 @@
     "@napi-rs/canvas": "^0.1.97",
     "cheerio": "1.1.2",
     "cron-parser": "^4.9.0",
+    "jsqr": "1.4.0",
     "koishi": "4.18.11",
     "koishi-plugin-adapter-onebot": "6.9.4",
     "koishi-plugin-canvas": "0.2.2",
