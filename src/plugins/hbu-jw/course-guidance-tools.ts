@@ -151,8 +151,8 @@ const SectionSchema = z.object({
 });
 
 const ValidateSchema = z.object({
-  sections: z.array(SectionSchema).min(1).max(30)
-    .describe('The exact section identifiers selected from hbu_jw_course_offerings.'),
+  sections: z.array(SectionSchema).max(30)
+    .describe('The exact section identifiers selected from hbu_jw_course_offerings. Use an empty array only when the offerings result contains no selectable sections.'),
 });
 
 abstract class HbuJwGuidanceToolBase extends StructuredTool {

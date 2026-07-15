@@ -179,7 +179,7 @@ export class HbuJwCourseGuidanceService {
       ...freeOfferings.map((offering) => ({ offering, source: 'free' as const })),
     ];
     for (const { offering, source } of sourcedOfferings) {
-      if (requested && !requested.has(offering.courseNumber)) continue;
+      if (source === 'plan' && requested && !requested.has(offering.courseNumber)) continue;
       if (loaded.passedNumbers.has(offering.courseNumber) || loaded.selectedNumbers.has(offering.courseNumber)) continue;
       if (offering.remainingSeats <= 0 || hasMeetingConflict(offering.meetings, meetings)) continue;
       const planCourse = planCourseByNumber.get(offering.courseNumber);

@@ -465,6 +465,101 @@ describe('hbu-jw final recommendation validation', () => {
     };
   }
 
+  it('applies courseNumbers only to plan offerings while independently exposing requested general electives', async () => {
+    const plan: HbuJwTrainingPlanSnapshot = {
+      planNumber: 'P2',
+      planName: '分组选课测试方案',
+      majorCode: 'M1',
+      majorName: '计算机科学与技术',
+      cohortYear: 2023,
+      requiredCredits: 6,
+      categories: [
+        { code: 'P', name: '专业核心课', requiredCredits: 2 },
+        { code: 'G', name: '通识通选课', requiredCredits: 4 },
+      ],
+      courses: [{
+        courseNumber: 'PLAN1',
+        courseName: '方案必修课',
+        categoryCode: 'P',
+        categoryName: '专业核心课',
+        attribute: 'required',
+        credits: 2,
+        replacementCourseNumbers: [],
+      }],
+    };
+    const offering = (courseNumber: string, credits: number): HbuJwCourseOffering => ({
+      executionPlanNumber: '2026-2027-1',
+      courseNumber,
+      sequenceNumber: '01',
+      courseName: courseNumber,
+      credits,
+      courseAttributeCode: '02',
+      courseAttributeName: '任选',
+      categoryCode: '',
+      categoryName: '',
+      planCategoryCode: '',
+      planCategoryName: '',
+      teacherName: '教师',
+      capacity: 50,
+      remainingSeats: 10,
+      meetings: [],
+    });
+    const client = {
+      getStudentPlanProfile: vi.fn(async () => ({
+        majorName: plan.majorName,
+        cohortYear: 2023,
+        planNumber: plan.planNumber,
+        planDetailPath: '/detail',
+      })),
+      getAllPassingScores: vi.fn(async () => []),
+      getCourseSelectionResult: vi.fn(async () => ({ totalUnits: 0, groups: [] })),
+      getThisSemesterSchedule: vi.fn(async () => ({
+        executiveEducationPlanNumber: 'current',
+        programPlanName: '当前学期',
+        totalUnits: 0,
+        courses: [],
+      })),
+      getPlanCourseOfferings: vi.fn(async () => [offering('PLAN1', 2), offering('PLAN2', 2)]),
+      getFreeCourseOfferings: vi.fn(async () => [offering('FREE1', 2)]),
+    };
+    const now = Date.UTC(2026, 6, 15);
+    const service = new HbuJwCourseGuidanceService(
+      { ensureAuthenticated: vi.fn(async () => ({ kind: 'authenticated' as const, cookieJar: EMPTY_JAR })) },
+      client as never,
+      {
+        getTrainingPlan: vi.fn(async () => ({
+          id: 2,
+          planNumber: plan.planNumber,
+          majorCode: plan.majorCode,
+          majorName: plan.majorName,
+          cohortYear: plan.cohortYear,
+          planName: plan.planName,
+          snapshotJson: JSON.stringify(plan),
+          sourceHash: 'hash',
+          syncedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      } as never,
+      {} as never,
+      {} as never,
+      () => now,
+    );
+
+    const result = await service.getOfferings(
+      { ownerKey: 'onebot:1', platform: 'onebot', qqUserId: '1', channelId: 'private:1' },
+      { courseNumbers: ['PLAN1'], includeGeneralElectives: true },
+    );
+
+    expect(result.offerings.map((item) => item.courseNumber)).toEqual(expect.arrayContaining(['PLAN1', 'FREE1']));
+    expect(result.offerings.map((item) => item.courseNumber)).not.toContain('PLAN2');
+    expect(result.offerings.find((item) => item.courseNumber === 'FREE1')).toMatchObject({
+      mappedCategoryCode: 'G',
+      priority: 'general-elective',
+    });
+    expect(client.getFreeCourseOfferings).toHaveBeenCalledOnce();
+  });
+
   it('rejects a non-maximal elective combination and accepts an exact fill', async () => {
     const fixture = guidanceFixture();
     const partial = await fixture.service.validateRecommendation(fixture.identity, [fixture.section('E1')]);
