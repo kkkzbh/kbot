@@ -26,31 +26,54 @@ async function submit() {
 
 <template>
   <main class="login-page">
-    <section class="login-card">
-      <div class="login-brand"><span>Q</span><strong>QQBot Admin</strong></div>
-      <p class="eyebrow">INDEPENDENT OPERATIONS</p>
-      <h1>运维工作台</h1>
-      <p class="login-description">首次使用服务器配置的 Admin access token 登录后，浏览器会通过 HttpOnly Cookie 保持会话，并在每次打开管理台时自动续期。</p>
-      <el-form label-position="top" @submit.prevent="submit">
-        <el-form-item label="Access token">
-          <el-input v-model="accessToken" type="password" show-password size="large" autocomplete="current-password" @keyup.enter="submit" />
-        </el-form-item>
-        <el-button type="primary" size="large" :loading="loading" :disabled="!accessToken" style="width:100%" @click="submit">进入工作台</el-button>
-      </el-form>
-      <p class="login-security">90 天滚动续期 · HttpOnly · SameSite Strict · Origin protected</p>
-    </section>
+    <form class="login-form" @submit.prevent="submit">
+      <el-input
+        v-model="accessToken"
+        type="password"
+        size="large"
+        autocomplete="current-password"
+        aria-label="Access token"
+        placeholder="请输入Access token"
+      />
+      <el-button native-type="submit" type="primary" size="large" :loading="loading" :disabled="!accessToken">进入控制台</el-button>
+    </form>
   </main>
 </template>
 
 <style scoped>
-.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 20% 10%, #25375f 0, #121a2a 35%, #0c111c 100%); }
-.login-card { width: min(430px, 100%); padding: 38px; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; color: #dce3ef; background: rgba(20,29,45,.94); box-shadow: 0 30px 80px rgba(0,0,0,.3); }
-.login-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
-.login-brand span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; color: #fff; background: #486de0; font-weight: 800; }
-.login-brand strong { font-size: 13px; }
-.eyebrow { margin: 0 0 5px; color: #75819a; font-size: 9px; font-weight: 800; letter-spacing: .16em; }
-h1 { margin: 0; color: #fff; font-size: 29px; letter-spacing: -.03em; }
-.login-description { margin: 10px 0 28px; color: #929db1; font-size: 12px; line-height: 1.7; }
-.login-security { margin: 22px 0 0; color: #677287; font-size: 9px; text-align: center; }
-:deep(.el-form-item__label) { color: #aeb8c8; }
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f5f7fa;
+}
+
+.login-form {
+  display: grid;
+  gap: 18px;
+  width: min(360px, 100%);
+}
+
+.login-form :deep(.el-input__wrapper) {
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px #dfe3e8 inset;
+}
+
+.login-form :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #5b78e6 inset;
+}
+
+.login-form :deep(.el-input__inner::placeholder) {
+  color: #a8afb9;
+}
+
+.login-form :deep(.el-button) {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 8px;
+}
 </style>
