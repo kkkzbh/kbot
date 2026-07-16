@@ -12,8 +12,11 @@ import { assertGenshinRedeemCookieCapability } from './cookie.js';
 import { credentialAad, decryptGenshinCredential } from './credential.js';
 import { GenshinStore, signInRecordRow } from './store.js';
 import {
+  GenshinDailyNoteVerificationRequiredError,
   GenshinTakumiError,
   type GenshinDailyNote,
+  type GenshinDailyNoteVerification,
+  type GenshinDailyNoteVerificationContext,
   type GenshinSignResult,
   type GenshinTakumiClient,
 } from './takumi-client.js';
@@ -25,6 +28,7 @@ import {
   type GenshinQrLoginResult,
   type GenshinOperationStatus,
   type GenshinSignInTrigger,
+  type GenshinStatusVerification,
   GenshinUserError,
   type OwnerIdentity,
 } from './types.js';
@@ -35,6 +39,7 @@ export interface GenshinRuntimeConfig {
   bindPagePath: string;
   publicBaseUrl: string;
   bindTokenTtlMs: number;
+  statusVerificationPath: string;
   timezone: string;
 }
 
@@ -79,6 +84,19 @@ export interface GenshinStatusReply {
   role: GenshinGameRole;
   note: GenshinDailyNote;
   queriedAt: number;
+}
+
+export interface GenshinStatusVerificationPage {
+  token: string;
+  gt: string;
+  challenge: string;
+}
+
+export class GenshinStatusVerificationLinkError extends GenshinUserError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GenshinStatusVerificationLinkError';
+  }
 }
 
 export class GenshinService {
@@ -216,7 +234,7 @@ export class GenshinService {
     }
 
     try {
-      const cookies = await this.client.exchangeCookieToken(result.cookies);
+      const cookies = await this.client.completeAccountTokens(result.cookies);
       const roles = await this.client.listRoles(cookies);
       if (roles.length === 0) {
         throw new GenshinUserError('该米游社账号没有可绑定的国服原神 UID。');
@@ -318,6 +336,7 @@ export class GenshinService {
       this.kek,
     );
     await this.store.updateCredentialEnvelope(credentialRow, credential.cipherText, credential.meta, now);
+    await this.store.cancelActiveStatusVerifications(identity.ownerKey, now);
     await this.store.clearChallengeSecrets(challenge.id, 'confirmed', now);
     await this.audit(identity.ownerKey, 'bind_confirmed', 'ok');
     return role;
@@ -327,6 +346,7 @@ export class GenshinService {
     const now = this.now();
     await this.store.revokeCredential(identity.ownerKey, now);
     await this.store.cancelActiveChallenges(identity.ownerKey, now);
+    await this.store.cancelActiveStatusVerifications(identity.ownerKey, now);
     await this.store.clearOwnerChallengeSecrets(identity.ownerKey, now);
     await this.audit(identity.ownerKey, 'unbind', 'ok');
   }
@@ -338,18 +358,64 @@ export class GenshinService {
 
   async queryStatus(identity: OwnerIdentity): Promise<GenshinStatusReply> {
     const credential = await this.requireActiveCredential(identity.ownerKey);
-    const { payload, role } = this.decryptCredential(credential);
     const now = this.now();
     try {
-      const note = await this.client.fetchDailyNote(payload.cookies, role);
+      const { payload, role } = await this.completeCredentialTokens(credential);
+      const claimedVerification = await this.store.claimVerifiedStatusChallenge(
+        credential.ownerKey,
+        createRandomToken(16),
+        now,
+      );
+      const verification = statusVerificationContext(claimedVerification);
+      const note = await this.client.fetchDailyNote(payload.cookies, role, verification);
       await this.store.markCredentialUsed(credential.id, now);
       await this.audit(credential.ownerKey, 'status_queried', 'ok');
       return { role, note, queriedAt: now };
     } catch (error) {
+      if (error instanceof GenshinDailyNoteVerificationRequiredError) {
+        const link = await this.createStatusVerificationLink(credential.ownerKey, error.verification, now);
+        const message = `米游社要求完成人机验证后才能读取实时便笺：\n${link}\n验证完成后，请重新发送“原神状态”。`;
+        await this.store.markCredentialFailure(credential.id, '米游社实时便笺要求人机验证。', now);
+        await this.audit(credential.ownerKey, 'status_verification_required', 'failed', formatFailureReason(error));
+        throw new GenshinStatusVerificationLinkError(message);
+      }
       const message = statusFailure(error);
       await this.store.markCredentialFailure(credential.id, message, now);
-      await this.audit(credential.ownerKey, 'status_query_failed', 'failed', message);
+      await this.audit(credential.ownerKey, 'status_query_failed', 'failed', formatFailureReason(error));
       throw new GenshinUserError(message);
+    }
+  }
+
+  async resolveStatusVerificationPage(token: string): Promise<GenshinStatusVerificationPage> {
+    const verification = await this.requirePendingStatusVerification(token);
+    return {
+      token,
+      gt: verification.gt,
+      challenge: verification.challenge,
+    };
+  }
+
+  async completeStatusVerification(token: string, validate: string): Promise<void> {
+    const verification = await this.requirePendingStatusVerification(token);
+    const credential = await this.requireActiveCredential(verification.ownerKey);
+    try {
+      const { payload } = await this.completeCredentialTokens(credential);
+      const verifiedChallenge = await this.client.verifyDailyNoteChallenge(payload.cookies, {
+        gt: verification.gt,
+        challenge: verification.challenge,
+        path: verification.challengePath,
+      }, validate);
+      const updated = await this.store.markStatusVerificationVerified(verification.id, verifiedChallenge, this.now());
+      if (!updated) {
+        throw new GenshinUserError('验证状态已变化，请回到 QQ 重新发送“原神状态”。');
+      }
+      await this.audit(verification.ownerKey, 'status_verification_completed', 'ok');
+    } catch (error) {
+      await this.audit(verification.ownerKey, 'status_verification_failed', 'failed', formatFailureReason(error));
+      if (error instanceof GenshinTakumiError) {
+        throw new GenshinUserError(error.message);
+      }
+      throw error;
     }
   }
 
@@ -505,6 +571,65 @@ export class GenshinService {
     return credential;
   }
 
+  private async requirePendingStatusVerification(token: string): Promise<GenshinStatusVerification> {
+    const normalizedToken = token.trim();
+    if (!normalizedToken) {
+      throw new GenshinUserError('实时便笺验证链接无效，请回到 QQ 重新发送“原神状态”。');
+    }
+    const verification = await this.store.findStatusVerificationByTokenHash(sha256Hex(normalizedToken));
+    if (!verification) {
+      throw new GenshinUserError('实时便笺验证链接无效，请回到 QQ 重新发送“原神状态”。');
+    }
+    const now = this.now();
+    if (verification.expiresAt <= now) {
+      await this.store.cleanupExpiredStatusVerifications(now);
+      throw new GenshinUserError('实时便笺验证链接已过期，请回到 QQ 重新发送“原神状态”。');
+    }
+    if (verification.status !== 'pending') {
+      throw new GenshinUserError('实时便笺验证链接已使用，请回到 QQ 重新发送“原神状态”。');
+    }
+    return verification;
+  }
+
+  private async createStatusVerificationLink(
+    ownerKey: string,
+    verification: GenshinDailyNoteVerification,
+    now: number,
+  ): Promise<string> {
+    await this.store.cleanupExpiredStatusVerifications(now);
+    await this.store.cancelActiveStatusVerifications(ownerKey, now);
+    const token = createRandomToken();
+    await this.store.createStatusVerification({
+      tokenHash: sha256Hex(token),
+      ownerKey,
+      gt: verification.gt,
+      challenge: verification.challenge,
+      challengePath: verification.path,
+      expiresAt: now + this.config.bindTokenTtlMs,
+      now,
+    });
+    return `${this.config.publicBaseUrl}${this.config.statusVerificationPath}?token=${encodeURIComponent(token)}`;
+  }
+
+  private async completeCredentialTokens(
+    credential: GenshinCredential,
+  ): Promise<{ payload: GenshinCredentialPayload; role: GenshinGameRole }> {
+    const decrypted = this.decryptCredential(credential);
+    const cookies = await this.client.completeAccountTokens(decrypted.payload.cookies);
+    if (cookies !== decrypted.payload.cookies) {
+      const encrypted = encryptEnvelopeJson(
+        { cookies } satisfies GenshinCredentialPayload,
+        credentialAad(credential.ownerKey, credential.id),
+        this.kek,
+      );
+      await this.store.updateCredentialEnvelope(credential, encrypted.cipherText, encrypted.meta, this.now());
+    }
+    return {
+      payload: { cookies },
+      role: decrypted.role,
+    };
+  }
+
   private decryptCredential(credential: GenshinCredential): { payload: GenshinCredentialPayload; role: GenshinGameRole } {
     return decryptGenshinCredential(credential, this.kek);
   }
@@ -616,6 +741,17 @@ function statusFailure(error: unknown): string {
     return error.message;
   }
   return '原神状态查询失败，请稍后重试。';
+}
+
+function statusVerificationContext(
+  verification: GenshinStatusVerification | null,
+): GenshinDailyNoteVerificationContext | undefined {
+  const challenge = String(verification?.verifiedChallenge ?? '').trim();
+  if (!verification || !challenge) return undefined;
+  return {
+    challenge,
+    path: verification.challengePath,
+  };
 }
 
 function formatFailureReason(error: unknown): string {

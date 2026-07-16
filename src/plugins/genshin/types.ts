@@ -16,6 +16,8 @@ export type GenshinBindChallengeStatus =
   | 'expired'
   | 'cancelled';
 
+export type GenshinStatusVerificationStatus = 'pending' | 'verified' | 'consumed' | 'expired';
+
 export type GenshinCookieFieldName =
   | 'stoken'
   | 'stuid'
@@ -120,6 +122,21 @@ export interface GenshinCredential {
   lastUsedAt?: number | null;
   lastFailureReason?: string | null;
   revokedAt?: number | null;
+}
+
+export interface GenshinStatusVerification {
+  id: number;
+  tokenHash: string;
+  ownerKey: string;
+  status: GenshinStatusVerificationStatus;
+  gt: string;
+  challenge: string;
+  challengePath: string;
+  verifiedChallenge?: string | null;
+  consumeAttemptId?: string | null;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type GenshinSignInTrigger = 'manual' | 'auto';

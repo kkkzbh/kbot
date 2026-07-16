@@ -1,5 +1,9 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { buildGenshinCookieHeader } from './cookie.js';
+import {
+  createMemoryGenshinDeviceProfileStore,
+  type GenshinDeviceProfileStoreLike,
+} from './device-profile.js';
 import {
   GENSHIN_GACHA_TYPES,
   GENSHIN_GAME_BIZ,
@@ -17,14 +21,21 @@ const PASSPORT_API_BASE_URL = 'https://passport-api.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
 const GACHA_LOG_BASE_URL = 'https://public-operation-hk4e.mihoyo.com';
+const DAILY_NOTE_PATH = '/game_record/app/genshin/api/dailyNote';
+const GAME_RECORD_INDEX_PATH = '/game_record/app/genshin/api/index';
+const GAME_RECORD_CREATE_VERIFICATION_PATH = '/game_record/app/card/wapi/createVerification';
+const GAME_RECORD_VERIFY_VERIFICATION_PATH = '/game_record/app/card/wapi/verifyVerification';
+const GAME_RECORD_APP_VERSION = '2.95.1';
+const GAME_RECORD_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) miHoYoBBS/${GAME_RECORD_APP_VERSION}`;
+const GAME_RECORD_TOOL_VERSION = 'v5.0.1-ys';
 const PASSPORT_QR_APP_ID = 'ddxf5dufpuyo';
 const PASSPORT_QR_CLIENT_TYPE = '3';
 const PASSPORT_QR_USER_AGENT = 'HYPContainer/1.3.3.182';
 const QR_EXPIRED_RETCODE = -106;
 const REDEEM_AUTH_APPID = 'apicdkey';
 const GACHA_AUTH_APPID = 'webview_gacha';
-const DS1_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
-const DS2_SALT = '9nQiU3AV0rJSIBWgdynfoGMGKaklfbM7';
+const CONTENT_DS_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
+const SIGN_DS_SALT = '9nQiU3AV0rJSIBWgdynfoGMGKaklfbM7';
 
 export interface GenshinTakumiClientOptions {
   fetchImpl?: typeof fetch;
@@ -34,6 +45,9 @@ export interface GenshinTakumiClientOptions {
   redeemGameVersion?: string;
   userAgent?: string;
   deviceId?: string;
+  deviceProfileStore?: GenshinDeviceProfileStoreLike;
+  now?: () => number;
+  recordNonce?: () => number;
 }
 
 export interface GenshinSignResult {
@@ -124,6 +138,10 @@ interface CookieAccountInfoPayload {
   cookie_token?: string;
 }
 
+interface LTokenPayload {
+  ltoken?: string;
+}
+
 interface SignInfoPayload {
   is_sign?: boolean;
   total_sign_day?: number;
@@ -200,6 +218,30 @@ export class GenshinTakumiError extends Error {
   }
 }
 
+export interface GenshinDailyNoteVerification {
+  gt: string;
+  challenge: string;
+  path: string;
+}
+
+export interface GenshinDailyNoteVerificationContext {
+  challenge: string;
+  path: string;
+}
+
+export class GenshinDailyNoteVerificationRequiredError extends GenshinTakumiError {
+  readonly verification: GenshinDailyNoteVerification;
+
+  constructor(verification: GenshinDailyNoteVerification, retcode: number) {
+    super('米游社要求完成人机验证后才能读取实时便笺。', {
+      retcode,
+      diagnostic: `game record verification required path=${verification.path} retcode=${retcode}`,
+    });
+    this.name = 'GenshinDailyNoteVerificationRequiredError';
+    this.verification = verification;
+  }
+}
+
 export class GenshinTakumiClient {
   private readonly fetchImpl: typeof fetch;
   private readonly appVersion: string;
@@ -208,6 +250,9 @@ export class GenshinTakumiClient {
   private readonly redeemGameVersion: string;
   private readonly userAgent: string;
   private readonly deviceId: string;
+  private readonly deviceProfileStore: GenshinDeviceProfileStoreLike;
+  private readonly now: () => number;
+  private readonly recordNonce: () => number;
 
   constructor(options: GenshinTakumiClientOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -216,7 +261,13 @@ export class GenshinTakumiClient {
     this.actId = options.actId ?? 'e202311201442471';
     this.redeemGameVersion = options.redeemGameVersion ?? 'CNRELWin6.0.0';
     this.userAgent = options.userAgent ?? `Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/${this.appVersion}`;
-    this.deviceId = (options.deviceId ?? randomUUID()).toUpperCase();
+    if (options.deviceId && options.deviceProfileStore) {
+      throw new Error('genshin client accepts either deviceId or deviceProfileStore.');
+    }
+    this.deviceProfileStore = options.deviceProfileStore ?? createMemoryGenshinDeviceProfileStore(options.deviceId);
+    this.deviceId = this.deviceProfileStore.profile.deviceId;
+    this.now = options.now ?? (() => Date.now());
+    this.recordNonce = options.recordNonce ?? (() => randomInt(100_001, 200_001));
   }
 
   async listRoles(cookies: GenshinCookieFields): Promise<GenshinGameRole[]> {
@@ -324,6 +375,48 @@ export class GenshinTakumiClient {
     };
   }
 
+  async exchangeLToken(cookies: GenshinCookieFields): Promise<GenshinCookieFields> {
+    const stuid = String(cookies.stuid ?? cookies.account_id ?? cookies.login_uid ?? '').trim();
+    if (!cookies.stoken || !cookies.mid || !stuid) {
+      throw new GenshinTakumiError('当前登录凭据缺少 stoken + mid + stuid，无法换取 ltoken。', {
+        retcode: null,
+        diagnostic: 'exchangeLToken missing stoken, mid, or stuid',
+      });
+    }
+    const payload = await this.requestJson<LTokenPayload>(new URL('/account/auth/api/getLTokenBySToken', PASSPORT_API_BASE_URL), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        cookie: buildCookieHeaderPairs([
+          ['mid', cookies.mid],
+          ['stoken', cookies.stoken],
+          ['stuid', stuid],
+        ]),
+      },
+    });
+    const ltoken = String(payload.data?.ltoken ?? '').trim();
+    if (!ltoken) {
+      throw new GenshinTakumiError('米游社未返回有效 ltoken。', {
+        retcode: payload.retcode,
+        diagnostic: 'ltoken exchange missing ltoken',
+      });
+    }
+    return {
+      ...cookies,
+      ltoken,
+      ltuid: stuid,
+    };
+  }
+
+  async completeAccountTokens(cookies: GenshinCookieFields): Promise<GenshinCookieFields> {
+    const withCookieToken = cookies.cookie_token && cookies.account_id
+      ? cookies
+      : await this.exchangeCookieToken(cookies);
+    return withCookieToken.ltoken && withCookieToken.ltuid
+      ? withCookieToken
+      : this.exchangeLToken(withCookieToken);
+  }
+
   async signIn(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinSignResult> {
     const info = await this.getSignInfo(cookies, role);
     if (info.isSigned) {
@@ -346,7 +439,7 @@ export class GenshinTakumiClient {
       'content-type': 'application/json;charset=utf-8',
       'x-rpc-platform': '1',
       'x-rpc-device_fp': deviceFp,
-      ds: createDs2(),
+      ds: createSignDs(),
     });
     return {
       status: 'ok',
@@ -379,18 +472,65 @@ export class GenshinTakumiClient {
     };
   }
 
-  async fetchDailyNote(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinDailyNote> {
-    const query = `role_id=${encodeURIComponent(role.uid)}&server=${encodeURIComponent(role.region)}`;
-    const url = new URL(`/game_record/app/genshin/api/dailyNote?${query}`, API_TAKUMI_RECORD_BASE_URL);
-    const payload = await this.requestJson<DailyNotePayload>(url, {
-      method: 'GET',
-      headers: this.baseHeaders(cookies, {
-        ds: createDs1(query, ''),
-        origin: 'https://webstatic.mihoyo.com',
-        referer: 'https://webstatic.mihoyo.com/',
-      }),
+  async fetchDailyNote(
+    cookies: GenshinCookieFields,
+    role: GenshinGameRole,
+    verification?: GenshinDailyNoteVerificationContext,
+  ): Promise<GenshinDailyNote> {
+    const deviceFp = await this.fetchDeviceFp();
+    const query = canonicalQuery(new URLSearchParams({ role_id: role.uid, server: role.region }));
+    await this.requestGameRecord<unknown>(GAME_RECORD_INDEX_PATH, query, cookies, deviceFp, {
+      challenge: verification?.path === GAME_RECORD_INDEX_PATH ? verification.challenge : '',
+    });
+    const payload = await this.requestGameRecord<DailyNotePayload>(DAILY_NOTE_PATH, query, cookies, deviceFp, {
+      challenge: verification?.path === DAILY_NOTE_PATH ? verification.challenge : '',
+      toolVersion: true,
     });
     return normalizeDailyNote(payload.data);
+  }
+
+  async verifyDailyNoteChallenge(
+    cookies: GenshinCookieFields,
+    verification: GenshinDailyNoteVerification,
+    validate: string,
+  ): Promise<string> {
+    const normalizedValidate = validate.trim();
+    if (!normalizedValidate) {
+      throw new GenshinTakumiError('人机验证结果为空，请重新验证。', {
+        retcode: null,
+        diagnostic: 'daily note verification missing validate',
+      });
+    }
+    const deviceFp = await this.fetchDeviceFp();
+    const body = JSON.stringify({
+      geetest_challenge: verification.challenge,
+      geetest_validate: normalizedValidate,
+      geetest_seccode: `${normalizedValidate}|jordan`,
+    });
+    const url = new URL(GAME_RECORD_VERIFY_VERIFICATION_PATH, API_TAKUMI_RECORD_BASE_URL);
+    const payload = await this.requestRawJson<TakumiResponse<{ challenge?: string }>>(url, {
+      method: 'POST',
+      headers: this.gameRecordHeaders(cookies, '', deviceFp, {
+        body,
+        challengePath: verification.path,
+        contentType: true,
+      }),
+      body,
+    });
+    if (payload.retcode !== 0) {
+      throw new GenshinTakumiError(payload.message || '米游社人机验证失败，请重新验证。', {
+        retcode: payload.retcode,
+        diagnostic: `POST ${GAME_RECORD_VERIFY_VERIFICATION_PATH} retcode=${payload.retcode}`,
+      });
+    }
+    const challenge = String(payload.data?.challenge ?? '').trim();
+    if (!challenge) {
+      throw new GenshinTakumiError('米游社未返回有效验证凭据。', {
+        retcode: payload.retcode,
+        diagnostic: 'verifyVerification missing challenge',
+      });
+    }
+    return challenge;
   }
 
   async createGachaAuthKey(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinAuthKey> {
@@ -460,7 +600,7 @@ export class GenshinTakumiClient {
     });
     const payload = await this.postTakumi<AuthKeyPayload>(new URL('/binding/api/genAuthKey', API_TAKUMI_BASE_URL), cookies, body, {
       'content-type': 'application/json;charset=utf-8',
-      ds: createDs1('', body),
+      ds: createContentDs('', body, this.now, this.recordNonce),
     });
     const data = payload.data;
     if (!data?.authkey || typeof data.sign_type !== 'number' || typeof data.authkey_ver !== 'number') {
@@ -500,48 +640,118 @@ export class GenshinTakumiClient {
   }
 
   private async fetchDeviceFp(): Promise<string> {
+    if (this.deviceProfileStore.profile.deviceFp) {
+      return this.deviceProfileStore.profile.deviceFp;
+    }
+    const profile = this.deviceProfileStore.profile;
     const body = JSON.stringify({
-      seed_id: randomAlphaNum(13),
-      device_id: this.deviceId,
-      platform: '1',
-      seed_time: String(Date.now()),
-      ext_fields: JSON.stringify({
-        IDFV: randomUUID().toUpperCase(),
-        model: 'iPhone16,1',
-        osVersion: '17.0.3',
-        screenSize: '393x852',
-        vendor: '--',
-        cpuType: 'CPU_TYPE_ARM64',
-        cpuCores: '16',
-        isJailBreak: '0',
-        networkType: 'WIFI',
-        proxyStatus: '0',
-        batteryStatus: '80',
-        chargeStatus: '0',
-        romCapacity: '256000',
-        romRemain: '128000',
-        ramCapacity: '8192',
-        ramRemain: '4096',
-        appMemory: '80',
-        accelerometer: '0x0x0',
-        gyroscope: '0x0x0',
-        magnetometer: '0x0x0',
-      }),
+      device_id: profile.fingerprintDeviceId,
+      seed_id: randomUUID(),
+      seed_time: String(this.now()),
+      platform: '2',
+      device_fp: randomBytes(7).toString('hex').slice(0, 13),
       app_name: 'bbs_cn',
-      device_fp: randomDigits(13),
+      bbs_device_id: profile.deviceId,
+      ext_fields: JSON.stringify(androidFingerprintFields(profile.deviceName, profile.productName)),
     });
-    const payload = await this.requestRawJson<{ retcode?: number; message?: string; data?: { code?: number; msg?: string; device_fp?: string } }>(new URL(DEVICE_FP_URL), {
+    const payload = await this.requestRawJson<{ retcode?: number; message?: string; data?: { device_fp?: string } }>(new URL(DEVICE_FP_URL), {
       method: 'POST',
-      headers: this.baseHeaders(undefined, { 'content-type': 'application/json;charset=utf-8' }),
+      headers: { 'content-type': 'application/json' },
       body,
     });
-    if (payload.retcode !== 0 || payload.data?.code !== 200 || !payload.data.device_fp) {
-      throw new GenshinTakumiError(payload.message || payload.data?.msg || '米游社设备指纹获取失败。', {
+    const deviceFp = String(payload.data?.device_fp ?? '').trim();
+    if (payload.retcode !== 0 || !deviceFp) {
+      throw new GenshinTakumiError(payload.message || '米游社设备指纹获取失败。', {
         retcode: payload.retcode ?? null,
-        diagnostic: `getFp retcode=${payload.retcode ?? 'null'} code=${payload.data?.code ?? 'null'}`,
+        diagnostic: `getFp retcode=${payload.retcode ?? 'null'}`,
       });
     }
-    return payload.data.device_fp;
+    this.deviceProfileStore.saveDeviceFp(deviceFp);
+    return deviceFp;
+  }
+
+  private async requestGameRecord<T>(
+    path: string,
+    query: string,
+    cookies: GenshinCookieFields,
+    deviceFp: string,
+    options: { challenge?: string; toolVersion?: boolean } = {},
+  ): Promise<TakumiResponse<T>> {
+    const url = new URL(path, API_TAKUMI_RECORD_BASE_URL);
+    url.search = query;
+    const payload = await this.requestRawJson<TakumiResponse<T>>(url, {
+      method: 'GET',
+      headers: this.gameRecordHeaders(cookies, query, deviceFp, {
+        challenge: options.challenge,
+        toolVersion: options.toolVersion,
+      }),
+    });
+    if ([1034, 5003, 10306].includes(payload.retcode)) {
+      const verification = await this.createDailyNoteVerification(cookies, path, deviceFp);
+      throw new GenshinDailyNoteVerificationRequiredError(verification, payload.retcode);
+    }
+    if (payload.retcode !== 0) {
+      throw new GenshinTakumiError(payload.message || `米游社请求失败（错误码 ${payload.retcode}）。`, {
+        retcode: payload.retcode,
+        diagnostic: `GET ${path} retcode=${payload.retcode}`,
+      });
+    }
+    return payload;
+  }
+
+  private async createDailyNoteVerification(
+    cookies: GenshinCookieFields,
+    path: string,
+    deviceFp: string,
+  ): Promise<GenshinDailyNoteVerification> {
+    const query = 'is_high=true';
+    const url = new URL(GAME_RECORD_CREATE_VERIFICATION_PATH, API_TAKUMI_RECORD_BASE_URL);
+    url.search = query;
+    const payload = await this.requestJson<{ gt?: string; challenge?: string }>(url, {
+      method: 'GET',
+      headers: this.gameRecordHeaders(cookies, query, deviceFp, { challengePath: path }),
+    });
+    const gt = String(payload.data?.gt ?? '').trim();
+    const challenge = String(payload.data?.challenge ?? '').trim();
+    if (!gt || !challenge) {
+      throw new GenshinTakumiError('米游社未返回有效人机验证参数。', {
+        retcode: payload.retcode,
+        diagnostic: `createVerification missing gt or challenge path=${path}`,
+      });
+    }
+    return { gt, challenge, path };
+  }
+
+  private gameRecordHeaders(
+    cookies: GenshinCookieFields,
+    query: string,
+    deviceFp: string,
+    options: {
+      body?: string;
+      challenge?: string;
+      challengePath?: string;
+      contentType?: boolean;
+      toolVersion?: boolean;
+    } = {},
+  ): Record<string, string> {
+    return {
+      accept: 'application/json',
+      cookie: gameRecordCookieHeader(cookies),
+      ds: createContentDs(query, options.body ?? '', this.now, this.recordNonce),
+      referer: 'https://webstatic.mihoyo.com',
+      'user-agent': GAME_RECORD_USER_AGENT,
+      'x-rpc-app_version': GAME_RECORD_APP_VERSION,
+      'x-rpc-client_type': '5',
+      'x-rpc-device_id': this.deviceId,
+      'x-rpc-device_fp': deviceFp,
+      ...(options.challenge ? { 'x-rpc-challenge': options.challenge } : {}),
+      ...(options.challengePath ? {
+        'x-rpc-challenge_game': '2',
+        'x-rpc-challenge_path': options.challengePath,
+      } : {}),
+      ...(options.contentType ? { 'content-type': 'application/json' } : {}),
+      ...(options.toolVersion ? { 'x-rpc-tool_verison': GAME_RECORD_TOOL_VERSION } : {}),
+    };
   }
 
   private async requestJson<T>(url: URL, init: RequestInit): Promise<TakumiResponse<T>> {
@@ -623,17 +833,26 @@ export class GenshinTakumiClient {
   }
 }
 
-function createDs1(query: string, body: string): string {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const random = randomAlphaNum(6);
-  const digest = md5(`salt=${DS1_SALT}&t=${timestamp}&r=${random}&b=${body}&q=${query}`);
-  return `${timestamp},${random},${digest}`;
+function createContentDs(
+  query: string,
+  body: string,
+  now: () => number,
+  nonceFactory: () => number,
+): string {
+  const timestamp = Math.floor(now() / 1000);
+  const nonce = nonceFactory();
+  if (!Number.isInteger(nonce) || nonce < 100_001 || nonce > 200_000) {
+    throw new Error('genshin content DS nonce must be an integer from 100001 through 200000.');
+  }
+  const normalizedQuery = canonicalQuery(new URLSearchParams(query));
+  const digest = md5(`salt=${CONTENT_DS_SALT}&t=${timestamp}&r=${nonce}&b=${body}&q=${normalizedQuery}`);
+  return `${timestamp},${nonce},${digest}`;
 }
 
-function createDs2(): string {
+function createSignDs(): string {
   const timestamp = Math.floor(Date.now() / 1000);
   const random = randomAlphaNum(6);
-  const digest = md5(`salt=${DS2_SALT}&t=${timestamp}&r=${random}`);
+  const digest = md5(`salt=${SIGN_DS_SALT}&t=${timestamp}&r=${random}`);
   return `${timestamp},${random},${digest}`;
 }
 
@@ -645,6 +864,87 @@ function randomAlphaNum(length: number): string {
   const alphabet = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const bytes = randomBytes(length);
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
+}
+
+function canonicalQuery(searchParams: URLSearchParams): string {
+  return new URLSearchParams([...searchParams.entries()].sort(([left], [right]) => left.localeCompare(right))).toString();
+}
+
+function gameRecordCookieHeader(cookies: GenshinCookieFields): string {
+  const accountId = String(cookies.account_id ?? '').trim();
+  const cookieToken = String(cookies.cookie_token ?? '').trim();
+  const ltoken = String(cookies.ltoken ?? '').trim();
+  const ltuid = String(cookies.ltuid ?? '').trim();
+  if (!accountId || !cookieToken || !ltoken || !ltuid) {
+    throw new GenshinTakumiError('当前登录凭据缺少实时便笺所需的登录字段，请重新绑定原神账号。', {
+      retcode: null,
+      diagnostic: 'game record cookie missing account_id, cookie_token, ltoken, or ltuid',
+    });
+  }
+  return buildCookieHeaderPairs([
+    ['account_id', accountId],
+    ['cookie_token', cookieToken],
+    ['ltoken', ltoken],
+    ['ltuid', ltuid],
+  ]);
+}
+
+function androidFingerprintFields(deviceName: string, productName: string): Record<string, string | number> {
+  return {
+    proxyStatus: 0,
+    isRoot: 0,
+    romCapacity: '512',
+    deviceName,
+    productName,
+    romRemain: '512',
+    hostname: 'dg02-pool03-kvm87',
+    screenSize: '1440x2905',
+    isTablet: 0,
+    aaid: '',
+    model: deviceName,
+    brand: 'XiaoMi',
+    hardware: 'qcom',
+    deviceType: 'OP5913L1',
+    devId: 'REL',
+    serialNumber: 'unknown',
+    sdCapacity: 512215,
+    buildTime: '1693626947000',
+    buildUser: 'android-build',
+    simState: 5,
+    ramRemain: '239814',
+    appUpdateTimeDiff: 1702604034482,
+    deviceInfo: `XiaoMi/${productName}/OP5913L1:13/SKQ1.221119.001/T.118e6c7-5aa23-73911:user/release-keys`,
+    vaid: '',
+    buildType: 'user',
+    sdkVersion: '34',
+    ui_mode: 'UI_MODE_TYPE_NORMAL',
+    isMockLocation: 0,
+    cpuType: 'arm64-v8a',
+    isAirMode: 0,
+    ringMode: 2,
+    chargeStatus: 1,
+    manufacturer: 'XiaoMi',
+    emulatorStatus: 0,
+    appMemory: '512',
+    osVersion: '14',
+    vendor: 'unknown',
+    accelerometer: '1.4883357x7.1712894x6.2847486',
+    sdRemain: 239600,
+    buildTags: 'release-keys',
+    packageName: 'com.mihoyo.hyperion',
+    networkType: 'WiFi',
+    oaid: '',
+    debugStatus: 1,
+    ramCapacity: '469679',
+    magnetometer: '20.081251x-27.487501x2.1937501',
+    display: `${productName}_13.1.0.181(CN01)`,
+    appInstallTimeDiff: 1688455751496,
+    packageVersion: '2.20.1',
+    gyroscope: '0.030226856x0.014647375x0.010652636',
+    batteryStatus: 100,
+    hasKeyboard: 0,
+    board: 'taro',
+  };
 }
 
 function normalizeDailyNote(payload: DailyNotePayload | undefined): GenshinDailyNote {
@@ -750,11 +1050,6 @@ function invalidDailyNote(diagnostic: string): GenshinTakumiError {
     retcode: 0,
     diagnostic,
   });
-}
-
-function randomDigits(length: number): string {
-  const bytes = randomBytes(length);
-  return Array.from(bytes, (byte) => String(byte % 10)).join('');
 }
 
 function normalizeLevel(value: unknown): number | null {

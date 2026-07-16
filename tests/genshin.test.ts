@@ -1,5 +1,5 @@
 import { mkdtempSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createCanvas } from '@napi-rs/canvas';
@@ -71,6 +71,10 @@ import {
 } from '../src/plugins/genshin/gacha-records.js';
 import { GenshinGachaIconResolver } from '../src/plugins/genshin/gacha-icon-resolver.js';
 import {
+  createMemoryGenshinDeviceProfileStore,
+  GenshinDeviceProfileStore,
+} from '../src/plugins/genshin/device-profile.js';
+import {
   buildGenshinMenuView,
   GenshinMenuService,
   renderGenshinMenuImage,
@@ -84,12 +88,18 @@ import { GenshinService } from '../src/plugins/genshin/service.js';
 import { credentialAad } from '../src/plugins/genshin/credential.js';
 import { gachaRecordKey, GenshinStore } from '../src/plugins/genshin/store.js';
 import {
+  GenshinDailyNoteVerificationRequiredError,
   GenshinTakumiClient,
   GenshinTakumiError,
   type GenshinDailyNote,
   type GenshinGachaLogItem,
 } from '../src/plugins/genshin/takumi-client.js';
-import { encryptEnvelopeJson, loadOrCreateKek, type CredentialKek } from '../src/plugins/shared/credential-crypto.js';
+import {
+  decryptEnvelopeJson,
+  encryptEnvelopeJson,
+  loadOrCreateKek,
+  type CredentialKek,
+} from '../src/plugins/shared/credential-crypto.js';
 import type {
   DatabaseLike,
   GenshinCookieFields,
@@ -99,6 +109,7 @@ import type {
   OwnerIdentity,
 } from '../src/plugins/genshin/types.js';
 import { renderGenshinBindPage } from '../src/plugins/genshin/web/bind-page.js';
+import { renderGenshinStatusVerificationPage } from '../src/plugins/genshin/web/status-verification-page.js';
 
 const tempDirs: string[] = [];
 
@@ -189,6 +200,8 @@ function createService(options: {
   signIn?: ReturnType<typeof vi.fn>;
   redeemCode?: ReturnType<typeof vi.fn>;
   fetchDailyNote?: ReturnType<typeof vi.fn>;
+  completeAccountTokens?: ReturnType<typeof vi.fn>;
+  verifyDailyNoteChallenge?: ReturnType<typeof vi.fn>;
   createGachaAuthKey?: ReturnType<typeof vi.fn>;
   fetchGachaLogPage?: ReturnType<typeof vi.fn>;
   now?: () => number;
@@ -201,11 +214,18 @@ function createService(options: {
   const client = {
     createQrLogin: vi.fn(async () => ({ ticket: 'ticket-secret', url: 'https://user.mihoyo.com/login-platform/mobile.html?tk=ticket-secret#/login/qr' })),
     queryQrLogin: vi.fn(async () => qrResults.shift() ?? { status: 'Confirmed', cookies: passportCookies }),
-    exchangeCookieToken: vi.fn(async (cookies: GenshinCookieFields) => ({ ...cookies, cookie_token: 'cookie_token_secret', account_id: '123456' })),
+    completeAccountTokens: options.completeAccountTokens ?? vi.fn(async (cookies: GenshinCookieFields) => ({
+      ...cookies,
+      cookie_token: 'cookie_token_secret',
+      account_id: '123456',
+      ltoken: 'ltoken_secret',
+      ltuid: '123456',
+    })),
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
     redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
     fetchDailyNote: options.fetchDailyNote ?? vi.fn(async () => dailyNote()),
+    verifyDailyNoteChallenge: options.verifyDailyNoteChallenge ?? vi.fn(async () => 'verified-challenge'),
     createGachaAuthKey: options.createGachaAuthKey ?? vi.fn(async () => ({ signType: 2, authkeyVer: 1, authkey: 'gacha-authkey-secret' })),
     fetchGachaLogPage: options.fetchGachaLogPage ?? vi.fn(async () => ({ list: [] })),
   };
@@ -217,6 +237,7 @@ function createService(options: {
       bindPagePath: '/genshin/bind',
       publicBaseUrl: 'https://genshin.example',
       bindTokenTtlMs: 600_000,
+      statusVerificationPath: '/genshin/bind/status-verification',
       timezone: 'Asia/Shanghai',
     },
     options.now ?? (() => 1_000),
@@ -414,7 +435,7 @@ describe('genshin binding service', () => {
     expect(challenge).toMatchObject({ status: 'role_selecting', pendingRolesJson: JSON.stringify(roles) });
     expect(JSON.stringify(challenge)).not.toContain('v2_secret');
     expect(JSON.stringify(challenge)).not.toContain('cookie_token_secret');
-    expect(client.exchangeCookieToken).toHaveBeenCalledWith({
+    expect(client.completeAccountTokens).toHaveBeenCalledWith({
       stoken: 'v2_secret',
       mid: 'mid_secret',
       account_id: '123456',
@@ -490,6 +511,7 @@ describe('genshin binding service', () => {
     expect(fetchDailyNote).toHaveBeenCalledWith(
       expect.objectContaining({ stoken: 'v2_secret' }),
       expect.objectContaining({ uid: '100000001', region: 'cn_gf01' }),
+      undefined,
     );
     expect(database.tables.get('genshin_credential')?.[0]).toMatchObject({
       lastUsedAt: 1_000,
@@ -499,6 +521,65 @@ describe('genshin binding service', () => {
       eventType: 'status_queried',
       status: 'ok',
     }));
+  });
+
+  it('stores a human-verification challenge and consumes it on the next status query', async () => {
+    const required = new GenshinDailyNoteVerificationRequiredError({
+      gt: 'geetest-id',
+      challenge: 'geetest-challenge',
+      path: '/game_record/app/genshin/api/index',
+    }, 1034);
+    const fetchDailyNote = vi.fn()
+      .mockRejectedValueOnce(required)
+      .mockResolvedValueOnce(dailyNote());
+    const verifyDailyNoteChallenge = vi.fn(async () => 'xrpc-verified-challenge');
+    const { service, database } = createService({ fetchDailyNote, verifyDailyNoteChallenge });
+    const started = await service.startBinding(identity());
+    await completeQrBinding(service, extractToken(started.link));
+
+    let verificationLink = '';
+    await service.queryStatus(identity()).catch((error: Error) => {
+      verificationLink = error.message.match(/https:\/\/genshin\.example\/\S+/)?.[0] ?? '';
+    });
+    expect(verificationLink).toContain('/genshin/bind/status-verification?token=');
+    const token = extractToken(verificationLink);
+    expect(database.tables.get('genshin_credential')?.[0]?.lastFailureReason).toBe('米游社实时便笺要求人机验证。');
+    expect(JSON.stringify(database.tables.get('genshin_credential'))).not.toContain(token);
+    await expect(service.resolveStatusVerificationPage(token)).resolves.toEqual({
+      token,
+      gt: 'geetest-id',
+      challenge: 'geetest-challenge',
+    });
+
+    await service.completeStatusVerification(token, 'geetest-validate');
+    await expect(service.queryStatus(identity())).resolves.toMatchObject({
+      note: { currentResin: 172 },
+    });
+
+    expect(verifyDailyNoteChallenge).toHaveBeenCalledWith(
+      expect.objectContaining({ ltoken: 'ltoken_secret' }),
+      {
+        gt: 'geetest-id',
+        challenge: 'geetest-challenge',
+        path: '/game_record/app/genshin/api/index',
+      },
+      'geetest-validate',
+    );
+    expect(fetchDailyNote).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ uid: '100000001' }),
+      {
+        challenge: 'xrpc-verified-challenge',
+        path: '/game_record/app/genshin/api/index',
+      },
+    );
+    expect(database.tables.get('genshin_status_verification')?.[0]).toMatchObject({
+      status: 'consumed',
+      gt: '',
+      challenge: '',
+      verifiedChallenge: null,
+    });
+    expect(JSON.stringify(database.tables.get('genshin_status_verification'))).not.toContain(token);
   });
 
   it('tracks qr scanned state before app confirmation', async () => {
@@ -1040,7 +1121,56 @@ describe('genshin gacha records renderer', () => {
   });
 });
 
+describe('genshin device profile', () => {
+  it('persists the device identity and fingerprint with owner-only permissions', async () => {
+    const dir = createTempDir();
+    const path = join(dir, 'device-profile.json');
+    const first = new GenshinDeviceProfileStore(path);
+    first.saveDeviceFp('persisted-device-fp');
+    const second = new GenshinDeviceProfileStore(path);
+
+    expect(second.profile).toEqual(first.profile);
+    expect(second.profile.deviceFp).toBe('persisted-device-fp');
+    const { mode } = await stat(path);
+    expect(mode & 0o077).toBe(0);
+  });
+});
+
 describe('genshin takumi client', () => {
+  it('completes the game-record cookie fields from a QR root token', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
+      calls.push({ url: url.toString(), init });
+      if (url.pathname === '/account/auth/api/getCookieAccountInfoBySToken') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { uid: '123456', cookie_token: 'cookie-token' } });
+      }
+      if (url.pathname === '/account/auth/api/getLTokenBySToken') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { ltoken: 'ltoken-value' } });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const client = new GenshinTakumiClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(client.completeAccountTokens({
+      stoken: 'stoken-value',
+      mid: 'mid-value',
+      stuid: '123456',
+    })).resolves.toMatchObject({
+      account_id: '123456',
+      cookie_token: 'cookie-token',
+      ltoken: 'ltoken-value',
+      ltuid: '123456',
+    });
+
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/account/auth/api/getCookieAccountInfoBySToken',
+      '/account/auth/api/getLTokenBySToken',
+    ]);
+    expect(calls[1].init.headers).toMatchObject({
+      cookie: 'mid=mid-value; stoken=stoken-value; stuid=123456',
+    });
+  });
+
   it('sends QR login, CN role, sign-in, authkey, and redeem requests with the expected shape', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
@@ -1222,12 +1352,22 @@ describe('genshin takumi client', () => {
         },
       });
     });
+    const deviceProfileStore = createMemoryGenshinDeviceProfileStore('00000000-0000-4000-8000-000000000001');
+    deviceProfileStore.saveDeviceFp('device-fp-123');
     const client = new GenshinTakumiClient({
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      deviceId: '00000000-0000-4000-8000-000000000001',
+      deviceProfileStore,
+      now: () => 1_700_000_000_000,
+      recordNonce: () => 123_456,
     });
 
-    await expect(client.fetchDailyNote({ stoken: 'secret', stuid: '123456', mid: 'mid' }, role())).resolves.toEqual(dailyNote({
+    await expect(client.fetchDailyNote({
+      account_id: '123456',
+      cookie_token: 'cookie-token-secret',
+      ltoken: 'ltoken-secret',
+      ltuid: '123456',
+      stoken: 'must-not-leak-to-record-api',
+    }, role())).resolves.toEqual(dailyNote({
       expeditions: [{
         avatarSideIcon: 'https://upload-bbs.mihoyo.com/ayaka.png',
         status: 'Ongoing',
@@ -1235,15 +1375,106 @@ describe('genshin takumi client', () => {
       }],
     }));
 
-    const requestUrl = new URL(calls[0].url);
+    expect(new URL(calls[0].url).pathname).toBe('/game_record/app/genshin/api/index');
+    const requestUrl = new URL(calls[1].url);
     expect(requestUrl.hostname).toBe('api-takumi-record.mihoyo.com');
     expect(requestUrl.pathname).toBe('/game_record/app/genshin/api/dailyNote');
     expect(requestUrl.search).toBe('?role_id=100000001&server=cn_gf01');
+    expect(calls[1].init.headers).toMatchObject({
+      cookie: 'account_id=123456; cookie_token=cookie-token-secret; ltoken=ltoken-secret; ltuid=123456',
+      referer: 'https://webstatic.mihoyo.com',
+      'x-rpc-app_version': '2.95.1',
+      'x-rpc-client_type': '5',
+      'x-rpc-device_id': '00000000-0000-4000-8000-000000000001',
+      'x-rpc-device_fp': 'device-fp-123',
+      'x-rpc-tool_verison': 'v5.0.1-ys',
+      ds: '1700000000,123456,0cea3ef09388c60574ce981a0a397a3d',
+    });
+    expect(calls[1].init.headers).not.toHaveProperty('origin');
+    expect(String((calls[1].init.headers as Record<string, string>).cookie)).not.toContain('stoken');
+  });
+
+  it('turns record-api risk control into a Geetest challenge', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
+      calls.push({ url: url.toString(), init });
+      if (url.pathname === '/game_record/app/genshin/api/index') {
+        return jsonResponse({ retcode: 1034, message: '', data: null });
+      }
+      if (url.pathname === '/game_record/app/card/wapi/createVerification') {
+        return jsonResponse({ retcode: 0, message: 'OK', data: { gt: 'geetest-id', challenge: 'geetest-challenge' } });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    const deviceProfileStore = createMemoryGenshinDeviceProfileStore('device-id');
+    deviceProfileStore.saveDeviceFp('device-fp');
+    const client = new GenshinTakumiClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      deviceProfileStore,
+      now: () => 1_700_000_000_000,
+      recordNonce: () => 123_456,
+    });
+    const cookies = {
+      account_id: '123456',
+      cookie_token: 'cookie-token',
+      ltoken: 'ltoken-value',
+      ltuid: '123456',
+    };
+
+    await expect(client.fetchDailyNote(cookies, role())).rejects.toMatchObject({
+      name: 'GenshinDailyNoteVerificationRequiredError',
+      retcode: 1034,
+      verification: {
+        gt: 'geetest-id',
+        challenge: 'geetest-challenge',
+        path: '/game_record/app/genshin/api/index',
+      },
+    });
+    expect(new URL(calls[1].url).search).toBe('?is_high=true');
+    expect(calls[1].init.headers).toMatchObject({
+      'x-rpc-challenge_game': '2',
+      'x-rpc-challenge_path': '/game_record/app/genshin/api/index',
+      'x-rpc-device_fp': 'device-fp',
+    });
+  });
+
+  it('submits Geetest validation and returns the x-rpc challenge', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
+      calls.push({ url: url.toString(), init });
+      return jsonResponse({ retcode: 0, message: 'OK', data: { challenge: 'xrpc-challenge' } });
+    });
+    const deviceProfileStore = createMemoryGenshinDeviceProfileStore('device-id');
+    deviceProfileStore.saveDeviceFp('device-fp');
+    const client = new GenshinTakumiClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      deviceProfileStore,
+      now: () => 1_700_000_000_000,
+      recordNonce: () => 123_456,
+    });
+
+    await expect(client.verifyDailyNoteChallenge({
+      account_id: '123456',
+      cookie_token: 'cookie-token',
+      ltoken: 'ltoken-value',
+      ltuid: '123456',
+    }, {
+      gt: 'geetest-id',
+      challenge: 'geetest-challenge',
+      path: '/game_record/app/genshin/api/index',
+    }, 'geetest-validate')).resolves.toBe('xrpc-challenge');
+
+    expect(new URL(calls[0].url).pathname).toBe('/game_record/app/card/wapi/verifyVerification');
     expect(calls[0].init.headers).toMatchObject({
-      cookie: expect.stringContaining('stoken=secret'),
-      origin: 'https://webstatic.mihoyo.com',
-      referer: 'https://webstatic.mihoyo.com/',
-      ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
+      'content-type': 'application/json',
+      'x-rpc-challenge_game': '2',
+      'x-rpc-challenge_path': '/game_record/app/genshin/api/index',
+      ds: expect.stringMatching(/^1700000000,123456,[a-f0-9]{32}$/),
+    });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      geetest_challenge: 'geetest-challenge',
+      geetest_validate: 'geetest-validate',
+      geetest_seccode: 'geetest-validate|jordan',
     });
   });
 
@@ -1309,12 +1540,15 @@ describe('genshin plugin routes and middleware', () => {
     });
 
     expect(ctx.model.extend).toHaveBeenCalledWith('genshin_bind_challenge', expect.anything(), expect.anything());
+    expect(ctx.model.extend).toHaveBeenCalledWith('genshin_status_verification', expect.anything(), expect.anything());
     expect(ctx.model.extend).toHaveBeenCalledWith('genshin_gacha_record', expect.anything(), expect.anything());
     expect(ctx.model.extend).toHaveBeenCalledWith('genshin_gacha_sync_state', expect.anything(), expect.anything());
     expect(server.use).toHaveBeenCalledWith(expect.any(Function));
     expect(server.get).toHaveBeenCalledWith('/genshin/bind', expect.any(Function));
     expect(server.get).toHaveBeenCalledWith('/genshin/bind/status', expect.any(Function));
+    expect(server.get).toHaveBeenCalledWith('/genshin/bind/status-verification', expect.any(Function));
     expect(server.post).toHaveBeenCalledWith('/genshin/bind/submit', expect.any(Function));
+    expect(server.post).toHaveBeenCalledWith('/genshin/bind/status-verification/submit', expect.any(Function));
     const guard = server.use.mock.calls[0]?.[0];
     const next = vi.fn(async () => undefined);
     const forbidden = { host: 'genshin.example', path: '/', status: 200, body: '' };
@@ -1323,8 +1557,10 @@ describe('genshin plugin routes and middleware', () => {
     expect(next).not.toHaveBeenCalled();
     await guard({ host: 'genshin.example', path: '/genshin/bind' }, next);
     await guard({ host: 'genshin.example', path: '/genshin/bind/status' }, next);
+    await guard({ host: 'genshin.example', path: '/genshin/bind/status-verification' }, next);
+    await guard({ host: 'genshin.example', path: '/genshin/bind/status-verification/submit' }, next);
     await guard({ host: 'other.example', path: '/' }, next);
-    expect(next).toHaveBeenCalledTimes(3);
+    expect(next).toHaveBeenCalledTimes(5);
     const handler = middleware.mock.calls[0]?.[0];
     const send = vi.fn();
     await handler({
@@ -1656,6 +1892,13 @@ describe('genshin plugin routes and middleware', () => {
     const database = createDatabase();
     const kek = loadOrCreateKek(join(dir, 'kek.key'));
     await seedCredential({ database, kek });
+    vi.spyOn(GenshinTakumiClient.prototype, 'completeAccountTokens').mockImplementation(async (cookies) => ({
+      ...cookies,
+      account_id: '123456',
+      cookie_token: 'cookie_token_secret',
+      ltoken: 'ltoken_secret',
+      ltuid: '123456',
+    }));
     const fetchDailyNote = vi.spyOn(GenshinTakumiClient.prototype, 'fetchDailyNote').mockResolvedValue(dailyNote());
     const middleware = vi.fn();
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
@@ -1695,7 +1938,82 @@ describe('genshin plugin routes and middleware', () => {
     expect(fetchDailyNote).toHaveBeenCalledWith(
       expect.objectContaining({ stoken: 'v2_secret' }),
       expect.objectContaining({ uid: '100000001' }),
+      undefined,
     );
+    const storedCredential = database.tables.get('genshin_credential')?.[0];
+    const storedPayload = decryptEnvelopeJson<GenshinCredentialPayload>(
+      String(storedCredential?.credentialCipher ?? ''),
+      String(storedCredential?.credentialMeta ?? ''),
+      credentialAad(String(storedCredential?.ownerKey ?? ''), Number(storedCredential?.id)),
+      kek,
+    );
+    expect(storedPayload.cookies).toMatchObject({
+      cookie_token: 'cookie_token_secret',
+      ltoken: 'ltoken_secret',
+      ltuid: '123456',
+    });
+  });
+
+  it('does not persist the one-time status verification link in chat history', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const kek = loadOrCreateKek(join(dir, 'kek.key'));
+    await seedCredential({ database, kek });
+    vi.spyOn(GenshinTakumiClient.prototype, 'completeAccountTokens').mockImplementation(async (cookies) => ({
+      ...cookies,
+      account_id: '123456',
+      cookie_token: 'cookie-token',
+      ltoken: 'ltoken-value',
+      ltuid: '123456',
+    }));
+    vi.spyOn(GenshinTakumiClient.prototype, 'fetchDailyNote').mockRejectedValue(new GenshinDailyNoteVerificationRequiredError({
+      gt: 'geetest-id',
+      challenge: 'geetest-challenge',
+      path: '/game_record/app/genshin/api/index',
+    }, 1034));
+    const sendReply = vi.fn(async (session: any, input: any) => {
+      await session.send(input.reply);
+      return null;
+    });
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+      nativeFeatureChat: {
+        registerCapability: vi.fn(() => () => undefined),
+        sendReply,
+      },
+    };
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '',
+    });
+    const send = vi.fn();
+    await middleware.mock.calls[0]?.[0]({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '原神状态',
+      send,
+    }, vi.fn());
+
+    const replyText = renderMessageContent(send.mock.calls[0]?.[0]);
+    const token = new URL(replyText.match(/https:\/\/genshin\.example\/\S+/)?.[0] ?? '').searchParams.get('token') ?? '';
+    expect(token).not.toBe('');
+    expect(sendReply.mock.calls[0]?.[1]).toMatchObject({
+      includeReplyPayload: false,
+      summary: '原神状态查询需要完成米游社人机验证；一次性链接未写入历史。',
+    });
+    expect(String(sendReply.mock.calls[0]?.[1]?.summary)).not.toContain(token);
   });
 
   it('requires the genshin allowlist to be explicitly configured', () => {
@@ -1744,6 +2062,23 @@ describe('genshin plugin routes and middleware', () => {
     expect(html).toContain('data-copy-command="原神确认 123456"');
     expect(html).toContain('复制确认命令');
     expect(html).toContain('navigator.clipboard.writeText');
+  });
+
+  it('renders the Geetest status-verification page without exposing credentials', () => {
+    const html = renderGenshinStatusVerificationPage({
+      state: 'pending',
+      token: 'one-time-token',
+      submitPath: '/genshin/bind/status-verification/submit',
+      gt: 'geetest-id',
+      challenge: 'geetest-challenge',
+    });
+
+    expect(html).toContain('https://static.geetest.com/static/js/gt.0.5.2.js');
+    expect(html).toContain("product: 'bind'");
+    expect(html).toContain('name="token" value="one-time-token"');
+    expect(html).toContain('验证通过后回到 QQ');
+    expect(html).not.toContain('stoken');
+    expect(html).not.toContain('cookie_token');
   });
 });
 

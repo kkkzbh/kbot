@@ -7,12 +7,14 @@ import type {
   GenshinGachaSyncState,
   GenshinRedeemRecord,
   GenshinSignInRecord,
+  GenshinStatusVerification,
 } from '../plugins/genshin/types.js';
 
 declare module 'koishi' {
   interface Tables {
     genshin_bind_challenge: GenshinBindChallenge;
     genshin_credential: GenshinCredential;
+    genshin_status_verification: GenshinStatusVerification;
     genshin_signin_record: GenshinSignInRecord;
     genshin_redeem_record: GenshinRedeemRecord;
     genshin_gacha_record: GenshinGachaRecord;

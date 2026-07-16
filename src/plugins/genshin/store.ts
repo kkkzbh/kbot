@@ -13,6 +13,7 @@ import type {
   GenshinRedeemRecord,
   GenshinSignInRecord,
   GenshinSignInTrigger,
+  GenshinStatusVerification,
   OwnerIdentity,
 } from './types.js';
 import { GENSHIN_SERVICE_ID } from './types.js';
@@ -79,6 +80,29 @@ export function ensureGenshinTables(ctx: Context): void {
       autoInc: true,
       unique: ['ownerKey'],
       indexes: [['ownerKey', 'serviceId'], ['uid'], ['revokedAt']],
+    },
+  );
+
+  ctx.model.extend(
+    'genshin_status_verification',
+    {
+      id: 'unsigned',
+      tokenHash: 'string',
+      ownerKey: 'string',
+      status: 'string',
+      gt: 'string',
+      challenge: 'string',
+      challengePath: 'string',
+      verifiedChallenge: { type: 'string', nullable: true },
+      consumeAttemptId: { type: 'string', nullable: true },
+      expiresAt: 'double',
+      createdAt: 'double',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: ['tokenHash'],
+      indexes: [['ownerKey', 'status'], ['expiresAt']],
     },
   );
 
@@ -193,6 +217,88 @@ export class GenshinStore {
       status: { $in: ACTIVE_CHALLENGE_STATUSES },
       expiresAt: { $lte: now },
     }, clearedChallengePatch('expired', now));
+  }
+
+  async cleanupExpiredStatusVerifications(now: number): Promise<void> {
+    await this.database.set('genshin_status_verification', {
+      status: { $in: ['pending', 'verified'] },
+      expiresAt: { $lte: now },
+    }, clearedStatusVerificationPatch('expired', now));
+  }
+
+  async cancelActiveStatusVerifications(ownerKey: string, now: number): Promise<void> {
+    await this.database.set('genshin_status_verification', {
+      ownerKey,
+      status: { $in: ['pending', 'verified'] },
+    }, clearedStatusVerificationPatch('expired', now));
+  }
+
+  async createStatusVerification(args: {
+    tokenHash: string;
+    ownerKey: string;
+    gt: string;
+    challenge: string;
+    challengePath: string;
+    expiresAt: number;
+    now: number;
+  }): Promise<GenshinStatusVerification> {
+    return this.database.create<GenshinStatusVerification>('genshin_status_verification', {
+      tokenHash: args.tokenHash,
+      ownerKey: args.ownerKey,
+      status: 'pending',
+      gt: args.gt,
+      challenge: args.challenge,
+      challengePath: args.challengePath,
+      verifiedChallenge: null,
+      consumeAttemptId: null,
+      expiresAt: args.expiresAt,
+      createdAt: args.now,
+      updatedAt: args.now,
+    });
+  }
+
+  async findStatusVerificationByTokenHash(tokenHash: string): Promise<GenshinStatusVerification | null> {
+    const [row] = await this.database.get<GenshinStatusVerification>('genshin_status_verification', { tokenHash });
+    return row ?? null;
+  }
+
+  async markStatusVerificationVerified(id: number, verifiedChallenge: string, now: number): Promise<GenshinStatusVerification | null> {
+    await this.database.set('genshin_status_verification', { id, status: 'pending' }, {
+      status: 'verified',
+      gt: '',
+      challenge: '',
+      verifiedChallenge,
+      consumeAttemptId: null,
+      updatedAt: now,
+    });
+    const [row] = await this.database.get<GenshinStatusVerification>('genshin_status_verification', { id });
+    return row?.status === 'verified' && row.verifiedChallenge === verifiedChallenge ? row : null;
+  }
+
+  async claimVerifiedStatusChallenge(
+    ownerKey: string,
+    consumeAttemptId: string,
+    now: number,
+  ): Promise<GenshinStatusVerification | null> {
+    const rows = await this.database.get<GenshinStatusVerification>('genshin_status_verification', {
+      ownerKey,
+      status: 'verified',
+    });
+    const row = rows
+      .filter((candidate) => candidate.expiresAt > now && Boolean(candidate.verifiedChallenge))
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (!row) return null;
+    const verifiedChallenge = row.verifiedChallenge as string;
+    await this.database.set('genshin_status_verification', { id: row.id, status: 'verified' }, {
+      status: 'consumed',
+      verifiedChallenge: null,
+      consumeAttemptId,
+      updatedAt: now,
+    });
+    const [claimed] = await this.database.get<GenshinStatusVerification>('genshin_status_verification', { id: row.id });
+    return claimed?.status === 'consumed' && claimed.consumeAttemptId === consumeAttemptId
+      ? { ...claimed, verifiedChallenge }
+      : null;
   }
 
   async cancelActiveChallenges(ownerKey: string, now: number): Promise<void> {
@@ -509,6 +615,17 @@ function clearedChallengePatch(status: GenshinBindChallengeStatus, now: number):
     pendingRolesJson: null,
     selectedRoleJson: null,
     errorMessage: null,
+    updatedAt: now,
+  };
+}
+
+function clearedStatusVerificationPatch(status: 'expired' | 'consumed', now: number): Record<string, unknown> {
+  return {
+    status,
+    gt: '',
+    challenge: '',
+    verifiedChallenge: null,
+    consumeAttemptId: null,
     updatedAt: now,
   };
 }

@@ -4,16 +4,22 @@ import QRCode from 'qrcode';
 import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
 import '../../types/native-feature-chat.js';
 import { loadOrCreateKek, resolveKekPath } from '../shared/credential-crypto.js';
+import { GenshinDeviceProfileStore, genshinDeviceProfilePath } from './device-profile.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 import { GenshinGachaService, renderGenshinGachaRecordsImage } from './gacha-records.js';
 import { GenshinGachaIconResolver } from './gacha-icon-resolver.js';
 import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
-import { GenshinService, type QrBindingStatusResult } from './service.js';
+import {
+  GenshinService,
+  GenshinStatusVerificationLinkError,
+  type QrBindingStatusResult,
+} from './service.js';
 import { buildGenshinStatusView, renderGenshinStatusImage } from './status-card.js';
 import { ensureGenshinTables, GenshinStore } from './store.js';
 import { GenshinTakumiClient } from './takumi-client.js';
 import { GenshinUserError, type DatabaseLike, type GenshinGameRole, type OwnerIdentity } from './types.js';
 import { renderGenshinBindPage, renderGenshinBindSuccessFragment } from './web/bind-page.js';
+import { renderGenshinStatusVerificationPage } from './web/status-verification-page.js';
 
 export const name = 'genshin';
 export const inject = ['server', 'database', 'puppeteer', 'nativeFeatureChat'] as const;
@@ -89,6 +95,8 @@ interface RuntimeConfig {
   credentialKekPath: string;
   bindSubmitPath: string;
   bindStatusPath: string;
+  statusVerificationPath: string;
+  statusVerificationSubmitPath: string;
   publicHostGuard: string | null;
   autoSignEnabled: boolean;
   autoSignCron: string;
@@ -109,16 +117,19 @@ export function apply(ctx: Context, config: Config): void {
   ensureGenshinTables(ctx);
 
   const kek = loadOrCreateKek(runtime.credentialKekPath);
+  const deviceProfileStore = new GenshinDeviceProfileStore(genshinDeviceProfilePath(runtime.credentialKekPath));
   const store = new GenshinStore(genshinCtx.database);
   const client = new GenshinTakumiClient({
     appVersion: runtime.takumiAppVersion,
     actId: runtime.signActId,
     redeemGameVersion: runtime.redeemGameVersion,
+    deviceProfileStore,
   });
   const service = new GenshinService(store, client, kek, {
     bindPagePath: runtime.bindPagePath,
     publicBaseUrl: runtime.publicBaseUrl,
     bindTokenTtlMs: runtime.bindTokenTtlMs,
+    statusVerificationPath: runtime.statusVerificationPath,
     timezone: runtime.timezone,
   });
   const menuService = new GenshinMenuService(genshinCtx.puppeteer);
@@ -152,7 +163,11 @@ export function apply(ctx: Context, config: Config): void {
   registerAutoSign(ctx, service, runtime);
 
   ctx.on?.('ready', async () => {
-    await store.cleanupExpiredChallenges(Date.now());
+    const now = Date.now();
+    await Promise.all([
+      store.cleanupExpiredChallenges(now),
+      store.cleanupExpiredStatusVerifications(now),
+    ]);
   });
 
   logger.info('Genshin bind page registered at %s.', runtime.bindPagePath);
@@ -170,6 +185,8 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     credentialKekPath,
     bindSubmitPath: `${bindPagePath}/submit`,
     bindStatusPath: `${bindPagePath}/status`,
+    statusVerificationPath: `${bindPagePath}/status-verification`,
+    statusVerificationSubmitPath: `${bindPagePath}/status-verification/submit`,
     publicHostGuard: resolvePublicHostGuard(publicBaseUrl),
     gachaIconCachePath,
     autoSignEnabled: config.autoSignEnabled ?? true,
@@ -187,7 +204,13 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
 
 function registerHostGuard(ctx: GenshinServicesLike, runtime: RuntimeConfig): void {
   if (!runtime.publicHostGuard || typeof ctx.server.use !== 'function') return;
-  const allowedPaths = new Set([runtime.bindPagePath, runtime.bindSubmitPath, runtime.bindStatusPath]);
+  const allowedPaths = new Set([
+    runtime.bindPagePath,
+    runtime.bindSubmitPath,
+    runtime.bindStatusPath,
+    runtime.statusVerificationPath,
+    runtime.statusVerificationSubmitPath,
+  ]);
   ctx.server.use(async (koaCtx: any, next: () => Promise<unknown>) => {
     const host = String(koaCtx.host ?? koaCtx.hostname ?? koaCtx.get?.('host') ?? koaCtx.request?.headers?.host ?? '').trim().toLowerCase();
     if (host !== runtime.publicHostGuard) {
@@ -204,6 +227,39 @@ function registerHostGuard(ctx: GenshinServicesLike, runtime: RuntimeConfig): vo
 }
 
 function registerWebRoutes(ctx: GenshinServicesLike, service: GenshinService, runtime: RuntimeConfig): void {
+  ctx.server.get(runtime.statusVerificationPath, async (koaCtx: any) => {
+    const token = String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
+    try {
+      const verification = await service.resolveStatusVerificationPage(token);
+      writeHtml(koaCtx, 200, renderGenshinStatusVerificationPage({
+        state: 'pending',
+        token: verification.token,
+        gt: verification.gt,
+        challenge: verification.challenge,
+        submitPath: runtime.statusVerificationSubmitPath,
+      }));
+    } catch (error) {
+      writeHtml(koaCtx, 400, renderGenshinStatusVerificationPage({
+        state: 'invalid',
+        message: toUserMessage(error),
+      }));
+    }
+  });
+
+  ctx.server.post(runtime.statusVerificationSubmitPath, async (koaCtx: any) => {
+    const body = await readRequestBody(koaCtx);
+    const token = String(body.token ?? '').trim();
+    try {
+      await service.completeStatusVerification(token, String(body.validate ?? ''));
+      writeHtml(koaCtx, 200, renderGenshinStatusVerificationPage({ state: 'success' }));
+    } catch (error) {
+      writeHtml(koaCtx, 400, renderGenshinStatusVerificationPage({
+        state: token ? 'error' : 'invalid',
+        message: toUserMessage(error),
+      }));
+    }
+  });
+
   ctx.server.get(runtime.bindPagePath, async (koaCtx: any) => {
     const token = String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
     try {
@@ -633,10 +689,13 @@ async function sendGenshinError(
   const historyMessage = sensitiveValue
     ? message.replaceAll(sensitiveValue, command.kind === 'confirm' ? '<确认码已隐藏>' : '<兑换码已隐藏>')
     : message;
+  const isStatusVerificationLink = error instanceof GenshinStatusVerificationLinkError;
   await sendGenshinReply(nativeFeatureChat, session, command, text, message, {
-    summary: `原神功能未完成：${historyMessage}`,
+    summary: isStatusVerificationLink
+      ? '原神状态查询需要完成米游社人机验证；一次性链接未写入历史。'
+      : `原神功能未完成：${historyMessage}`,
     success: false,
-    includeReplyPayload: sensitiveValue == null,
+    includeReplyPayload: sensitiveValue == null && !isStatusVerificationLink,
   });
 }
 
