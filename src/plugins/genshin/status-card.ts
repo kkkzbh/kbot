@@ -10,9 +10,10 @@ const STATUS_CARD_WIDTH = 960;
 
 export interface GenshinStatusView {
   nickname: string;
-  maskedUid: string;
+  uid: string;
   regionName: string;
   levelText: string;
+  onlineStatusText: string;
   updatedAtText: string;
   resin: {
     current: number;
@@ -60,9 +61,10 @@ export function buildGenshinStatusView(
   const finishedExpeditions = note.expeditions.filter((item) => item.status === 'Finished').length;
   return {
     nickname: role.nickname || '旅行者',
-    maskedUid: maskUid(role.uid),
+    uid: role.uid,
     regionName: role.regionName || role.region,
     levelText: role.level == null ? '冒险等阶未知' : `冒险等阶 ${role.level}`,
+    onlineStatusText: '在线',
     updatedAtText: `${formatClock(queriedAt, timezone)} 更新`,
     resin: {
       current: note.currentResin,
@@ -307,6 +309,32 @@ export function renderGenshinStatusHtml(view: GenshinStatusView): string {
       background: rgba(8, 34, 41, .32);
       font-size: 17px;
       font-weight: 700;
+    }
+    .header-status {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    }
+    .online-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 13px;
+      border: 1px solid rgba(116, 225, 184, .42);
+      border-radius: 999px;
+      color: #baf3d6;
+      background: rgba(18, 91, 72, .42);
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .online-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #70e0a8;
+      box-shadow: 0 0 0 4px rgba(112, 224, 168, .13), 0 0 12px rgba(112, 224, 168, .72);
     }
     .content { padding: 28px; }
     .resource-grid {
@@ -639,10 +667,13 @@ export function renderGenshinStatusHtml(view: GenshinStatusView): string {
             <div class="identity-seal">${iconSvg('compass')}</div>
             <div>
               <h1>${escapeHtml(view.nickname)}</h1>
-              <div class="role-meta">${escapeHtml(view.regionName)} · ${escapeHtml(view.levelText)} · UID ${escapeHtml(view.maskedUid)}</div>
+              <div class="role-meta">${escapeHtml(view.regionName)} · ${escapeHtml(view.levelText)} · UID ${escapeHtml(view.uid)}</div>
             </div>
           </div>
-          <div class="updated">${escapeHtml(view.updatedAtText)}</div>
+          <div class="header-status">
+            <div class="online-status"><span class="online-dot"></span><span>在线状态 · ${escapeHtml(view.onlineStatusText)}</span></div>
+            <div class="updated">${escapeHtml(view.updatedAtText)}</div>
+          </div>
         </div>
       </header>
 
@@ -785,11 +816,6 @@ function formatMonthDayClock(timestamp: number, timezone: string): string {
     minute: '2-digit',
     hour12: false,
   }).format(timestamp);
-}
-
-function maskUid(uid: string): string {
-  if (uid.length <= 4) return uid;
-  return `${uid.slice(0, 3)}****${uid.slice(-2)}`;
 }
 
 function iconSvg(name: 'compass' | 'commission' | 'transformer' | 'expedition'): string {
