@@ -1039,7 +1039,6 @@ describe('genshin status card', () => {
       uid: '100000001',
       regionName: '天空岛',
       levelText: '冒险等阶 60',
-      onlineStatusText: '在线',
       resin: { current: 172, max: 200, state: 'warning' },
       homeCoin: { current: 2_180, max: 2_400, state: 'warning' },
       commissions: { finished: 4, total: 4, complete: true },
@@ -1075,7 +1074,7 @@ describe('genshin status card', () => {
     expect(html).toContain('旅行者 &lt;荧&gt;');
     expect(html).toContain('UID 100000001');
     expect(html).not.toContain('UID 100****01');
-    expect(html).toContain('在线状态 · 在线');
+    expect(html).not.toContain('在线状态');
     expect(html).toContain('原粹树脂');
     expect(html).toContain('172');
     expect(html).toContain('洞天宝钱');
