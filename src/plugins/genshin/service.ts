@@ -11,7 +11,12 @@ import {
 import { assertGenshinRedeemCookieCapability } from './cookie.js';
 import { credentialAad, decryptGenshinCredential } from './credential.js';
 import { GenshinStore, signInRecordRow } from './store.js';
-import { GenshinTakumiError, type GenshinSignResult, type GenshinTakumiClient } from './takumi-client.js';
+import {
+  GenshinTakumiError,
+  type GenshinDailyNote,
+  type GenshinSignResult,
+  type GenshinTakumiClient,
+} from './takumi-client.js';
 import {
   type GenshinBindChallenge,
   type GenshinCredential,
@@ -68,6 +73,12 @@ export interface RedeemReply {
   role: GenshinGameRole;
   status: GenshinOperationStatus;
   message: string;
+}
+
+export interface GenshinStatusReply {
+  role: GenshinGameRole;
+  note: GenshinDailyNote;
+  queriedAt: number;
 }
 
 export class GenshinService {
@@ -323,6 +334,23 @@ export class GenshinService {
   async manualSignIn(identity: OwnerIdentity): Promise<SignInReply> {
     const credential = await this.requireActiveCredential(identity.ownerKey);
     return this.signInCredential(credential, 'manual');
+  }
+
+  async queryStatus(identity: OwnerIdentity): Promise<GenshinStatusReply> {
+    const credential = await this.requireActiveCredential(identity.ownerKey);
+    const { payload, role } = this.decryptCredential(credential);
+    const now = this.now();
+    try {
+      const note = await this.client.fetchDailyNote(payload.cookies, role);
+      await this.store.markCredentialUsed(credential.id, now);
+      await this.audit(credential.ownerKey, 'status_queried', 'ok');
+      return { role, note, queriedAt: now };
+    } catch (error) {
+      const message = statusFailure(error);
+      await this.store.markCredentialFailure(credential.id, message, now);
+      await this.audit(credential.ownerKey, 'status_query_failed', 'failed', message);
+      throw new GenshinUserError(message);
+    }
   }
 
   async redeemCode(identity: OwnerIdentity, cdkeyInput: string): Promise<RedeemReply> {
@@ -581,6 +609,13 @@ function redeemFailure(error: unknown): { retcode: number; message: string } {
     retcode: -1,
     message: '原神兑换码领取失败，请稍后重试。',
   };
+}
+
+function statusFailure(error: unknown): string {
+  if (error instanceof GenshinTakumiError || error instanceof GenshinUserError) {
+    return error.message;
+  }
+  return '原神状态查询失败，请稍后重试。';
 }
 
 function formatFailureReason(error: unknown): string {

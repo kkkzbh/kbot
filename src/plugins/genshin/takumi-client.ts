@@ -12,6 +12,7 @@ import {
 } from './types.js';
 
 const API_TAKUMI_BASE_URL = 'https://api-takumi.mihoyo.com';
+const API_TAKUMI_RECORD_BASE_URL = 'https://api-takumi-record.mihoyo.com';
 const PASSPORT_API_BASE_URL = 'https://passport-api.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
 const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
@@ -68,6 +69,39 @@ export interface GenshinGachaLogPage {
   list: GenshinGachaLogItem[];
 }
 
+export interface GenshinDailyNoteExpedition {
+  avatarSideIcon: string;
+  status: 'Finished' | 'Ongoing';
+  remainedSeconds: number;
+}
+
+export interface GenshinDailyNoteTransformer {
+  obtained: boolean;
+  reached: boolean;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+export interface GenshinDailyNote {
+  currentResin: number;
+  maxResin: number;
+  resinRecoverySeconds: number;
+  finishedTaskNum: number;
+  totalTaskNum: number;
+  isExtraTaskRewardReceived: boolean;
+  remainResinDiscountNum: number;
+  resinDiscountNumLimit: number;
+  currentExpeditionNum: number;
+  maxExpeditionNum: number;
+  expeditions: GenshinDailyNoteExpedition[];
+  currentHomeCoin: number;
+  maxHomeCoin: number;
+  homeCoinRecoverySeconds: number;
+  transformer: GenshinDailyNoteTransformer;
+}
+
 interface TakumiResponse<T> {
   retcode: number;
   message: string;
@@ -114,6 +148,24 @@ interface GachaLogPayloadItem {
   item_type?: string;
   rank_type?: string | number;
   id?: string | number;
+}
+
+interface DailyNotePayload {
+  current_resin?: unknown;
+  max_resin?: unknown;
+  resin_recovery_time?: unknown;
+  finished_task_num?: unknown;
+  total_task_num?: unknown;
+  is_extra_task_reward_received?: unknown;
+  remain_resin_discount_num?: unknown;
+  resin_discount_num_limit?: unknown;
+  current_expedition_num?: unknown;
+  max_expedition_num?: unknown;
+  expeditions?: unknown;
+  current_home_coin?: unknown;
+  max_home_coin?: unknown;
+  home_coin_recovery_time?: unknown;
+  transformer?: unknown;
 }
 
 interface QrFetchPayload {
@@ -325,6 +377,20 @@ export class GenshinTakumiClient {
       retcode: payload.retcode,
       message: payload.message || 'OK',
     };
+  }
+
+  async fetchDailyNote(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinDailyNote> {
+    const query = `role_id=${encodeURIComponent(role.uid)}&server=${encodeURIComponent(role.region)}`;
+    const url = new URL(`/game_record/app/genshin/api/dailyNote?${query}`, API_TAKUMI_RECORD_BASE_URL);
+    const payload = await this.requestJson<DailyNotePayload>(url, {
+      method: 'GET',
+      headers: this.baseHeaders(cookies, {
+        ds: createDs1(query, ''),
+        origin: 'https://webstatic.mihoyo.com',
+        referer: 'https://webstatic.mihoyo.com/',
+      }),
+    });
+    return normalizeDailyNote(payload.data);
   }
 
   async createGachaAuthKey(cookies: GenshinCookieFields, role: GenshinGameRole): Promise<GenshinAuthKey> {
@@ -579,6 +645,111 @@ function randomAlphaNum(length: number): string {
   const alphabet = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const bytes = randomBytes(length);
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
+}
+
+function normalizeDailyNote(payload: DailyNotePayload | undefined): GenshinDailyNote {
+  if (!payload || typeof payload !== 'object') {
+    throw invalidDailyNote('dailyNote missing data object');
+  }
+  const expeditions = requireArray(payload.expeditions, 'expeditions').map((item, index) => {
+    const record = requireObject(item, `expeditions[${index}]`);
+    const status = record.status;
+    if (status !== 'Finished' && status !== 'Ongoing') {
+      throw invalidDailyNote(`expeditions[${index}].status is invalid`);
+    }
+    return {
+      avatarSideIcon: requireString(record.avatar_side_icon, `expeditions[${index}].avatar_side_icon`),
+      status: status as GenshinDailyNoteExpedition['status'],
+      remainedSeconds: requireSeconds(record.remained_time, `expeditions[${index}].remained_time`),
+    };
+  });
+  const transformer = requireObject(payload.transformer, 'transformer');
+  const recoveryTime = requireObject(transformer.recovery_time, 'transformer.recovery_time');
+  return {
+    currentResin: requireNonNegativeInteger(payload.current_resin, 'current_resin'),
+    maxResin: requirePositiveInteger(payload.max_resin, 'max_resin'),
+    resinRecoverySeconds: requireSeconds(payload.resin_recovery_time, 'resin_recovery_time'),
+    finishedTaskNum: requireNonNegativeInteger(payload.finished_task_num, 'finished_task_num'),
+    totalTaskNum: requireNonNegativeInteger(payload.total_task_num, 'total_task_num'),
+    isExtraTaskRewardReceived: requireBoolean(payload.is_extra_task_reward_received, 'is_extra_task_reward_received'),
+    remainResinDiscountNum: requireNonNegativeInteger(payload.remain_resin_discount_num, 'remain_resin_discount_num'),
+    resinDiscountNumLimit: requireNonNegativeInteger(payload.resin_discount_num_limit, 'resin_discount_num_limit'),
+    currentExpeditionNum: requireNonNegativeInteger(payload.current_expedition_num, 'current_expedition_num'),
+    maxExpeditionNum: requireNonNegativeInteger(payload.max_expedition_num, 'max_expedition_num'),
+    expeditions,
+    currentHomeCoin: requireNonNegativeInteger(payload.current_home_coin, 'current_home_coin'),
+    maxHomeCoin: requireNonNegativeInteger(payload.max_home_coin, 'max_home_coin'),
+    homeCoinRecoverySeconds: requireSeconds(payload.home_coin_recovery_time, 'home_coin_recovery_time'),
+    transformer: {
+      obtained: requireBoolean(transformer.obtained, 'transformer.obtained'),
+      reached: requireBoolean(recoveryTime.reached, 'transformer.recovery_time.reached'),
+      day: requireNonNegativeInteger(recoveryTime.Day, 'transformer.recovery_time.Day'),
+      hour: requireNonNegativeInteger(recoveryTime.Hour, 'transformer.recovery_time.Hour'),
+      minute: requireNonNegativeInteger(recoveryTime.Minute, 'transformer.recovery_time.Minute'),
+      second: requireNonNegativeInteger(recoveryTime.Second, 'transformer.recovery_time.Second'),
+    },
+  };
+}
+
+function requireObject(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidDailyNote(`${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireArray(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw invalidDailyNote(`${field} must be an array`);
+  }
+  return value;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw invalidDailyNote(`${field} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw invalidDailyNote(`${field} must be a boolean`);
+  }
+  return value;
+}
+
+function requireNonNegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw invalidDailyNote(`${field} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function requirePositiveInteger(value: unknown, field: string): number {
+  const parsed = requireNonNegativeInteger(value, field);
+  if (parsed === 0) {
+    throw invalidDailyNote(`${field} must be positive`);
+  }
+  return parsed;
+}
+
+function requireSeconds(value: unknown, field: string): number {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw invalidDailyNote(`${field} must be a non-negative integer string`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw invalidDailyNote(`${field} exceeds the supported integer range`);
+  }
+  return parsed;
+}
+
+function invalidDailyNote(diagnostic: string): GenshinTakumiError {
+  return new GenshinTakumiError('米游社未返回有效原神状态数据。', {
+    retcode: 0,
+    diagnostic,
+  });
 }
 
 function randomDigits(length: number): string {

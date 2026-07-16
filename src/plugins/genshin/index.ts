@@ -9,6 +9,7 @@ import { GenshinGachaService, renderGenshinGachaRecordsImage } from './gacha-rec
 import { GenshinGachaIconResolver } from './gacha-icon-resolver.js';
 import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
 import { GenshinService, type QrBindingStatusResult } from './service.js';
+import { buildGenshinStatusView, renderGenshinStatusImage } from './status-card.js';
 import { ensureGenshinTables, GenshinStore } from './store.js';
 import { GenshinTakumiClient } from './takumi-client.js';
 import { GenshinUserError, type DatabaseLike, type GenshinGameRole, type OwnerIdentity } from './types.js';
@@ -388,6 +389,24 @@ function registerKeywordMiddleware(
       return;
     }
 
+    if (command.kind === 'status') {
+      try {
+        const identity = resolveOwnerIdentity(session);
+        const result = await service.queryStatus(identity);
+        const view = buildGenshinStatusView(result, runtime.timezone);
+        await sendGenshinReply(nativeFeatureChat, session, command, text, [
+          h.at(identity.qqUserId),
+          h.text('\n'),
+          await renderGenshinStatusImage(puppeteer, view),
+        ], {
+          summary: `机器人返回了 UID ${result.role.uid} 的原神状态图片。`,
+        });
+      } catch (error) {
+        await sendGenshinError(nativeFeatureChat, session, command, text, error);
+      }
+      return;
+    }
+
     if (command.kind === 'redeem_help') {
       await sendGenshinReply(nativeFeatureChat, session, command, text, '请发送：原神兑换 <兑换码>。', {
         summary: '机器人说明原神兑换命令需要 6 至 32 位字母或数字兑换码。',
@@ -561,6 +580,7 @@ type GenshinCommand =
   | { kind: 'confirm_help' }
   | { kind: 'confirm'; confirmCode: string }
   | { kind: 'sign' }
+  | { kind: 'status' }
   | { kind: 'redeem_help' }
   | { kind: 'redeem'; cdkey: string }
   | { kind: 'gacha_records' }
@@ -636,7 +656,7 @@ export function buildGenshinCapabilityReference(session: Session, runtime: Runti
     `原神功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
     '- 总入口：“原神”，返回完整原神菜单。',
     '- 账号：“原神绑定”、“原神确认 <6位数字确认码>”、“原神解绑”。',
-    '- 日常：“原神签到”、“原神兑换 <兑换码>”；兑换码只接受 6 至 32 位字母或数字。',
+    '- 日常：“原神状态”、“原神签到”、“原神兑换 <兑换码>”；状态会返回树脂、委托、派遣、洞天宝钱和参量质变仪卡片；兑换码只接受 6 至 32 位字母或数字。',
     '- 记录：“抽卡记录”或“原神抽卡记录”，同步并返回当前绑定 UID 的抽卡统计；允许在已启用群聊中直接发送。',
     '- 功能面向米游社国服原神 UID，查询和操作前需要先完成绑定。',
     enabled
@@ -645,7 +665,7 @@ export function buildGenshinCapabilityReference(session: Session, runtime: Runti
   ].join('\n');
 }
 
-const GENSHIN_USAGE_TOPIC_PATTERN = /(?:原神(?:功能|机器人|绑定|确认|确定|解绑|签到|兑换|抽卡记录)|抽卡记录|绑定原神)/;
+const GENSHIN_USAGE_TOPIC_PATTERN = /(?:原神(?:功能|机器人|绑定|确认|确定|解绑|状态|签到|兑换|抽卡记录)|抽卡记录|绑定原神)/;
 const GENSHIN_USAGE_INTENT_PATTERN = /(?:(?:怎么|如何|怎样|咋).{0,4}(?:查|看|用|绑定|签到|兑换|同步)|命令|格式|入口|菜单|查询|查看|同步|使用|发送|输入|失败|报错)/;
 
 export function shouldExposeGenshinCapabilityReference(session: Session): boolean {
@@ -663,6 +683,7 @@ function parseGenshinCommand(text: string): GenshinCommand | null {
   if (/^原神(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };
   const confirm = text.match(/^原神(?:确认|确定)\s+(\d{6})$/);
   if (confirm?.[1]) return { kind: 'confirm', confirmCode: confirm[1] };
+  if (text === '原神状态') return { kind: 'status' };
   if (text === '原神签到') return { kind: 'sign' };
   if (/^原神兑换\s*$/.test(text)) return { kind: 'redeem_help' };
   const redeem = text.match(/^原神兑换\s+([A-Za-z0-9]{6,32})$/);

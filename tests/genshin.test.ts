@@ -75,10 +75,20 @@ import {
   GenshinMenuService,
   renderGenshinMenuImage,
 } from '../src/plugins/genshin/menu.js';
+import {
+  buildGenshinStatusView,
+  renderGenshinStatusHtml,
+  renderGenshinStatusImage,
+} from '../src/plugins/genshin/status-card.js';
 import { GenshinService } from '../src/plugins/genshin/service.js';
 import { credentialAad } from '../src/plugins/genshin/credential.js';
 import { gachaRecordKey, GenshinStore } from '../src/plugins/genshin/store.js';
-import { GenshinTakumiClient, GenshinTakumiError, type GenshinGachaLogItem } from '../src/plugins/genshin/takumi-client.js';
+import {
+  GenshinTakumiClient,
+  GenshinTakumiError,
+  type GenshinDailyNote,
+  type GenshinGachaLogItem,
+} from '../src/plugins/genshin/takumi-client.js';
 import { encryptEnvelopeJson, loadOrCreateKek, type CredentialKek } from '../src/plugins/shared/credential-crypto.js';
 import type {
   DatabaseLike,
@@ -178,6 +188,7 @@ function createService(options: {
   qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed' | 'Expired'; cookies?: GenshinCookieFields }>;
   signIn?: ReturnType<typeof vi.fn>;
   redeemCode?: ReturnType<typeof vi.fn>;
+  fetchDailyNote?: ReturnType<typeof vi.fn>;
   createGachaAuthKey?: ReturnType<typeof vi.fn>;
   fetchGachaLogPage?: ReturnType<typeof vi.fn>;
   now?: () => number;
@@ -194,6 +205,7 @@ function createService(options: {
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
     redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
+    fetchDailyNote: options.fetchDailyNote ?? vi.fn(async () => dailyNote()),
     createGachaAuthKey: options.createGachaAuthKey ?? vi.fn(async () => ({ signType: 2, authkeyVer: 1, authkey: 'gacha-authkey-secret' })),
     fetchGachaLogPage: options.fetchGachaLogPage ?? vi.fn(async () => ({ list: [] })),
   };
@@ -296,6 +308,45 @@ function gachaRecord(overrides: Partial<GenshinGachaRecord> = {}): GenshinGachaR
     createdAt: 1_000,
   };
   return { ...base, ...overrides };
+}
+
+function dailyNote(overrides: Partial<GenshinDailyNote> = {}): GenshinDailyNote {
+  return {
+    currentResin: 172,
+    maxResin: 200,
+    resinRecoverySeconds: 13_440,
+    finishedTaskNum: 4,
+    totalTaskNum: 4,
+    isExtraTaskRewardReceived: true,
+    remainResinDiscountNum: 2,
+    resinDiscountNumLimit: 3,
+    currentExpeditionNum: 5,
+    maxExpeditionNum: 5,
+    expeditions: [
+      {
+        avatarSideIcon: 'https://upload-bbs.mihoyo.com/game_record/genshin/character_side_icon/UI_AvatarIcon_Side_Ayaka.png',
+        status: 'Finished',
+        remainedSeconds: 0,
+      },
+      {
+        avatarSideIcon: 'https://upload-bbs.mihoyo.com/game_record/genshin/character_side_icon/UI_AvatarIcon_Side_Amber.png',
+        status: 'Ongoing',
+        remainedSeconds: 3_780,
+      },
+    ],
+    currentHomeCoin: 2_180,
+    maxHomeCoin: 2_400,
+    homeCoinRecoverySeconds: 6_600,
+    transformer: {
+      obtained: true,
+      reached: false,
+      day: 1,
+      hour: 3,
+      minute: 20,
+      second: 0,
+    },
+    ...overrides,
+  };
 }
 
 function createPuppeteerHarness() {
@@ -422,6 +473,32 @@ describe('genshin binding service', () => {
       status: 'ok',
       retcode: 0,
     });
+  });
+
+  it('queries the live status for the bound UID and records credential use', async () => {
+    const fetchDailyNote = vi.fn(async () => dailyNote());
+    const { service, database } = createService({ fetchDailyNote });
+    const started = await service.startBinding(identity());
+    await completeQrBinding(service, extractToken(started.link));
+
+    await expect(service.queryStatus(identity())).resolves.toMatchObject({
+      role: { uid: '100000001', region: 'cn_gf01' },
+      note: { currentResin: 172, currentHomeCoin: 2_180 },
+      queriedAt: 1_000,
+    });
+
+    expect(fetchDailyNote).toHaveBeenCalledWith(
+      expect.objectContaining({ stoken: 'v2_secret' }),
+      expect.objectContaining({ uid: '100000001', region: 'cn_gf01' }),
+    );
+    expect(database.tables.get('genshin_credential')?.[0]).toMatchObject({
+      lastUsedAt: 1_000,
+      lastFailureReason: null,
+    });
+    expect(database.tables.get('genshin_auth_audit')).toContainEqual(expect.objectContaining({
+      eventType: 'status_queried',
+      status: 'ok',
+    }));
   });
 
   it('tracks qr scanned state before app confirmation', async () => {
@@ -687,6 +764,7 @@ describe('genshin menu module', () => {
     expect(shouldExposeGenshinCapabilityReference(session('原神兑换ABCDEF12'))).toBe(true);
     expect(shouldExposeGenshinCapabilityReference(session('原神确认123456'))).toBe(true);
     expect(shouldExposeGenshinCapabilityReference(session('抽卡记录怎么查'))).toBe(true);
+    expect(shouldExposeGenshinCapabilityReference(session('原神状态'))).toBe(true);
     expect(shouldExposeGenshinCapabilityReference(session('原神签到失败了'))).toBe(true);
   });
 
@@ -703,6 +781,7 @@ describe('genshin menu module', () => {
     expect(reference).toContain('总入口：“原神”');
     expect(reference).toContain('原神确认 <6位数字确认码>');
     expect(reference).toContain('原神兑换 <兑换码>');
+    expect(reference).toContain('原神状态');
     expect(reference).toContain('6 至 32 位字母或数字');
     expect(reference).toContain('“抽卡记录”或“原神抽卡记录”');
     expect(reference).toContain('米游社国服原神 UID');
@@ -725,6 +804,7 @@ describe('genshin menu module', () => {
       [
         '日常',
         [
+          ['原神状态', '查看树脂、委托、派遣与洞天宝钱'],
           ['原神签到', '为已绑定 UID 执行每日签到'],
           ['原神兑换 <兑换码>', '为已绑定 UID 领取兑换码奖励'],
         ],
@@ -752,6 +832,7 @@ describe('genshin menu module', () => {
     expect(html).toContain('原神绑定');
     expect(html).toContain('原神确认 <span class="param">&lt;确认码&gt;</span>');
     expect(html).toContain('原神兑换 <span class="param">&lt;兑换码&gt;</span>');
+    expect(html).toContain('原神状态');
     expect(html).toContain('抽卡记录');
     expect(html).not.toContain('原神资料');
     expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
@@ -765,6 +846,66 @@ describe('genshin menu module', () => {
 
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
+  });
+});
+
+describe('genshin status card', () => {
+  it('builds a live-note view with resource recovery and expedition states', () => {
+    const view = buildGenshinStatusView({
+      role: role(),
+      note: dailyNote(),
+      queriedAt: Date.UTC(2026, 6, 16, 10, 0, 0),
+    }, 'Asia/Shanghai');
+
+    expect(view).toMatchObject({
+      nickname: '旅行者',
+      maskedUid: '100****01',
+      regionName: '天空岛',
+      levelText: '冒险等阶 60',
+      resin: { current: 172, max: 200, state: 'warning' },
+      homeCoin: { current: 2_180, max: 2_400, state: 'warning' },
+      commissions: { finished: 4, total: 4, complete: true },
+      weeklyDiscount: { remaining: 2, limit: 3 },
+      transformer: { title: '冷却中', detail: '还需 1天3小时', ready: false },
+      expeditionSummary: '已派遣 5/5 · 1 个可领取',
+    });
+    expect(view.resin.recoveryText).toContain('21:44');
+    expect(view.expeditions.map((item) => item.statusText)).toEqual(['已完成', '1小时3分钟后完成']);
+
+    const lockedHomeView = buildGenshinStatusView({
+      role: role(),
+      note: dailyNote({ currentHomeCoin: 0, maxHomeCoin: 0, homeCoinRecoverySeconds: 0 }),
+      queriedAt: Date.UTC(2026, 6, 16, 10, 0, 0),
+    }, 'Asia/Shanghai');
+    expect(lockedHomeView.homeCoin).toMatchObject({
+      percent: 0,
+      recoveryText: '尚未解锁尘歌壶',
+      unlocked: false,
+    });
+  });
+
+  it('renders the live-note HTML as a PNG card', async () => {
+    const { page, puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const view = buildGenshinStatusView({
+      role: role({ nickname: '旅行者 <荧>' }),
+      note: dailyNote(),
+      queriedAt: Date.UTC(2026, 6, 16, 10, 0, 0),
+    }, 'Asia/Shanghai');
+
+    const html = renderGenshinStatusHtml(view);
+    expect(html).toContain('原神实时便笺');
+    expect(html).toContain('旅行者 &lt;荧&gt;');
+    expect(html).toContain('UID 100****01');
+    expect(html).toContain('原粹树脂');
+    expect(html).toContain('172');
+    expect(html).toContain('洞天宝钱');
+    expect(html).toContain('参量质变仪');
+    expect(html).toContain('UI_AvatarIcon_Side_Ayaka.png');
+
+    const image = await renderGenshinStatusImage(puppeteer, view);
+    expect(String(image)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('id="genshin-status-card"');
+    expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));
   });
 });
 
@@ -1046,6 +1187,64 @@ describe('genshin takumi client', () => {
     expect(gachaUrl.searchParams.get('gacha_type')).toBe('301');
     expect(gachaUrl.searchParams.get('size')).toBe('20');
     expect(gachaUrl.searchParams.get('end_id')).toBe('0');
+  });
+
+  it('requests and normalizes the Genshin daily note contract', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
+      calls.push({ url: url.toString(), init });
+      return jsonResponse({
+        retcode: 0,
+        message: 'OK',
+        data: {
+          current_resin: 172,
+          max_resin: 200,
+          resin_recovery_time: '13440',
+          finished_task_num: 4,
+          total_task_num: 4,
+          is_extra_task_reward_received: true,
+          remain_resin_discount_num: 2,
+          resin_discount_num_limit: 3,
+          current_expedition_num: 5,
+          max_expedition_num: 5,
+          expeditions: [{
+            avatar_side_icon: 'https://upload-bbs.mihoyo.com/ayaka.png',
+            status: 'Ongoing',
+            remained_time: '3780',
+          }],
+          current_home_coin: 2_180,
+          max_home_coin: 2_400,
+          home_coin_recovery_time: '6600',
+          transformer: {
+            obtained: true,
+            recovery_time: { Day: 1, Hour: 3, Minute: 20, Second: 0, reached: false },
+          },
+        },
+      });
+    });
+    const client = new GenshinTakumiClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      deviceId: '00000000-0000-4000-8000-000000000001',
+    });
+
+    await expect(client.fetchDailyNote({ stoken: 'secret', stuid: '123456', mid: 'mid' }, role())).resolves.toEqual(dailyNote({
+      expeditions: [{
+        avatarSideIcon: 'https://upload-bbs.mihoyo.com/ayaka.png',
+        status: 'Ongoing',
+        remainedSeconds: 3_780,
+      }],
+    }));
+
+    const requestUrl = new URL(calls[0].url);
+    expect(requestUrl.hostname).toBe('api-takumi-record.mihoyo.com');
+    expect(requestUrl.pathname).toBe('/game_record/app/genshin/api/dailyNote');
+    expect(requestUrl.search).toBe('?role_id=100000001&server=cn_gf01');
+    expect(calls[0].init.headers).toMatchObject({
+      cookie: expect.stringContaining('stoken=secret'),
+      origin: 'https://webstatic.mihoyo.com',
+      referer: 'https://webstatic.mihoyo.com/',
+      ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
+    });
   });
 
   it('maps expired passport qr tickets to an expired status', async () => {
@@ -1450,6 +1649,53 @@ describe('genshin plugin routes and middleware', () => {
     }, vi.fn());
 
     expect(renderMessageContent(send.mock.calls[0]?.[0])).toContain('image/png');
+  });
+
+  it('returns the current Genshin status card for a bound private-chat user', async () => {
+    const dir = createTempDir();
+    const database = createDatabase();
+    const kek = loadOrCreateKek(join(dir, 'kek.key'));
+    await seedCredential({ database, kek });
+    const fetchDailyNote = vi.spyOn(GenshinTakumiClient.prototype, 'fetchDailyNote').mockResolvedValue(dailyNote());
+    const middleware = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database,
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '',
+    });
+
+    const handler = middleware.mock.calls[0]?.[0];
+    const send = vi.fn();
+    await handler({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'private:1405359129',
+      isDirect: true,
+      content: '原神状态',
+      send,
+    }, vi.fn());
+
+    const reply = send.mock.calls[0]?.[0];
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(getNavigatedHtml()).toContain('原神实时便笺');
+    expect(getNavigatedHtml()).toContain('原粹树脂');
+    expect(fetchDailyNote).toHaveBeenCalledWith(
+      expect.objectContaining({ stoken: 'v2_secret' }),
+      expect.objectContaining({ uid: '100000001' }),
+    );
   });
 
   it('requires the genshin allowlist to be explicitly configured', () => {
