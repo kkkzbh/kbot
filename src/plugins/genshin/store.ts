@@ -495,6 +495,35 @@ export class GenshinStore {
     });
   }
 
+  async refreshActiveCredentialEnvelope(
+    row: GenshinCredential,
+    credentialCipher: string,
+    credentialMeta: string,
+    now: number,
+  ): Promise<boolean> {
+    await this.database.set('genshin_credential', {
+      id: row.id,
+      ownerKey: row.ownerKey,
+      version: row.version,
+      credentialCipher: row.credentialCipher,
+      credentialMeta: row.credentialMeta,
+      revokedAt: null,
+    }, {
+      credentialCipher,
+      credentialMeta,
+      updatedAt: now,
+    });
+    const [updated] = await this.database.get<GenshinCredential>('genshin_credential', { id: row.id });
+    return Boolean(
+      updated
+      && updated.ownerKey === row.ownerKey
+      && updated.version === row.version
+      && updated.credentialCipher === credentialCipher
+      && updated.credentialMeta === credentialMeta
+      && updated.revokedAt == null
+    );
+  }
+
   async getActiveCredential(ownerKey: string): Promise<GenshinCredential | null> {
     const rows = await this.database.get<GenshinCredential>('genshin_credential', {
       ownerKey,

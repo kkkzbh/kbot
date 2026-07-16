@@ -582,6 +582,102 @@ describe('genshin binding service', () => {
     expect(JSON.stringify(database.tables.get('genshin_status_verification'))).not.toContain(token);
   });
 
+  it('does not resurrect a credential unbound while legacy tokens are being completed', async () => {
+    let releaseCompletion!: () => void;
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    const completeAccountTokens = vi.fn(async (cookies: GenshinCookieFields) => {
+      await completionGate;
+      return {
+        ...cookies,
+        account_id: '123456',
+        cookie_token: 'cookie-token',
+        ltoken: 'ltoken-value',
+        ltuid: '123456',
+      };
+    });
+    const fetchDailyNote = vi.fn(async () => dailyNote());
+    const { service, database, kek } = createService({ completeAccountTokens, fetchDailyNote });
+    await seedCredential({ database, kek });
+
+    const query = service.queryStatus(identity());
+    await vi.waitFor(() => expect(completeAccountTokens).toHaveBeenCalledTimes(1));
+    await service.unbind(identity());
+    releaseCompletion();
+
+    await expect(query).rejects.toThrow('原神绑定状态已变化');
+    expect(database.tables.get('genshin_credential')?.[0]).toMatchObject({
+      revokedAt: 1_000,
+      credentialCipher: '',
+      credentialMeta: '',
+    });
+    expect(fetchDailyNote).not.toHaveBeenCalled();
+  });
+
+  it('does not roll a concurrent rebind back to the legacy credential snapshot', async () => {
+    let releaseCompletion!: () => void;
+    const completionGate = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    const completeAccountTokens = vi.fn(async (cookies: GenshinCookieFields) => {
+      await completionGate;
+      return {
+        ...cookies,
+        account_id: '123456',
+        cookie_token: 'old-cookie-token',
+        ltoken: 'old-ltoken',
+        ltuid: '123456',
+      };
+    });
+    const fetchDailyNote = vi.fn(async () => dailyNote());
+    const { service, database, kek } = createService({ completeAccountTokens, fetchDailyNote });
+    await seedCredential({ database, kek });
+    const oldRow = database.tables.get('genshin_credential')?.[0];
+    if (!oldRow) throw new Error('missing seeded credential');
+
+    const query = service.queryStatus(identity());
+    await vi.waitFor(() => expect(completeAccountTokens).toHaveBeenCalledTimes(1));
+    const newRole = role({ uid: '200000001', nickname: '新旅行者' });
+    const newPayload: GenshinCredentialPayload = {
+      cookies: {
+        stoken: 'new-stoken',
+        mid: 'new-mid',
+        stuid: '654321',
+        account_id: '654321',
+        cookie_token: 'new-cookie-token',
+        ltoken: 'new-ltoken',
+        ltuid: '654321',
+      },
+    };
+    const newEnvelope = encryptEnvelopeJson(
+      newPayload,
+      credentialAad(identity().ownerKey, Number(oldRow.id)),
+      kek,
+    );
+    await database.set('genshin_credential', { id: oldRow.id }, {
+      uid: newRole.uid,
+      nickname: newRole.nickname,
+      version: Number(oldRow.version) + 1,
+      credentialCipher: newEnvelope.cipherText,
+      credentialMeta: newEnvelope.meta,
+      revokedAt: null,
+    });
+    releaseCompletion();
+
+    await expect(query).rejects.toThrow('原神绑定状态已变化');
+    const current = database.tables.get('genshin_credential')?.[0];
+    expect(current).toMatchObject({
+      uid: '200000001',
+      nickname: '新旅行者',
+      version: 2,
+      revokedAt: null,
+      credentialCipher: newEnvelope.cipherText,
+      credentialMeta: newEnvelope.meta,
+    });
+    expect(fetchDailyNote).not.toHaveBeenCalled();
+  });
+
   it('tracks qr scanned state before app confirmation', async () => {
     const { service, database, client } = createService({
       qrResults: [

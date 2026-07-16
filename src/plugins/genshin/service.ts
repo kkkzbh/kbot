@@ -622,7 +622,15 @@ export class GenshinService {
         credentialAad(credential.ownerKey, credential.id),
         this.kek,
       );
-      await this.store.updateCredentialEnvelope(credential, encrypted.cipherText, encrypted.meta, this.now());
+      const updated = await this.store.refreshActiveCredentialEnvelope(
+        credential,
+        encrypted.cipherText,
+        encrypted.meta,
+        this.now(),
+      );
+      if (!updated) {
+        throw new GenshinUserError('原神绑定状态已变化，请重新发送“原神状态”。');
+      }
     }
     return {
       payload: { cookies },
