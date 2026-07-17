@@ -804,6 +804,7 @@ describe('hbu-jw binding service', () => {
         throw new HbuJwLoginError('账号不存在', {
           code: 'login_rejected',
           diagnostic: 'login_submit status=200 redirect=none message=账号不存在',
+          category: 'credential',
         });
       },
     });
@@ -882,6 +883,81 @@ describe('hbu-jw binding service', () => {
       credentialVersion: 1,
     });
     expect(login).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps saved credentials retryable when automatic login fails upstream', async () => {
+    let loginCalls = 0;
+    const { service, database } = createService({
+      validate: async () => false,
+      login: async () => {
+        loginCalls += 1;
+        if (loginCalls === 1) return { cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'initial' }] } };
+        throw new HbuJwLoginError('教务登录入口返回 HTTP 503，自动登录暂时无法完成。', {
+          code: 'login_page_failed',
+          diagnostic: 'login_page status=503',
+          category: 'upstream',
+        });
+      },
+    });
+    const started = await service.startBinding(identity());
+    const submitted = await service.submitCredentials({
+      token: extractToken(started.link),
+      username: 'student-1',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    await service.confirmBinding(identity(), submitted.confirmCode);
+
+    await expect(service.ensureAuthenticated(identity())).resolves.toEqual({
+      kind: 'unavailable',
+      reason: '教务登录入口返回 HTTP 503，自动登录暂时无法完成。',
+    });
+    expect(database.tables.get('hbu_jw_session')?.[0]).toMatchObject({
+      status: 'expired',
+      lastFailureReason: '教务登录入口返回 HTTP 503，自动登录暂时无法完成。',
+    });
+    expect(database.tables.get('hbu_jw_credential')?.[0]?.lastFailureReason).toBeNull();
+    expect(database.tables.get('hbu_jw_auth_audit')?.at(-1)).toMatchObject({
+      eventType: 'credential_refresh_failed',
+      reason: 'login_page_failed: login_page status=503',
+    });
+  });
+
+  it('marks saved credentials invalid only when the login provider rejects them', async () => {
+    let loginCalls = 0;
+    const { service, database } = createService({
+      validate: async () => false,
+      login: async () => {
+        loginCalls += 1;
+        if (loginCalls === 1) return { cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'initial' }] } };
+        throw new HbuJwLoginError('河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。', {
+          code: 'webvpn_invalid_account',
+          diagnostic: 'webvpn error=INVALID_ACCOUNT',
+          category: 'credential',
+        });
+      },
+    });
+    const started = await service.startBinding(identity());
+    const submitted = await service.submitCredentials({
+      token: extractToken(started.link),
+      username: 'student-1',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    await service.confirmBinding(identity(), submitted.confirmCode);
+
+    await expect(service.ensureAuthenticated(identity())).resolves.toEqual({
+      kind: 'invalid',
+      reason: '河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。',
+    });
+    expect(database.tables.get('hbu_jw_session')?.[0]).toMatchObject({
+      status: 'invalid',
+      lastFailureReason: '河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。',
+    });
+    expect(database.tables.get('hbu_jw_credential')?.[0]?.lastFailureReason).toBe('webvpn_invalid_account: webvpn error=INVALID_ACCOUNT');
+    expect(database.tables.get('hbu_jw_auth_audit')?.at(-1)).toMatchObject({
+      eventType: 'credential_refresh_rejected',
+    });
   });
 
   it('unbind revokes credentials and removes the current QQ session only', async () => {
@@ -2470,7 +2546,7 @@ describe('hbu-jw http client', () => {
   it('rejects cross-origin redirects before sending cookies to the redirected target', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url === 'https://zhjw.hbu.cn/login') {
-        return new Response('', {
+        return new Response('<form action="/sigin"><input name="password"></form>', {
           status: 200,
           headers: { 'set-cookie': 'JSESSIONID=abc; Path=/' },
         });
@@ -2485,8 +2561,115 @@ describe('hbu-jw http client', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    await expect(client.login('student', 'password')).rejects.toThrow('非预期跳转');
+    await expect(client.login('student', 'password')).rejects.toThrow('非预期跨域');
     expect(fetchImpl.mock.calls.map((call) => call[0])).not.toContain('https://example.com/steal');
+  });
+
+  it('logs into WebVPN before submitting the original jw login form', async () => {
+    const resourcePrefix = '/http/77726476706e69737468656265737421eaff4b8b69386a45300b87';
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === 'https://zhjw.hbu.cn/login') {
+        return new Response('', {
+          status: 302,
+          headers: { location: `https://v.hbu.cn${resourcePrefix}/login` },
+        });
+      }
+      if (url === `https://v.hbu.edu.cn${resourcePrefix}/login`) {
+        if (String((init?.headers as Record<string, string> | undefined)?.cookie ?? '').includes('webvpn_session=active')) {
+          return new Response('<form action="/sigin"><input name="password"></form>', {
+            status: 200,
+            headers: { 'set-cookie': 'JSESSIONID=jw-session; Path=/' },
+          });
+        }
+        return new Response('', {
+          status: 302,
+          headers: {
+            location: 'https://v.hbu.cn/login',
+            'set-cookie': 'wengine_vpn_ticketv_hbu_cn=ticket; Path=/',
+          },
+        });
+      }
+      if (url === 'https://v.hbu.edu.cn/login') {
+        return new Response([
+          '<html><body>WEBVPN资源访问系统',
+          '<form id="form">',
+          '<input name="_csrf" value="csrf-token">',
+          '<input name="auth_type" value="local">',
+          '<input name="needCaptcha" value="false">',
+          '<input name="captcha_id" value="captcha-id">',
+          '</form>',
+          '<script>$.post("/do-login")</script>',
+          '</body></html>',
+        ].join(''), { status: 200 });
+      }
+      if (url === 'https://v.hbu.edu.cn/do-login') {
+        const body = init?.body as URLSearchParams;
+        expect(body.get('_csrf')).toBe('csrf-token');
+        expect(body.get('username')).toBe('student');
+        expect(body.get('password')).toBe('77726476706e6973617765736f6d6521f669c8738c549c2e');
+        expect(init?.headers).toMatchObject({
+          host: 'v.hbu.cn',
+          origin: 'https://v.hbu.cn',
+        });
+        return new Response(JSON.stringify({ success: true, url: `${resourcePrefix}/login` }), {
+          status: 200,
+          headers: { 'set-cookie': 'webvpn_session=active; Path=/' },
+        });
+      }
+      if (url === `https://v.hbu.edu.cn${resourcePrefix}/sigin`) {
+        expect(init?.headers).toMatchObject({
+          host: 'v.hbu.cn',
+          origin: 'https://v.hbu.cn',
+          referer: `https://v.hbu.cn${resourcePrefix}/login`,
+        });
+        return new Response('', {
+          status: 302,
+          headers: { location: 'https://zhjw.hbu.cn/index' },
+        });
+      }
+      if (url === `https://v.hbu.edu.cn${resourcePrefix}/index`) {
+        return new Response('<html><body>URP综合教务系统首页</body></html>', { status: 200 });
+      }
+      return new Response('', { status: 500 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.login('student', 'password')).resolves.toEqual({
+      cookieJar: {
+        cookies: [
+          { name: 'wengine_vpn_ticketv_hbu_cn', value: 'ticket' },
+          { name: 'webvpn_session', value: 'active' },
+          { name: 'JSESSIONID', value: 'jw-session' },
+        ],
+      },
+    });
+    expect(fetchImpl.mock.calls.map((call) => call[0])).not.toContain('https://zhjw.hbu.cn/sigin');
+  });
+
+  it('reports WebVPN credential rejection precisely', async () => {
+    const resourcePrefix = '/http/77726476706e69737468656265737421eaff4b8b69386a45300b87';
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === 'https://zhjw.hbu.cn/login') {
+        return new Response('', { status: 302, headers: { location: `https://v.hbu.cn${resourcePrefix}/login` } });
+      }
+      if (url === `https://v.hbu.edu.cn${resourcePrefix}/login`) {
+        return new Response('', { status: 302, headers: { location: 'https://v.hbu.cn/login' } });
+      }
+      if (url === 'https://v.hbu.edu.cn/login') {
+        return new Response('<form id="form"><input name="_csrf" value="csrf"><input name="auth_type" value="local"></form><script>$.post("/do-login")</script>', { status: 200 });
+      }
+      if (url === 'https://v.hbu.edu.cn/do-login') {
+        return new Response(JSON.stringify({ success: false, error: 'INVALID_ACCOUNT', message: '账号或密码错误' }), { status: 200 });
+      }
+      return new Response('', { status: 500 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.login('student', 'password')).rejects.toMatchObject({
+      code: 'webvpn_invalid_account',
+      category: 'credential',
+      message: '河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。',
+    });
   });
 
   it('extracts clear login failure messages from the jw login page', async () => {
@@ -2791,6 +2974,7 @@ describe('hbu-jw bind page rendering', () => {
     expect(html).toContain('value="student-1"');
     expect(html).toContain('value="1405359129" readonly');
     expect(html).toContain('name="persistCredentialConsent" value="yes" required checked');
+    expect(html).toContain('仅用于河北大学 WebVPN 与教务登录态失效后的自动重新登录');
     expect(html).toContain('id="password"');
     expect(html).toContain('data-password-toggle');
     expect(html).toContain('aria-label="显示密码"');

@@ -60,7 +60,7 @@ export const Config: Schema<Config> = Schema.object({
   publicBaseUrl: Schema.string().description('群聊回复中使用的外部可访问基础 URL。'),
   bindTokenTtlMs: Schema.natural().role('time').default(DEFAULT_BIND_TOKEN_TTL_MS).description('绑定链接有效期。'),
   credentialKekPath: Schema.string().description('教务凭据 KEK 文件路径。文件必须为 0600 权限。'),
-  autoReloginEnabled: Schema.boolean().default(true).description('教务 session 失效后是否自动重新登录。'),
+  autoReloginEnabled: Schema.boolean().default(true).description('河北大学 WebVPN 或教务 session 失效后是否自动重新登录。'),
   keepAliveEnabled: Schema.boolean().default(false).description('是否启用教务 session 轻量保活。'),
   keepAliveIntervalMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_INTERVAL_MS).description('保活周期。'),
   keepAliveRecentUseWindowMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS).description('只保活最近使用过的登录态。'),

@@ -26,6 +26,7 @@ export interface HbuJwExamScheduleAuthServiceLike {
     | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
     | { kind: 'needs_binding'; reason: string }
     | { kind: 'invalid'; reason: string }
+    | { kind: 'unavailable'; reason: string }
   >;
 }
 

@@ -1,3 +1,8 @@
+import { createCipheriv } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { rootCertificates } from 'node:tls';
+import { Agent, type Dispatcher } from 'undici';
 import type {
   HbuJwCourseOffering,
   HbuJwCourseOfferingMeeting,
@@ -27,6 +32,9 @@ export interface HbuJwLoginResult {
 export interface HbuJwClientOptions {
   fetchImpl?: typeof fetch;
   baseUrl?: string;
+  webVpnBaseUrl?: string;
+  webVpnTransportBaseUrl?: string;
+  webVpnDispatcher?: Dispatcher;
   userAgent?: string;
 }
 
@@ -37,17 +45,21 @@ type RequestOptions = Omit<RequestInit, 'headers'> & {
 export class HbuJwLoginError extends Error {
   readonly code: string;
   readonly diagnostic: string;
+  readonly category: HbuJwLoginErrorCategory;
 
-  constructor(message: string, options: { code: string; diagnostic: string; cause?: unknown }) {
+  constructor(message: string, options: { code: string; diagnostic: string; category: HbuJwLoginErrorCategory; cause?: unknown }) {
     super(message);
     this.name = 'HbuJwLoginError';
     this.code = options.code;
     this.diagnostic = options.diagnostic;
+    this.category = options.category;
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
   }
 }
+
+export type HbuJwLoginErrorCategory = 'credential' | 'interaction_required' | 'upstream' | 'protocol';
 
 export class HbuJwQueryError extends Error {
   constructor(message: string) {
@@ -60,23 +72,53 @@ export class HbuJwHttpClient {
   private readonly fetchImpl: typeof fetch;
   private readonly baseUrl: string;
   private readonly baseOrigin: string;
+  private readonly webVpnOrigin: string;
+  private readonly webVpnTransportOrigin: string;
+  private readonly webVpnDispatcher?: Dispatcher;
   private readonly userAgent: string;
+  private webVpnResourceBaseUrl: string | null = null;
 
   constructor(options: HbuJwClientOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.baseUrl = options.baseUrl ?? 'https://zhjw.hbu.cn';
+    this.baseUrl = normalizeOrigin(options.baseUrl ?? 'https://zhjw.hbu.cn');
     this.baseOrigin = new URL(this.baseUrl).origin;
+    this.webVpnOrigin = normalizeOrigin(options.webVpnBaseUrl ?? 'https://v.hbu.cn');
+    this.webVpnTransportOrigin = normalizeOrigin(options.webVpnTransportBaseUrl ?? 'https://v.hbu.edu.cn');
+    this.webVpnDispatcher = options.webVpnDispatcher
+      ?? (options.fetchImpl ? undefined : createWebVpnDispatcher());
     this.userAgent = options.userAgent ?? 'qqbot-hbu-jw/1.0';
   }
 
   async login(username: string, password: string): Promise<HbuJwLoginResult> {
     try {
       const jar = new CookieJar();
-      const loginPage = await this.request('/login', { jar });
+      let loginPage = await this.request('/login', { jar });
+      if (isWebVpnLoginPageHtml(loginPage.text)) {
+        await this.loginWebVpn(username, password, jar, loginPage.text);
+        loginPage = await this.request('/login', { jar });
+        if (isWebVpnLoginPageHtml(loginPage.text)) {
+          throw new HbuJwLoginError('河北大学 WebVPN 登录成功后仍未建立教务访问会话，请稍后重试。', {
+            code: 'webvpn_session_missing',
+            diagnostic: `webvpn resource login resolved to ${loginPage.url}`,
+            category: 'upstream',
+          });
+        }
+      }
+      if (isAuthenticatedHtml(loginPage.text)) {
+        return { cookieJar: jar.serialize() };
+      }
       if (loginPage.response.status !== 200) {
-        throw new HbuJwLoginError('教务登录页访问失败，请稍后重试。', {
+        throw new HbuJwLoginError(`教务登录入口返回 HTTP ${loginPage.response.status}，自动登录暂时无法完成。`, {
           code: 'login_page_failed',
           diagnostic: `login_page status=${loginPage.response.status}`,
+          category: 'upstream',
+        });
+      }
+      if (!isLoginPageHtml(loginPage.text)) {
+        throw new HbuJwLoginError('教务登录页结构发生变化，自动登录暂时无法完成。', {
+          code: 'login_page_changed',
+          diagnostic: `login_page url=${loginPage.url}`,
+          category: 'protocol',
         });
       }
 
@@ -95,30 +137,32 @@ export class HbuJwHttpClient {
         return { cookieJar: jar.serialize() };
       }
 
-      const redirect = login.response.headers.get('location');
-      if (!redirect && isLoginPageHtml(login.text)) {
+      if (isWebVpnLoginPageHtml(login.text)) {
+        throw new HbuJwLoginError('河北大学 WebVPN 会话在教务登录过程中失效，请稍后重试。', {
+          code: 'webvpn_session_expired',
+          diagnostic: `jw login resolved to webvpn login url=${login.url}`,
+          category: 'upstream',
+        });
+      }
+      if (isLoginPageHtml(login.text)) {
         const message = extractLoginFailureMessage(login.text) ?? '教务登录失败，教务系统未返回登录态。';
         throw new HbuJwLoginError(message, {
           code: 'login_rejected',
-          diagnostic: `login_submit status=${login.response.status} redirect=none message=${message}`,
+          diagnostic: `login_submit status=${login.response.status} url=${login.url} message=${message}`,
+          category: message.includes('验证码') ? 'interaction_required' : 'credential',
         });
       }
-
-      const target = redirect ? this.normalizeSameOriginUrl(redirect) : `${this.baseUrl}/index`;
-      const index = await this.request(target, { jar, headers: { referer: `${this.baseUrl}/login` } });
-      if (!isAuthenticatedHtml(index.text)) {
-        const message = extractLoginFailureMessage(index.text) ?? extractLoginFailureMessage(login.text) ?? '教务登录失败，教务系统未返回登录态。';
-        throw new HbuJwLoginError(message, {
-          code: 'not_authenticated',
-          diagnostic: `login_submit status=${login.response.status} redirect=${redirect ? 'same-origin' : 'none'} index status=${index.response.status} message=${message}`,
-        });
-      }
-      return { cookieJar: jar.serialize() };
+      throw new HbuJwLoginError('教务登录协议发生变化，提交账号后没有获得登录态。', {
+        code: 'not_authenticated',
+        diagnostic: `login_submit status=${login.response.status} url=${login.url}`,
+        category: 'protocol',
+      });
     } catch (error) {
       if (error instanceof HbuJwLoginError) throw error;
-      throw new HbuJwLoginError('教务登录请求失败，请检查网络或代理配置。', {
+      throw new HbuJwLoginError('教务系统当前无法访问，自动登录未完成，请稍后重试。', {
         code: 'request_failed',
         diagnostic: describeError(error),
+        category: 'upstream',
         cause: error,
       });
     }
@@ -499,45 +543,350 @@ export class HbuJwHttpClient {
     return normalizeCourseOfferings(requireRecordArray(payload.rwRxkZlList, '自由选课班次'), 'free');
   }
 
-  private async request(url: string, options: RequestOptions & { jar: CookieJar }): Promise<{ response: Response; text: string }> {
-    const { jar, ...requestOptions } = options;
-    const target = url.startsWith('http://') || url.startsWith('https://') ? url : new URL(url, this.baseUrl).href;
-    const targetUrl = new URL(target);
-    if (targetUrl.origin !== this.baseOrigin) {
-      throw new HbuJwLoginError('教务系统返回了非预期跳转。', {
-        code: 'cross_origin_request',
-        diagnostic: `request origin=${targetUrl.origin}`,
+  private async loginWebVpn(username: string, password: string, jar: CookieJar, html: string): Promise<void> {
+    const csrf = extractInputValue(html, '_csrf');
+    if (!csrf) {
+      throw new HbuJwLoginError('河北大学 WebVPN 登录协议发生变化，自动登录暂时无法完成。', {
+        code: 'webvpn_login_page_changed',
+        diagnostic: 'webvpn login page is missing _csrf',
+        category: 'protocol',
       });
     }
-    const headers: Record<string, string> = {
-      'user-agent': this.userAgent,
-      ...(options.headers ?? {}),
-    };
-    const cookieHeader = jar.header();
-    if (cookieHeader) headers.cookie = cookieHeader;
-    const response = await this.fetchImpl(target, {
-      ...requestOptions,
-      headers,
-      redirect: 'manual',
+    const body = new URLSearchParams({
+      _csrf: csrf,
+      auth_type: extractInputValue(html, 'auth_type') ?? 'local',
+      username,
+      password: encryptWebVpnPassword(password),
+      captcha: '',
+      needCaptcha: extractInputValue(html, 'needCaptcha') ?? 'false',
+      captcha_id: extractInputValue(html, 'captcha_id') ?? '',
+      remember_cookie: 'on',
     });
-    jar.remember(readSetCookieHeaders(response.headers));
-    return { response, text: await response.text() };
+    const response = await this.request(`${this.webVpnOrigin}/do-login`, {
+      jar,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        origin: this.webVpnOrigin,
+        referer: `${this.webVpnOrigin}/login`,
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body,
+    });
+    if (response.response.status !== 200) {
+      throw new HbuJwLoginError(`河北大学 WebVPN 登录接口返回 HTTP ${response.response.status}，自动登录暂时无法完成。`, {
+        code: 'webvpn_login_http_error',
+        diagnostic: `webvpn do-login status=${response.response.status}`,
+        category: 'upstream',
+      });
+    }
+
+    const payload = parseWebVpnLoginPayload(response.text);
+    if (payload.success === true) {
+      const successUrl = typeof payload.url === 'string' ? payload.url : '';
+      if (!successUrl) {
+        throw new HbuJwLoginError('河北大学 WebVPN 登录响应缺少教务访问地址。', {
+          code: 'webvpn_login_response_changed',
+          diagnostic: 'webvpn success response is missing url',
+          category: 'protocol',
+        });
+      }
+      const target = this.resolveRequestUrl(successUrl);
+      if (target.origin !== this.webVpnOrigin) {
+        throw new HbuJwLoginError('河北大学 WebVPN 返回了非预期访问地址。', {
+          code: 'webvpn_success_cross_origin',
+          diagnostic: `webvpn success origin=${target.origin}`,
+          category: 'protocol',
+        });
+      }
+      return;
+    }
+    throw createWebVpnLoginError(payload);
   }
 
-  private normalizeSameOriginUrl(value: string): string {
-    const target = new URL(value, this.baseUrl);
+  private async request(url: string, options: RequestOptions & { jar: CookieJar }): Promise<{ response: Response; text: string; url: string }> {
+    const {
+      jar,
+      headers: configuredHeaders = {},
+      method: configuredMethod,
+      body: configuredBody,
+      ...requestOptions
+    } = options;
+    let currentUrl = this.resolveRequestUrl(url);
+    let method = String(configuredMethod ?? 'GET').toUpperCase();
+    let body = configuredBody;
+
+    for (let redirectCount = 0; redirectCount <= 8; redirectCount += 1) {
+      this.assertAllowedOrigin(currentUrl, 'cross_origin_request');
+      const transportUrl = this.toTransportUrl(currentUrl);
+      const headers = this.createRequestHeaders(configuredHeaders, jar, currentUrl);
+      if ((method === 'GET' || method === 'HEAD') && body !== undefined) body = undefined;
+      const init = {
+        ...requestOptions,
+        method,
+        body,
+        headers,
+        redirect: 'manual' as const,
+        ...(currentUrl.origin === this.webVpnOrigin && this.webVpnDispatcher
+          ? { dispatcher: this.webVpnDispatcher }
+          : {}),
+      } as RequestInit & { dispatcher?: Dispatcher };
+      const response = await this.fetchImpl(transportUrl.href, init);
+      jar.remember(readSetCookieHeaders(response.headers));
+      const text = await response.text();
+      const location = response.headers.get('location');
+      if (!location || !isRedirectStatus(response.status)) {
+        return { response, text, url: currentUrl.href };
+      }
+      if (redirectCount === 8) {
+        throw new HbuJwLoginError('教务入口重定向次数过多，自动登录暂时无法完成。', {
+          code: 'too_many_redirects',
+          diagnostic: `last_url=${currentUrl.href} location=${location}`,
+          category: 'upstream',
+        });
+      }
+
+      const rawRedirectedUrl = this.canonicalizeWebVpnUrl(new URL(location, currentUrl));
+      const redirectedUrl = currentUrl.origin === this.webVpnOrigin
+        && rawRedirectedUrl.origin === this.baseOrigin
+        && this.webVpnResourceBaseUrl
+        ? this.resolveRequestUrl(rawRedirectedUrl.href)
+        : rawRedirectedUrl;
+      if (currentUrl.origin === this.baseOrigin && redirectedUrl.origin === this.webVpnOrigin) {
+        this.captureWebVpnResourceBase(currentUrl, redirectedUrl);
+      } else if (redirectedUrl.origin !== currentUrl.origin) {
+        throw new HbuJwLoginError('教务系统返回了非预期跨域跳转。', {
+          code: 'cross_origin_redirect',
+          diagnostic: `redirect from=${currentUrl.origin} to=${redirectedUrl.origin}`,
+          category: 'protocol',
+        });
+      }
+      this.assertAllowedOrigin(redirectedUrl, 'cross_origin_redirect');
+      if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === 'POST')) {
+        method = 'GET';
+        body = undefined;
+      }
+      currentUrl = redirectedUrl;
+    }
+    throw new Error('unreachable redirect loop');
+  }
+
+  private resolveRequestUrl(value: string): URL {
+    if (this.webVpnResourceBaseUrl && value.startsWith(new URL(this.webVpnResourceBaseUrl).pathname)) {
+      return new URL(value, this.webVpnOrigin);
+    }
+    const target = this.canonicalizeWebVpnUrl(new URL(value, this.baseUrl));
+    if (target.origin === this.baseOrigin && this.webVpnResourceBaseUrl) {
+      return new URL(`${new URL(this.webVpnResourceBaseUrl).pathname}${target.pathname}${target.search}${target.hash}`, this.webVpnOrigin);
+    }
+    return target;
+  }
+
+  private captureWebVpnResourceBase(source: URL, target: URL): void {
+    const resourcePath = source.pathname;
+    if (!target.pathname.endsWith(resourcePath)) {
+      throw new HbuJwLoginError('河北大学 WebVPN 返回了无法识别的教务资源地址。', {
+        code: 'webvpn_resource_path_changed',
+        diagnostic: `source_path=${resourcePath} target_path=${target.pathname}`,
+        category: 'protocol',
+      });
+    }
+    const prefix = target.pathname.slice(0, -resourcePath.length);
+    if (!/^\/(?:http|https)\/[a-f0-9]+$/i.test(prefix)) {
+      throw new HbuJwLoginError('河北大学 WebVPN 返回了无法识别的教务资源地址。', {
+        code: 'webvpn_resource_path_changed',
+        diagnostic: `resource_prefix=${prefix}`,
+        category: 'protocol',
+      });
+    }
+    this.webVpnResourceBaseUrl = new URL(prefix, this.webVpnOrigin).href.replace(/\/$/, '');
+  }
+
+  private canonicalizeWebVpnUrl(target: URL): URL {
     const base = new URL(this.baseUrl);
     if (target.hostname === base.hostname && target.protocol === 'http:' && base.protocol === 'https:') {
       target.protocol = 'https:';
     }
-    if (target.origin !== this.baseOrigin) {
-      throw new HbuJwLoginError('教务系统返回了非预期跳转。', {
-        code: 'cross_origin_redirect',
-        diagnostic: `redirect origin=${target.origin}`,
-      });
-    }
-    return target.href;
+    if (target.origin !== this.webVpnTransportOrigin) return target;
+    return new URL(`${target.pathname}${target.search}${target.hash}`, this.webVpnOrigin);
   }
+
+  private toTransportUrl(target: URL): URL {
+    if (target.origin !== this.webVpnOrigin) return target;
+    return new URL(`${target.pathname}${target.search}${target.hash}`, this.webVpnTransportOrigin);
+  }
+
+  private assertAllowedOrigin(target: URL, code: 'cross_origin_request' | 'cross_origin_redirect'): void {
+    if (target.origin === this.baseOrigin || target.origin === this.webVpnOrigin) return;
+    throw new HbuJwLoginError('教务系统返回了非预期跨域地址。', {
+      code,
+      diagnostic: `request origin=${target.origin}`,
+      category: 'protocol',
+    });
+  }
+
+  private createRequestHeaders(configured: Record<string, string>, jar: CookieJar, target: URL): Record<string, string> {
+    const headers: Record<string, string> = {
+      'user-agent': this.userAgent,
+      ...configured,
+    };
+    for (const name of ['origin', 'referer'] as const) {
+      const value = headers[name];
+      if (!value) continue;
+      const headerUrl = new URL(value);
+      if (headerUrl.origin === this.baseOrigin && this.webVpnResourceBaseUrl) {
+        headers[name] = name === 'origin'
+          ? this.webVpnOrigin
+          : new URL(`${new URL(this.webVpnResourceBaseUrl).pathname}${headerUrl.pathname}${headerUrl.search}`, this.webVpnOrigin).href;
+      }
+    }
+    if (target.origin === this.webVpnOrigin) headers.host = new URL(this.webVpnOrigin).host;
+    const cookieHeader = jar.header();
+    if (cookieHeader) headers.cookie = cookieHeader;
+    return headers;
+  }
+}
+
+interface WebVpnLoginPayload {
+  success?: boolean;
+  url?: unknown;
+  error?: unknown;
+  message?: unknown;
+}
+
+function normalizeOrigin(value: string): string {
+  const target = new URL(value);
+  return target.origin;
+}
+
+function createWebVpnDispatcher(): Dispatcher {
+  // The official v.hbu.cn service presents the v.hbu.edu.cn certificate and omits
+  // this public intermediate. Use the certificate-matching transport host and
+  // add only the missing issuer while retaining Node's normal root trust store.
+  const intermediateCa = readFileSync(join(__dirname, 'assets/xcc-trust-ov-ssl-ca.pem'), 'utf8');
+  return new Agent({
+    connect: {
+      ca: [...rootCertificates, intermediateCa],
+    },
+  });
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function isWebVpnLoginPageHtml(html: string): boolean {
+  return /<form\b[^>]*\bid=["']form["'][^>]*>/i.test(html)
+    && /(?:\/do-login|WEBVPN资源访问系统|wengine-vpn)/i.test(html)
+    && /name=["']auth_type["']/i.test(html);
+}
+
+function extractInputValue(html: string, name: string): string | null {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tag = html.match(new RegExp(`<input\\b[^>]*\\bname=["']${escapedName}["'][^>]*>`, 'i'))?.[0];
+  if (!tag) return null;
+  const value = tag.match(/\bvalue=["']([^"']*)["']/i)?.[1];
+  return value === undefined ? '' : decodeBasicHtmlEntities(value);
+}
+
+function encryptWebVpnPassword(password: string): string {
+  const key = Buffer.from('wrdvpnisawesome!', 'utf8');
+  const iv = Buffer.from('wrdvpnisawesome!', 'utf8');
+  const sourceLength = password.length;
+  const padded = sourceLength % 16 === 0
+    ? password
+    : password.padEnd(sourceLength + (16 - sourceLength % 16), '0');
+  const cipher = createCipheriv('aes-128-cfb', key, iv);
+  const encrypted = Buffer.concat([cipher.update(Buffer.from(padded, 'utf8')), cipher.final()]);
+  return `${iv.toString('hex')}${encrypted.subarray(0, sourceLength).toString('hex')}`;
+}
+
+function parseWebVpnLoginPayload(text: string): WebVpnLoginPayload {
+  try {
+    const payload = JSON.parse(text) as unknown;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) return payload as WebVpnLoginPayload;
+  } catch {
+    // Converted into the structured protocol error below.
+  }
+  throw new HbuJwLoginError('河北大学 WebVPN 登录响应格式发生变化，自动登录暂时无法完成。', {
+    code: 'webvpn_login_response_changed',
+    diagnostic: `webvpn response=${clipDiagnostic(text)}`,
+    category: 'protocol',
+  });
+}
+
+function createWebVpnLoginError(payload: WebVpnLoginPayload): HbuJwLoginError {
+  const error = typeof payload.error === 'string' ? payload.error : 'UNKNOWN';
+  const serverMessage = typeof payload.message === 'string' ? clipDiagnostic(payload.message) : '';
+  const diagnostic = `webvpn error=${error}${serverMessage ? ` message=${serverMessage}` : ''}`;
+  switch (error) {
+    case 'INVALID_ACCOUNT':
+      return new HbuJwLoginError('河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。', {
+        code: 'webvpn_invalid_account',
+        diagnostic,
+        category: 'credential',
+      });
+    case 'CAPTCHA_FAILED':
+      return new HbuJwLoginError('河北大学 WebVPN 要求图片验证码，机器人无法自动完成本次登录，请稍后重试。', {
+        code: 'webvpn_captcha_required',
+        diagnostic,
+        category: 'interaction_required',
+      });
+    case 'NEED_TWO_STEP':
+      return new HbuJwLoginError('河北大学 WebVPN 要求短信二次验证，请先在 WebVPN 网页完成验证后重试。', {
+        code: 'webvpn_sms_required',
+        diagnostic,
+        category: 'interaction_required',
+      });
+    case 'NEED_TWO_STEP_TOTP':
+      return new HbuJwLoginError('河北大学 WebVPN 要求六位动态口令，请先在 WebVPN 网页完成验证后重试。', {
+        code: 'webvpn_totp_required',
+        diagnostic,
+        category: 'interaction_required',
+      });
+    case 'NEED_CONFIRM':
+      return new HbuJwLoginError('河北大学 WebVPN 检测到其他登录会话，需要人工确认是否继续登录。', {
+        code: 'webvpn_login_confirmation_required',
+        diagnostic,
+        category: 'interaction_required',
+      });
+    case 'WEEK_PASSWORD_FORBID':
+      return new HbuJwLoginError('河北大学 WebVPN 禁止弱密码登录，请先修改统一认证密码。', {
+        code: 'webvpn_weak_password_forbidden',
+        diagnostic,
+        category: 'interaction_required',
+      });
+    case 'WECHAT_BINDING':
+      return new HbuJwLoginError('河北大学 WebVPN 要求先完成企业微信账号绑定。', {
+        code: 'webvpn_wechat_binding_required',
+        diagnostic,
+        category: 'interaction_required',
+      });
+    case 'IP_FORBIDDEN':
+      return new HbuJwLoginError('河北大学 WebVPN 拒绝了当前服务器 IP，请联系管理员检查访问策略。', {
+        code: 'webvpn_ip_forbidden',
+        diagnostic,
+        category: 'upstream',
+      });
+    case 'TOO_MANY_ATTEMPTS':
+      return new HbuJwLoginError('河北大学 WebVPN 登录尝试过多，请稍后再试。', {
+        code: 'webvpn_too_many_attempts',
+        diagnostic,
+        category: 'upstream',
+      });
+    default:
+      return new HbuJwLoginError(serverMessage
+        ? `河北大学 WebVPN 登录失败：${serverMessage}`
+        : '河北大学 WebVPN 返回了无法识别的登录错误。', {
+        code: 'webvpn_unknown_error',
+        diagnostic,
+        category: 'protocol',
+      });
+  }
+}
+
+function clipDiagnostic(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
 class CookieJar {

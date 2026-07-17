@@ -63,7 +63,8 @@ export class HbuJwBindSubmissionPendingError extends HbuJwUserError {
 export type AuthenticatedSessionResult =
   | { kind: 'authenticated'; cookieJar: SerializedCookieJar; credentialVersion?: number }
   | { kind: 'needs_binding'; reason: string }
-  | { kind: 'invalid'; reason: string };
+  | { kind: 'invalid'; reason: string }
+  | { kind: 'unavailable'; reason: string };
 
 export class HbuJwService {
   constructor(
@@ -240,8 +241,13 @@ export class HbuJwService {
     const now = this.now();
     await this.store.cleanupExpiredChallenges(now);
     const session = await this.store.getSession(identity.ownerKey);
-    if (session?.status === 'active' || session?.status === 'expired') return '已绑定';
-    if (session?.status === 'invalid') return '教务凭据已失效，需要重新绑定';
+    if (session?.status === 'active') return '已绑定';
+    if (session?.status === 'expired') {
+      return session.lastFailureReason && session.lastFailureReason !== 'session_expired'
+        ? `已绑定；${session.lastFailureReason}`
+        : '已绑定；教务登录态已过期，下次查询时会自动续登';
+    }
+    if (session?.status === 'invalid') return session.lastFailureReason ?? '教务账号凭据已失效，需要重新绑定';
     const challenges = await this.store.findActiveChallenges(identity.ownerKey);
     if (challenges.some((challenge) => challenge.status === 'login_succeeded')) return '绑定流程待确认';
     if (challenges.some((challenge) => challenge.status === 'login_pending')) return '正在验证教务账号密码';
@@ -283,7 +289,7 @@ export class HbuJwService {
       return { kind: 'needs_binding', reason: '请先发送“教务绑定”。' };
     }
     if (!this.config.autoReloginEnabled) {
-      return { kind: 'invalid', reason: '教务登录态已失效，请重新绑定。' };
+      return { kind: 'unavailable', reason: '教务登录态已过期，自动续登当前未启用，请联系管理员或重新绑定。' };
     }
 
     try {
@@ -299,11 +305,15 @@ export class HbuJwService {
       await this.store.markCredentialUsed(credential.id, now);
       await this.audit(identity.ownerKey, 'credential_refresh_succeeded', 'ok');
       return { kind: 'authenticated', cookieJar: login.cookieJar, credentialVersion: credential.version };
-    } catch {
-      await this.store.setSessionStatus(identity.ownerKey, 'invalid', 'credential_refresh_failed', now);
-      await this.store.markCredentialFailure(credential.id, 'credential_refresh_failed', now);
-      await this.audit(identity.ownerKey, 'credential_refresh_failed', 'failed', 'credential_refresh_failed');
-      return { kind: 'invalid', reason: '教务凭据已失效，需要重新绑定。' };
+    } catch (error) {
+      const failure = classifyCredentialRefreshFailure(error);
+      await this.store.setSessionStatus(identity.ownerKey, failure.sessionStatus, failure.userMessage, now);
+      if (failure.credentialRejected) {
+        await this.store.markCredentialFailure(credential.id, failure.diagnostic, now);
+      }
+      await this.audit(identity.ownerKey, failure.eventType, 'failed', failure.diagnostic);
+      logger.warn('hbu jw credential refresh failed: owner=%s reason=%s', identity.ownerKey, failure.diagnostic);
+      return { kind: failure.resultKind, reason: failure.userMessage };
     }
   }
 
@@ -392,6 +402,49 @@ function formatLoginFailureReason(error: unknown): string {
   if (error instanceof HbuJwUserError) return clipDiagnostic(error.message);
   if (error instanceof Error) return clipDiagnostic(`${error.name}: ${error.message}`);
   return clipDiagnostic(String(error));
+}
+
+interface CredentialRefreshFailure {
+  resultKind: 'invalid' | 'unavailable';
+  sessionStatus: 'invalid' | 'expired';
+  credentialRejected: boolean;
+  eventType: 'credential_refresh_rejected' | 'credential_refresh_interaction_required' | 'credential_refresh_failed';
+  userMessage: string;
+  diagnostic: string;
+}
+
+function classifyCredentialRefreshFailure(error: unknown): CredentialRefreshFailure {
+  if (error instanceof HbuJwLoginError) {
+    const diagnostic = clipDiagnostic(`${error.code}: ${error.diagnostic}`);
+    if (error.category === 'credential') {
+      return {
+        resultKind: 'invalid',
+        sessionStatus: 'invalid',
+        credentialRejected: true,
+        eventType: 'credential_refresh_rejected',
+        userMessage: error.message,
+        diagnostic,
+      };
+    }
+    return {
+      resultKind: 'unavailable',
+      sessionStatus: 'expired',
+      credentialRejected: false,
+      eventType: error.category === 'interaction_required'
+        ? 'credential_refresh_interaction_required'
+        : 'credential_refresh_failed',
+      userMessage: error.message,
+      diagnostic,
+    };
+  }
+  return {
+    resultKind: 'unavailable',
+    sessionStatus: 'expired',
+    credentialRejected: false,
+    eventType: 'credential_refresh_failed',
+    userMessage: '教务自动续登出现内部错误，请联系管理员。',
+    diagnostic: formatLoginFailureReason(error),
+  };
 }
 
 function clipDiagnostic(value: string): string {

@@ -640,7 +640,7 @@ function renderForm(options: { qq: string; token: string; submitPath: string; us
 
             <label class="consent">
               <input type="checkbox" name="persistCredentialConsent" value="yes" required${options.persistCredentialConsent ? ' checked' : ''}>
-              <span>我授权机器人加密保存教务账号密码，仅用于教务登录态失效后的自动重新登录。</span>
+              <span>我授权机器人加密保存账号密码，仅用于河北大学 WebVPN 与教务登录态失效后的自动重新登录。</span>
             </label>
 
             <button class="submit" type="submit">绑定教务</button>
