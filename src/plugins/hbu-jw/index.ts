@@ -1,4 +1,4 @@
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Context, h, Logger, Schema, type Fragment, type Session } from 'koishi';
 import type { NativeFeatureChatServiceLike } from '../../types/native-feature-chat.js';
@@ -17,7 +17,7 @@ import {
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwExamScheduleService } from './exams.js';
 import { HbuJwGpaService } from './gpa.js';
-import { HbuJwHttpClient } from './jw-client.js';
+import { HbuJwHttpClient, type HbuWebVpnBrokerOptions } from './jw-client.js';
 import { HbuJwMenuService } from './menu.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
 import { HbuJwSelectionResultService } from './selection-results.js';
@@ -50,6 +50,9 @@ export interface Config {
   keepAliveEnabled?: boolean;
   keepAliveIntervalMs?: number;
   keepAliveRecentUseWindowMs?: number;
+  webVpnBrokerUrl?: string;
+  webVpnBrokerTokenFile?: string;
+  webVpnBrokerAccount?: string;
   allowedGroups?: string[] | string;
   naturalTriggerEnabled?: boolean;
   naturalTriggerGroups?: string[] | string;
@@ -64,6 +67,9 @@ export const Config: Schema<Config> = Schema.object({
   keepAliveEnabled: Schema.boolean().default(false).description('是否启用教务 session 轻量保活。'),
   keepAliveIntervalMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_INTERVAL_MS).description('保活周期。'),
   keepAliveRecentUseWindowMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS).description('只保活最近使用过的登录态。'),
+  webVpnBrokerUrl: Schema.string().description('指定账号使用的本机 HBU WebVPN broker URL。'),
+  webVpnBrokerTokenFile: Schema.string().description('HBU WebVPN broker 的 systemd credential 文件。'),
+  webVpnBrokerAccount: Schema.string().description('使用共享 HBU WebVPN 会话的学号。'),
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用教务系统功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用教务系统功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
@@ -121,6 +127,7 @@ interface RuntimeConfig {
   keepAliveEnabled: boolean;
   keepAliveIntervalMs: number;
   keepAliveRecentUseWindowMs: number;
+  webVpnBroker?: HbuWebVpnBrokerOptions;
   allowedGroups: Set<string>;
   naturalTriggerEnabled: boolean;
   naturalTriggerGroups: Set<string>;
@@ -140,7 +147,7 @@ export function apply(ctx: Context, config: Config): void {
 
   const kek = loadOrCreateKek(runtime.credentialKekPath);
   const store = new HbuJwStore(hbuCtx.database);
-  const jwClient = new HbuJwHttpClient();
+  const jwClient = new HbuJwHttpClient({ webVpnBroker: runtime.webVpnBroker });
   const academicCache = new HbuJwAcademicCache(store, jwClient);
   const service = new HbuJwService(store, jwClient, kek, {
     bindPagePath: runtime.bindPagePath,
@@ -284,12 +291,26 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     keepAliveEnabled: config.keepAliveEnabled ?? false,
     keepAliveIntervalMs: requirePositiveInteger(config.keepAliveIntervalMs ?? DEFAULT_KEEP_ALIVE_INTERVAL_MS, 'hbu-jw.keepAliveIntervalMs'),
     keepAliveRecentUseWindowMs: requirePositiveInteger(config.keepAliveRecentUseWindowMs ?? DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS, 'hbu-jw.keepAliveRecentUseWindowMs'),
+    webVpnBroker: resolveWebVpnBroker(config),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'hbu-jw.allowedGroups'),
     naturalTriggerEnabled: config.naturalTriggerEnabled === true,
     naturalTriggerGroups: parseGroupSet(config.naturalTriggerGroups ?? ''),
     bindSubmitPath: `${bindPagePath}/submit`,
     campusBackgroundPath: `${bindPagePath}/assets/campus-bg.jpg`,
   };
+}
+
+function resolveWebVpnBroker(config: Config): HbuWebVpnBrokerOptions | undefined {
+  const url = config.webVpnBrokerUrl?.trim() ?? '';
+  const tokenFile = config.webVpnBrokerTokenFile?.trim() ?? '';
+  const account = config.webVpnBrokerAccount?.trim() ?? '';
+  const configured = [url, tokenFile, account].filter(Boolean).length;
+  if (configured === 0) return undefined;
+  if (configured !== 3) throw new Error('hbu-jw WebVPN broker requires URL, token file, and account together.');
+  if (!/^\d{6,32}$/.test(account)) throw new Error('hbu-jw WebVPN broker account is invalid.');
+  const token = readFileSync(tokenFile);
+  if (token.length !== 32) throw new Error('hbu-jw WebVPN broker token must be 32 bytes.');
+  return { url, token, account };
 }
 
 function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtime: RuntimeConfig): void {

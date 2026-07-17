@@ -111,6 +111,7 @@ export interface SerializedCookieJar {
     name: string;
     value: string;
   }>;
+  webVpnBrokerAccount?: string;
 }
 
 export interface HbuJwScoreRow {

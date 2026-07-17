@@ -15,6 +15,7 @@ ENV_SERVER="${SHARED_DIR}/.env.server"
 ENV_RUNTIME="${SHARED_DIR}/.env.runtime"
 CLOUDFLARED_HBU_JW_TOKEN_FILE="${QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE:-/etc/cloudflared/qqbot-hbu-jw.token}"
 CLOUDFLARED_GENSHIN_TOKEN_FILE="${QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE:-/etc/cloudflared/qqbot-genshin.token}"
+HBU_WEBVPN_BROKER_CREDENTIAL="${QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL:-/etc/credstore.encrypted/hbu-webvpn-broker.cred}"
 SYSTEMD_DIR="/etc/systemd/system"
 QUADLET_DIR="/etc/containers/systemd"
 
@@ -52,6 +53,12 @@ if [[ ! -s "${CLOUDFLARED_GENSHIN_TOKEN_FILE}" ]]; then
   exit 2
 fi
 chmod 600 "${CLOUDFLARED_GENSHIN_TOKEN_FILE}"
+
+if [[ ! -s "${HBU_WEBVPN_BROKER_CREDENTIAL}" ]]; then
+  echo "[installer] missing HBU WebVPN broker credential: ${HBU_WEBVPN_BROKER_CREDENTIAL}" >&2
+  exit 2
+fi
+chmod 600 "${HBU_WEBVPN_BROKER_CREDENTIAL}"
 
 if ! command -v corepack >/dev/null 2>&1 && ! command -v npm >/dev/null 2>&1; then
   echo "[installer] missing command: corepack or npm" >&2
@@ -99,6 +106,8 @@ ensure_server_env_defaults() {
   ensure_server_env_key "GENSHIN_TAKUMI_APP_VERSION" "2.70.1"
   ensure_server_env_key "GENSHIN_SIGN_ACT_ID" "e202311201442471"
   ensure_server_env_key "GENSHIN_REDEEM_GAME_VERSION" "CNRELWin6.0.0"
+  ensure_server_env_key "HBU_JW_WEBVPN_BROKER_URL" "http://127.0.0.1:8789"
+  ensure_server_env_key "HBU_JW_WEBVPN_BROKER_ACCOUNT" "20231202051"
   chmod 600 "${ENV_SERVER}"
 }
 ensure_server_env_defaults
@@ -292,6 +301,7 @@ CHATLUNA_ROOT_DIR="${STAGE_CHATLUNA}" bash "${STAGE_QQBOT}/scripts/ensure-chatlu
   QQBOT_QUADLET_DIR="${QUADLET_DIR}" \
   QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE="${CLOUDFLARED_HBU_JW_TOKEN_FILE}" \
   QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE="${CLOUDFLARED_GENSHIN_TOKEN_FILE}" \
+  QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL="${HBU_WEBVPN_BROKER_CREDENTIAL}" \
     node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
 )
 systemctl daemon-reload

@@ -44,6 +44,7 @@ describe('server runtime artifact rendering', () => {
 
     const quadlet = readFileSync(join(quadletDir, 'qqbot-pmhq.container'), 'utf8');
     const llbot = readFileSync(join(systemdDir, 'qqbot-llbot.service'), 'utf8');
+    const koishi = readFileSync(join(systemdDir, 'qqbot-koishi.service'), 'utf8');
     expect(quadlet).toContain('ContainerName=pmhq');
     expect(quadlet).toContain(`EnvironmentFile=${sharedDir}/.env.pmhq`);
     expect(quadlet).toContain(`Volume=${dataDir}/pmhq/QQ:/root/.config/QQ:Z`);
@@ -51,6 +52,9 @@ describe('server runtime artifact rendering', () => {
     expect(quadlet).toContain('HealthOnFailure=kill');
     expect(quadlet).toContain('Restart=on-failure');
     expect(llbot).toContain('Wants=network-online.target qqbot-pmhq.service');
+    expect(koishi).toContain('Wants=network-online.target qqbot-llbot.service hbu-webvpn-agent.service');
+    expect(koishi).toContain('LoadCredentialEncrypted=hbu-webvpn-broker:/etc/credstore.encrypted/hbu-webvpn-broker.cred');
+    expect(koishi).toContain('Environment=HBU_JW_WEBVPN_BROKER_TOKEN_FILE=%d/hbu-webvpn-broker');
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
   });

@@ -35,7 +35,22 @@ export interface HbuJwClientOptions {
   webVpnBaseUrl?: string;
   webVpnTransportBaseUrl?: string;
   webVpnDispatcher?: Dispatcher;
+  webVpnBroker?: HbuWebVpnBrokerOptions;
   userAgent?: string;
+}
+
+export interface HbuWebVpnBrokerOptions {
+  url: string;
+  token: Buffer;
+  account: string;
+  fetchImpl?: typeof fetch;
+}
+
+interface NormalizedHbuWebVpnBrokerOptions {
+  url: string;
+  authorization: string;
+  account: string;
+  fetchImpl: typeof fetch;
 }
 
 type RequestOptions = Omit<RequestInit, 'headers'> & {
@@ -75,6 +90,7 @@ export class HbuJwHttpClient {
   private readonly webVpnOrigin: string;
   private readonly webVpnTransportOrigin: string;
   private readonly webVpnDispatcher?: Dispatcher;
+  private readonly webVpnBroker?: NormalizedHbuWebVpnBrokerOptions;
   private readonly userAgent: string;
   private webVpnResourceBaseUrl: string | null = null;
 
@@ -86,14 +102,31 @@ export class HbuJwHttpClient {
     this.webVpnTransportOrigin = normalizeOrigin(options.webVpnTransportBaseUrl ?? 'https://v.hbu.edu.cn');
     this.webVpnDispatcher = options.webVpnDispatcher
       ?? (options.fetchImpl ? undefined : createWebVpnDispatcher());
+    this.webVpnBroker = normalizeBrokerOptions(options.webVpnBroker);
     this.userAgent = options.userAgent ?? 'qqbot-hbu-jw/1.0';
+  }
+
+  prepareSession(cookieJar: SerializedCookieJar, account: string): SerializedCookieJar {
+    const brokerAccount = this.webVpnBroker?.account === account ? account : undefined;
+    if (cookieJar.webVpnBrokerAccount === brokerAccount) return cookieJar;
+    return {
+      cookies: [],
+      ...(brokerAccount ? { webVpnBrokerAccount: brokerAccount } : {}),
+    };
   }
 
   async login(username: string, password: string): Promise<HbuJwLoginResult> {
     try {
-      const jar = new CookieJar();
+      const jar = new CookieJar(this.webVpnBroker?.account === username ? username : undefined);
       let loginPage = await this.request('/login', { jar });
       if (isWebVpnLoginPageHtml(loginPage.text)) {
+        if (jar.webVpnBrokerAccount) {
+          throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
+            code: 'webvpn_broker_session_missing',
+            diagnostic: 'broker-backed JW login resolved to the WebVPN login page',
+            category: 'upstream',
+          });
+        }
         await this.loginWebVpn(username, password, jar, loginPage.text);
         loginPage = await this.request('/login', { jar });
         if (isWebVpnLoginPageHtml(loginPage.text)) {
@@ -612,26 +645,38 @@ export class HbuJwHttpClient {
       body: configuredBody,
       ...requestOptions
     } = options;
-    let currentUrl = this.resolveRequestUrl(url);
+    let currentUrl = this.resolveRequestUrl(url, jar.webVpnBrokerAccount);
     let method = String(configuredMethod ?? 'GET').toUpperCase();
     let body = configuredBody;
 
     for (let redirectCount = 0; redirectCount <= 8; redirectCount += 1) {
       this.assertAllowedOrigin(currentUrl, 'cross_origin_request');
-      const transportUrl = this.toTransportUrl(currentUrl);
-      const headers = this.createRequestHeaders(configuredHeaders, jar, currentUrl);
+      const brokerAccount = jar.webVpnBrokerAccount;
+      const transportUrl = brokerAccount ? currentUrl : this.toTransportUrl(currentUrl);
+      const headers = brokerAccount
+        ? { ...configuredHeaders }
+        : this.createRequestHeaders(configuredHeaders, jar, currentUrl);
       if ((method === 'GET' || method === 'HEAD') && body !== undefined) body = undefined;
-      const init = {
-        ...requestOptions,
-        method,
-        body,
-        headers,
-        redirect: 'manual' as const,
-        ...(currentUrl.origin === this.webVpnOrigin && this.webVpnDispatcher
-          ? { dispatcher: this.webVpnDispatcher }
-          : {}),
-      } as RequestInit & { dispatcher?: Dispatcher };
-      const response = await this.fetchImpl(transportUrl.href, init);
+      const response = brokerAccount
+        ? await this.requestThroughBroker({
+            account: brokerAccount,
+            target: transportUrl,
+            method,
+            headers,
+            body,
+            requestOptions,
+            cookies: jar.serialize().cookies,
+          })
+        : await this.fetchImpl(transportUrl.href, {
+            ...requestOptions,
+            method,
+            body,
+            headers,
+            redirect: 'manual' as const,
+            ...(currentUrl.origin === this.webVpnOrigin && this.webVpnDispatcher
+              ? { dispatcher: this.webVpnDispatcher }
+              : {}),
+          } as RequestInit & { dispatcher?: Dispatcher });
       jar.remember(readSetCookieHeaders(response.headers));
       const text = await response.text();
       const location = response.headers.get('location');
@@ -671,7 +716,18 @@ export class HbuJwHttpClient {
     throw new Error('unreachable redirect loop');
   }
 
-  private resolveRequestUrl(value: string): URL {
+  private resolveRequestUrl(value: string, brokerAccount?: string): URL {
+    if (brokerAccount) {
+      const target = new URL(value, this.baseUrl);
+      if (target.origin !== this.baseOrigin) {
+        throw new HbuJwLoginError('HBU WebVPN broker 收到非预期教务地址。', {
+          code: 'webvpn_broker_cross_origin',
+          diagnostic: `broker request origin=${target.origin}`,
+          category: 'protocol',
+        });
+      }
+      return target;
+    }
     if (this.webVpnResourceBaseUrl && value.startsWith(new URL(this.webVpnResourceBaseUrl).pathname)) {
       return new URL(value, this.webVpnOrigin);
     }
@@ -745,6 +801,84 @@ export class HbuJwHttpClient {
     if (cookieHeader) headers.cookie = cookieHeader;
     return headers;
   }
+
+  private async requestThroughBroker(args: {
+    account: string;
+    target: URL;
+    method: string;
+    headers: Record<string, string>;
+    body: BodyInit | null | undefined;
+    requestOptions: Omit<RequestInit, 'headers' | 'method' | 'body'>;
+    cookies: SerializedCookieJar['cookies'];
+  }): Promise<Response> {
+    const broker = this.webVpnBroker;
+    if (!broker || broker.account !== args.account) {
+      throw new HbuJwLoginError('HBU WebVPN broker 账号配置不匹配。', {
+        code: 'webvpn_broker_account_mismatch',
+        diagnostic: `requested account=${args.account}`,
+        category: 'protocol',
+      });
+    }
+    if (Object.keys(args.requestOptions).length > 0) {
+      throw new HbuJwLoginError('HBU WebVPN broker 收到了不支持的请求选项。', {
+        code: 'webvpn_broker_request_options',
+        diagnostic: `options=${Object.keys(args.requestOptions).sort().join(',')}`,
+        category: 'protocol',
+      });
+    }
+    let bodyBase64: string | undefined;
+    if (args.body !== undefined && args.body !== null) {
+      if (typeof args.body !== 'string' && !Buffer.isBuffer(args.body) && !(args.body instanceof URLSearchParams)) {
+        throw new HbuJwLoginError('HBU WebVPN broker 收到了不支持的请求体。', {
+          code: 'webvpn_broker_request_body',
+          diagnostic: `body=${Object.prototype.toString.call(args.body)}`,
+          category: 'protocol',
+        });
+      }
+      bodyBase64 = Buffer.from(args.body instanceof URLSearchParams ? args.body.toString() : args.body).toString('base64');
+    }
+
+    let brokerResponse: Response;
+    try {
+      brokerResponse = await broker.fetchImpl(`${broker.url}/v1/fetch`, {
+        method: 'POST',
+        headers: {
+          authorization: broker.authorization,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          account: args.account,
+          targetUrl: args.target.href,
+          method: args.method,
+          headers: args.headers,
+          cookies: args.cookies,
+          ...(bodyBase64 === undefined ? {} : { bodyBase64 }),
+        }),
+        signal: AbortSignal.timeout(25_000),
+      });
+    } catch (error) {
+      throw new HbuJwLoginError('km6 的 HBU WebVPN broker 当前无法访问。', {
+        code: 'webvpn_broker_unreachable',
+        diagnostic: describeError(error),
+        category: 'upstream',
+        cause: error,
+      });
+    }
+
+    const payload = await parseBrokerPayload(brokerResponse);
+    if (!brokerResponse.ok || payload.ok !== true) {
+      throw new HbuJwLoginError('km6 的 HBU WebVPN 共享会话当前不可用。', {
+        code: typeof payload.code === 'string' ? payload.code : 'webvpn_broker_failed',
+        diagnostic: `broker status=${brokerResponse.status} code=${String(payload.code ?? 'unknown')}`,
+        category: 'upstream',
+      });
+    }
+    const status = requireBrokerStatus(payload.status);
+    const headers = requireBrokerResponseHeaders(payload.headers);
+    for (const cookie of requireBrokerSetCookies(payload.setCookies)) headers.append('set-cookie', cookie);
+    const responseBody = decodeBrokerResponseBody(payload.bodyBase64);
+    return new Response(new Uint8Array(responseBody), { status, headers });
+  }
 }
 
 interface WebVpnLoginPayload {
@@ -757,6 +891,110 @@ interface WebVpnLoginPayload {
 function normalizeOrigin(value: string): string {
   const target = new URL(value);
   return target.origin;
+}
+
+function normalizeBrokerOptions(options: HbuWebVpnBrokerOptions | undefined): NormalizedHbuWebVpnBrokerOptions | undefined {
+  if (!options) return undefined;
+  const target = new URL(options.url);
+  if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || target.pathname !== '/' || target.search || target.hash) {
+    throw new Error('HBU WebVPN broker URL must be an HTTP loopback origin');
+  }
+  if (!Buffer.isBuffer(options.token) || options.token.length !== 32) {
+    throw new Error('HBU WebVPN broker token must be 32 bytes');
+  }
+  if (!/^\d{6,32}$/.test(options.account)) {
+    throw new Error('HBU WebVPN broker account is invalid');
+  }
+  return {
+    url: target.origin,
+    authorization: `Bearer ${options.token.toString('base64url')}`,
+    account: options.account,
+    fetchImpl: options.fetchImpl ?? fetch,
+  };
+}
+
+async function parseBrokerPayload(response: Response): Promise<Record<string, unknown>> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await response.text());
+  } catch {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效响应。', {
+      code: 'webvpn_broker_invalid_json',
+      diagnostic: `broker status=${response.status}`,
+      category: 'protocol',
+    });
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效响应。', {
+      code: 'webvpn_broker_invalid_payload',
+      diagnostic: `broker status=${response.status}`,
+      category: 'protocol',
+    });
+  }
+  return payload as Record<string, unknown>;
+}
+
+function requireBrokerStatus(value: unknown): number {
+  if (!Number.isInteger(value) || Number(value) < 200 || Number(value) > 599) {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效 HTTP 状态。', {
+      code: 'webvpn_broker_invalid_status',
+      diagnostic: `status=${String(value)}`,
+      category: 'protocol',
+    });
+  }
+  return Number(value);
+}
+
+function requireBrokerResponseHeaders(value: unknown): Headers {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效响应头。', {
+      code: 'webvpn_broker_invalid_headers',
+      diagnostic: 'headers are not an object',
+      category: 'protocol',
+    });
+  }
+  const headers = new Headers();
+  for (const [name, headerValue] of Object.entries(value)) {
+    if (typeof headerValue !== 'string' || /[\0\r\n]/.test(headerValue) || name.toLowerCase() === 'set-cookie') {
+      throw new HbuJwLoginError('HBU WebVPN broker 返回了无效响应头。', {
+        code: 'webvpn_broker_invalid_headers',
+        diagnostic: `header=${name}`,
+        category: 'protocol',
+      });
+    }
+    headers.set(name, headerValue);
+  }
+  return headers;
+}
+
+function requireBrokerSetCookies(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 128 || value.some((cookie) => typeof cookie !== 'string' || /[\0\r\n]/.test(cookie))) {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效 Cookie。', {
+      code: 'webvpn_broker_invalid_cookies',
+      diagnostic: 'setCookies are invalid',
+      category: 'protocol',
+    });
+  }
+  return value as string[];
+}
+
+function decodeBrokerResponseBody(value: unknown): Buffer {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效响应体。', {
+      code: 'webvpn_broker_invalid_body',
+      diagnostic: 'bodyBase64 is invalid',
+      category: 'protocol',
+    });
+  }
+  const body = Buffer.from(value, 'base64');
+  if (body.toString('base64') !== value || body.length > 8 * 1024 * 1024) {
+    throw new HbuJwLoginError('HBU WebVPN broker 返回了无效响应体。', {
+      code: 'webvpn_broker_invalid_body',
+      diagnostic: `decoded bytes=${body.length}`,
+      category: 'protocol',
+    });
+  }
+  return body;
 }
 
 function createWebVpnDispatcher(): Dispatcher {
@@ -892,8 +1130,10 @@ function clipDiagnostic(value: string): string {
 class CookieJar {
   private readonly cookies = new Map<string, string>();
 
+  constructor(readonly webVpnBrokerAccount?: string) {}
+
   static from(serialized: SerializedCookieJar): CookieJar {
-    const jar = new CookieJar();
+    const jar = new CookieJar(serialized.webVpnBrokerAccount);
     for (const cookie of serialized.cookies ?? []) {
       if (cookie.name) jar.cookies.set(cookie.name, cookie.value);
     }
@@ -919,6 +1159,7 @@ class CookieJar {
   serialize(): SerializedCookieJar {
     return {
       cookies: [...this.cookies.entries()].map(([name, value]) => ({ name, value })),
+      ...(this.webVpnBrokerAccount ? { webVpnBrokerAccount: this.webVpnBrokerAccount } : {}),
     };
   }
 }

@@ -272,11 +272,20 @@ export class HbuJwService {
     const session = await this.store.getSession(identity.ownerKey);
     const credential = await this.store.getActiveCredential(identity.ownerKey);
     if (session?.status === 'active') {
-      const cookieJar = this.decryptCookieJar(identity.ownerKey, session.cookieJarCipher);
+      if (!credential) {
+        throw new Error(`active hbu-jw session is missing credential: owner=${identity.ownerKey}`);
+      }
+      const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
+        credential.credentialCipher,
+        credential.credentialMeta,
+        credentialAad(identity.ownerKey, HBU_JW_SERVICE_ID, credential.id),
+        this.kek,
+      );
+      const cookieJar = this.jwClient.prepareSession(
+        this.decryptCookieJar(identity.ownerKey, session.cookieJarCipher),
+        credentialPayload.username,
+      );
       if (await this.jwClient.validate(cookieJar)) {
-        if (!credential) {
-          throw new Error(`active hbu-jw session is missing credential: owner=${identity.ownerKey}`);
-        }
         await this.store.markSessionValidated(identity.ownerKey, now);
         await this.audit(identity.ownerKey, 'session_validated', 'ok');
         return { kind: 'authenticated', cookieJar, credentialVersion: credential.version };
@@ -322,7 +331,18 @@ export class HbuJwService {
     const sessions = await this.store.listRecentActiveSessions(now - recentUseWindowMs);
     await Promise.all(sessions.map(async (session) => {
       try {
-        const cookieJar = this.decryptCookieJar(session.ownerKey, session.cookieJarCipher);
+        const credential = await this.store.getActiveCredential(session.ownerKey);
+        if (!credential) throw new Error('active session is missing its credential');
+        const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
+          credential.credentialCipher,
+          credential.credentialMeta,
+          credentialAad(session.ownerKey, HBU_JW_SERVICE_ID, credential.id),
+          this.kek,
+        );
+        const cookieJar = this.jwClient.prepareSession(
+          this.decryptCookieJar(session.ownerKey, session.cookieJarCipher),
+          credentialPayload.username,
+        );
         if (await this.jwClient.validate(cookieJar)) {
           await this.store.markSessionValidated(session.ownerKey, now);
         } else {

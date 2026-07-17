@@ -31,6 +31,7 @@ const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
 const cloudflaredHbuJwTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE', '/etc/cloudflared/qqbot-hbu-jw.token'));
 const cloudflaredGenshinTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE', '/etc/cloudflared/qqbot-genshin.token'));
+const hbuWebVpnBrokerCredential = resolve(envValue('QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL', '/etc/credstore.encrypted/hbu-webvpn-broker.cred'));
 const cloudflaredOriginUrl = envValue('QQBOT_CLOUDFLARED_ORIGIN_URL', 'http://127.0.0.1:5140');
 const app = quote(appDir);
 const data = quote(dataDir);
@@ -38,6 +39,7 @@ const server = quote(envServer);
 const runtime = quote(envRuntime);
 const hbuJwToken = quote(cloudflaredHbuJwTokenFile);
 const genshinToken = quote(cloudflaredGenshinTokenFile);
+const hbuBrokerCredential = quote(hbuWebVpnBrokerCredential);
 const cloudflaredOrigin = quote(cloudflaredOriginUrl);
 const pmhqImage = envValue('PMHQ_IMAGE', 'docker.io/linyuchen/pmhq');
 const pmhqTag = envValue('PMHQ_TAG', 'latest');
@@ -121,8 +123,8 @@ WantedBy=qqbot.target
 writeUnit(systemdDir, 'qqbot-koishi.service', `
 [Unit]
 Description=QQBot Koishi Service
-After=network-online.target qqbot-llbot.service
-Wants=network-online.target qqbot-llbot.service
+After=network-online.target qqbot-llbot.service hbu-webvpn-agent.service
+Wants=network-online.target qqbot-llbot.service hbu-webvpn-agent.service
 PartOf=qqbot.target qqbot-llbot.service
 
 [Service]
@@ -134,6 +136,8 @@ Environment=QQBOT_ENV_BASE_FILE=${server}
 Environment=QQBOT_ENV_OVERRIDE_FILE=${runtime}
 Environment=CHATLUNA_PRESET_DIRS=${data}/chathub/presets:${app}/data/chathub/presets
 Environment=CHATLUNA_RUNTIME_PRESET_DIR=${data}/chathub/presets
+LoadCredentialEncrypted=hbu-webvpn-broker:${hbuBrokerCredential}
+Environment=HBU_JW_WEBVPN_BROKER_TOKEN_FILE=%d/hbu-webvpn-broker
 ExecStart=/usr/bin/env bash -lc 'cd "${app}" && exec pnpm start:server'
 Restart=always
 RestartSec=5

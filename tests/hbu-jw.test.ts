@@ -242,9 +242,10 @@ function createService(options: {
   const database = options.database ?? createDatabase();
   const login = vi.fn(options.login ?? (async () => ({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] } })));
   const validate = vi.fn(options.validate ?? (async () => true));
+  const prepareSession = vi.fn((cookieJar: SerializedCookieJar) => cookieJar);
   const service = new HbuJwService(
     new HbuJwStore(database as unknown as DatabaseLike),
-    { login, validate } as never,
+    { login, validate, prepareSession } as never,
     loadOrCreateKek(join(dir, 'kek.key')),
     {
       bindPagePath: '/jw/bind',
@@ -254,7 +255,7 @@ function createService(options: {
     },
     options.now ?? (() => 1_000),
   );
-  return { service, database, login, validate };
+  return { service, database, login, validate, prepareSession };
 }
 
 function scoreRow(overrides: Partial<HbuJwScoreRow> = {}): HbuJwScoreRow {
@@ -2543,6 +2544,80 @@ describe('hbu-jw course query module', () => {
 });
 
 describe('hbu-jw http client', () => {
+  it('routes the configured account through the authenticated WebVPN broker', async () => {
+    const directFetch = vi.fn(async () => {
+      throw new Error('direct transport must not be used for the broker-backed account');
+    });
+    const account = '20231202051';
+    const token = Buffer.alloc(32, 7);
+    const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      expect(authorization).toBe(`Bearer ${token.toString('base64url')}`);
+
+      const request = JSON.parse(String(init?.body)) as {
+        account: string;
+        targetUrl: string;
+        method: string;
+        bodyBase64?: string;
+      };
+      expect(request.account).toBe(account);
+      const target = new URL(request.targetUrl);
+      const response = (status: number, body: string, headers: Record<string, string> = {}, setCookies: string[] = []) => new Response(JSON.stringify({
+        ok: true,
+        status,
+        headers,
+        setCookies,
+        bodyBase64: Buffer.from(body).toString('base64'),
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+
+      if (target.pathname === '/login') {
+        return response(200, '<form action="/sigin"><input name="password"></form>', {}, ['JSESSIONID=broker-jw; Path=/']);
+      }
+      if (target.pathname === '/sigin') {
+        expect(Buffer.from(request.bodyBase64 ?? '', 'base64').toString()).toBe(`username=${account}&password=password`);
+        return response(302, '', { location: 'https://zhjw.hbu.cn/index' });
+      }
+      if (target.pathname === '/index') {
+        return response(200, '<html><body>URP综合教务系统首页</body></html>');
+      }
+      return response(404, 'missing');
+    });
+    const client = new HbuJwHttpClient({
+      fetchImpl: directFetch as never,
+      webVpnBroker: {
+        url: 'http://127.0.0.1:8789',
+        token,
+        account,
+        fetchImpl: brokerFetch as never,
+      },
+    });
+
+    expect(client.prepareSession({
+      cookies: [
+        { name: 'webvpn_session', value: 'obsolete' },
+        { name: 'JSESSIONID', value: 'obsolete' },
+      ],
+    }, account)).toEqual({
+      cookies: [],
+      webVpnBrokerAccount: account,
+    });
+
+    const login = await client.login(account, 'password');
+
+    expect(login).toEqual({
+      cookieJar: {
+        cookies: [{ name: 'JSESSIONID', value: 'broker-jw' }],
+        webVpnBrokerAccount: account,
+      },
+    });
+    await expect(client.validate(login.cookieJar)).resolves.toBe(true);
+    expect(directFetch).not.toHaveBeenCalled();
+    expect(brokerFetch).toHaveBeenCalledTimes(4);
+  });
+
   it('rejects cross-origin redirects before sending cookies to the redirected target', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url === 'https://zhjw.hbu.cn/login') {
