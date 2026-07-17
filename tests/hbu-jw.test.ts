@@ -232,6 +232,14 @@ function extractToken(link: string): string {
   return new URL(link).searchParams.get('token') ?? '';
 }
 
+function cookieJar(sessionId: string | null = 'abc'): SerializedCookieJar {
+  return {
+    version: 1,
+    transport: 'direct',
+    cookies: sessionId === null ? [] : [{ name: 'JSESSIONID', value: sessionId }],
+  };
+}
+
 function createService(options: {
   database?: ReturnType<typeof createDatabase>;
   now?: () => number;
@@ -240,7 +248,7 @@ function createService(options: {
 } = {}) {
   const dir = createTempDir();
   const database = options.database ?? createDatabase();
-  const login = vi.fn(options.login ?? (async () => ({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] } })));
+  const login = vi.fn(options.login ?? (async () => ({ cookieJar: cookieJar() })));
   const validate = vi.fn(options.validate ?? (async () => true));
   const prepareSession = vi.fn((cookieJar: SerializedCookieJar) => cookieJar);
   const service = new HbuJwService(
@@ -772,7 +780,7 @@ describe('hbu-jw binding service', () => {
       state: 'pending',
     });
 
-    resolveLogin({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] } });
+    resolveLogin({ cookieJar: cookieJar() });
     await submit;
   });
 
@@ -865,7 +873,7 @@ describe('hbu-jw binding service', () => {
         validateCalls += 1;
         return validateCalls > 1;
       },
-      login: async () => ({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'fresh' }] } }),
+      login: async () => ({ cookieJar: cookieJar('fresh') }),
     });
     const started = await service.startBinding(identity());
     const submitted = await service.submitCredentials({
@@ -880,7 +888,7 @@ describe('hbu-jw binding service', () => {
 
     expect(result).toEqual({
       kind: 'authenticated',
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'fresh' }] },
+      cookieJar: cookieJar('fresh'),
       credentialVersion: 1,
     });
     expect(login).toHaveBeenCalledTimes(2);
@@ -892,7 +900,7 @@ describe('hbu-jw binding service', () => {
       validate: async () => false,
       login: async () => {
         loginCalls += 1;
-        if (loginCalls === 1) return { cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'initial' }] } };
+        if (loginCalls === 1) return { cookieJar: cookieJar('initial') };
         throw new HbuJwLoginError('教务登录入口返回 HTTP 503，自动登录暂时无法完成。', {
           code: 'login_page_failed',
           diagnostic: 'login_page status=503',
@@ -930,7 +938,7 @@ describe('hbu-jw binding service', () => {
       validate: async () => false,
       login: async () => {
         loginCalls += 1;
-        if (loginCalls === 1) return { cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'initial' }] } };
+        if (loginCalls === 1) return { cookieJar: cookieJar('initial') };
         throw new HbuJwLoginError('河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。', {
           code: 'webvpn_invalid_account',
           diagnostic: 'webvpn error=INVALID_ACCOUNT',
@@ -1079,7 +1087,7 @@ describe('hbu-jw binding service', () => {
 
 describe('hbu-jw academic cache', () => {
   const auth = {
-    cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+    cookieJar: cookieJar(),
     credentialVersion: 1,
   };
 
@@ -1384,7 +1392,7 @@ describe('hbu-jw GPA calculation', () => {
   it('uses the authenticated session to query and render a GPA image', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getAllPassingScores = vi.fn(async () => [
       scoreRow({ id: { courseNumber: '2023D00003' }, courseName: '程序设计', credit: '3', gradePointScore: 4.5 }),
@@ -1397,7 +1405,7 @@ describe('hbu-jw GPA calculation', () => {
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
-    expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getAllPassingScores).toHaveBeenCalledWith(cookieJar());
   });
 
   it('writes remote GPA source rows into the academic cache', async () => {
@@ -1405,7 +1413,7 @@ describe('hbu-jw GPA calculation', () => {
     const store = new HbuJwStore(database as unknown as DatabaseLike);
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
       credentialVersion: 1,
     }));
     const getAllPassingScores = vi.fn(async () => [
@@ -1437,7 +1445,7 @@ describe('hbu-jw GPA calculation', () => {
     const store = new HbuJwStore(database as unknown as DatabaseLike);
     const auth = {
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
       credentialVersion: 1,
     };
     const seedGetAllPassingScores = vi.fn(async () => [
@@ -1466,7 +1474,7 @@ describe('hbu-jw GPA calculation', () => {
 
     expect(renderMessageContent(reply)).toContain('实时查询失败，以下为数据库记录');
     expect(renderMessageContent(reply)).toContain('image/png');
-    expect(failingGetAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(failingGetAllPassingScores).toHaveBeenCalledWith(cookieJar());
   });
 
   it('surfaces binding requirements before querying scores', async () => {
@@ -1697,7 +1705,7 @@ describe('hbu-jw term scores module', () => {
   it('uses the authenticated session to query and render term scores', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getThisTermScores = vi.fn(async () => [thisTermScoreRow()]);
     const getAllPassingScores = vi.fn(async () => [
@@ -1716,8 +1724,8 @@ describe('hbu-jw term scores module', () => {
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
-    expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
-    expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getThisTermScores).toHaveBeenCalledWith(cookieJar());
+    expect(getAllPassingScores).toHaveBeenCalledWith(cookieJar());
     expect(getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 
@@ -1726,7 +1734,7 @@ describe('hbu-jw term scores module', () => {
     const store = new HbuJwStore(database as unknown as DatabaseLike);
     const auth = {
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
       credentialVersion: 1,
     };
     const ensureAuthenticated = vi.fn(async () => auth);
@@ -1776,8 +1784,8 @@ describe('hbu-jw term scores module', () => {
 
     expect(renderMessageContent(reply)).toContain('实时查询失败，以下为数据库记录');
     expect(getNavigatedHtml()).toContain('缓存软件工程');
-    expect(failingClient.getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
-    expect(failingClient.getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(failingClient.getThisTermScores).toHaveBeenCalledWith(cookieJar());
+    expect(failingClient.getAllPassingScores).toHaveBeenCalledWith(cookieJar());
   });
 
   it('does not use cached term score rows from another credential version', async () => {
@@ -1793,7 +1801,7 @@ describe('hbu-jw term scores module', () => {
       {
         ensureAuthenticated: vi.fn(async () => ({
           kind: 'authenticated' as const,
-          cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+          cookieJar: cookieJar(),
           credentialVersion: 1,
         })),
       },
@@ -1816,7 +1824,7 @@ describe('hbu-jw term scores module', () => {
       {
         ensureAuthenticated: vi.fn(async () => ({
           kind: 'authenticated' as const,
-          cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+          cookieJar: cookieJar(),
           credentialVersion: 2,
         })),
       },
@@ -1833,7 +1841,7 @@ describe('hbu-jw term scores module', () => {
   it('uses primary look result row counts for recorded term score status', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getThisTermScores = vi.fn(async () => [
       thisTermScoreRow({
@@ -1872,7 +1880,7 @@ describe('hbu-jw term scores module', () => {
     await service.queryTermScores(identity());
 
     expect(getSubitemScoreDetails).toHaveBeenCalledWith(
-      { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar(),
       { zxjxjhh: '2025-2026-2-2', kch: '2023S01004', kxh: '01', kssj: '20260620', kcsxdm: '001' },
     );
     expect(getNavigatedHtml()).toContain('已录入2');
@@ -1882,7 +1890,7 @@ describe('hbu-jw term scores module', () => {
   it('uses pending raw status look results for recorded term score status', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getThisTermScores = vi.fn(async () => [
       thisTermScoreRow({
@@ -1924,7 +1932,7 @@ describe('hbu-jw term scores module', () => {
   it('uses look results without primary score rows as pending term score status', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getThisTermScores = vi.fn(async () => [
       thisTermScoreRow({
@@ -1965,7 +1973,7 @@ describe('hbu-jw term scores module', () => {
   it('queries anonymous term scores without loading all passing scores', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getThisTermScores = vi.fn(async () => [
       thisTermScoreRow({
@@ -2004,7 +2012,7 @@ describe('hbu-jw term scores module', () => {
 
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
-    expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getThisTermScores).toHaveBeenCalledWith(cookieJar());
     expect(getAllPassingScores).not.toHaveBeenCalled();
     expect(getSubitemScoreDetails).toHaveBeenCalledTimes(1);
     expect(getNavigatedHtml()).toContain('已录入1');
@@ -2087,7 +2095,7 @@ describe('hbu-jw exam schedule module', () => {
   it('uses the authenticated session to query and render exam schedule', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getExamSchedule = vi.fn(async () => [examPlanEvent()]);
     const { puppeteer } = createPuppeteerHarness();
@@ -2103,7 +2111,7 @@ describe('hbu-jw exam schedule module', () => {
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
-    expect(getExamSchedule).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getExamSchedule).toHaveBeenCalledWith(cookieJar());
   });
 
   it('surfaces binding requirements before querying exam schedule', async () => {
@@ -2220,7 +2228,7 @@ describe('hbu-jw schedule module', () => {
   it('uses the authenticated session to query and render schedules', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getThisSemesterSchedule = vi.fn(async () => thisSemesterSchedule());
     const { puppeteer } = createPuppeteerHarness();
@@ -2236,7 +2244,7 @@ describe('hbu-jw schedule module', () => {
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/gif');
     expect(ensureAuthenticated).toHaveBeenCalledWith(identity());
-    expect(getThisSemesterSchedule).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getThisSemesterSchedule).toHaveBeenCalledWith(cookieJar());
   });
 
   it('surfaces binding requirements before querying schedules', async () => {
@@ -2331,7 +2339,7 @@ describe('hbu-jw course query module', () => {
   it('uses the authenticated session to query and render one course detail list', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getSubitemScoreTerms = vi.fn(async () => terms);
     const getThisTermScores = vi.fn(async () => [
@@ -2369,10 +2377,10 @@ describe('hbu-jw course query module', () => {
 
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
-    expect(getThisTermScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getThisTermScores).toHaveBeenCalledWith(cookieJar());
     expect(getAllPassingScores).not.toHaveBeenCalled();
     expect(getSubitemScoreDetails).toHaveBeenCalledWith(
-      { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar(),
       { zxjxjhh: '2025-2026-2-2', kch: '2023S01105', kxh: '02', kssj: '20260620', kcsxdm: '003' },
     );
     expect(getNavigatedHtml()).toContain('模式识别与机器学习');
@@ -2387,7 +2395,7 @@ describe('hbu-jw course query module', () => {
   it('renders the score type that contains recorded score values', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getSubitemScoreTerms = vi.fn(async () => terms);
     const getThisTermScores = vi.fn(async () => [
@@ -2434,7 +2442,7 @@ describe('hbu-jw course query module', () => {
   it('loads historical candidates from all passing scores when a previous term is selected', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     }));
     const getSubitemScoreTerms = vi.fn(async () => terms);
     const getThisTermScores = vi.fn();
@@ -2468,9 +2476,9 @@ describe('hbu-jw course query module', () => {
     await service.queryCourse(identity(), { courseQuery: '程序设计', termInput: '-1' });
 
     expect(getThisTermScores).not.toHaveBeenCalled();
-    expect(getAllPassingScores).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getAllPassingScores).toHaveBeenCalledWith(cookieJar());
     expect(getSubitemScoreDetails).toHaveBeenCalledWith(
-      { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar(),
       { zxjxjhh: '2025-2026-1-2', kch: '2023D00003', kxh: '01', kssj: '20260105', kcsxdm: '001' },
     );
     expect(getNavigatedHtml()).toContain('接口返回 0 条分项成绩');
@@ -2544,23 +2552,25 @@ describe('hbu-jw course query module', () => {
 });
 
 describe('hbu-jw http client', () => {
-  it('routes the configured account through the authenticated WebVPN broker', async () => {
+  it('routes every account through one broker with isolated JW cookies', async () => {
     const directFetch = vi.fn(async () => {
-      throw new Error('direct transport must not be used for the broker-backed account');
+      throw new Error('direct transport must not be used when the broker is configured');
     });
-    const account = '20231202051';
+    const accounts = ['20231202051', '20231202052'];
     const token = Buffer.alloc(32, 7);
+    let loginSequence = 0;
+    const indexCookies: string[][] = [];
     const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const authorization = new Headers(init?.headers).get('authorization');
       expect(authorization).toBe(`Bearer ${token.toString('base64url')}`);
 
       const request = JSON.parse(String(init?.body)) as {
-        account: string;
         targetUrl: string;
         method: string;
+        cookies: Array<{ name: string; value: string }>;
         bodyBase64?: string;
       };
-      expect(request.account).toBe(account);
+      expect(request).not.toHaveProperty('account');
       const target = new URL(request.targetUrl);
       const response = (status: number, body: string, headers: Record<string, string> = {}, setCookies: string[] = []) => new Response(JSON.stringify({
         ok: true,
@@ -2574,13 +2584,19 @@ describe('hbu-jw http client', () => {
       });
 
       if (target.pathname === '/login') {
-        return response(200, '<form action="/sigin"><input name="password"></form>', {}, ['JSESSIONID=broker-jw; Path=/']);
+        loginSequence += 1;
+        return response(200, '<form action="/sigin"><input name="password"></form>', {}, [`JSESSIONID=login-${loginSequence}; Path=/`]);
       }
       if (target.pathname === '/sigin') {
-        expect(Buffer.from(request.bodyBase64 ?? '', 'base64').toString()).toBe(`username=${account}&password=password`);
-        return response(302, '', { location: 'https://zhjw.hbu.cn/index' });
+        const form = new URLSearchParams(Buffer.from(request.bodyBase64 ?? '', 'base64').toString());
+        const username = form.get('username');
+        expect(accounts).toContain(username);
+        expect(form.get('password')).toBe(accounts.indexOf(username ?? '') === 0 ? 'password-a' : 'password-b');
+        expect(request.cookies).toEqual([{ name: 'JSESSIONID', value: `login-${accounts.indexOf(username ?? '') + 1}` }]);
+        return response(302, '', { location: 'https://zhjw.hbu.cn/index' }, [`JSESSIONID=session-${username}; Path=/`]);
       }
       if (target.pathname === '/index') {
+        indexCookies.push(request.cookies.map((cookie) => `${cookie.name}=${cookie.value}`));
         return response(200, '<html><body>URP综合教务系统首页</body></html>');
       }
       return response(404, 'missing');
@@ -2590,7 +2606,6 @@ describe('hbu-jw http client', () => {
       webVpnBroker: {
         url: 'http://127.0.0.1:8789',
         token,
-        account,
         fetchImpl: brokerFetch as never,
       },
     });
@@ -2600,22 +2615,35 @@ describe('hbu-jw http client', () => {
         { name: 'webvpn_session', value: 'obsolete' },
         { name: 'JSESSIONID', value: 'obsolete' },
       ],
-    }, account)).toEqual({
+    })).toEqual({
+      version: 1,
+      transport: 'broker',
       cookies: [],
-      webVpnBrokerAccount: account,
     });
 
-    const login = await client.login(account, 'password');
+    const firstLogin = await client.login(accounts[0]!, 'password-a');
+    const secondLogin = await client.login(accounts[1]!, 'password-b');
 
-    expect(login).toEqual({
-      cookieJar: {
-        cookies: [{ name: 'JSESSIONID', value: 'broker-jw' }],
-        webVpnBrokerAccount: account,
-      },
+    expect(firstLogin.cookieJar).toEqual({
+      version: 1,
+      transport: 'broker',
+      cookies: [{ name: 'JSESSIONID', value: `session-${accounts[0]}` }],
     });
-    await expect(client.validate(login.cookieJar)).resolves.toBe(true);
+    expect(secondLogin.cookieJar).toEqual({
+      version: 1,
+      transport: 'broker',
+      cookies: [{ name: 'JSESSIONID', value: `session-${accounts[1]}` }],
+    });
+    await expect(client.validate(firstLogin.cookieJar)).resolves.toBe(true);
+    await expect(client.validate(secondLogin.cookieJar)).resolves.toBe(true);
     expect(directFetch).not.toHaveBeenCalled();
-    expect(brokerFetch).toHaveBeenCalledTimes(4);
+    expect(indexCookies).toEqual([
+      [`JSESSIONID=session-${accounts[0]}`],
+      [`JSESSIONID=session-${accounts[1]}`],
+      [`JSESSIONID=session-${accounts[0]}`],
+      [`JSESSIONID=session-${accounts[1]}`],
+    ]);
+    expect(brokerFetch).toHaveBeenCalledTimes(8);
   });
 
   it('rejects cross-origin redirects before sending cookies to the redirected target', async () => {
@@ -2711,6 +2739,8 @@ describe('hbu-jw http client', () => {
 
     await expect(client.login('student', 'password')).resolves.toEqual({
       cookieJar: {
+        version: 1,
+        transport: 'direct',
         cookies: [
           { name: 'wengine_vpn_ticketv_hbu_cn', value: 'ticket' },
           { name: 'webvpn_session', value: 'active' },
@@ -2778,7 +2808,7 @@ describe('hbu-jw http client', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    await expect(client.getAllPassingScores({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] })).resolves.toEqual(rows);
+    await expect(client.getAllPassingScores(cookieJar())).resolves.toEqual(rows);
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
       'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/allPassingScores/index',
       'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/token/allPassingScores/callback',
@@ -2791,7 +2821,7 @@ describe('hbu-jw http client', () => {
       '"/student/integratedQuery/scoreQuery/b/allPassingScores/callback"',
     ].join('\n'), { status: 200 }));
     const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
-    await expect(ambiguousClient.getAllPassingScores({ cookies: [] })).rejects.toThrow('没有唯一的回调地址');
+    await expect(ambiguousClient.getAllPassingScores(cookieJar(null))).rejects.toThrow('没有唯一的回调地址');
 
     const malformedFetch = vi.fn(async (url: string) => {
       if (url.endsWith('/allPassingScores/index')) {
@@ -2800,7 +2830,7 @@ describe('hbu-jw http client', () => {
       return new Response(JSON.stringify({ data: [] }), { status: 200 });
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
-    await expect(malformedClient.getAllPassingScores({ cookies: [] })).rejects.toThrow('结构异常');
+    await expect(malformedClient.getAllPassingScores(cookieJar(null))).rejects.toThrow('结构异常');
   });
 
   it('loads this term scores from the dynamic data endpoint', async () => {
@@ -2820,7 +2850,7 @@ describe('hbu-jw http client', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    await expect(client.getThisTermScores({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] })).resolves.toEqual(rows);
+    await expect(client.getThisTermScores(cookieJar())).resolves.toEqual(rows);
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
       'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/thisTermScores/index',
       'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/token/thisTermScores/data',
@@ -2833,7 +2863,7 @@ describe('hbu-jw http client', () => {
       '"/student/integratedQuery/scoreQuery/b/thisTermScores/data"',
     ].join('\n'), { status: 200 }));
     const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
-    await expect(ambiguousClient.getThisTermScores({ cookies: [] })).rejects.toThrow('没有唯一的数据地址');
+    await expect(ambiguousClient.getThisTermScores(cookieJar(null))).rejects.toThrow('没有唯一的数据地址');
 
     const malformedFetch = vi.fn(async (url: string) => {
       if (url.endsWith('/thisTermScores/index')) {
@@ -2842,7 +2872,7 @@ describe('hbu-jw http client', () => {
       return new Response(JSON.stringify({ data: [] }), { status: 200 });
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
-    await expect(malformedClient.getThisTermScores({ cookies: [] })).rejects.toThrow('结构异常');
+    await expect(malformedClient.getThisTermScores(cookieJar(null))).rejects.toThrow('结构异常');
   });
 
   it('loads subitem score terms and details from the fixed look endpoint', async () => {
@@ -2870,12 +2900,12 @@ describe('hbu-jw http client', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    await expect(client.getSubitemScoreTerms({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] })).resolves.toEqual([
+    await expect(client.getSubitemScoreTerms(cookieJar())).resolves.toEqual([
       { code: '2026-2027-1-2', label: '2026-2027学年秋(三学期)', selected: false },
       { code: '2025-2026-2-2', label: '2025-2026学年春(三学期)', selected: true },
     ]);
     await expect(client.getSubitemScoreDetails(
-      { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar(),
       { zxjxjhh: '2025-2026-2-2', kch: '2023S01105', kxh: '02', kssj: '20260620', kcsxdm: '003' },
     )).resolves.toMatchObject({
       rows: [
@@ -2891,7 +2921,7 @@ describe('hbu-jw http client', () => {
       '"/student/integratedQuery/scoreQuery/subitemScore/b/look"',
     ].join('\n'), { status: 200 }));
     const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
-    await expect(ambiguousClient.getSubitemScoreDetails({ cookies: [] }, params)).rejects.toThrow('没有唯一的查看地址');
+    await expect(ambiguousClient.getSubitemScoreDetails(cookieJar(null), params)).rejects.toThrow('没有唯一的查看地址');
 
     const malformedFetch = vi.fn(async (url: string) => {
       if (url.endsWith('/subitemScore/index')) {
@@ -2900,7 +2930,7 @@ describe('hbu-jw http client', () => {
       return new Response('not-json', { status: 200 });
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
-    await expect(malformedClient.getSubitemScoreDetails({ cookies: [] }, params)).rejects.toThrow('非 JSON');
+    await expect(malformedClient.getSubitemScoreDetails(cookieJar(null), params)).rejects.toThrow('非 JSON');
   });
 
   it('loads exam schedule from the fullcalendar detail endpoint', async () => {
@@ -2925,7 +2955,7 @@ describe('hbu-jw http client', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    await expect(client.getExamSchedule({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] })).resolves.toEqual(rows);
+    await expect(client.getExamSchedule(cookieJar())).resolves.toEqual(rows);
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
       'https://zhjw.hbu.cn/student/examinationManagement/examPlan/index',
       'https://zhjw.hbu.cn/student/examinationManagement/examPlan/detail',
@@ -2938,7 +2968,7 @@ describe('hbu-jw http client', () => {
       '"/student/examinationManagement/examPlan/detail"',
     ].join('\n'), { status: 200 }));
     const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
-    await expect(ambiguousClient.getExamSchedule({ cookies: [] })).rejects.toThrow('没有唯一的数据地址');
+    await expect(ambiguousClient.getExamSchedule(cookieJar(null))).rejects.toThrow('没有唯一的数据地址');
 
     const malformedFetch = vi.fn(async (url: string) => {
       if (url.endsWith('/examPlan/index')) {
@@ -2947,7 +2977,7 @@ describe('hbu-jw http client', () => {
       return new Response(JSON.stringify([{ title: '软件工程' }]), { status: 200 });
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
-    await expect(malformedClient.getExamSchedule({ cookies: [] })).rejects.toThrow('结构异常');
+    await expect(malformedClient.getExamSchedule(cookieJar(null))).rejects.toThrow('结构异常');
   });
 
   it('loads this semester schedule from the dynamic callback endpoint', async () => {
@@ -2963,7 +2993,7 @@ describe('hbu-jw http client', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    const schedule = await client.getThisSemesterSchedule({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    const schedule = await client.getThisSemesterSchedule(cookieJar());
 
     expect(schedule).toMatchObject({
       executiveEducationPlanNumber: '2025-2026-2-2',
@@ -2999,7 +3029,7 @@ describe('hbu-jw http client', () => {
       '"/student/courseSelect/thisSemesterCurriculum/b/ajaxStudentSchedule/curr/callback"',
     ].join('\n'), { status: 200 }));
     const ambiguousClient = new HbuJwHttpClient({ fetchImpl: ambiguousFetch as never });
-    await expect(ambiguousClient.getThisSemesterSchedule({ cookies: [] })).rejects.toThrow('没有唯一的回调地址');
+    await expect(ambiguousClient.getThisSemesterSchedule(cookieJar(null))).rejects.toThrow('没有唯一的回调地址');
 
     const malformedFetch = vi.fn(async (url: string) => {
       if (url.endsWith('/thisSemesterCurriculum/index')) {
@@ -3008,7 +3038,7 @@ describe('hbu-jw http client', () => {
       return new Response(JSON.stringify({ data: [] }), { status: 200 });
     });
     const malformedClient = new HbuJwHttpClient({ fetchImpl: malformedFetch as never });
-    await expect(malformedClient.getThisSemesterSchedule({ cookies: [] })).rejects.toThrow('结构异常');
+    await expect(malformedClient.getThisSemesterSchedule(cookieJar(null))).rejects.toThrow('结构异常');
   });
 });
 
@@ -3311,7 +3341,7 @@ describe('hbu-jw plugin integration', () => {
 
   it('redirects successful credential submissions to the GET bind success page', async () => {
     vi.spyOn(HbuJwHttpClient.prototype, 'login').mockResolvedValue({
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: cookieJar(),
     });
     const dir = createTempDir();
     const database = createDatabase();
@@ -3495,7 +3525,7 @@ describe('hbu-jw plugin integration', () => {
     expect(String(pendingGetCtx.body)).toContain('正在验证教务账号密码');
     expect(String(pendingGetCtx.body)).not.toContain('<form class="form"');
 
-    resolveLogin({ cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] } });
+    resolveLogin({ cookieJar: cookieJar() });
     await firstPost;
     expect(firstPostCtx.status).toBe(303);
     expect(firstPostHeaders.get('cache-control')).toBe('no-store');

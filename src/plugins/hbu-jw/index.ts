@@ -52,7 +52,6 @@ export interface Config {
   keepAliveRecentUseWindowMs?: number;
   webVpnBrokerUrl?: string;
   webVpnBrokerTokenFile?: string;
-  webVpnBrokerAccount?: string;
   allowedGroups?: string[] | string;
   naturalTriggerEnabled?: boolean;
   naturalTriggerGroups?: string[] | string;
@@ -67,9 +66,8 @@ export const Config: Schema<Config> = Schema.object({
   keepAliveEnabled: Schema.boolean().default(false).description('是否启用教务 session 轻量保活。'),
   keepAliveIntervalMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_INTERVAL_MS).description('保活周期。'),
   keepAliveRecentUseWindowMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS).description('只保活最近使用过的登录态。'),
-  webVpnBrokerUrl: Schema.string().description('指定账号使用的本机 HBU WebVPN broker URL。'),
+  webVpnBrokerUrl: Schema.string().description('所有教务账号共享的本机 HBU WebVPN broker URL。'),
   webVpnBrokerTokenFile: Schema.string().description('HBU WebVPN broker 的 systemd credential 文件。'),
-  webVpnBrokerAccount: Schema.string().description('使用共享 HBU WebVPN 会话的学号。'),
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用教务系统功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用教务系统功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
@@ -303,14 +301,12 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
 function resolveWebVpnBroker(config: Config): HbuWebVpnBrokerOptions | undefined {
   const url = config.webVpnBrokerUrl?.trim() ?? '';
   const tokenFile = config.webVpnBrokerTokenFile?.trim() ?? '';
-  const account = config.webVpnBrokerAccount?.trim() ?? '';
-  const configured = [url, tokenFile, account].filter(Boolean).length;
+  const configured = [url, tokenFile].filter(Boolean).length;
   if (configured === 0) return undefined;
-  if (configured !== 3) throw new Error('hbu-jw WebVPN broker requires URL, token file, and account together.');
-  if (!/^\d{6,32}$/.test(account)) throw new Error('hbu-jw WebVPN broker account is invalid.');
+  if (configured !== 2) throw new Error('hbu-jw WebVPN broker requires URL and token file together.');
   const token = readFileSync(tokenFile);
   if (token.length !== 32) throw new Error('hbu-jw WebVPN broker token must be 32 bytes.');
-  return { url, token, account };
+  return { url, token };
 }
 
 function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtime: RuntimeConfig): void {

@@ -107,7 +107,6 @@ plugins:
       keepAliveRecentUseWindowMs: ${{ +env.HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS || 86400000 }}
       webVpnBrokerUrl: ${{ env.HBU_JW_WEBVPN_BROKER_URL || '' }}
       webVpnBrokerTokenFile: ${{ env.HBU_JW_WEBVPN_BROKER_TOKEN_FILE || '' }}
-      webVpnBrokerAccount: ${{ env.HBU_JW_WEBVPN_BROKER_ACCOUNT || '' }}
       allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
       naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
       naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}

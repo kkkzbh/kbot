@@ -23,7 +23,20 @@ import type {
   DatabaseLike,
   HbuJwCourseSelectionResult,
   OwnerIdentity,
+  SerializedCookieJar,
 } from '../src/plugins/hbu-jw/types.js';
+
+const COOKIE_JAR: SerializedCookieJar = {
+  version: 1,
+  transport: 'direct',
+  cookies: [{ name: 'JSESSIONID', value: 'abc' }],
+};
+
+const EMPTY_COOKIE_JAR: SerializedCookieJar = {
+  version: 1,
+  transport: 'direct',
+  cookies: [],
+};
 
 function rawSelectionPayload() {
   return {
@@ -220,7 +233,7 @@ describe('hbu-jw selection result http contract', () => {
     });
     const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
 
-    const result = await client.getCourseSelectionResult({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    const result = await client.getCourseSelectionResult(COOKIE_JAR);
 
     expect(result).toMatchObject({ totalUnits: 5 });
     expect(result.groups[0]).toMatchObject({ programPlanCode: '3201', totalUnits: 5 });
@@ -245,14 +258,14 @@ describe('hbu-jw selection result http contract', () => {
         '"/student/courseSelect/thisSemesterCurriculum/callback"',
       ].join('\n'), { status: 200 })) as never,
     });
-    await expect(ambiguousClient.getCourseSelectionResult({ cookies: [] })).rejects.toThrow('没有唯一的回调地址');
+    await expect(ambiguousClient.getCourseSelectionResult(EMPTY_COOKIE_JAR)).rejects.toThrow('没有唯一的回调地址');
 
     const malformedClient = new HbuJwHttpClient({
       fetchImpl: vi.fn(async (url: string) => url.endsWith('/courseSelectResult/index')
         ? new Response('"/student/courseSelect/thisSemesterCurriculum/callback"', { status: 200 })
         : new Response(JSON.stringify({ dateList: [{}] }), { status: 200 })) as never,
     });
-    await expect(malformedClient.getCourseSelectionResult({ cookies: [] })).rejects.toThrow('异常');
+    await expect(malformedClient.getCourseSelectionResult(EMPTY_COOKIE_JAR)).rejects.toThrow('异常');
   });
 });
 
@@ -291,7 +304,7 @@ describe('hbu-jw selection result module', () => {
   it('authenticates, queries, and returns a mentioned image', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
-      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] },
+      cookieJar: COOKIE_JAR,
     }));
     const getCourseSelectionResult = vi.fn(async () => selectionResult());
     const { puppeteer } = createPuppeteerHarness();
@@ -307,7 +320,7 @@ describe('hbu-jw selection result module', () => {
 
     expect(contentText(reply)).toContain('<at id="1405359129"/>');
     expect(contentText(reply)).toContain('image/gif');
-    expect(getCourseSelectionResult).toHaveBeenCalledWith({ cookies: [{ name: 'JSESSIONID', value: 'abc' }] });
+    expect(getCourseSelectionResult).toHaveBeenCalledWith(COOKIE_JAR);
   });
 
   it('includes the selection result command in the academic affairs menu', () => {
@@ -328,7 +341,7 @@ describe('hbu-jw selection result cache', () => {
   it('stores the result as its own academic data kind and falls back to it', async () => {
     const database = createDatabase();
     const store = new HbuJwStore(database as unknown as DatabaseLike);
-    const auth = { cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'abc' }] }, credentialVersion: 1 };
+    const auth = { cookieJar: COOKIE_JAR, credentialVersion: 1 };
     const seedCache = new HbuJwAcademicCache(
       store,
       { getCourseSelectionResult: vi.fn(async () => selectionResult()) } as never,

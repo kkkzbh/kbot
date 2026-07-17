@@ -275,16 +275,7 @@ export class HbuJwService {
       if (!credential) {
         throw new Error(`active hbu-jw session is missing credential: owner=${identity.ownerKey}`);
       }
-      const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
-        credential.credentialCipher,
-        credential.credentialMeta,
-        credentialAad(identity.ownerKey, HBU_JW_SERVICE_ID, credential.id),
-        this.kek,
-      );
-      const cookieJar = this.jwClient.prepareSession(
-        this.decryptCookieJar(identity.ownerKey, session.cookieJarCipher),
-        credentialPayload.username,
-      );
+      const cookieJar = this.jwClient.prepareSession(this.decryptCookieJar(identity.ownerKey, session.cookieJarCipher));
       if (await this.jwClient.validate(cookieJar)) {
         await this.store.markSessionValidated(identity.ownerKey, now);
         await this.audit(identity.ownerKey, 'session_validated', 'ok');
@@ -333,16 +324,7 @@ export class HbuJwService {
       try {
         const credential = await this.store.getActiveCredential(session.ownerKey);
         if (!credential) throw new Error('active session is missing its credential');
-        const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
-          credential.credentialCipher,
-          credential.credentialMeta,
-          credentialAad(session.ownerKey, HBU_JW_SERVICE_ID, credential.id),
-          this.kek,
-        );
-        const cookieJar = this.jwClient.prepareSession(
-          this.decryptCookieJar(session.ownerKey, session.cookieJarCipher),
-          credentialPayload.username,
-        );
+        const cookieJar = this.jwClient.prepareSession(this.decryptCookieJar(session.ownerKey, session.cookieJarCipher));
         if (await this.jwClient.validate(cookieJar)) {
           await this.store.markSessionValidated(session.ownerKey, now);
         } else {
@@ -371,8 +353,8 @@ export class HbuJwService {
     return challenge;
   }
 
-  private decryptCookieJar(ownerKey: string, cookieJarCipher: string): SerializedCookieJar {
-    return decryptSelfContainedJson<SerializedCookieJar>(cookieJarCipher, cookieAad(ownerKey), this.kek);
+  private decryptCookieJar(ownerKey: string, cookieJarCipher: string): unknown {
+    return decryptSelfContainedJson<unknown>(cookieJarCipher, cookieAad(ownerKey), this.kek);
   }
 
   private completedSubmitResult(challenge: HbuJwBindChallenge): SubmitCredentialsResult {

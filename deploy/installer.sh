@@ -95,6 +95,19 @@ ensure_server_env_key() {
   printf '%s=%s\n' "${key}" "${value}" >> "${ENV_SERVER}"
 }
 
+remove_env_key() {
+  local file="$1"
+  local key="$2"
+  if [[ ! -f "${file}" ]] || ! grep -Eq "^${key}=" "${file}"; then
+    return
+  fi
+  local tmp
+  tmp="$(mktemp "${file}.tmp.XXXXXX")"
+  awk -v prefix="${key}=" 'index($0, prefix) != 1' "${file}" > "${tmp}"
+  chmod 600 "${tmp}"
+  mv "${tmp}" "${file}"
+}
+
 ensure_server_env_defaults() {
   ensure_server_env_key "GENSHIN_PUBLIC_BASE_URL" "https://genshin.kkkzbh.cn"
   ensure_server_env_key "GENSHIN_BIND_PAGE_PATH" "/genshin/bind"
@@ -107,7 +120,8 @@ ensure_server_env_defaults() {
   ensure_server_env_key "GENSHIN_SIGN_ACT_ID" "e202311201442471"
   ensure_server_env_key "GENSHIN_REDEEM_GAME_VERSION" "CNRELWin6.0.0"
   ensure_server_env_key "HBU_JW_WEBVPN_BROKER_URL" "http://127.0.0.1:8789"
-  ensure_server_env_key "HBU_JW_WEBVPN_BROKER_ACCOUNT" "20231202051"
+  remove_env_key "${ENV_SERVER}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
+  remove_env_key "${ENV_RUNTIME}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
   chmod 600 "${ENV_SERVER}"
 }
 ensure_server_env_defaults

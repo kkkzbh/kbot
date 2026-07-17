@@ -226,7 +226,6 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS', label: '教务保活最近使用窗口', type: 'number', section: 'features' },
   { key: 'HBU_JW_WEBVPN_BROKER_URL', label: '教务 WebVPN Broker 地址', type: 'text', section: 'features' },
   { key: 'HBU_JW_WEBVPN_BROKER_TOKEN_FILE', label: '教务 WebVPN Broker 凭据文件', type: 'text', section: 'features' },
-  { key: 'HBU_JW_WEBVPN_BROKER_ACCOUNT', label: '教务 WebVPN Broker 学号', type: 'text', section: 'features' },
   { key: 'CAMPUS_AUTH_PUBLIC_BASE_URL', label: '校园绑定外部地址', type: 'text', section: 'features' },
   { key: 'CAMPUS_AUTH_BIND_PAGE_PATH', label: '校园绑定页路径', type: 'text', section: 'features' },
   { key: 'CAMPUS_AUTH_BIND_TOKEN_TTL_MS', label: '校园绑定链接有效期', type: 'number', section: 'features' },

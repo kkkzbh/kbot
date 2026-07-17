@@ -107,11 +107,12 @@ export interface HbuJwAcademicItem {
 }
 
 export interface SerializedCookieJar {
+  version: 1;
+  transport: 'direct' | 'broker';
   cookies: Array<{
     name: string;
     value: string;
   }>;
-  webVpnBrokerAccount?: string;
 }
 
 export interface HbuJwScoreRow {
