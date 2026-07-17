@@ -673,6 +673,39 @@ describe('admin systemd helpers', () => {
     expect(status.canStart).toBe(false);
     expect(status.canStop).toBe(true);
     expect(status.canEnable).toBe(false);
+    expect(status.runtimeState).toBe('healthy');
+    expect(status.controllerState).toMatchObject({ activeState: 'active', subState: 'active' });
+  });
+
+  it('reports a healthy PMHQ workload with a failed controller as degraded', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, '', 'utf8');
+    const execFile = vi.fn().mockResolvedValue({
+      stdout: [
+        'Description=QQBot PMHQ Service',
+        'LoadState=loaded',
+        'ActiveState=failed',
+        'SubState=failed',
+        'UnitFileState=generated',
+        'Result=exit-code',
+        'InvocationID=a030b1fd7f4c49d2b54c3e7c339eb284',
+      ].join('\n'),
+      stderr: '',
+    });
+    const manager = new AdminRuntimeManager({
+      rootDir: dir,
+      envFilePath,
+      execFile,
+      fetchFn: vi.fn(async () => new Response('{}', { status: 200 })),
+    });
+
+    const status = await manager.getServiceStatus('qqbot-pmhq.service');
+
+    expect(status.runtimeState).toBe('degraded');
+    expect(status.healthDetail).toContain('工作负载健康');
+    expect(status.canStart).toBe(true);
+    expect(status.canStop).toBe(false);
   });
 
   it('keeps server service units scoped to production services', () => {
@@ -1846,7 +1879,12 @@ describe('admin manager', () => {
         stderr: '',
       });
 
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+    const manager = new AdminRuntimeManager({
+      rootDir: dir,
+      envFilePath,
+      execFile,
+      fetchFn: vi.fn(async () => new Response('{}', { status: 200 })),
+    });
     const status = await manager.runServiceAction('qqbot.target', 'restart');
 
     expect(execFile).toHaveBeenNthCalledWith(
@@ -1858,10 +1896,10 @@ describe('admin manager', () => {
     expect(execFile).toHaveBeenNthCalledWith(
       2,
       'systemctl',
-      ['--user', 'show', 'qqbot.target', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState'],
+      ['--user', 'show', 'qqbot.target', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState,Result,InvocationID'],
       expect.objectContaining({ cwd: dir, timeout: 15_000 }),
     );
-    expect(status.activeState).toBe('active');
+    expect(status.controllerState.activeState).toBe('active');
   });
 
   it('schedules qqbot-koishi.service restart through a transient user unit', async () => {
@@ -1894,10 +1932,10 @@ describe('admin manager', () => {
     expect(execFile).toHaveBeenNthCalledWith(
       2,
       'systemctl',
-      ['--user', 'show', 'qqbot-koishi.service', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState'],
+      ['--user', 'show', 'qqbot-koishi.service', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState,Result,InvocationID'],
       expect.objectContaining({ cwd: dir, timeout: 15_000 }),
     );
-    expect(status.activeState).toBe('active');
+    expect(status.controllerState.activeState).toBe('active');
   });
 
   it('uses system-level systemctl for server-mode service actions', async () => {
@@ -1930,10 +1968,10 @@ describe('admin manager', () => {
     expect(execFile).toHaveBeenNthCalledWith(
       2,
       'systemctl',
-      ['show', 'qqbot-koishi.service', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState'],
+      ['show', 'qqbot-koishi.service', '--property', 'Description,LoadState,ActiveState,SubState,UnitFileState,Result,InvocationID'],
       expect.objectContaining({ cwd: dir, timeout: 15_000 }),
     );
-    expect(status.activeState).toBe('active');
+    expect(status.controllerState.activeState).toBe('active');
   });
 
   it('filters local-only TTS units from server-mode service status queries', async () => {
@@ -1951,7 +1989,12 @@ describe('admin manager', () => {
       stderr: '',
     });
 
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+    const manager = new AdminRuntimeManager({
+      rootDir: dir,
+      envFilePath,
+      execFile,
+      fetchFn: vi.fn(async () => new Response('{}', { status: 200 })),
+    });
     const statuses = await manager.getServiceStatuses();
 
     expect(statuses.map((status) => status.unit)).toEqual([

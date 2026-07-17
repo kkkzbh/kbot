@@ -15,6 +15,8 @@ import {
   modelTabsPatchRequestSchema,
   oauthAttemptRequestSchema,
   oauthProviderSchema,
+  operationalEventActionRequestSchema,
+  operationalEventListQuerySchema,
   pageQuerySchema,
   presetNameSchema,
   presetReorderRequestSchema,
@@ -48,6 +50,7 @@ import {
   type ManagedEnvField,
 } from './server.js';
 import type { AdminLogService } from './logs.js';
+import type { OperationalEventService } from './operational-events.js';
 import {
   ADMIN_SESSION_COOKIE,
   AdminHttpError,
@@ -79,6 +82,7 @@ export type RegisterAdminApiOptions = {
   session: AdminSessionService;
   services: AdminRuntimeServices;
   logs: AdminLogService;
+  events: OperationalEventService;
   copilotBridge: CopilotOAuthBridgeService;
   codexBridge: CodexOAuthBridgeService;
   logger: Logger;
@@ -360,7 +364,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
   }, { authenticated: false, mutation: true });
 
   register('get', '/overview', async () => {
-    const [services, env, modelTabs, presets, tts, memoryStatus, memorySummary, affinity] = await Promise.all([
+    const [services, env, modelTabs, presets, tts, memoryStatus, memorySummary, affinity, eventSummary] = await Promise.all([
       options.manager.getServiceStatuses(),
       options.manager.getManagedEnv(),
       options.manager.getModelTabsState(),
@@ -369,6 +373,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       options.services.memoryStatus?.getSnapshot() ?? Promise.resolve(createUnavailableMemoryStatusSnapshot()),
       options.services.memoryAdmin?.getSummary() ?? Promise.resolve(unavailableMemorySummary()),
       options.services.affinity?.getAdminState() ?? Promise.resolve(null),
+      options.events.summary(),
     ]);
     const activeModel = modelTabs.tabs.find((tab) => tab.id === modelTabs.activeTab);
     return {
@@ -376,8 +381,10 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       services,
       serviceSummary: {
         total: services.length,
-        running: services.filter((service) => service.activeState === 'active').length,
-        failed: services.filter((service) => service.activeState === 'failed').length,
+        running: services.filter((service) => service.runtimeState === 'healthy' || service.runtimeState === 'degraded').length,
+        healthy: services.filter((service) => service.runtimeState === 'healthy').length,
+        degraded: services.filter((service) => service.runtimeState === 'degraded').length,
+        stopped: services.filter((service) => service.runtimeState === 'stopped').length,
       },
       currentModel: activeModel ? {
         id: activeModel.id,
@@ -389,6 +396,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       memory: { status: memoryStatus, summary: memorySummary },
       tts: tts.health,
       affinity: affinity ? { available: true, enabled: affinity.settings.enabled } : { available: false, enabled: false },
+      events: eventSummary,
       apply: applyState.snapshot(),
     };
   });
@@ -399,6 +407,20 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     const status = await domain(() => options.manager.runServiceAction(input.unit, input.action));
     applyState.clearForService(input.unit, input.action);
     return { status, apply: applyState.snapshot() };
+  }, { mutation: true });
+
+  register('get', '/events', async (koaCtx) => {
+    await options.events.sync();
+    return options.events.list(parseInput(operationalEventListQuerySchema, koaCtx.query));
+  });
+  register('get', '/events/summary', () => options.events.summary());
+  register('get', '/events/:id', (koaCtx) => domain(() => options.events.detail(
+    parseInput(z.coerce.number().int().positive(), koaCtx.params.id),
+  )));
+  register('post', '/events/:id/action', async (koaCtx) => {
+    const id = parseInput(z.coerce.number().int().positive(), koaCtx.params.id);
+    const input = parseInput(operationalEventActionRequestSchema, koaCtx.request.body);
+    return domain(() => options.events.runAction(id, input.action));
   }, { mutation: true });
 
   register('get', '/logs', (koaCtx) => {

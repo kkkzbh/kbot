@@ -16,6 +16,7 @@ ENV_RUNTIME="${SHARED_DIR}/.env.runtime"
 CLOUDFLARED_HBU_JW_TOKEN_FILE="${QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE:-/etc/cloudflared/qqbot-hbu-jw.token}"
 CLOUDFLARED_GENSHIN_TOKEN_FILE="${QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE:-/etc/cloudflared/qqbot-genshin.token}"
 SYSTEMD_DIR="/etc/systemd/system"
+QUADLET_DIR="/etc/containers/systemd"
 
 case "${VERIFY_SCOPE}" in
   koishi|full) ;;
@@ -34,7 +35,7 @@ require_cmd() {
   fi
 }
 
-for cmd in bash tar node pnpm systemctl journalctl curl podman podman-compose cloudflared; do
+for cmd in bash tar node pnpm systemctl journalctl curl podman cloudflared; do
   require_cmd "${cmd}"
 done
 
@@ -122,6 +123,7 @@ require_bundle_entry "qqbot/package.json"
 require_bundle_entry "qqbot/koishi.yml"
 require_bundle_entry "qqbot/dist"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
+require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "chatluna/packages/core/package.json"
 
 clear_managed_dir() {
@@ -221,6 +223,43 @@ write_runtime_env() {
 }
 write_runtime_env
 
+write_pmhq_env() {
+  local pmhq_env="${SHARED_DIR}/.env.pmhq"
+  local tmp
+  tmp="$(mktemp "${pmhq_env}.tmp.XXXXXX")"
+  trap 'rm -f -- "${tmp}"' RETURN
+  (
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_SERVER}"
+    if [[ -f "${ENV_RUNTIME}" ]]; then
+      # shellcheck disable=SC1090
+      . "${ENV_RUNTIME}"
+    fi
+    set +a
+    local pmhq_headless="${ENABLE_HEADLESS:-false}"
+    local pmhq_auto_login="${AUTO_LOGIN_QQ:-}"
+    local pmhq_timezone="${TZ:-Asia/Shanghai}"
+    case "${pmhq_headless}" in true|false) ;; *) echo "[installer] ENABLE_HEADLESS must be true or false" >&2; exit 2 ;; esac
+    if [[ -n "${pmhq_auto_login}" && ! "${pmhq_auto_login}" =~ ^[0-9]+$ ]]; then
+      echo "[installer] AUTO_LOGIN_QQ must be empty or numeric" >&2
+      exit 2
+    fi
+    if [[ ! "${pmhq_timezone}" =~ ^[A-Za-z0-9_+/-]+$ ]]; then
+      echo "[installer] invalid TZ for PMHQ" >&2
+      exit 2
+    fi
+    printf '%s\n' \
+      "ENABLE_HEADLESS=${pmhq_headless}" \
+      "AUTO_LOGIN_QQ=${pmhq_auto_login}" \
+      "TZ=${pmhq_timezone}" > "${tmp}"
+  )
+  chmod 600 "${tmp}"
+  mv "${tmp}" "${pmhq_env}"
+  trap - RETURN
+}
+write_pmhq_env
+
 if [[ -z "$(find "${DATA_DIR}/chathub/presets" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" && -d "${STAGE_QQBOT}/data/chathub/presets" ]]; then
   cp -a "${STAGE_QQBOT}/data/chathub/presets/." "${DATA_DIR}/chathub/presets/"
 fi
@@ -238,15 +277,25 @@ CHATLUNA_ROOT_DIR="${STAGE_CHATLUNA}" bash "${STAGE_QQBOT}/scripts/ensure-chatlu
   node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml
 )
 
-QQBOT_APP_DIR="${APP_DIR}" \
-QQBOT_APP_ROOT="${APP_ROOT}" \
-QQBOT_DATA_DIR="${DATA_DIR}" \
-QQBOT_SHARED_DIR="${SHARED_DIR}" \
-QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
-QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE="${CLOUDFLARED_HBU_JW_TOKEN_FILE}" \
-QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE="${CLOUDFLARED_GENSHIN_TOKEN_FILE}" \
-  node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
+(
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_SERVER}"
+  # shellcheck disable=SC1090
+  . "${ENV_RUNTIME}"
+  set +a
+  QQBOT_APP_DIR="${APP_DIR}" \
+  QQBOT_APP_ROOT="${APP_ROOT}" \
+  QQBOT_DATA_DIR="${DATA_DIR}" \
+  QQBOT_SHARED_DIR="${SHARED_DIR}" \
+  QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
+  QQBOT_QUADLET_DIR="${QUADLET_DIR}" \
+  QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE="${CLOUDFLARED_HBU_JW_TOKEN_FILE}" \
+  QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE="${CLOUDFLARED_GENSHIN_TOKEN_FILE}" \
+    node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
+)
 systemctl daemon-reload
+systemctl cat qqbot-pmhq.service >/dev/null
 
 if systemctl cat qqbot.target >/dev/null 2>&1; then
   systemctl stop qqbot.target

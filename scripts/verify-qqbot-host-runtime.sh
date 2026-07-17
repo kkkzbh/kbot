@@ -11,6 +11,7 @@ case "${SCOPE}" in
 esac
 
 PMHQ_CONTAINER="${QQBOT_PMHQ_CONTAINER_NAME:-pmhq}"
+PMHQ_UNIT="${QQBOT_PMHQ_UNIT:-qqbot-pmhq.service}"
 PMHQ_HEALTH_HOST="${QQBOT_PMHQ_HEALTH_HOST:-127.0.0.1}"
 PMHQ_PORT="${PMHQ_PORT:-13000}"
 PMHQ_LOGIN_NETWORK_PROBE_URL="${QQBOT_PMHQ_LOGIN_NETWORK_PROBE_URL:-https://im.qq.com/}"
@@ -95,6 +96,12 @@ container_is_healthy() {
   [ "${health}" = "healthy" ] || [ "${health}" = "unknown" ]
 }
 
+container_has_no_restart_policy() {
+  local policy
+  policy="$(podman inspect --format '{{.HostConfig.RestartPolicy.Name}}' "${PMHQ_CONTAINER}" 2>/dev/null || echo missing)"
+  [ -z "${policy}" ] || [ "${policy}" = "no" ]
+}
+
 container_has_default_route() {
   podman exec "${PMHQ_CONTAINER}" sh -lc \
     'grep -Eq "^[^[:space:]]+[[:space:]]+00000000[[:space:]]+" /proc/net/route'
@@ -141,6 +148,8 @@ print_koishi_diagnostics() {
 }
 
 print_full_diagnostics() {
+  echo "== ${PMHQ_UNIT} status ==" >&2
+  systemctl status "${PMHQ_UNIT}" --no-pager >&2 || true
   echo "== pmhq inspect ==" >&2
   podman inspect "${PMHQ_CONTAINER}" 2>/dev/null || true
   echo "== pmhq routes ==" >&2
@@ -178,7 +187,9 @@ fi
 
 wait_until "${CLOUDFLARED_HBU_JW_UNIT} is active" systemd_unit_active "${CLOUDFLARED_HBU_JW_UNIT}"
 wait_until "${CLOUDFLARED_GENSHIN_UNIT} is active" systemd_unit_active "${CLOUDFLARED_GENSHIN_UNIT}"
+wait_until "${PMHQ_UNIT} is active" systemd_unit_active "${PMHQ_UNIT}"
 wait_until "${PMHQ_CONTAINER} is running" container_is_running
+wait_until "${PMHQ_CONTAINER} has no Podman restart policy" container_has_no_restart_policy
 wait_until "${PMHQ_CONTAINER} has a default route" container_has_default_route
 wait_until "${PMHQ_CONTAINER} can reach QQ login network" container_can_reach_login_network
 wait_until "${PMHQ_CONTAINER} is healthy" container_is_healthy

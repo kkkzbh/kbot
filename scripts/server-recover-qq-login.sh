@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${QQBOT_SERVER_ENV_FILE:-${ROOT_DIR}/.env.server}"
-STATE_FILE="${QQBOT_SERVER_LOGIN_RECOVERY_FILE:-${ROOT_DIR}/.server-login-recovery.env}"
+ENV_FILE="${QQBOT_PMHQ_ENV_FILE:-/opt/qqbot/shared/.env.pmhq}"
+STATE_FILE="${QQBOT_SERVER_LOGIN_RECOVERY_FILE:-${ENV_FILE}.login-recovery}"
 
 if [ $# -ne 1 ]; then
   echo "Usage: $0 prepare|restore" >&2
@@ -50,13 +50,14 @@ NODE
 }
 
 restart_server_target() {
-  systemctl daemon-reload
+  systemctl restart qqbot-pmhq.service
   systemctl restart qqbot.target
 }
 
 prepare_manual_login() {
   load_env
 
+  umask 077
   cat > "${STATE_FILE}" <<EOF
 AUTO_LOGIN_QQ_ORIG=${AUTO_LOGIN_QQ:-}
 EOF
@@ -67,9 +68,8 @@ EOF
     systemctl stop qqbot.target >/dev/null 2>&1 || true
   fi
 
-  systemctl daemon-reload
-  systemctl start qqbot-pmhq.service
-  systemctl start qqbot-llbot.service
+  systemctl restart qqbot-pmhq.service
+  systemctl start qqbot.target
   "${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh" full
 
   cat <<EOF

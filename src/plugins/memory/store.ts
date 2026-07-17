@@ -669,6 +669,27 @@ export class MemoryStore {
     });
   }
 
+  async requeueDeadLetterJob(id: number): Promise<boolean> {
+    const [job] = await this.database.get('memory_job', { id, status: 'dead_letter' }) as MemoryJobRecord[];
+    if (!job) return false;
+    await this.database.set('memory_job', { id, status: 'dead_letter' }, {
+      status: 'pending',
+      retryCount: 0,
+      nextRunAt: Date.now(),
+      lockedAt: null,
+      lastError: null,
+      updatedAt: Date.now(),
+    });
+    return true;
+  }
+
+  async discardDeadLetterJob(id: number): Promise<boolean> {
+    const [job] = await this.database.get('memory_job', { id, status: 'dead_letter' }) as MemoryJobRecord[];
+    if (!job) return false;
+    await this.database.remove('memory_job', { id, status: 'dead_letter' });
+    return true;
+  }
+
   async requeueStaleProcessingJobs(lockTimeoutMs: number): Promise<number> {
     const rows = await this.database.get('memory_job', { status: 'processing' }) as MemoryJobRecord[];
     const threshold = Date.now() - lockTimeoutMs;

@@ -1,19 +1,39 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
+import type { BotServiceRuntimeState, BotServiceStatus, OperationalEventItem } from '@contracts';
 import EmptyState from '@/components/EmptyState.vue';
 import { api } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
-type Overview = any;
+type Overview = {
+  services: BotServiceStatus[];
+  serviceSummary: { total: number; running: number; healthy: number; degraded: number; stopped: number };
+  currentModel: { model: string; title: string } | null;
+  defaultPreset: string | null;
+  memory: { summary: { factCount: number; episodeCount: number; pendingReviewCount: number } };
+  events: { openCount: number; pending: OperationalEventItem[] };
+  apply: { restartRequired: boolean; reasons: string[] };
+};
 const state = ref<Overview | null>(null);
 const loading = ref(true);
 const router = useRouter();
 const runtime = useRuntimeStore();
 let timer: number | undefined;
 
-const unhealthy = computed(() => state.value?.services?.filter((item: any) => item.activeState !== 'active') ?? []);
+const runtimeLabels: Record<BotServiceRuntimeState, string> = {
+  healthy: '运行正常',
+  degraded: '运行中 · 需关注',
+  stopped: '已停止',
+  unknown: '状态未知',
+};
+
+function stateClass(state: BotServiceRuntimeState): string {
+  if (state === 'healthy') return 'ok';
+  if (state === 'degraded' || state === 'unknown') return 'warn';
+  return 'error';
+}
 
 async function load(silent = false) {
   if (!silent) loading.value = true;
@@ -23,6 +43,7 @@ async function load(silent = false) {
     runtime.currentModel = next.currentModel?.model || '未配置模型';
     runtime.running = next.serviceSummary.running;
     runtime.total = next.serviceSummary.total;
+    runtime.openEventCount = next.events.openCount;
     runtime.updateApply(next.apply);
   } catch (error) {
     if (!silent) ElMessage.error(error instanceof Error ? error.message : '总览加载失败');
@@ -44,7 +65,7 @@ onBeforeUnmount(() => window.clearInterval(timer));
     <section class="panel overview-summary">
       <article class="summary-item">
         <span>运行服务</span>
-        <div><strong>{{ state.serviceSummary.running }}/{{ state.serviceSummary.total }}</strong><small>{{ state.serviceSummary.failed ? `${state.serviceSummary.failed} 个失败` : '全部正常' }}</small></div>
+        <div><strong>{{ state.serviceSummary.running }}/{{ state.serviceSummary.total }}</strong><small>{{ state.serviceSummary.degraded ? `${state.serviceSummary.degraded} 个需关注` : state.serviceSummary.stopped ? `${state.serviceSummary.stopped} 个已停止` : '全部正常' }}</small></div>
       </article>
       <article class="summary-item summary-model">
         <span>当前模型</span>
@@ -62,22 +83,20 @@ onBeforeUnmount(() => window.clearInterval(timer));
     </section>
     <section class="overview-operations">
       <article class="panel compact-panel">
-        <div class="panel-head"><div><h2>服务健康</h2><p>{{ state.serviceSummary.running }}/{{ state.serviceSummary.total }} 正在运行</p></div><el-button text @click="router.push('/runtime/services')">管理 →</el-button></div>
+        <div class="panel-head"><div><h2>服务健康</h2><p>{{ state.serviceSummary.healthy }} 个健康，{{ state.serviceSummary.degraded }} 个需关注</p></div><el-button text @click="router.push('/runtime/services')">管理 →</el-button></div>
         <div class="service-list">
           <div v-for="service in state.services" :key="service.unit" class="service-row">
             <div><strong>{{ service.description }}</strong><span class="mono muted">{{ service.unit }}</span></div>
-            <span class="service-state"><i class="status-dot" :class="service.activeState === 'active' ? 'ok' : 'error'" />{{ service.subState }}</span>
+            <span class="service-state"><i class="status-dot" :class="stateClass(service.runtimeState)" />{{ runtimeLabels[service.runtimeState] }}</span>
           </div>
         </div>
       </article>
       <article class="panel compact-panel">
-          <div class="panel-head"><div><h2>待处理事项</h2><p>需要人工关注的运行状态</p></div></div>
-          <div v-if="unhealthy.length || state.memory.summary.pendingReviewCount || state.memory.summary.deadLetterJobs" class="issue-list">
-            <button v-for="service in unhealthy" :key="service.unit" @click="router.push('/runtime/services')"><i class="status-dot error" /><span><strong>{{ service.description }}</strong><small>{{ service.activeState }} / {{ service.subState }}</small></span></button>
-            <button v-if="state.memory.summary.pendingReviewCount" @click="router.push('/intelligence/memory')"><i class="status-dot warn" /><span><strong>{{ state.memory.summary.pendingReviewCount }} 项记忆待审核</strong><small>进入长期记忆处理候选记录</small></span></button>
-            <button v-if="state.memory.summary.deadLetterJobs" @click="router.push('/intelligence/memory')"><i class="status-dot error" /><span><strong>{{ state.memory.summary.deadLetterJobs }} 个 dead letter job</strong><small>检查记忆任务失败原因</small></span></button>
+          <div class="panel-head"><div><h2>待处理事件</h2><p>{{ state.events.openCount }} 项尚未确认</p></div><el-button text @click="router.push('/runtime/events')">全部 →</el-button></div>
+          <div v-if="state.events.pending.length" class="issue-list">
+            <button v-for="event in state.events.pending" :key="event.id" @click="router.push(`/runtime/events?id=${event.id}`)"><i class="status-dot" :class="event.severity === 'error' ? 'error' : 'warn'" /><span><strong>{{ event.title }}</strong><small>{{ event.summary }}</small></span></button>
           </div>
-          <EmptyState v-else title="当前没有待处理事项" description="轮询每 10 秒更新一次。" />
+          <EmptyState v-else title="当前没有待处理事件" description="事件采集器每 10 秒同步一次。" />
       </article>
     </section>
   </div>

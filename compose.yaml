@@ -10,11 +10,9 @@ services:
       ENABLE_HEADLESS: "${ENABLE_HEADLESS:-false}"
       AUTO_LOGIN_QQ: "${AUTO_LOGIN_QQ:-}"
       TZ: "${TZ:-Asia/Shanghai}"
-    labels:
-      com.qqbot.pmhq.config-signature: "${QQBOT_PMHQ_CONFIG_SIGNATURE:-unmanaged}"
     volumes:
       - ${PMHQ_QQ_CONFIG_DIR:-./data/pmhq/QQ}:/root/.config/QQ:Z
-    restart: always
+    restart: "no"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:13000/health"]
       interval: 30s

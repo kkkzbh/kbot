@@ -42,11 +42,11 @@ describe('qq voice config wiring', () => {
     expect(content).toContain('chatluna-agent:computer-agent: {}');
   });
 
-  it('keeps compose focused on pmhq and voice-asr only', () => {
+  it('keeps the local compose health contract for pmhq and voice-asr', () => {
     const content = readFileSync(resolve(process.cwd(), 'compose.yaml'), 'utf8');
 
     expect(content).toContain('"${PMHQ_BIND_HOST:-127.0.0.1}:${PMHQ_PORT:-13000}:13000"');
-    expect(content).toContain('restart: always');
+    expect(content).toContain('restart: "no"');
     expect(content).not.toContain('network_mode: "pasta:');
     expect(content).toContain('voice-asr:');
     expect(content).toContain('"127.0.0.1:${VOICE_ASR_PORT:-5161}:8080"');
@@ -114,19 +114,11 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('pmhq:13000');
   });
 
-  it('bridges llbot home to the pmhq qq mount and removes legacy cni artifacts before pmhq startup', () => {
+  it('bridges llbot home to its isolated runtime directory', () => {
     const llbotScript = readFileSync(resolve(process.cwd(), 'scripts/run-llbot-host.sh'), 'utf8');
-    const pmhqScript = readFileSync(resolve(process.cwd(), 'scripts/podman-pmhq-service.sh'), 'utf8');
 
     expect(llbotScript).toContain('export QQBOT_HOST_HOME="${HOST_HOME}"');
     expect(llbotScript).toContain('export HOME="${LLBOT_RUNTIME_DIR}/.host-home"');
-    expect(pmhqScript).toContain('remove_legacy_cni_artifacts');
-    expect(pmhqScript).toContain('podman network rm qqbot-stack_default qqbot-stack_app_network');
-    expect(pmhqScript).toContain('rm -f /etc/cni/net.d/qqbot-stack_default.conflist /etc/cni/net.d/qqbot-stack_app_network.conflist');
-    expect(pmhqScript).toContain('host_login_network_ready');
-    expect(pmhqScript).toContain('pmhq_container_has_default_route');
-    expect(pmhqScript).toContain('pmhq_container_can_reach_login_network');
-    expect(pmhqScript).toContain('remove_unusable_pmhq_container');
   });
 
   it('ships a laptop-local TTS env template', () => {
@@ -168,49 +160,6 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('<qqbot-voice>');
   });
 
-
-  it('ships a dedicated pmhq compose helper for the host topology', () => {
-    const content = readFileSync(resolve(process.cwd(), 'scripts/podman-pmhq-service.sh'), 'utf8');
-
-    expect(content).toContain('Usage: $0 up|stop|restart|recreate');
-    expect(content).toContain('COMPOSE_CMD="podman-compose"');
-    expect(content).toContain('"${COMPOSE_CMD}" -f "${COMPOSE_FILE}" "$@"');
-    expect(content).toContain('compose up -d pmhq');
-    expect(content).toContain('compose stop pmhq');
-    expect(content).toContain('pmhq_desired_signature');
-    expect(content).toContain('remove_stale_pmhq_container');
-    expect(content).toContain('QQBOT_PMHQ_CONFIG_SIGNATURE');
-    expect(content).not.toContain('QQBOT_PODMAN_COMPOSE_BIN');
-    expect(content).not.toContain('podman)" "compose');
-    expect(content).toContain('remove_legacy_llbot_container');
-    expect(content).toContain('QQBOT_PMHQ_LOGIN_NETWORK_PROBE_URL');
-    expect(content).toContain('wait_for "host login network is reachable"');
-    expect(content).toContain('wait_for "${PMHQ_CONTAINER} outbound network is ready"');
-    expect(content).not.toContain('compose up -d llbot');
-  });
-
-  it('clears podman-restart global stop during systemd rendering', () => {
-    const content = readFileSync(resolve(process.cwd(), 'deploy/render-systemd.mjs'), 'utf8');
-
-    expect(content).toContain("join(systemdDir, 'podman-restart.service.d')");
-    expect(content).toContain("'qqbot-no-global-stop.conf'");
-    expect(content).toContain('ExecStop=');
-  });
-
-
-  it('ships a one-shot server login recovery helper for pmhq and llbot services', () => {
-    const content = readFileSync(resolve(process.cwd(), 'scripts/server-recover-qq-login.sh'), 'utf8');
-
-    expect(content).toContain('Usage: $0 prepare|restore');
-    expect(content).toContain('AUTO_LOGIN_QQ_ORIG=');
-    expect(content).toContain('systemctl stop qqbot.target');
-    expect(content).toContain('systemctl start qqbot-pmhq.service');
-    expect(content).toContain('systemctl start qqbot-llbot.service');
-    expect(content).toContain('${ROOT_DIR}/scripts/verify-qqbot-host-runtime.sh" full');
-    expect(content).toContain('AUTO_LOGIN_QQ is temporarily cleared in ${ENV_FILE}.');
-    expect(content).toContain('systemctl restart qqbot.target');
-    expect(content).toContain('set_auto_login_value');
-  });
 
   it('ships a server voice env validator that rejects empty or loopback TTS settings', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/validate-server-voice-env.mjs'), 'utf8');

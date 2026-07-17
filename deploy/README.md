@@ -68,7 +68,7 @@ When a full deploy is required, the script runs typecheck, tests, build, package
 
 ## Services
 
-Systemd owns the application stack, while PMHQ is an independent stateful QQ login service:
+Systemd owns the application stack. PMHQ is rendered from `/etc/containers/systemd/qqbot-pmhq.container`; Quadlet generates the long-running `qqbot-pmhq.service`:
 
 ```text
 qqbot-pmhq.service
@@ -84,9 +84,11 @@ qqbot.target
 PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot, the independent admin workspace at `/`, and its authenticated HTTP API. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
 The Genshin Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-genshin.token` and exposes the bind page through `genshin.kkkzbh.cn`.
 
-Deploy installs `/etc/systemd/system/podman-restart.service.d/qqbot-no-global-stop.conf` so the Podman boot helper can start restart-policy containers without stopping unrelated root Podman containers later. PMHQ has `restart: always`; stop it through `qqbot-pmhq.service`, not through global Podman stop-all commands.
+Quadlet is the only PMHQ lifecycle owner. Its healthcheck delays systemd readiness until `/health` succeeds, kills an unhealthy container, and lets systemd restart it. The dedicated `/opt/qqbot/shared/.env.pmhq` contains only PMHQ container environment values and is regenerated with mode `0600` during deploy. Podman's global restart-policy helper does not start PMHQ.
 
 Do not restart or recreate PMHQ during ordinary deploys, code updates, or bot restarts. PMHQ contains the QQ desktop device profile; touching it can make QQ treat the server as a new device. Restart LLBot and Koishi for normal runtime recovery.
+
+The first deployment that migrates an existing Compose-managed PMHQ container to Quadlet replaces that container once while preserving `/opt/qqbot/data/pmhq/QQ`. Perform that migration in a maintenance window and verify QQ login immediately afterward. Later ordinary deploys leave the running PMHQ unit untouched.
 
 ## Operations
 
@@ -101,4 +103,4 @@ ssh km6 'systemctl stop qqbot.target'
 ssh km6 'bash /opt/qqbot/app/qqbot/deploy/verify.sh full'
 ```
 
-Use `systemctl restart qqbot-pmhq.service` only for explicit QQ login recovery. Use `scripts/podman-pmhq-service.sh recreate` only when you intentionally accept a new QQ device/profile risk.
+Use `systemctl restart qqbot-pmhq.service` only for explicit QQ login recovery. `scripts/server-recover-qq-login.sh` temporarily changes the dedicated PMHQ environment, restarts PMHQ, and restores the original quick-login value after manual recovery.

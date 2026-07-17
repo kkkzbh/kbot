@@ -124,6 +124,7 @@ export type AdminRuntimeManagerOptions = {
   bundledPresetDirPaths?: string[];
   fs?: FsLike;
   execFile?: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
+  fetchFn?: typeof fetch;
   copilotBridge?: CopilotBridgeStateProvider;
   codexBridge?: CodexBridgeStateProvider;
 };
@@ -1232,17 +1233,30 @@ export function parseSystemdShowOutput(text: string, unit: BotServiceUnit): BotS
 
   const activeState = values.ActiveState || 'unknown';
   const unitFileState = values.UnitFileState || 'unknown';
+  const subState = values.SubState || 'unknown';
+  const runtimeState = activeState === 'active'
+    ? 'healthy'
+    : activeState === 'inactive' || activeState === 'failed'
+      ? 'stopped'
+      : 'unknown';
   return {
     unit,
     description: values.Description || unit,
-    loadState: values.LoadState || 'unknown',
-    activeState,
-    subState: values.SubState || 'unknown',
-    unitFileState,
+    runtimeState,
+    controllerState: {
+      loadState: values.LoadState || 'unknown',
+      activeState,
+      subState,
+      unitFileState,
+      result: values.Result || 'unknown',
+      invocationId: values.InvocationID || null,
+    },
+    checkedAt: Date.now(),
+    healthDetail: `systemd 当前状态为 ${activeState}/${subState}`,
     canStart: activeState !== 'active',
     canStop: activeState === 'active',
     canRestart: activeState === 'active',
-    canEnable: !['enabled', 'static'].includes(unitFileState),
+    canEnable: !['enabled', 'static', 'generated'].includes(unitFileState),
   };
 }
 
@@ -1353,6 +1367,7 @@ export class AdminRuntimeManager {
   readonly ttsEnvFilePath: string;
   readonly fs: FsLike;
   readonly execFile: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
+  readonly fetchFn: typeof fetch;
   readonly copilotBridge?: CopilotBridgeStateProvider;
   readonly codexBridge?: CodexBridgeStateProvider;
   private ttsHealth: AdminTtsHealthSnapshot | null = null;
@@ -1402,6 +1417,7 @@ export class AdminRuntimeManager {
       : resolveTtsEnvFilePath(this.rootDir);
     this.fs = options.fs ?? defaultFs();
     this.execFile = options.execFile ?? defaultExec;
+    this.fetchFn = options.fetchFn ?? fetch;
     this.copilotBridge = options.copilotBridge;
     this.codexBridge = options.codexBridge;
   }
@@ -1839,7 +1855,8 @@ export class AdminRuntimeManager {
       await this.scheduleRestart(unit);
       return this.getServiceStatus(unit);
     }
-    await this.execFile('systemctl', withSystemdScope(this.systemdScope, [action, unit]), { cwd: this.rootDir, timeout: 15_000 });
+    const timeout = unit === 'qqbot-pmhq.service' && (action === 'start' || action === 'restart') ? 180_000 : 15_000;
+    await this.execFile('systemctl', withSystemdScope(this.systemdScope, [action, unit]), { cwd: this.rootDir, timeout });
     return this.getServiceStatus(unit);
   }
 
@@ -1858,11 +1875,115 @@ export class AdminRuntimeManager {
         'show',
         unit,
         '--property',
-        'Description,LoadState,ActiveState,SubState,UnitFileState',
+        'Description,LoadState,ActiveState,SubState,UnitFileState,Result,InvocationID',
       ]),
       { cwd: this.rootDir, timeout: 15_000 },
     );
-    return parseSystemdShowOutput(stdout, unit);
+    const status = parseSystemdShowOutput(stdout, unit);
+    if (unit !== 'qqbot-pmhq.service') return status;
+    return this.probePmhqHealth(status);
+  }
+
+  private async probePmhqHealth(status: BotServiceStatus): Promise<BotServiceStatus> {
+    try {
+      const response = await this.fetchFn('http://127.0.0.1:13000/health', {
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (!response.ok) {
+        return {
+          ...status,
+          runtimeState: status.controllerState.activeState === 'active' ? 'degraded' : 'stopped',
+          checkedAt: Date.now(),
+          healthDetail: `PMHQ health endpoint 返回 HTTP ${response.status}`,
+        };
+      }
+      const controllerActive = status.controllerState.activeState === 'active';
+      return {
+        ...status,
+        runtimeState: controllerActive ? 'healthy' : 'degraded',
+        checkedAt: Date.now(),
+        healthDetail: controllerActive
+          ? 'PMHQ health endpoint 正常'
+          : `PMHQ 工作负载健康，systemd 控制状态为 ${status.controllerState.activeState}/${status.controllerState.subState}`,
+      };
+    } catch (error) {
+      return {
+        ...status,
+        runtimeState: status.controllerState.activeState === 'active' ? 'degraded' : 'stopped',
+        checkedAt: Date.now(),
+        healthDetail: `PMHQ health endpoint 无法访问：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  async readServiceFailureJournal(afterCursor: string | null): Promise<{
+    entries: Array<{
+      cursor: string;
+      bootId: string;
+      invocationId: string;
+      unit: BotServiceUnit;
+      result: string;
+      message: string;
+      occurredAt: number;
+    }>;
+    cursor: string | null;
+  }> {
+    const args = [
+      ...(this.systemdScope === 'user' ? ['--user'] : []),
+      '--no-pager',
+      '--output=json',
+      '--show-cursor',
+      ...(afterCursor ? [`--after-cursor=${afterCursor}`] : ['--boot']),
+      'MESSAGE_ID=be02cf6855d2428ba40df7e9d022f03d',
+    ];
+    const { stdout } = await this.execFile('journalctl', args, { cwd: this.rootDir, timeout: 15_000 });
+    const lines = stdout.split(/\r?\n/).filter(Boolean);
+    const cursorLine = lines.filter((line) => line.startsWith('-- cursor: ')).at(-1);
+    const entries = lines.flatMap((line) => {
+      if (!line.startsWith('{')) return [];
+      let record: Record<string, unknown>;
+      try {
+        record = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return [];
+      }
+      const unit = String(record.UNIT ?? '');
+      if (!this.managedServiceUnits.includes(unit as BotServiceUnit)) return [];
+      const invocationId = String(record.INVOCATION_ID ?? '');
+      const cursor = String(record.__CURSOR ?? '');
+      const bootId = String(record._BOOT_ID ?? '');
+      if (!invocationId || !cursor || !bootId) return [];
+      const realtimeMicros = Number(record.__REALTIME_TIMESTAMP ?? 0);
+      return [{
+        cursor,
+        bootId,
+        invocationId,
+        unit: unit as BotServiceUnit,
+        result: String(record.JOB_RESULT ?? 'failed'),
+        message: typeof record.MESSAGE === 'string' ? record.MESSAGE : `Failed to start ${unit}`,
+        occurredAt: Number.isFinite(realtimeMicros) ? Math.floor(realtimeMicros / 1_000) : Date.now(),
+      }];
+    });
+    return {
+      entries,
+      cursor: cursorLine?.slice('-- cursor: '.length).trim() || entries.at(-1)?.cursor || afterCursor,
+    };
+  }
+
+  async readServiceInvocationJournal(unit: BotServiceUnit, invocationId: string): Promise<string[]> {
+    validateServiceAction(unit, 'start');
+    if (!this.managedServiceUnits.includes(unit)) throw new Error(`当前运行角色不支持这个服务：${unit}`);
+    if (!/^[a-f0-9]{32}$/i.test(invocationId)) throw new Error('systemd invocation id 格式无效');
+    const { stdout } = await this.execFile('journalctl', [
+      ...(this.systemdScope === 'user' ? ['--user'] : []),
+      '--no-pager',
+      '--output=short-iso',
+      '--lines=200',
+      `_SYSTEMD_INVOCATION_ID=${invocationId}`,
+      '+',
+      `INVOCATION_ID=${invocationId}`,
+    ], { cwd: this.rootDir, timeout: 15_000 });
+    return stdout.split(/\r?\n/).filter(Boolean);
   }
 
   async listPresetSummaries(): Promise<PresetSummary[]> {

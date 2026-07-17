@@ -27,6 +27,8 @@ import type {
 
 export type ServiceAction = 'start' | 'stop' | 'restart' | 'enable';
 
+export type BotServiceRuntimeState = 'healthy' | 'degraded' | 'stopped' | 'unknown';
+
 export type BotServiceUnit =
   | 'qqbot.target'
   | 'qqbot-pmhq.service'
@@ -40,14 +42,66 @@ export type BotServiceUnit =
 export interface BotServiceStatus {
   unit: BotServiceUnit;
   description: string;
-  loadState: string;
-  activeState: string;
-  subState: string;
-  unitFileState: string;
+  runtimeState: BotServiceRuntimeState;
+  controllerState: {
+    loadState: string;
+    activeState: string;
+    subState: string;
+    unitFileState: string;
+    result: string;
+    invocationId: string | null;
+  };
+  checkedAt: number;
+  healthDetail: string;
   canStart: boolean;
   canStop: boolean;
   canRestart: boolean;
   canEnable: boolean;
+}
+
+export type OperationalEventSource = 'systemd' | 'memory';
+export type OperationalEventType =
+  | 'service_start_failed'
+  | 'service_controller_mismatch'
+  | 'memory_job_dead_letter'
+  | 'memory_review_required';
+export type OperationalEventSeverity = 'warning' | 'error';
+export type OperationalEventStatus = 'open' | 'acknowledged' | 'resolved';
+export type OperationalEventResolution = 'recovered' | 'retried' | 'discarded' | 'completed' | null;
+export type OperationalEventAction = 'acknowledge' | 'retry' | 'discard';
+
+export interface OperationalEventItem {
+  id: number;
+  sourceKey: string;
+  source: OperationalEventSource;
+  type: OperationalEventType;
+  severity: OperationalEventSeverity;
+  status: OperationalEventStatus;
+  resolution: OperationalEventResolution;
+  title: string;
+  summary: string;
+  unit: BotServiceUnit | null;
+  invocationId: string | null;
+  memoryJobId: number | null;
+  memoryCandidateId: number | null;
+  occurredAt: number;
+  acknowledgedAt: number | null;
+  resolvedAt: number | null;
+  updatedAt: number;
+  availableActions: OperationalEventAction[];
+  targetPath: string;
+}
+
+export interface OperationalEventPage {
+  items: OperationalEventItem[];
+  total: number;
+  openCount: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface OperationalEventDetail extends OperationalEventItem {
+  journal: string[];
 }
 
 export interface EnvPatch {

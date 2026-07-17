@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import {
   Award,
+  BellRing,
   Blocks,
   BookOpenCheck,
   ChevronDown,
@@ -28,6 +29,7 @@ import {
 } from '@lucide/vue';
 import { useSessionStore } from '@/stores/session';
 import { useRuntimeStore } from '@/stores/runtime';
+import { api } from '@/api/client';
 
 type NavItem = {
   key: string;
@@ -42,6 +44,7 @@ const groups: NavGroup[] = [
   { label: '总览', items: [{ key: 'overview', label: '运行总览', path: '/', icon: LayoutDashboard }] },
   { label: '运行与监控', items: [
     { key: 'services', label: '服务管理', path: '/runtime/services', icon: Server },
+    { key: 'events', label: '事件中心', path: '/runtime/events', icon: BellRing },
     { key: 'logs', label: '运行日志', path: '/runtime/logs', icon: ScrollText },
   ] },
   { label: '对话智能', items: [
@@ -92,6 +95,16 @@ const filteredCommands = computed(() => {
 const restartTitle = computed(() => runtime.restartReasons.length
   ? `配置等待重启：${runtime.restartReasons.join(' · ')}`
   : '配置等待重启');
+let eventTimer: number | undefined;
+
+async function loadEventSummary(): Promise<void> {
+  try {
+    const summary = await api<{ openCount: number }>('/events/summary');
+    runtime.openEventCount = summary.openCount;
+  } catch {
+    // The page-level API error UI remains the owner of visible fetch failures.
+  }
+}
 
 function isActive(item: NavItem): boolean {
   return item.path === route.path;
@@ -136,8 +149,15 @@ function handleKeyboard(event: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', handleKeyboard));
-onBeforeUnmount(() => window.removeEventListener('keydown', handleKeyboard));
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyboard);
+  void loadEventSummary();
+  eventTimer = window.setInterval(loadEventSummary, 10_000);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeyboard);
+  window.clearInterval(eventTimer);
+});
 watch(() => route.path, activateRouteBranch, { immediate: true });
 </script>
 
@@ -158,6 +178,7 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
             >
               <component :is="item.icon" :size="18" :stroke-width="1.8" class="nav-icon" />
               <span>{{ item.label }}</span>
+              <span v-if="item.key === 'events' && runtime.openEventCount" class="nav-badge">{{ runtime.openEventCount > 99 ? '99+' : runtime.openEventCount }}</span>
               <ChevronDown v-if="item.children" :size="15" class="nav-chevron" :class="{ expanded: expandedBranches[item.key] }" />
             </button>
             <div v-if="item.children" v-show="expandedBranches[item.key]" class="nav-submenu">

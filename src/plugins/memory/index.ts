@@ -18,6 +18,7 @@ import { extractPlainText, MemoryStore } from './store.js';
 export { MemoryStore } from './store.js';
 import { MemoryAdminService } from './admin.js';
 export { MemoryAdminService } from './admin.js';
+export type { MemoryOperationalAttentionItem } from './admin.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };

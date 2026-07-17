@@ -5,6 +5,7 @@ export const useRuntimeStore = defineStore('runtime', {
     currentModel: '加载中',
     running: 0,
     total: 0,
+    openEventCount: 0,
     restartRequired: false,
     restartReasons: [] as string[],
   }),

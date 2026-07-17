@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { useRoute, useRouter } from 'vue-router';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import { api, jsonBody } from '@/api/client';
@@ -9,7 +10,14 @@ const state = ref<any | null>(null);
 const users = ref<any[]>([]);
 const records = ref<any[]>([]);
 const selectedUser = ref('');
-const activeKind = ref<'facts'|'episodes'|'reviews'|'jobs'|'audit'>('facts');
+const route = useRoute();
+const router = useRouter();
+const requestedTab = String(route.query.tab || '');
+const activeKind = ref<'facts'|'episodes'|'reviews'|'jobs'|'audit'>(
+  ['facts', 'episodes', 'reviews', 'jobs', 'audit'].includes(requestedTab)
+    ? requestedTab as 'facts'|'episodes'|'reviews'|'jobs'|'audit'
+    : 'facts',
+);
 const loading = ref(false);
 const probing = ref('');
 const userPage = reactive({ page: 1, pageSize: 15, total: 0, search: '' });
@@ -96,7 +104,11 @@ async function exportUser() {
   URL.revokeObjectURL(url);
 }
 
-watch(activeKind, () => { recordPage.page = 1; loadRecords(); });
+watch(activeKind, () => {
+  recordPage.page = 1;
+  void router.replace({ query: { ...route.query, tab: activeKind.value } });
+  void loadRecords();
+});
 onMounted(async () => { await Promise.all([loadState(), loadUsers()]); await loadRecords(); });
 </script>
 

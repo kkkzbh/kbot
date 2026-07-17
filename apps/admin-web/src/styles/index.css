@@ -34,6 +34,7 @@ a { color: inherit; text-decoration: none; }
 .nav-item:hover .nav-icon { color: #5f78a8; }
 .nav-item.active .nav-icon, .nav-item.branch-active .nav-icon { color: #4068cf; }
 .nav-chevron { margin-left: auto; transition: transform .18s ease; }
+.nav-badge { margin-left: auto; min-width: 19px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; border-radius: 9px; color: #fff; background: #e05265; font-size: 9px; font-weight: 700; }
 .nav-chevron.expanded { transform: rotate(180deg); }
 .nav-submenu { position: relative; display: grid; gap: 2px; margin: 4px 0 8px 17px; padding-left: 13px; }
 .nav-submenu::before { content: ""; position: absolute; inset: 3px auto 3px 0; width: 1px; background: #dde4ee; }

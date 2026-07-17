@@ -66,6 +66,16 @@ export const serviceActionRequestSchema = z.object({
   action: serviceActionSchema,
 });
 
+export const operationalEventListQuerySchema = z.object({
+  view: z.enum(['pending', 'history']).default('pending'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const operationalEventActionRequestSchema = z.object({
+  action: z.enum(['acknowledge', 'retry', 'discard']),
+});
+
 export const settingsSectionSchema = z.enum(['basic', 'features', 'model']);
 
 export const settingsChangeSchema = z.object({
@@ -207,3 +217,14 @@ export type SettingsSection = z.infer<typeof settingsSectionSchema>;
 export type SettingsPatchRequest = z.infer<typeof settingsPatchRequestSchema>;
 export type MemoryKind = z.infer<typeof memoryKindSchema>;
 export type MemoryMutation = z.infer<typeof memoryMutationSchema>;
+export type OperationalEventListQuery = z.infer<typeof operationalEventListQuerySchema>;
+export type OperationalEventActionRequest = z.infer<typeof operationalEventActionRequestSchema>;
+export type {
+  BotServiceStatus,
+  BotServiceRuntimeState,
+  BotServiceUnit,
+  OperationalEventAction,
+  OperationalEventDetail,
+  OperationalEventItem,
+  OperationalEventPage,
+} from '../../types/admin.js';

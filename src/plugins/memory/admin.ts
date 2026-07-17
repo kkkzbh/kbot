@@ -273,6 +273,17 @@ export type MemoryAdminMutation =
   | { action: 'review'; candidateId: number; decision: 'approve' | 'reject' | 'private' }
   | { action: 'forget'; userKey: string; type?: 'fact' | 'episode'; id?: number; topicKey?: string; contextKey?: string; all?: boolean };
 
+export type MemoryOperationalAttentionItem = {
+  sourceKey: string;
+  type: 'memory_job_dead_letter' | 'memory_review_required';
+  severity: 'warning' | 'error';
+  title: string;
+  summary: string;
+  memoryJobId: number | null;
+  memoryCandidateId: number | null;
+  occurredAt: number;
+};
+
 export class MemoryAdminService {
   constructor(
     private readonly database: MemoryDatabaseLike,
@@ -302,6 +313,43 @@ export class MemoryAdminService {
     if (input.topicKey) return (await this.store.forgetTopic(input.userKey, input.topicKey, input.contextKey ?? null)) > 0;
     if (input.contextKey) return (await this.store.forgetContext(input.userKey, input.contextKey)) > 0;
     return this.store.forgetMemory({ userKey: input.userKey, type: input.type ?? 'fact', id: Number(input.id) });
+  }
+
+  async getOperationalAttentionItems(): Promise<MemoryOperationalAttentionItem[]> {
+    const [jobs, reviews] = await Promise.all([
+      this.database.get('memory_job', { status: 'dead_letter' }) as Promise<MemoryJobRecord[]>,
+      this.database.get('memory_candidate', { reviewStatus: 'pending_review' }) as Promise<MemoryCandidateRecord[]>,
+    ]);
+    return [
+      ...jobs.map((job): MemoryOperationalAttentionItem => ({
+        sourceKey: `memory-job:${job.id}:dead-letter:${Number(job.updatedAt ?? 0)}`,
+        type: 'memory_job_dead_letter',
+        severity: 'error',
+        title: `${job.jobType} 记忆任务进入 dead letter`,
+        summary: job.lastError || `任务已重试 ${job.retryCount} 次`,
+        memoryJobId: job.id,
+        memoryCandidateId: null,
+        occurredAt: Number(job.updatedAt ?? job.createdAt ?? Date.now()),
+      })),
+      ...reviews.map((review): MemoryOperationalAttentionItem => ({
+        sourceKey: `memory-review:${review.id}`,
+        type: 'memory_review_required',
+        severity: 'warning',
+        title: `${review.candidateType} 记忆等待审核`,
+        summary: `用户 ${review.ownerUserKey} · ${review.contextKey}`,
+        memoryJobId: null,
+        memoryCandidateId: review.id,
+        occurredAt: Number(review.createdAt ?? Date.now()),
+      })),
+    ];
+  }
+
+  async retryDeadLetterJob(id: number): Promise<void> {
+    if (!await this.store.requeueDeadLetterJob(id)) throw new Error(`找不到 dead-letter job：${id}`);
+  }
+
+  async discardDeadLetterJob(id: number): Promise<void> {
+    if (!await this.store.discardDeadLetterJob(id)) throw new Error(`找不到 dead-letter job：${id}`);
   }
 
   async exportUser(userKey: string): Promise<{ userKey: string; facts: any[]; episodes: any[]; provenance: any[] }> {

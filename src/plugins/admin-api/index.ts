@@ -13,6 +13,7 @@ import { AdminLogService } from './logs.js';
 import { registerAdminApi, type AdminRuntimeServices } from './http-api.js';
 import { registerAdminStatic } from './static.js';
 import { registerInternalBridges } from './internal-bridges.js';
+import { ensureOperationalEventTables, OperationalEventService } from './operational-events.js';
 
 export const name = 'admin-api';
 export const inject = {
@@ -58,6 +59,7 @@ export function apply(ctx: Context, config: Config): void {
     ttlSeconds: config.sessionTtlSeconds,
   });
   const logs = new AdminLogService();
+  ensureOperationalEventTables(ctx);
   ctx.on('dispose', () => logs.dispose());
   const services: AdminRuntimeServices = {
     database: ctx.database as unknown as AdminRuntimeServices['database'],
@@ -67,6 +69,12 @@ export function apply(ctx: Context, config: Config): void {
     get toolPolicy() { return runtimeCtx.toolPolicy; },
     get affinity() { return runtimeCtx.affinity; },
   };
+  const events = new OperationalEventService(
+    services.database,
+    manager,
+    () => runtimeCtx.memoryAdmin,
+    logger,
+  );
 
   manager.syncManagedChatLunaAgentConfig();
 
@@ -77,6 +85,7 @@ export function apply(ctx: Context, config: Config): void {
     session,
     services,
     logs,
+    events,
     copilotBridge,
     codexBridge,
     logger,
@@ -94,6 +103,7 @@ export function apply(ctx: Context, config: Config): void {
     getAffinity: () => runtimeCtx.affinity,
     logger,
   });
+  events.start(ctx);
 
   logger.info('independent admin workspace registered at /');
 }

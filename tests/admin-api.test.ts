@@ -124,12 +124,16 @@ describe('independent admin API plugin', () => {
     const getPaths = server.get.mock.calls.map((call) => call[0]);
     const postPaths = server.post.mock.calls.map((call) => call[0]);
     expect(getPaths).toContain('/api/admin/v1/overview');
+    expect(getPaths).toContain('/api/admin/v1/events');
+    expect(getPaths).toContain('/api/admin/v1/events/summary');
+    expect(getPaths).toContain('/api/admin/v1/events/:id');
     expect(getPaths).toContain('/api/admin/v1/memory/users');
     expect(getPaths).toContain('/api/admin/v1/logs');
     expect(getPaths).toContain('/');
     expect(getPaths).toContain('/assets/(.*)');
     expect(getPaths).toContain('/extensions/(.*)');
     expect(postPaths).toContain('/api/admin/v1/session');
+    expect(postPaths).toContain('/api/admin/v1/events/:id/action');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();

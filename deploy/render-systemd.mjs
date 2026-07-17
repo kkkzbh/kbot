@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 function envValue(name, fallback = '') {
@@ -26,6 +26,7 @@ const appDir = resolve(requireEnv('QQBOT_APP_DIR'));
 const dataDir = resolve(requireEnv('QQBOT_DATA_DIR'));
 const sharedDir = resolve(requireEnv('QQBOT_SHARED_DIR'));
 const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', '/etc/systemd/system'));
+const quadletDir = resolve(envValue('QQBOT_QUADLET_DIR', '/etc/containers/systemd'));
 const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
 const cloudflaredHbuJwTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE', '/etc/cloudflared/qqbot-hbu-jw.token'));
@@ -38,40 +39,63 @@ const runtime = quote(envRuntime);
 const hbuJwToken = quote(cloudflaredHbuJwTokenFile);
 const genshinToken = quote(cloudflaredGenshinTokenFile);
 const cloudflaredOrigin = quote(cloudflaredOriginUrl);
+const pmhqImage = envValue('PMHQ_IMAGE', 'docker.io/linyuchen/pmhq');
+const pmhqTag = envValue('PMHQ_TAG', 'latest');
+const pmhqBindHost = envValue('PMHQ_BIND_HOST', '127.0.0.1');
+const pmhqPort = envValue('PMHQ_PORT', '13000');
+
+if (pmhqBindHost !== '127.0.0.1') throw new Error('server PMHQ_BIND_HOST must be 127.0.0.1');
+if (!/^\d{2,5}$/.test(pmhqPort) || Number(pmhqPort) > 65535) throw new Error('invalid PMHQ_PORT');
+if (!/^[A-Za-z0-9._/:@-]+$/.test(pmhqImage) || !/^[A-Za-z0-9._-]+$/.test(pmhqTag)) {
+  throw new Error('invalid PMHQ image reference');
+}
 
 mkdirSync(systemdDir, { recursive: true });
+mkdirSync(quadletDir, { recursive: true });
 
 const podmanRestartDropInDir = join(systemdDir, 'podman-restart.service.d');
-mkdirSync(podmanRestartDropInDir, { recursive: true });
-writeUnit(podmanRestartDropInDir, 'qqbot-no-global-stop.conf', `
-[Service]
-# The boot helper may start shared root Podman containers, but stop belongs to
-# each app-specific service. Its vendor ExecStop stops every boot-managed
-# container and can take PMHQ down with unrelated stacks.
-ExecStop=
-`);
+const legacyPodmanRestartDropIn = join(podmanRestartDropInDir, 'qqbot-no-global-stop.conf');
+const legacyPmhqUnit = join(systemdDir, 'qqbot-pmhq.service');
+for (const file of [legacyPodmanRestartDropIn, legacyPmhqUnit]) {
+  if (!existsSync(file)) continue;
+  rmSync(file);
+  console.log(`[systemd] removed obsolete ${file}`);
+}
+try {
+  rmdirSync(podmanRestartDropInDir);
+} catch (error) {
+  if (error?.code !== 'ENOENT' && error?.code !== 'ENOTEMPTY') throw error;
+}
 
-writeUnit(systemdDir, 'qqbot-pmhq.service', `
+writeUnit(quadletDir, 'qqbot-pmhq.container', `
 [Unit]
 Description=QQBot PMHQ Service
 After=network-online.target
 Wants=network-online.target
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=${app}
-EnvironmentFile=${server}
-EnvironmentFile=-${runtime}
-Environment=CONTAINERS_CONF=${app}/config/podman/containers.conf
-Environment=QQBOT_ENV_BASE_FILE=${server}
-Environment=QQBOT_ENV_OVERRIDE_FILE=${runtime}
-ExecStartPre=/usr/bin/env bash -lc 'mkdir -p "${data}/pmhq/QQ"'
-ExecStart=/usr/bin/env bash -lc 'cd "${app}" && ./scripts/podman-pmhq-service.sh up'
-ExecStop=/usr/bin/env bash -lc 'cd "${app}" && ./scripts/podman-pmhq-service.sh stop'
+[Container]
+Image=${pmhqImage}:${pmhqTag}
+ContainerName=pmhq
+PublishPort=${pmhqBindHost}:${pmhqPort}:13000
+EnvironmentFile=${sharedDir}/.env.pmhq
+Volume=${dataDir}/pmhq/QQ:/root/.config/QQ:Z
+HealthCmd=curl -f http://localhost:13000/health
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=40s
+HealthOnFailure=kill
+Notify=healthy
+Pull=newer
 
-[Install]
-WantedBy=qqbot.target
+[Service]
+WorkingDirectory=${app}
+Environment=CONTAINERS_CONF=${app}/config/podman/containers.conf
+ExecStartPre=/usr/bin/env bash -lc 'mkdir -p "${data}/pmhq/QQ"'
+ExecStartPre=${app}/scripts/wait-pmhq-login-network.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=240
 `);
 
 writeUnit(systemdDir, 'qqbot-llbot.service', `

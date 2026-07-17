@@ -7,6 +7,7 @@ export const router = createRouter({
     { path: '/login', name: 'login', component: () => import('@/pages/LoginPage.vue'), meta: { public: true, title: '登录' } },
     { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '总览', description: '服务、模型与运行风险一览' } },
     { path: '/runtime/services', name: 'services', component: () => import('@/pages/ServicesPage.vue'), meta: { title: '服务管理', description: 'systemd 服务状态与生命周期操作' } },
+    { path: '/runtime/events', name: 'events', component: () => import('@/pages/EventsPage.vue'), meta: { title: '事件中心', description: '待处理运行事件与历史记录' } },
     { path: '/runtime/logs', name: 'logs', component: () => import('@/pages/LogsPage.vue'), meta: { title: '运行日志', description: 'Koishi 进程实时日志' } },
     { path: '/intelligence/models', name: 'models', component: () => import('@/pages/ModelsPage.vue'), meta: { title: '模型接口', description: 'Provider、模型与 OAuth 连接' } },
     { path: '/intelligence/presets', name: 'presets', component: () => import('@/pages/PresetsPage.vue'), meta: { title: '角色预设', description: '角色 prompt 与默认预设' } },
