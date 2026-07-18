@@ -5,7 +5,12 @@ import { pathToFileURL } from 'node:url';
 import { h } from 'koishi';
 import { assertGenshinAdvancedCookieCapability } from './cookie.js';
 import { decryptGenshinCredential } from './credential.js';
-import { GENSHIN_GACHA_ICON_BASE_URL, GENSHIN_GACHA_ICON_NAMES, GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME } from './gacha-icon-data.js';
+import {
+  GENSHIN_GACHA_ICON_BASE_URL,
+  GENSHIN_GACHA_ICON_NAMES,
+  GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME,
+  GENSHIN_GACHA_LOCAL_ICON_FILE_NAMES,
+} from './gacha-icon-data.js';
 import type { GenshinGachaIconResolver } from './gacha-icon-resolver.js';
 import { gachaRecordKey, gachaSyncKey, type GenshinStore } from './store.js';
 import {
@@ -728,6 +733,8 @@ function resolveGachaIconUrl(itemId: string, itemName: string, resolvedIconName:
     ?? GENSHIN_GACHA_ICON_NAMES[itemId as keyof typeof GENSHIN_GACHA_ICON_NAMES]
     ?? GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME[itemName as keyof typeof GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME];
   if (!iconName) return renderUnknownWishIconSrc(tone);
+  const localFileName = GENSHIN_GACHA_LOCAL_ICON_FILE_NAMES[iconName as keyof typeof GENSHIN_GACHA_LOCAL_ICON_FILE_NAMES];
+  if (localFileName) return pathToFileURL(join(__dirname, 'assets', localFileName)).href;
   return `${GENSHIN_GACHA_ICON_BASE_URL}${encodeURIComponent(iconName)}.png`;
 }
 

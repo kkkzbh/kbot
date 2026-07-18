@@ -1185,6 +1185,16 @@ describe('genshin gacha records renderer', () => {
         rankType: '4',
         time: '2026-07-08 19:41:00',
       }),
+      gachaRecord({
+        id: 7,
+        recordKey: gachaRecordKey('100000001', 'cn_gf01', '1000000000000000007'),
+        recordId: '1000000000000000007',
+        itemId: '10000133',
+        name: '桑多涅',
+        itemType: '角色',
+        rankType: '5',
+        time: '2026-07-08 19:29:00',
+      }),
     ], {
       uid: '100000001',
       nickname: '旅行者',
@@ -1208,10 +1218,13 @@ describe('genshin gacha records renderer', () => {
     expect(html).toContain('data:image/svg+xml');
     expect(html).toContain('https://enka.network/ui/UI_AvatarIcon_Nefer.png');
     expect(html).toContain('https://enka.network/ui/UI_AvatarIcon_Ayaka.png');
+    expect(html).toContain('file:///');
+    expect(html).toContain('/genshin/assets/UI_AvatarIcon_Sandrone.png');
     expect(html).toContain('https://enka.network/ui/UI_EquipIcon_Sword_Narukami.png');
     expect(html).toContain('https://enka.network/ui/UI_EquipIcon_Catalyst_Dvalin.png');
     expect(html).toContain('已垫 1 抽');
     expect(html).toContain('奈芙尔');
+    expect(html).toContain('桑多涅');
     expect(html).toContain('神里绫华');
     expect(html).toContain('雾切之回光');
     expect(html).toContain('天空之卷');

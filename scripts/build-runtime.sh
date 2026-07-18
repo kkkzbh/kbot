@@ -33,6 +33,8 @@ pnpm exec tsc -p tsconfig.build.json --outDir "$STAGE_DIST"
 QQBOT_ADMIN_OUT_DIR="$STAGE_ADMIN_DIR" pnpm admin:build
 mkdir -p "$STAGE_DIST/plugins/affinity/assets"
 cp -R "$ROOT_DIR/src/plugins/affinity/assets/." "$STAGE_DIST/plugins/affinity/assets/"
+mkdir -p "$STAGE_DIST/plugins/genshin/assets"
+cp -R "$ROOT_DIR/src/plugins/genshin/assets/." "$STAGE_DIST/plugins/genshin/assets/"
 mkdir -p "$STAGE_DIST/plugins/hbu-jw/assets"
 cp -R "$ROOT_DIR/src/plugins/hbu-jw/assets/." "$STAGE_DIST/plugins/hbu-jw/assets/"
 node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml --dist "$STAGE_DIST"

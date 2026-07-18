@@ -384,6 +384,7 @@ export const GENSHIN_GACHA_ICON_NAMES = {
   "10000130": "UI_AvatarIcon_Linnea",
   "10000131": "UI_AvatarIcon_Nicole",
   "10000132": "UI_AvatarIcon_Prune",
+  "10000133": "UI_AvatarIcon_Sandrone",
   "10000901": "UI_AvatarIcon_Mavuika",
   "10000902": "UI_AvatarIcon_Hutao",
   "10000903": "UI_AvatarIcon_Ineffa",
@@ -423,6 +424,10 @@ export const GENSHIN_GACHA_ICON_NAMES = {
 } as const satisfies Record<string, string>;
 
 export const GENSHIN_GACHA_ICON_BASE_URL = 'https://enka.network/ui/';
+
+export const GENSHIN_GACHA_LOCAL_ICON_FILE_NAMES = {
+  "UI_AvatarIcon_Sandrone": "UI_AvatarIcon_Sandrone.png",
+} as const satisfies Record<string, string>;
 
 export const GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME = {
   "阿贝多": "UI_AvatarIcon_Albedo",
@@ -500,6 +505,7 @@ export const GENSHIN_GACHA_ICON_NAMES_BY_ITEM_NAME = {
   "赛诺": "UI_AvatarIcon_Cyno",
   "赛索斯": "UI_AvatarIcon_Sethos",
   "砂糖": "UI_AvatarIcon_Sucrose",
+  "桑多涅": "UI_AvatarIcon_Sandrone",
   "珊瑚宫心海": "UI_AvatarIcon_Kokomi",
   "申鹤": "UI_AvatarIcon_Shenhe",
   "神里绫华": "UI_AvatarIcon_Ayaka",
