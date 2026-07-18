@@ -8,6 +8,7 @@
 - Server service management uses system-level systemd units: `qqbot.target`, `qqbot-pmhq.service`, `qqbot-llbot.service`, `qqbot-koishi.service`, and `cloudflared-qqbot-hbu-jw.service` under `/etc/systemd/system`.
 - Production service commands use `systemctl ...` and `journalctl -u ...`; do not use `systemctl --user` for server runtime operations.
 - The HBU JW public bind page uses the token-file Cloudflare Tunnel service `cloudflared-qqbot-hbu-jw.service`; do not replace it with CLI-managed credentials JSON.
-- km6 runs the Tailnet-only `hbu-webvpn-agent`; route its configured account through the authenticated loopback broker and never create a second WebVPN session for that account.
-- If a change touches runtime backend code, shared runtime types, console IPC, or managed env keys used by `koishi.yml` through `./dist/plugins/**`, verify with `pnpm build` before handing it off. `pnpm console:build` is only enough for frontend-only console changes.
+- For HBU JW health checks, use the existing production-bound credentials for student ID `20231202051`; never print the password, cookies, or session data.
+- `km6` runs the Tailnet-only `hbu-webvpn-agent`; route its configured account through the authenticated loopback broker and never create a second WebVPN session for that account.
+- If a change touches runtime backend code, shared runtime types, Admin API contracts, or managed env keys used by `koishi.yml` through `./dist/plugins/**`, verify with `pnpm build` before handing it off. For frontend-only admin changes, run both `pnpm admin:typecheck` and `pnpm admin:build`.
 - Follow `docs/testing-policy.md` when adding or changing tests. Keep assertions tied to stable user behavior, runtime contracts, or artifact boundaries. Do not add broad string snapshots, unrelated cross-domain assertions, or duplicate checks that mainly increase failure noise.
