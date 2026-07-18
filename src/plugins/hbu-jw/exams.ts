@@ -83,17 +83,12 @@ export class HbuJwExamScheduleService {
       throw new HbuJwUserError(auth.reason);
     }
 
-    try {
-      const query = this.academicCache
-        ? await this.academicCache.getExamSchedule(identity, auth, hbuJwDatabaseFallbackPolicy())
-        : { data: await this.jwClient.getExamSchedule(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now().getTime() };
-      const view = buildHbuJwExamScheduleView(query.data, this.now());
-      const notice = formatAcademicFallbackNotice([query]);
-      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwExamScheduleImage(this.puppeteer, view)];
-    } catch (error) {
-      if (error instanceof HbuJwUserError) throw error;
-      throw new HbuJwUserError('教务考试安排查询失败，请稍后重试。');
-    }
+    const query = this.academicCache
+      ? await this.academicCache.getExamSchedule(identity, auth, hbuJwDatabaseFallbackPolicy())
+      : { data: await this.jwClient.getExamSchedule(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now().getTime() };
+    const view = buildHbuJwExamScheduleView(query.data, this.now());
+    const notice = formatAcademicFallbackNotice([query]);
+    return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwExamScheduleImage(this.puppeteer, view)];
   }
 }
 

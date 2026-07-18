@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { HbuJwHttpClient } from './jw-client.js';
+import { HbuJwLoginError, type HbuJwHttpClient } from './jw-client.js';
 import type { HbuJwStore, HbuJwAcademicItemInput } from './store.js';
 import type {
   HbuJwAcademicDataKind,
@@ -436,6 +436,9 @@ function canonicalScoreTypeCode(value: string): string {
 }
 
 function describeError(error: unknown): string {
+  if (error instanceof HbuJwLoginError) {
+    return `${error.name}[${error.code}]: ${error.message}; ${error.diagnostic}`.slice(0, 500);
+  }
   if (error instanceof Error) return `${error.name}: ${error.message}`.slice(0, 500);
   return String(error).slice(0, 500);
 }

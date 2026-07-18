@@ -119,17 +119,12 @@ export class HbuJwTermScoresService {
       throw new HbuJwUserError(auth.reason);
     }
 
-    try {
-      const queryResults: Array<HbuJwAcademicQueryResult<unknown>> = [];
-      const view = mode === 'full'
-        ? await this.buildFullView(identity, auth, queryResults)
-        : await this.buildAnonymousView(identity, auth, queryResults);
-      const notice = formatAcademicFallbackNotice(queryResults);
-      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
-    } catch (error) {
-      if (error instanceof HbuJwUserError) throw error;
-      throw new HbuJwUserError('教务成绩查询失败，请稍后重试。');
-    }
+    const queryResults: Array<HbuJwAcademicQueryResult<unknown>> = [];
+    const view = mode === 'full'
+      ? await this.buildFullView(identity, auth, queryResults)
+      : await this.buildAnonymousView(identity, auth, queryResults);
+    const notice = formatAcademicFallbackNotice(queryResults);
+    return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
   }
 
   private async buildFullView(
@@ -137,10 +132,8 @@ export class HbuJwTermScoresService {
     auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
     queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
   ): Promise<HbuJwTermScoresView> {
-    const [scoresResult, allPassingScoresResult] = await Promise.all([
-      this.loadThisTermScores(identity, auth),
-      this.loadAllPassingScores(identity, auth),
-    ]);
+    const scoresResult = await this.loadThisTermScores(identity, auth);
+    const allPassingScoresResult = await this.loadAllPassingScores(identity, auth);
     queryResults.push(scoresResult, allPassingScoresResult);
     const statusOverrides = await resolveLookStatusOverrides(async (params) => {
       const result = await this.loadSubitemScoreDetails(identity, auth, params);
@@ -701,11 +694,11 @@ async function resolveLookStatusOverrides(
   if (rowsNeedingLook.length === 0) return new Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>();
 
   const overrides = new Map<HbuJwThisTermScoreRow, HbuJwTermScoreStatus>();
-  await Promise.all(rowsNeedingLook.map(async (row) => {
+  for (const row of rowsNeedingLook) {
     const result = await loadDetails(buildSubitemScoreLookParamsFromThisTermRow(row));
     const recordedCount = result.rows.filter(isPrimarySubitemScoreType).length;
     overrides.set(row, recordedCount > 0 ? { kind: 'recorded', recordedCount } : { kind: 'pending' });
-  }));
+  }
   return overrides;
 }
 

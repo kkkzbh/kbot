@@ -177,18 +177,13 @@ export class HbuJwScheduleService {
       throw new HbuJwUserError(auth.reason);
     }
 
-    try {
-      const query = this.academicCache
-        ? await this.academicCache.getThisSemesterSchedule(identity, auth, hbuJwDatabaseFallbackPolicy())
-        : { data: await this.jwClient.getThisSemesterSchedule(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now() };
-      const view = buildHbuJwScheduleView(query.data, mode, this.now());
-      const format: HbuJwScheduleRenderFormat = mode === 'full-semester' ? 'gif' : 'png';
-      const notice = formatAcademicFallbackNotice([query]);
-      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwScheduleImage(this.puppeteer, view, format)];
-    } catch (error) {
-      if (error instanceof HbuJwUserError) throw error;
-      throw new HbuJwUserError('教务课表查询失败，请稍后重试。');
-    }
+    const query = this.academicCache
+      ? await this.academicCache.getThisSemesterSchedule(identity, auth, hbuJwDatabaseFallbackPolicy())
+      : { data: await this.jwClient.getThisSemesterSchedule(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now() };
+    const view = buildHbuJwScheduleView(query.data, mode, this.now());
+    const format: HbuJwScheduleRenderFormat = mode === 'full-semester' ? 'gif' : 'png';
+    const notice = formatAcademicFallbackNotice([query]);
+    return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwScheduleImage(this.puppeteer, view, format)];
   }
 }
 

@@ -10,5 +10,7 @@
 - The HBU JW public bind page uses the token-file Cloudflare Tunnel service `cloudflared-qqbot-hbu-jw.service`; do not replace it with CLI-managed credentials JSON.
 - For HBU JW health checks, use the existing production-bound credentials for student ID `20231202051`; never print the password, cookies, or session data.
 - `km6` runs the Tailnet-only `hbu-webvpn-agent`; route its configured account through the authenticated loopback broker and never create a second WebVPN session for that account.
+- Do not catch distinct exceptions and replace them with one generic user-visible failure. Preserve the typed cause and report the failed operation, stage, upstream HTTP status, and provider error code whenever they are available.
+- Keep detailed diagnostics in service logs and persisted failure state. User-visible errors must remain actionable while excluding passwords, cookies, tokens, session data, and other secrets.
 - If a change touches runtime backend code, shared runtime types, Admin API contracts, or managed env keys used by `koishi.yml` through `./dist/plugins/**`, verify with `pnpm build` before handing it off. For frontend-only admin changes, run both `pnpm admin:typecheck` and `pnpm admin:build`.
 - Follow `docs/testing-policy.md` when adding or changing tests. Keep assertions tied to stable user behavior, runtime contracts, or artifact boundaries. Do not add broad string snapshots, unrelated cross-domain assertions, or duplicate checks that mainly increase failure noise.

@@ -178,17 +178,12 @@ export class HbuJwGpaService {
       throw new HbuJwUserError(auth.reason);
     }
 
-    try {
-      const query = this.academicCache
-        ? await this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy())
-        : { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
-      const view = buildHbuJwGpaView(calculateHbuJwGpa(query.data));
-      const notice = formatAcademicFallbackNotice([query]);
-      return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwGpaImage(this.puppeteer, view)];
-    } catch (error) {
-      if (error instanceof HbuJwUserError) throw error;
-      throw new HbuJwUserError('教务成绩查询失败，请稍后重试。');
-    }
+    const query = this.academicCache
+      ? await this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy())
+      : { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
+    const view = buildHbuJwGpaView(calculateHbuJwGpa(query.data));
+    const notice = formatAcademicFallbackNotice([query]);
+    return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwGpaImage(this.puppeteer, view)];
   }
 }
 

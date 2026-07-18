@@ -77,6 +77,7 @@ import {
   apply as applyHbuJwPlugin,
   buildHbuJwCapabilityReference,
   shouldExposeHbuJwCapabilityReference,
+  toUserMessage,
 } from '../src/plugins/hbu-jw/index.js';
 import { HbuJwCourseGuidanceService } from '../src/plugins/hbu-jw/course-guidance.js';
 import {
@@ -107,6 +108,7 @@ import {
 import {
   HbuJwHttpClient,
   HbuJwLoginError,
+  HbuJwQueryError,
   buildSubitemScoreLookParamsFromScoreRow,
   buildSubitemScoreLookParamsFromThisTermRow,
 } from '../src/plugins/hbu-jw/jw-client.js';
@@ -1836,7 +1838,7 @@ describe('hbu-jw term scores module', () => {
       fallbackCache,
     );
 
-    await expect(service.queryTermScores(identity())).rejects.toThrow('教务成绩查询失败，请稍后重试。');
+    await expect(service.queryTermScores(identity())).rejects.toThrow('jw unavailable');
     expect(database.tables.get('hbu_jw_academic_item')?.some((row) => row.credentialVersion === 1)).toBe(true);
     expect(database.tables.get('hbu_jw_academic_item')?.some((row) => row.credentialVersion === 2)).toBe(false);
   });
@@ -1888,6 +1890,59 @@ describe('hbu-jw term scores module', () => {
     );
     expect(getNavigatedHtml()).toContain('已录入2');
     expect(getNavigatedHtml()).toContain('<td class="score-col score">84</td>');
+  });
+
+  it('serializes score sources and per-course look requests through the shared session', async () => {
+    let releaseTermScores!: () => void;
+    let releaseFirstLook!: () => void;
+    const termScoresBlocked = new Promise<void>((resolve) => {
+      releaseTermScores = resolve;
+    });
+    const firstLookBlocked = new Promise<void>((resolve) => {
+      releaseFirstLook = resolve;
+    });
+    const rows = [
+      thisTermScoreRow({
+        id: { courseNumber: 'LOOK001', executiveEducationPlanNumber: '2025-2026-2-2', examtime: '20260620' },
+        courseName: '待查课程一',
+        inputStatusCode: '04',
+        inputStatusExplain: '暂存',
+      }),
+      thisTermScoreRow({
+        id: { courseNumber: 'LOOK002', executiveEducationPlanNumber: '2025-2026-2-2', examtime: '20260621' },
+        courseName: '待查课程二',
+        inputStatusCode: '04',
+        inputStatusExplain: '暂存',
+      }),
+    ];
+    const getThisTermScores = vi.fn(async () => {
+      await termScoresBlocked;
+      return rows;
+    });
+    const getAllPassingScores = vi.fn(async () => []);
+    const getSubitemScoreDetails = vi.fn()
+      .mockImplementationOnce(async (params) => {
+        await firstLookBlocked;
+        return { params, message: '', rows: [] };
+      })
+      .mockImplementationOnce(async (params) => ({ params, message: '', rows: [] }));
+    const service = new HbuJwTermScoresService(
+      { ensureAuthenticated: vi.fn(async () => ({ kind: 'authenticated' as const, cookieJar: cookieJar() })) },
+      { getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      createPuppeteerHarness().puppeteer,
+    );
+
+    const query = service.queryTermScores(identity());
+    await vi.waitFor(() => expect(getThisTermScores).toHaveBeenCalledTimes(1));
+    expect(getAllPassingScores).not.toHaveBeenCalled();
+    releaseTermScores();
+    await vi.waitFor(() => expect(getSubitemScoreDetails).toHaveBeenCalledTimes(1));
+    expect(getSubitemScoreDetails).toHaveBeenCalledTimes(1);
+    releaseFirstLook();
+    await query;
+
+    expect(getAllPassingScores).toHaveBeenCalledTimes(1);
+    expect(getSubitemScoreDetails).toHaveBeenCalledTimes(2);
   });
 
   it('uses pending raw status look results for recorded term score status', async () => {
@@ -2622,6 +2677,18 @@ describe('hbu-jw shared session coordinator', () => {
 });
 
 describe('hbu-jw http client', () => {
+  it('keeps structured query, login, and unexpected error details user-visible', () => {
+    expect(toUserMessage(new HbuJwQueryError('分项成绩查询接口返回了非 JSON 内容。')))
+      .toBe('分项成绩查询接口返回了非 JSON 内容。');
+    expect(toUserMessage(new HbuJwLoginError('共享会话当前不可用（broker HTTP 503）。', {
+      code: 'webvpn_unavailable',
+      diagnostic: 'broker status=503 code=webvpn_unavailable',
+      category: 'upstream',
+    }))).toBe('共享会话当前不可用（broker HTTP 503）。（错误码：webvpn_unavailable）');
+    expect(toUserMessage(new TypeError('成绩图片节点不存在。')))
+      .toBe('教务功能执行失败（TypeError）：成绩图片节点不存在。');
+  });
+
   it('switches the single shared JW slot and verifies the exact student identity', async () => {
     const directFetch = vi.fn(async () => {
       throw new Error('direct transport must not be used when the broker is configured');
@@ -2961,6 +3028,19 @@ describe('hbu-jw http client', () => {
       'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/thisTermScores/index',
       'https://zhjw.hbu.cn/student/integratedQuery/scoreQuery/token/thisTermScores/data',
     ]);
+  });
+
+  it('reports the exact HTTP status when the term score endpoint is rate limited', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/thisTermScores/index')) {
+        return new Response('"/student/integratedQuery/scoreQuery/token/thisTermScores/data"', { status: 200 });
+      }
+      return new Response('Too Many Requests', { status: 429 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.getThisTermScores(cookieJar()))
+      .rejects.toThrow('本学期成绩接口访问失败（HTTP 429）。');
   });
 
   it('rejects ambiguous term score data pages and malformed term score payloads', async () => {

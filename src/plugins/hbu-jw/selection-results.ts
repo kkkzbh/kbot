@@ -40,22 +40,17 @@ export class HbuJwSelectionResultService {
     const auth = await this.authService.ensureAuthenticated(identity);
     if (auth.kind !== 'authenticated') throw new HbuJwUserError(auth.reason);
 
-    try {
-      const query = this.academicCache
-        ? await this.academicCache.getCourseSelectionResult(identity, auth, hbuJwDatabaseFallbackPolicy())
-        : { data: await this.jwClient.getCourseSelectionResult(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now() };
-      const schedule = buildHbuJwSelectionSchedule(query.data);
-      const view = buildHbuJwScheduleView(schedule, 'full-semester', this.now());
-      const notice = formatAcademicFallbackNotice([query]);
-      return [
-        h.at(identity.qqUserId),
-        h.text(notice ? `\n${notice}\n` : '\n'),
-        await renderHbuJwScheduleImage(this.puppeteer, view, 'gif'),
-      ];
-    } catch (error) {
-      if (error instanceof HbuJwUserError) throw error;
-      throw new HbuJwUserError('教务选课结果查询失败，请稍后重试。');
-    }
+    const query = this.academicCache
+      ? await this.academicCache.getCourseSelectionResult(identity, auth, hbuJwDatabaseFallbackPolicy())
+      : { data: await this.jwClient.getCourseSelectionResult(auth.cookieJar), source: 'remote' as const, fetchedAt: this.now() };
+    const schedule = buildHbuJwSelectionSchedule(query.data);
+    const view = buildHbuJwScheduleView(schedule, 'full-semester', this.now());
+    const notice = formatAcademicFallbackNotice([query]);
+    return [
+      h.at(identity.qqUserId),
+      h.text(notice ? `\n${notice}\n` : '\n'),
+      await renderHbuJwScheduleImage(this.puppeteer, view, 'gif'),
+    ];
   }
 }
 

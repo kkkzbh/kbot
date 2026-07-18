@@ -229,7 +229,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwLoginError('教务账号登录后无法校验学籍身份，已拒绝继续查询。', {
+      throw new HbuJwLoginError(`教务账号登录后无法校验学籍身份（HTTP ${page.response.status}），已拒绝继续查询。`, {
         code: 'jw_identity_page_failed',
         diagnostic: `identity_page status=${page.response.status}`,
         category: 'upstream',
@@ -270,7 +270,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('全部及格成绩页面访问失败。');
+      throw new HbuJwQueryError(`全部及格成绩页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     const callbackPath = findAllPassingScoresCallback(page.text);
@@ -283,7 +283,7 @@ export class HbuJwHttpClient {
       },
     });
     if (callback.response.status !== 200) {
-      throw new HbuJwQueryError('全部及格成绩接口访问失败。');
+      throw new HbuJwQueryError(`全部及格成绩接口访问失败（HTTP ${callback.response.status}）。`);
     }
 
     let payload: unknown;
@@ -303,7 +303,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('本学期成绩页面访问失败。');
+      throw new HbuJwQueryError(`本学期成绩页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     const dataPath = findThisTermScoresDataPath(page.text);
@@ -316,7 +316,7 @@ export class HbuJwHttpClient {
       },
     });
     if (data.response.status !== 200) {
-      throw new HbuJwQueryError('本学期成绩接口访问失败。');
+      throw new HbuJwQueryError(`本学期成绩接口访问失败（HTTP ${data.response.status}）。`);
     }
 
     let payload: unknown;
@@ -336,7 +336,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('分项成绩页面访问失败。');
+      throw new HbuJwQueryError(`分项成绩页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     return parseSubitemScoreTerms(page.text);
@@ -350,7 +350,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('分项成绩页面访问失败。');
+      throw new HbuJwQueryError(`分项成绩页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     const lookPath = findSubitemScoreLookPath(page.text);
@@ -366,7 +366,7 @@ export class HbuJwHttpClient {
       body: buildSubitemScoreLookBody(params),
     });
     if (look.response.status !== 200) {
-      throw new HbuJwQueryError('分项成绩查询接口访问失败。');
+      throw new HbuJwQueryError(`分项成绩查询接口访问失败（HTTP ${look.response.status}）。`);
     }
 
     let payload: unknown;
@@ -386,7 +386,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('考试安排页面访问失败。');
+      throw new HbuJwQueryError(`考试安排页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     const detailPath = findExamPlanDetailPath(page.text);
@@ -399,7 +399,7 @@ export class HbuJwHttpClient {
       },
     });
     if (detail.response.status !== 200) {
-      throw new HbuJwQueryError('考试安排接口访问失败。');
+      throw new HbuJwQueryError(`考试安排接口访问失败（HTTP ${detail.response.status}）。`);
     }
 
     let payload: unknown;
@@ -419,7 +419,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('本学期课表页面访问失败。');
+      throw new HbuJwQueryError(`本学期课表页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     const callbackPath = findThisSemesterScheduleCallback(page.text);
@@ -433,7 +433,7 @@ export class HbuJwHttpClient {
       },
     });
     if (callback.response.status !== 200) {
-      throw new HbuJwQueryError('本学期课表接口访问失败。');
+      throw new HbuJwQueryError(`本学期课表接口访问失败（HTTP ${callback.response.status}）。`);
     }
 
     let payload: unknown;
@@ -453,7 +453,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('选课结果页面访问失败。');
+      throw new HbuJwQueryError(`选课结果页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     const callbackPath = findCourseSelectionResultCallback(page.text);
@@ -466,7 +466,7 @@ export class HbuJwHttpClient {
       },
     });
     if (callback.response.status !== 200) {
-      throw new HbuJwQueryError('选课结果接口访问失败。');
+      throw new HbuJwQueryError(`选课结果接口访问失败（HTTP ${callback.response.status}）。`);
     }
 
     let payload: unknown;
@@ -486,7 +486,7 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
-      throw new HbuJwQueryError('学籍信息页面访问失败。');
+      throw new HbuJwQueryError(`学籍信息页面访问失败（HTTP ${page.response.status}）。`);
     }
 
     return parseStudentPlanProfile(page.text);
@@ -509,7 +509,7 @@ export class HbuJwHttpClient {
       },
     });
     if (detail.response.status !== 200) {
-      throw new HbuJwQueryError('培养方案详情接口访问失败。');
+      throw new HbuJwQueryError(`培养方案详情接口访问失败（HTTP ${detail.response.status}）。`);
     }
     const payload = parseJsonObject(detail.text, '培养方案详情接口');
     const metadata = requireRecord(payload.jhFajhb, '培养方案元数据');
@@ -532,7 +532,7 @@ export class HbuJwHttpClient {
         },
       });
       if (response.response.status !== 200) {
-        throw new HbuJwQueryError('培养方案课组接口访问失败。');
+        throw new HbuJwQueryError(`培养方案课组接口访问失败（HTTP ${response.response.status}）。`);
       }
       const categoryPayload = parseJsonObject(response.text, '培养方案课组接口');
       const category = requireRecord(categoryPayload.kz, '培养方案课组');
@@ -596,7 +596,7 @@ export class HbuJwHttpClient {
     const jar = CookieJar.from(cookieJar);
     const pagePath = `/student/courseSelect/planCourse/index?fajhh=${encodeURIComponent(planNumber)}`;
     const page = await this.request(pagePath, { jar, headers: { referer: `${this.baseUrl}/index` } });
-    if (page.response.status !== 200) throw new HbuJwQueryError('方案选课页面访问失败。');
+    if (page.response.status !== 200) throw new HbuJwQueryError(`方案选课页面访问失败（HTTP ${page.response.status}）。`);
     const callbackPath = findUniquePath(page.text, /[^"'\s<>]*planCourse\/courseList[^"'\s<>]*/g, '方案选课');
     const currentExecutionPlanNumber = readSelectedOptionValue(page.text, 'jhxn', '方案选课当前执行计划');
     const response = await this.request(callbackPath, {
@@ -605,7 +605,7 @@ export class HbuJwHttpClient {
       headers: ajaxFormHeaders(new URL(pagePath, this.baseUrl).href),
       body: new URLSearchParams({ fajhh: planNumber, jhxn: currentExecutionPlanNumber, kcsxdm: '', kch: '', kcm: '', kclbdm: '', xqh: '', xq: '0', jc: '0' }),
     });
-    if (response.response.status !== 200) throw new HbuJwQueryError('方案选课接口访问失败。');
+    if (response.response.status !== 200) throw new HbuJwQueryError(`方案选课接口访问失败（HTTP ${response.response.status}）。`);
     const payload = parseJsonObject(response.text, '方案选课接口');
     return normalizeCourseOfferings(requireRecordArray(payload.rwfalist, '方案选课班次'), 'plan');
   }
@@ -614,7 +614,7 @@ export class HbuJwHttpClient {
     const jar = CookieJar.from(cookieJar);
     const pagePath = '/student/courseSelect/freeCourse/index';
     const page = await this.request(pagePath, { jar, headers: { referer: `${this.baseUrl}/index` } });
-    if (page.response.status !== 200) throw new HbuJwQueryError('自由选课页面访问失败。');
+    if (page.response.status !== 200) throw new HbuJwQueryError(`自由选课页面访问失败（HTTP ${page.response.status}）。`);
     const callbackPath = findUniquePath(page.text, /[^"'\s<>]*freeCourse\/courseList[^"'\s<>]*/g, '自由选课');
     const response = await this.request(callbackPath, {
       jar,
@@ -622,7 +622,7 @@ export class HbuJwHttpClient {
       headers: ajaxFormHeaders(new URL(pagePath, this.baseUrl).href),
       body: new URLSearchParams({ kkxsh: '', kch: '', kcm: '', skjs: '', xq: '0', jc: '0', kclbdm: categoryCode }),
     });
-    if (response.response.status !== 200) throw new HbuJwQueryError('自由选课接口访问失败。');
+    if (response.response.status !== 200) throw new HbuJwQueryError(`自由选课接口访问失败（HTTP ${response.response.status}）。`);
     const payload = parseJsonObject(response.text, '自由选课接口');
     return normalizeCourseOfferings(requireRecordArray(payload.rwRxkZlList, '自由选课班次'), 'free');
   }
@@ -909,9 +909,10 @@ export class HbuJwHttpClient {
 
     const payload = await parseBrokerPayload(brokerResponse);
     if (!brokerResponse.ok || payload.ok !== true) {
-      throw new HbuJwLoginError('km6 的 HBU WebVPN 共享会话当前不可用。', {
-        code: typeof payload.code === 'string' ? payload.code : 'webvpn_broker_failed',
-        diagnostic: `broker status=${brokerResponse.status} code=${String(payload.code ?? 'unknown')}`,
+      const code = typeof payload.code === 'string' ? payload.code : 'webvpn_broker_failed';
+      throw new HbuJwLoginError(`km6 的 HBU WebVPN 共享会话当前不可用（broker HTTP ${brokerResponse.status}）。`, {
+        code,
+        diagnostic: `broker status=${brokerResponse.status} code=${code}`,
         category: 'upstream',
       });
     }

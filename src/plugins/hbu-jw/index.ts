@@ -17,7 +17,12 @@ import {
 import { loadOrCreateKek, resolveKekPath } from './crypto.js';
 import { HbuJwExamScheduleService } from './exams.js';
 import { HbuJwGpaService } from './gpa.js';
-import { HbuJwHttpClient, type HbuWebVpnBrokerOptions } from './jw-client.js';
+import {
+  HbuJwHttpClient,
+  HbuJwLoginError,
+  HbuJwQueryError,
+  type HbuWebVpnBrokerOptions,
+} from './jw-client.js';
 import { HbuJwMenuService } from './menu.js';
 import { HbuJwScheduleService, type HbuJwScheduleMode, type HbuJwSchedulePuppeteerLike } from './schedule.js';
 import { HbuJwSelectionResultService } from './selection-results.js';
@@ -879,8 +884,28 @@ async function readRawBody(stream: AsyncIterable<Buffer | string> | undefined): 
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function toUserMessage(error: unknown): string {
+export function toUserMessage(error: unknown): string {
   if (error instanceof HbuJwUserError) return error.message;
-  logger.warn('hbu jw operation failed: %s', error instanceof Error ? error.message : String(error));
-  return '教务绑定处理失败，请稍后重试。';
+  if (error instanceof HbuJwLoginError) {
+    logger.warn(
+      'hbu jw operation failed: type=%s code=%s category=%s message=%s diagnostic=%s',
+      error.name,
+      error.code,
+      error.category,
+      error.message,
+      error.diagnostic,
+    );
+    return `${error.message}（错误码：${error.code}）`;
+  }
+  if (error instanceof HbuJwQueryError) {
+    logger.warn('hbu jw operation failed: type=%s message=%s', error.name, error.message);
+    return error.message;
+  }
+  if (error instanceof Error) {
+    logger.warn('hbu jw operation failed: type=%s message=%s stack=%s', error.name, error.message, error.stack ?? '');
+    return `教务功能执行失败（${error.name}）：${error.message}`;
+  }
+  const detail = String(error);
+  logger.warn('hbu jw operation failed: type=unknown detail=%s', detail);
+  return `教务功能执行失败：${detail}`;
 }
