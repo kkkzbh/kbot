@@ -14,6 +14,7 @@ import {
   type HbuJwKek,
 } from './crypto.js';
 import { HbuJwStore } from './store.js';
+import { HbuJwSharedSessionCoordinator } from './shared-session.js';
 import {
   HBU_JW_SERVICE_ID,
   HbuJwUserError,
@@ -73,7 +74,12 @@ export class HbuJwService {
     private readonly kek: HbuJwKek,
     private readonly config: HbuJwRuntimeConfig,
     private readonly now: () => number = () => Date.now(),
+    private readonly sharedSession = new HbuJwSharedSessionCoordinator(),
   ) {}
+
+  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    return this.sharedSession.runExclusive(operation);
+  }
 
   async startBinding(identity: OwnerIdentity): Promise<StartBindingResult> {
     const now = this.now();
@@ -271,6 +277,9 @@ export class HbuJwService {
     const now = this.now();
     const session = await this.store.getSession(identity.ownerKey);
     const credential = await this.store.getActiveCredential(identity.ownerKey);
+    if (this.jwClient.usesSharedBroker()) {
+      return this.ensureSharedSessionAuthenticated(identity, credential, now);
+    }
     if (session?.status === 'active') {
       if (!credential) {
         throw new Error(`active hbu-jw session is missing credential: owner=${identity.ownerKey}`);
@@ -317,7 +326,59 @@ export class HbuJwService {
     }
   }
 
+  private async ensureSharedSessionAuthenticated(
+    identity: OwnerIdentity,
+    credential: Awaited<ReturnType<HbuJwStore['getActiveCredential']>>,
+    now: number,
+  ): Promise<AuthenticatedSessionResult> {
+    const state = this.sharedSession.requireState();
+    if (!credential) {
+      return { kind: 'needs_binding', reason: '请先发送“教务绑定”。' };
+    }
+    if (state.authenticated?.ownerKey === identity.ownerKey
+      && state.authenticated.credentialVersion === credential.version) {
+      return {
+        kind: 'authenticated',
+        cookieJar: state.authenticated.cookieJar,
+        credentialVersion: credential.version,
+      };
+    }
+    if (!this.config.autoReloginEnabled) {
+      return { kind: 'unavailable', reason: '共享教务会话需要自动切换账号，自动续登当前未启用。' };
+    }
+
+    try {
+      const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
+        credential.credentialCipher,
+        credential.credentialMeta,
+        credentialAad(identity.ownerKey, HBU_JW_SERVICE_ID, credential.id),
+        this.kek,
+      );
+      const login = await this.jwClient.login(credentialPayload.username, credentialPayload.password);
+      const cookieJarCipher = encryptSelfContainedJson(login.cookieJar, cookieAad(identity.ownerKey), this.kek);
+      await this.store.replaceSession(identity, cookieJarCipher, 'active', now);
+      await this.store.markCredentialUsed(credential.id, now);
+      await this.audit(identity.ownerKey, 'shared_session_switched', 'ok');
+      state.authenticated = {
+        ownerKey: identity.ownerKey,
+        cookieJar: login.cookieJar,
+        credentialVersion: credential.version,
+      };
+      return { kind: 'authenticated', cookieJar: login.cookieJar, credentialVersion: credential.version };
+    } catch (error) {
+      const failure = classifyCredentialRefreshFailure(error);
+      await this.store.setSessionStatus(identity.ownerKey, failure.sessionStatus, failure.userMessage, now);
+      if (failure.credentialRejected) {
+        await this.store.markCredentialFailure(credential.id, failure.diagnostic, now);
+      }
+      await this.audit(identity.ownerKey, failure.eventType, 'failed', failure.diagnostic);
+      logger.warn('hbu jw shared session switch failed: owner=%s reason=%s', identity.ownerKey, failure.diagnostic);
+      return { kind: failure.resultKind, reason: failure.userMessage };
+    }
+  }
+
   async runKeepAlive(recentUseWindowMs: number): Promise<void> {
+    if (this.jwClient.usesSharedBroker()) return;
     const now = this.now();
     const sessions = await this.store.listRecentActiveSessions(now - recentUseWindowMs);
     await Promise.all(sessions.map(async (session) => {

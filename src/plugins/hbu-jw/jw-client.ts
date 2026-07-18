@@ -104,6 +104,10 @@ export class HbuJwHttpClient {
     this.userAgent = options.userAgent ?? 'qqbot-hbu-jw/1.0';
   }
 
+  usesSharedBroker(): boolean {
+    return this.webVpnBroker !== undefined;
+  }
+
   prepareSession(cookieJar: unknown): SerializedCookieJar {
     const transport = this.webVpnBroker ? 'broker' : 'direct';
     if (isCurrentCookieJar(cookieJar) && cookieJar.transport === transport) return cookieJar;
@@ -117,6 +121,16 @@ export class HbuJwHttpClient {
   async login(username: string, password: string): Promise<HbuJwLoginResult> {
     try {
       const jar = new CookieJar(this.webVpnBroker ? 'broker' : 'direct');
+      if (jar.transport === 'broker') {
+        const logout = await this.request('/logout', { jar });
+        if (isWebVpnLoginPageHtml(logout.text)) {
+          throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
+            code: 'webvpn_broker_session_missing',
+            diagnostic: 'broker-backed JW logout resolved to the WebVPN login page',
+            category: 'upstream',
+          });
+        }
+      }
       let loginPage = await this.request('/login', { jar });
       if (isWebVpnLoginPageHtml(loginPage.text)) {
         if (jar.transport === 'broker') {
@@ -135,6 +149,13 @@ export class HbuJwHttpClient {
             category: 'upstream',
           });
         }
+      }
+      if (isAuthenticatedHtml(loginPage.text) && jar.transport === 'broker') {
+        throw new HbuJwLoginError('共享教务会话退出后仍保留了旧账号，已拒绝继续查询。', {
+          code: 'jw_shared_session_not_cleared',
+          diagnostic: `login page remained authenticated url=${loginPage.url}`,
+          category: 'protocol',
+        });
       }
       if (isAuthenticatedHtml(loginPage.text)) {
         return { cookieJar: jar.serialize() };
@@ -166,6 +187,7 @@ export class HbuJwHttpClient {
         body: loginBody,
       });
       if (isAuthenticatedHtml(login.text)) {
+        if (jar.transport === 'broker') await this.assertAuthenticatedStudent(jar, username);
         return { cookieJar: jar.serialize() };
       }
 
@@ -196,6 +218,36 @@ export class HbuJwHttpClient {
         diagnostic: describeError(error),
         category: 'upstream',
         cause: error,
+      });
+    }
+  }
+
+  private async assertAuthenticatedStudent(jar: CookieJar, username: string): Promise<void> {
+    const pagePath = '/student/rollManagement/rollInfo/index';
+    const page = await this.request(pagePath, {
+      jar,
+      headers: { referer: `${this.baseUrl}/index` },
+    });
+    if (page.response.status !== 200) {
+      throw new HbuJwLoginError('教务账号登录后无法校验学籍身份，已拒绝继续查询。', {
+        code: 'jw_identity_page_failed',
+        diagnostic: `identity_page status=${page.response.status}`,
+        category: 'upstream',
+      });
+    }
+    const studentNumber = readProfileField(page.text, ['学号']);
+    if (!studentNumber) {
+      throw new HbuJwLoginError('教务学籍页缺少学号，已拒绝继续查询。', {
+        code: 'jw_identity_missing',
+        diagnostic: 'identity page is missing student number',
+        category: 'protocol',
+      });
+    }
+    if (studentNumber !== username) {
+      throw new HbuJwLoginError('教务登录身份与绑定账号不一致，已拒绝返回数据。', {
+        code: 'jw_identity_mismatch',
+        diagnostic: 'authenticated student number does not match submitted username',
+        category: 'protocol',
       });
     }
   }

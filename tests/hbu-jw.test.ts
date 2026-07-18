@@ -124,6 +124,7 @@ import {
   renderHbuJwScheduleImage,
 } from '../src/plugins/hbu-jw/schedule.js';
 import { HbuJwService } from '../src/plugins/hbu-jw/service.js';
+import { HbuJwSharedSessionCoordinator } from '../src/plugins/hbu-jw/shared-session.js';
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
 import {
   HbuJwTermScoresService,
@@ -245,15 +246,17 @@ function createService(options: {
   now?: () => number;
   validate?: (cookieJar: SerializedCookieJar) => Promise<boolean>;
   login?: (username: string, password: string) => Promise<{ cookieJar: SerializedCookieJar }>;
+  sharedBroker?: boolean;
 } = {}) {
   const dir = createTempDir();
   const database = options.database ?? createDatabase();
   const login = vi.fn(options.login ?? (async () => ({ cookieJar: cookieJar() })));
   const validate = vi.fn(options.validate ?? (async () => true));
   const prepareSession = vi.fn((cookieJar: SerializedCookieJar) => cookieJar);
+  const usesSharedBroker = vi.fn(() => options.sharedBroker === true);
   const service = new HbuJwService(
     new HbuJwStore(database as unknown as DatabaseLike),
-    { login, validate, prepareSession } as never,
+    { login, validate, prepareSession, usesSharedBroker } as never,
     loadOrCreateKek(join(dir, 'kek.key')),
     {
       bindPagePath: '/jw/bind',
@@ -263,7 +266,7 @@ function createService(options: {
     },
     options.now ?? (() => 1_000),
   );
-  return { service, database, login, validate, prepareSession };
+  return { service, database, login, validate, prepareSession, usesSharedBroker };
 }
 
 function scoreRow(overrides: Partial<HbuJwScoreRow> = {}): HbuJwScoreRow {
@@ -2551,15 +2554,82 @@ describe('hbu-jw course query module', () => {
   });
 });
 
+describe('hbu-jw shared session coordinator', () => {
+  it('serializes complete shared-session transactions and remains reentrant', async () => {
+    const coordinator = new HbuJwSharedSessionCoordinator();
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = coordinator.runExclusive(async () => {
+      events.push('first:start');
+      await coordinator.runExclusive(async () => {
+        events.push('first:reentrant');
+      });
+      await firstGate;
+      events.push('first:end');
+    });
+    const second = coordinator.runExclusive(async () => {
+      events.push('second:start');
+      events.push('second:end');
+    });
+
+    await vi.waitFor(() => expect(events).toEqual(['first:start', 'first:reentrant']));
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(events).toEqual(['first:start', 'first:reentrant', 'first:end', 'second:start', 'second:end']);
+  });
+
+  it('switches the broker account once per exclusive service transaction', async () => {
+    const { service, login, database } = createService({
+      sharedBroker: true,
+      login: async (username) => ({ cookieJar: cookieJar(username) }),
+    });
+    const firstIdentity = identity();
+    const secondIdentity = identity({ ownerKey: 'onebot:2', qqUserId: '2' });
+    for (const [owner, username, password] of [
+      [firstIdentity, 'student-1', 'password-1'],
+      [secondIdentity, 'student-2', 'password-2'],
+    ] as const) {
+      const started = await service.startBinding(owner);
+      const submitted = await service.runExclusive(() => service.submitCredentials({
+        token: extractToken(started.link),
+        username,
+        password,
+        persistCredentialConsent: true,
+      }));
+      await service.confirmBinding(owner, submitted.confirmCode);
+    }
+    login.mockClear();
+
+    await expect(service.ensureAuthenticated(firstIdentity)).rejects.toThrow('exclusive transaction');
+    const firstTransaction = await service.runExclusive(async () => {
+      const first = await service.ensureAuthenticated(firstIdentity);
+      const repeated = await service.ensureAuthenticated(firstIdentity);
+      return { first, repeated };
+    });
+    const secondTransaction = await service.runExclusive(() => service.ensureAuthenticated(secondIdentity));
+
+    expect(firstTransaction.first).toEqual(firstTransaction.repeated);
+    expect(secondTransaction).toMatchObject({ kind: 'authenticated', credentialVersion: 1 });
+    expect(login).toHaveBeenCalledTimes(2);
+    expect(login).toHaveBeenNthCalledWith(1, 'student-1', 'password-1');
+    expect(login).toHaveBeenNthCalledWith(2, 'student-2', 'password-2');
+    expect(database.tables.get('hbu_jw_auth_audit')?.filter((row) => row.eventType === 'shared_session_switched')).toHaveLength(2);
+  });
+});
+
 describe('hbu-jw http client', () => {
-  it('routes every account through one broker with isolated JW cookies', async () => {
+  it('switches the single shared JW slot and verifies the exact student identity', async () => {
     const directFetch = vi.fn(async () => {
       throw new Error('direct transport must not be used when the broker is configured');
     });
     const accounts = ['20231202051', '20231202052'];
     const token = Buffer.alloc(32, 7);
-    let loginSequence = 0;
-    const indexCookies: string[][] = [];
+    let currentAccount = '';
+    const submittedAccounts: string[] = [];
     const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const authorization = new Headers(init?.headers).get('authorization');
       expect(authorization).toBe(`Bearer ${token.toString('base64url')}`);
@@ -2583,21 +2653,32 @@ describe('hbu-jw http client', () => {
         headers: { 'content-type': 'application/json' },
       });
 
+      if (target.pathname === '/logout') {
+        currentAccount = '';
+        return response(302, '', { location: 'https://zhjw.hbu.cn/enterOut' });
+      }
+      if (target.pathname === '/enterOut') {
+        return response(200, '<html><body>logged out</body></html>');
+      }
       if (target.pathname === '/login') {
-        loginSequence += 1;
-        return response(200, '<form action="/sigin"><input name="password"></form>', {}, [`JSESSIONID=login-${loginSequence}; Path=/`]);
+        return response(200, '<form action="/sigin"><input name="password"></form>');
       }
       if (target.pathname === '/sigin') {
         const form = new URLSearchParams(Buffer.from(request.bodyBase64 ?? '', 'base64').toString());
         const username = form.get('username');
         expect(accounts).toContain(username);
         expect(form.get('password')).toBe(accounts.indexOf(username ?? '') === 0 ? 'password-a' : 'password-b');
-        expect(request.cookies).toEqual([{ name: 'JSESSIONID', value: `login-${accounts.indexOf(username ?? '') + 1}` }]);
-        return response(302, '', { location: 'https://zhjw.hbu.cn/index' }, [`JSESSIONID=session-${username}; Path=/`]);
+        expect(request.cookies).toEqual([]);
+        currentAccount = username ?? '';
+        submittedAccounts.push(currentAccount);
+        return response(302, '', { location: 'https://zhjw.hbu.cn/index' });
       }
       if (target.pathname === '/index') {
-        indexCookies.push(request.cookies.map((cookie) => `${cookie.name}=${cookie.value}`));
+        expect(request.cookies).toEqual([]);
         return response(200, '<html><body>URP综合教务系统首页</body></html>');
+      }
+      if (target.pathname === '/student/rollManagement/rollInfo/index') {
+        return response(200, `<div class="profile-info-name">学号</div><div class="profile-info-value">${currentAccount}</div>`);
       }
       return response(404, 'missing');
     });
@@ -2627,23 +2708,48 @@ describe('hbu-jw http client', () => {
     expect(firstLogin.cookieJar).toEqual({
       version: 1,
       transport: 'broker',
-      cookies: [{ name: 'JSESSIONID', value: `session-${accounts[0]}` }],
+      cookies: [],
     });
     expect(secondLogin.cookieJar).toEqual({
       version: 1,
       transport: 'broker',
-      cookies: [{ name: 'JSESSIONID', value: `session-${accounts[1]}` }],
+      cookies: [],
     });
-    await expect(client.validate(firstLogin.cookieJar)).resolves.toBe(true);
-    await expect(client.validate(secondLogin.cookieJar)).resolves.toBe(true);
     expect(directFetch).not.toHaveBeenCalled();
-    expect(indexCookies).toEqual([
-      [`JSESSIONID=session-${accounts[0]}`],
-      [`JSESSIONID=session-${accounts[1]}`],
-      [`JSESSIONID=session-${accounts[0]}`],
-      [`JSESSIONID=session-${accounts[1]}`],
-    ]);
-    expect(brokerFetch).toHaveBeenCalledTimes(8);
+    expect(submittedAccounts).toEqual(accounts);
+    expect(brokerFetch).toHaveBeenCalledTimes(12);
+  });
+
+  it('rejects a shared JW slot whose returned student identity differs from the submitted account', async () => {
+    const token = Buffer.alloc(32, 7);
+    const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { targetUrl: string };
+      const path = new URL(request.targetUrl).pathname;
+      const body = path === '/login'
+        ? '<form action="/sigin"><input name="password"></form>'
+        : path === '/index'
+          ? '<html><body>URP综合教务系统首页</body></html>'
+          : path.endsWith('/rollInfo/index')
+            ? '<div class="profile-info-name">学号</div><div class="profile-info-value">20231202099</div>'
+            : '';
+      const status = path === '/logout' || path === '/enterOut' || path === '/login' || path.endsWith('/rollInfo/index') ? 200 : 302;
+      const headers = path === '/sigin' ? { location: 'https://zhjw.hbu.cn/index' } : {};
+      return new Response(JSON.stringify({
+        ok: true,
+        status,
+        headers,
+        setCookies: [],
+        bodyBase64: Buffer.from(body).toString('base64'),
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const client = new HbuJwHttpClient({
+      webVpnBroker: { url: 'http://127.0.0.1:8789', token, fetchImpl: brokerFetch as never },
+    });
+
+    await expect(client.login('20231202051', 'password')).rejects.toMatchObject({
+      code: 'jw_identity_mismatch',
+      category: 'protocol',
+    });
   });
 
   it('rejects cross-origin redirects before sending cookies to the redirected target', async () => {

@@ -345,12 +345,12 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
         writeRedirect(koaCtx, bindPageLocation(runtime, token));
         return;
       }
-      await service.submitCredentials({
+      await service.runExclusive(() => service.submitCredentials({
         token,
         username,
         password: String(body.password ?? ''),
         persistCredentialConsent,
-      });
+      }));
       writeRedirect(koaCtx, bindPageLocation(runtime, token));
     } catch (error) {
       if (error instanceof HbuJwBindSubmissionPendingError) {
@@ -410,180 +410,182 @@ function registerKeywordMiddleware(
       return;
     }
 
-    if (command.kind === 'course_guidance') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await guidanceService.assertBound(identity);
-        guidanceRuns.activate(session);
-        return await next();
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+    return service.runExclusive(async () => {
+      if (command.kind === 'course_guidance') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await guidanceService.assertBound(identity);
+          guidanceRuns.activate(session);
+          return await next();
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+          return;
+        }
+      }
+
+      if (command.kind === 'menu') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), {
+            summary: '机器人返回了教务功能菜单图片。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
         return;
       }
-    }
 
-    if (command.kind === 'menu') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await menuService.queryMenu(identity.qqUserId), {
-          summary: '机器人返回了教务功能菜单图片。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'bind') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          const result = await service.startBinding(identity);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, `请打开链接完成教务绑定：\n${result.link}\n链接 10 分钟内有效。\n\n网页登录成功后，页面会显示 6 位确认码。请回到这里发送：\n教务确认 <确认码>\n完成绑定。`), {
+            summary: '机器人提供了教务绑定流程；一次性绑定链接未写入历史。',
+            includeReplyPayload: false,
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'bind') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        const result = await service.startBinding(identity);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, `请打开链接完成教务绑定：\n${result.link}\n链接 10 分钟内有效。\n\n网页登录成功后，页面会显示 6 位确认码。请回到这里发送：\n教务确认 <确认码>\n完成绑定。`), {
-          summary: '机器人提供了教务绑定流程；一次性绑定链接未写入历史。',
-          includeReplyPayload: false,
+      if (command.kind === 'confirm_help') {
+        await sendHbuJwReply(nativeFeatureChat, session, command, text, '请发送完整确认命令：教务确认 <6位确认码>。确认码会在网页登录成功后的页面上显示。', {
+          summary: '机器人说明教务确认码必须是 6 位数字。',
         });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'confirm_help') {
-      await sendHbuJwReply(nativeFeatureChat, session, command, text, '请发送完整确认命令：教务确认 <6位确认码>。确认码会在网页登录成功后的页面上显示。', {
-        summary: '机器人说明教务确认码必须是 6 位数字。',
-      });
-      return;
-    }
-
-    if (command.kind === 'confirm') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await service.confirmBinding(identity, command.confirmCode);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, '教务绑定完成。', 'space'), {
-          summary: '教务绑定完成。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'confirm') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await service.confirmBinding(identity, command.confirmCode);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, '教务绑定完成。', 'space'), {
+            summary: '教务绑定完成。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'status') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await service.getStatus(identity), {
-          summary: '机器人返回了教务绑定状态；详细账号信息未写入历史。',
-          includeReplyPayload: false,
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'status') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await service.getStatus(identity), {
+            summary: '机器人返回了教务绑定状态；详细账号信息未写入历史。',
+            includeReplyPayload: false,
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'unbind') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await service.unbind(identity);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, '教务绑定已解除。', {
-          summary: '教务绑定已解除。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'unbind') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await service.unbind(identity);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, '教务绑定已解除。', {
+            summary: '教务绑定已解除。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'gpa') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await gpaService.queryGpa(identity), {
-          summary: '机器人返回了 GPA 查询结果。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'gpa') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await gpaService.queryGpa(identity), {
+            summary: '机器人返回了 GPA 查询结果。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'schedule') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await scheduleService.querySchedule(identity, command.mode), {
-          summary: command.mode === 'current-week'
-            ? '机器人返回了本周课表查询结果图片。'
-            : '机器人返回了本学期完整动态课表。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'schedule') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await scheduleService.querySchedule(identity, command.mode), {
+            summary: command.mode === 'current-week'
+              ? '机器人返回了本周课表查询结果图片。'
+              : '机器人返回了本学期完整动态课表。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'selection_result') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await selectionResultService.querySelectionResult(identity), {
-          summary: '机器人返回了本学期选课结果图片。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'selection_result') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await selectionResultService.querySelectionResult(identity), {
+            summary: '机器人返回了本学期选课结果图片。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'term_scores') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await termScoresService.queryTermScores(identity, command.mode), {
-          summary: command.mode === 'full'
-            ? '机器人返回了本学期成绩查询结果图片。'
-            : '机器人返回了本学期匿名成绩查询结果图片。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'term_scores') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await termScoresService.queryTermScores(identity, command.mode), {
+            summary: command.mode === 'full'
+              ? '机器人返回了本学期成绩查询结果图片。'
+              : '机器人返回了本学期匿名成绩查询结果图片。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'course_query_help') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await courseQueryService.queryHelp(identity.qqUserId), {
-          summary: '机器人返回了课程查询命令格式、课程匹配和学期参数说明图片。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'course_query_help') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await courseQueryService.queryHelp(identity.qqUserId), {
+            summary: '机器人返回了课程查询命令格式、课程匹配和学期参数说明图片。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'course_query') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        const reply = await courseQueryService.queryCourse(identity, {
-          courseQuery: command.courseQuery,
-          termInput: command.termInput,
-        });
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, reply, {
-          summary: `机器人返回了“${command.courseQuery}”的课程分项成绩查询结果图片（学期参数：${command.termInput ?? '0'}）。`,
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'course_query') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          const reply = await courseQueryService.queryCourse(identity, {
+            courseQuery: command.courseQuery,
+            termInput: command.termInput,
+          });
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, reply, {
+            summary: `机器人返回了“${command.courseQuery}”的课程分项成绩查询结果图片（学期参数：${command.termInput ?? '0'}）。`,
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
       }
-      return;
-    }
 
-    if (command.kind === 'exam_schedule') {
-      try {
-        const identity = resolveOwnerIdentity(session);
-        await sendHbuJwReply(nativeFeatureChat, session, command, text, await examScheduleService.queryExamSchedule(identity), {
-          summary: '机器人返回了本学期考试安排查询结果图片。',
-        });
-      } catch (error) {
-        await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+      if (command.kind === 'exam_schedule') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, await examScheduleService.queryExamSchedule(identity), {
+            summary: '机器人返回了本学期考试安排查询结果图片。',
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
       }
-    }
+    });
   });
 }
 
