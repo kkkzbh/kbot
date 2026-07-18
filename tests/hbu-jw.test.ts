@@ -1204,7 +1204,7 @@ describe('hbu-jw menu module', () => {
       naturalTriggerGroups: new Set<string>(),
     } as never);
 
-    expect(reference).toContain('总入口：“教务”');
+    expect(reference).toContain('总入口：“教务”或“教务系统”');
     expect(reference).toContain('群聊中需要 @机器人');
     expect(reference).toContain('课程查询 <课程名关键词或课程号> [学期]');
     expect(reference).toContain('命令名后必须有空格');
@@ -3347,7 +3347,7 @@ describe('hbu-jw plugin integration', () => {
     expect(renderMessageContent(send.mock.calls[0]?.[0])).toContain('教务绑定');
   });
 
-  it('returns the academic affairs menu in allowed groups without creating a binding challenge', async () => {
+  it.each(['教务', '教务系统'])('returns the academic affairs menu for the %s keyword in allowed groups', async (keyword) => {
     const dir = createTempDir();
     const database = createDatabase();
     const middleware = vi.fn();
@@ -3378,7 +3378,7 @@ describe('hbu-jw plugin integration', () => {
       userId: '1405359129',
       channelId: 'group:100',
       guildId: '100',
-      content: '教务',
+      content: keyword,
       send,
     }, vi.fn());
 

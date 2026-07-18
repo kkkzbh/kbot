@@ -732,7 +732,7 @@ export function buildHbuJwCapabilityReference(
 
   return [
     `教务功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
-    '- 总入口：“教务”，返回完整教务菜单。',
+    '- 总入口：“教务”或“教务系统”，返回完整教务菜单。',
     '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务状态”、“教务解绑”。',
     '- 查询：“GPA”、“成绩”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
     ...(guidanceRequested ? [
@@ -765,7 +765,7 @@ export function shouldExposeHbuJwCapabilityReference(session: Session): boolean 
 
 function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '选课指导') return { kind: 'course_guidance' };
-  if (text === '教务') return { kind: 'menu' };
+  if (text === '教务' || text === '教务系统') return { kind: 'menu' };
   if (text === '教务绑定') return { kind: 'bind' };
   if (/^教务(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };
   const confirm = text.match(/^教务(?:确认|确定)\s+(\d{6})$/);
