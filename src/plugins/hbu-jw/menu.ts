@@ -71,7 +71,7 @@ const MENU_SECTIONS: HbuJwMenuSectionView[] = [
     icon: 'search',
     items: [
       { keyword: 'GPA', description: '计算推免相关GPA，排除艺术类等必修课程', icon: 'chart' },
-      { keyword: '成绩', description: '查看本学期成绩', icon: 'list' },
+      { keyword: '成绩 [index]', description: '省略 index 查本学期；0 查入学首学期，依次递增', icon: 'list' },
       { keyword: '匿名成绩', description: '查看本学期成绩，但不显示敏感数据，可查是否出分', icon: 'list' },
       { keyword: '课程查询', description: '查看指定课程的分项成绩接口返回', icon: 'search' },
       { keyword: '选课结果', description: '查看本学期课程、学分与选课状态', icon: 'check' },

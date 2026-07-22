@@ -118,15 +118,26 @@ export interface SerializedCookieJar {
 export interface HbuJwScoreRow {
   id?: {
     courseNumber?: string | null;
+    coureSequenceNumber?: string | null;
+    executiveEducationPlanNumber?: string | null;
+    startTime?: string | null;
+    studentId?: string | null;
     [key: string]: unknown;
   } | null;
   courseName?: string | null;
   credit?: string | number | null;
+  courseScore?: string | number | null;
   gradePointScore?: string | number | null;
   courseAttributeCode?: string | null;
   courseAttributeName?: string | null;
+  xkcsxdm?: string | null;
+  xkcsxmc?: string | null;
   academicYearCode?: string | null;
   termName?: string | null;
+  examTime?: string | null;
+  avgcj?: string | number | null;
+  rank?: string | number | null;
+  operatingTime?: string | null;
   [key: string]: unknown;
 }
 

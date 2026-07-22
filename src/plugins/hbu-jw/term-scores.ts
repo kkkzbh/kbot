@@ -73,6 +73,18 @@ export type HbuJwTermScoreStatus =
 export type HbuJwTermScoreGpaDeltaKind = 'positive' | 'negative' | 'zero' | 'not-counted' | 'pending' | 'missing' | 'anonymous';
 export type HbuJwTermScoresMode = 'full' | 'anonymous';
 
+export interface HbuJwPassingScoreTerm {
+  academicYear: string;
+  termName: '秋' | '春';
+  label: string;
+  sortKey: number;
+}
+
+export interface HbuJwPassingScoreTermGroup {
+  term: HbuJwPassingScoreTerm;
+  rows: HbuJwScoreRow[];
+}
+
 export type HbuJwTermScoresBuildInput =
   | { mode: 'full'; rows: HbuJwThisTermScoreRow[]; allPassingRows: HbuJwScoreRow[]; statusOverrides?: ReadonlyMap<HbuJwThisTermScoreRow, HbuJwTermScoreStatus> }
   | { mode: 'anonymous'; rows: HbuJwThisTermScoreRow[]; statusOverrides?: ReadonlyMap<HbuJwThisTermScoreRow, HbuJwTermScoreStatus> };
@@ -110,21 +122,52 @@ export class HbuJwTermScoresService {
     private readonly authService: HbuJwTermScoresAuthServiceLike,
     private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreDetails'>,
     private readonly puppeteer: HbuJwTermScoresPuppeteerLike,
-    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreDetails'>,
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getAllPassingScores' | 'getAllPassingScoresPreferDatabase' | 'getSubitemScoreDetails'>,
   ) {}
 
-  async queryTermScores(identity: OwnerIdentity, mode: HbuJwTermScoresMode = 'full'): Promise<Fragment> {
+  async queryTermScores(identity: OwnerIdentity, mode: HbuJwTermScoresMode = 'full', semesterIndex?: number): Promise<Fragment> {
     const auth = await this.authService.ensureAuthenticated(identity);
     if (auth.kind !== 'authenticated') {
       throw new HbuJwUserError(auth.reason);
     }
+    if (semesterIndex != null && (!Number.isSafeInteger(semesterIndex) || semesterIndex < 0)) {
+      throw new HbuJwUserError('成绩 index 必须是非负整数。');
+    }
+    if (semesterIndex != null && mode !== 'full') {
+      throw new HbuJwUserError('历史学期成绩不支持匿名模式。');
+    }
 
     const queryResults: Array<HbuJwAcademicQueryResult<unknown>> = [];
-    const view = mode === 'full'
-      ? await this.buildFullView(identity, auth, queryResults)
-      : await this.buildAnonymousView(identity, auth, queryResults);
+    const view = semesterIndex != null
+      ? await this.buildHistoricalView(identity, auth, semesterIndex, queryResults)
+      : mode === 'full'
+        ? await this.buildFullView(identity, auth, queryResults)
+        : await this.buildAnonymousView(identity, auth, queryResults);
     const notice = formatAcademicFallbackNotice(queryResults);
     return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), await renderHbuJwTermScoresImage(this.puppeteer, view)];
+  }
+
+  private async buildHistoricalView(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    semesterIndex: number,
+    queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
+  ): Promise<HbuJwTermScoresView> {
+    let scoresResult = await this.loadAllPassingScores(identity, auth, true);
+    let terms = groupHbuJwPassingScoresByTerm(scoresResult.data);
+    if (semesterIndex >= terms.length && scoresResult.source === 'database') {
+      scoresResult = await this.loadAllPassingScores(identity, auth, false);
+      terms = groupHbuJwPassingScoresByTerm(scoresResult.data);
+    }
+    if (scoresResult.failureReason) queryResults.push(scoresResult);
+    if (terms.length === 0) {
+      throw new HbuJwUserError('当前没有可查询的历史学期成绩。');
+    }
+    const selected = terms[semesterIndex];
+    if (!selected) {
+      throw new HbuJwUserError(`成绩 index ${semesterIndex} 超出范围，可用范围为 0-${terms.length - 1}。`);
+    }
+    return buildHbuJwHistoricalTermScoresView(selected, scoresResult.data, semesterIndex);
   }
 
   private async buildFullView(
@@ -171,9 +214,12 @@ export class HbuJwTermScoresService {
   private async loadAllPassingScores(
     identity: OwnerIdentity,
     auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+    preferDatabase = false,
   ): Promise<HbuJwAcademicQueryResult<HbuJwScoreRow[]>> {
     if (this.academicCache) {
-      return this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy());
+      return preferDatabase
+        ? this.academicCache.getAllPassingScoresPreferDatabase(identity, auth, hbuJwDatabaseFallbackPolicy())
+        : this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy());
     }
     return { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote', fetchedAt: Date.now() };
   }
@@ -218,6 +264,35 @@ export function buildHbuJwTermScoresView(input: HbuJwTermScoresBuildInput): HbuJ
     recordedCount,
     pendingCount,
     rows: rowViews,
+  };
+}
+
+export function groupHbuJwPassingScoresByTerm(rows: HbuJwScoreRow[]): HbuJwPassingScoreTermGroup[] {
+  const groups = new Map<number, HbuJwPassingScoreTermGroup>();
+  for (const row of rows) {
+    const term = parsePassingScoreTerm(row);
+    const group = groups.get(term.sortKey);
+    if (group) {
+      group.rows.push(row);
+    } else {
+      groups.set(term.sortKey, { term, rows: [row] });
+    }
+  }
+  return [...groups.values()].sort((left, right) => left.term.sortKey - right.term.sortKey);
+}
+
+export function buildHbuJwHistoricalTermScoresView(
+  selected: HbuJwPassingScoreTermGroup,
+  allPassingRows: HbuJwScoreRow[],
+  semesterIndex: number,
+): HbuJwTermScoresView {
+  const rows = selected.rows.map(toHistoricalTermScoreRow);
+  const cumulativePassingRows = allPassingRows.filter((row) => parsePassingScoreTerm(row).sortKey <= selected.term.sortKey);
+  const view = buildHbuJwTermScoresView({ mode: 'full', rows, allPassingRows: cumulativePassingRows });
+  return {
+    ...view,
+    title: `河北大学第 ${semesterIndex + 1} 学期成绩`,
+    subtitle: `${selected.term.label} · ${rows.length} 门课程 · ${formatNumber(view.totalCredits)} 学分`,
   };
 }
 
@@ -743,6 +818,50 @@ function termScoreKey(row: HbuJwThisTermScoreRow): string {
     readOptionalText(row.id?.examtime),
     readOptionalText(row.courseName),
   ].join('\u0000');
+}
+
+function parsePassingScoreTerm(row: HbuJwScoreRow): HbuJwPassingScoreTerm {
+  const courseName = readOptionalText(row.courseName) || '未知课程';
+  const academicYear = readOptionalText(row.academicYearCode);
+  const academicYearMatch = /^(\d{4})-(\d{4})$/.exec(academicYear);
+  if (!academicYearMatch || Number(academicYearMatch[2]) !== Number(academicYearMatch[1]) + 1) {
+    throw new HbuJwQueryError(`历史成绩课程 ${courseName} 的学年无效。`);
+  }
+  const termName = readOptionalText(row.termName);
+  if (termName !== '秋' && termName !== '春') {
+    throw new HbuJwQueryError(`历史成绩课程 ${courseName} 的学期无效。`);
+  }
+  const academicYearStart = Number(academicYearMatch[1]);
+  return {
+    academicYear,
+    termName,
+    label: `${academicYear} ${termName}`,
+    sortKey: academicYearStart * 2 + (termName === '秋' ? 0 : 1),
+  };
+}
+
+function toHistoricalTermScoreRow(row: HbuJwScoreRow): HbuJwThisTermScoreRow {
+  return {
+    id: {
+      courseNumber: row.id?.courseNumber,
+      executiveEducationPlanNumber: row.id?.executiveEducationPlanNumber,
+      examtime: row.id?.startTime,
+      studentNumber: row.id?.studentId,
+    },
+    coureSequenceNumber: row.id?.coureSequenceNumber,
+    courseName: row.courseName,
+    credit: row.credit,
+    coursePropertyCode: row.xkcsxdm ?? row.courseAttributeCode,
+    coursePropertyName: row.xkcsxmc ?? row.courseAttributeName,
+    courseScore: row.courseScore,
+    gradePoint: row.gradePointScore,
+    inputStatusCode: CONFIRMED_STATUS_CODE,
+    inputStatusExplain: '确定',
+    avgcj: row.avgcj,
+    rank: row.rank,
+    termName: row.termName,
+    operatetime: row.operatingTime,
+  };
 }
 
 function formatTermLabel(rows: HbuJwThisTermScoreRow[]): string {

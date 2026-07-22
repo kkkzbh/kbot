@@ -77,6 +77,7 @@ import {
   apply as applyHbuJwPlugin,
   buildHbuJwCapabilityReference,
   parseCourseQueryCommand,
+  parseHbuJwCommand,
   shouldExposeHbuJwCapabilityReference,
   toUserMessage,
 } from '../src/plugins/hbu-jw/index.js';
@@ -131,7 +132,9 @@ import { HbuJwSharedSessionCoordinator } from '../src/plugins/hbu-jw/shared-sess
 import { HbuJwStore } from '../src/plugins/hbu-jw/store.js';
 import {
   HbuJwTermScoresService,
+  buildHbuJwHistoricalTermScoresView,
   buildHbuJwTermScoresView,
+  groupHbuJwPassingScoresByTerm,
   renderHbuJwTermScoresImage,
 } from '../src/plugins/hbu-jw/term-scores.js';
 import { HbuJwUserError } from '../src/plugins/hbu-jw/types.js';
@@ -1214,6 +1217,8 @@ describe('hbu-jw menu module', () => {
     expect(reference).toContain('0 查询课序 01');
     expect(reference).toContain('1 查询课序 02');
     expect(reference).toContain('只使用本学期数据');
+    expect(reference).toContain('“成绩”省略 index 时查询本学期');
+    expect(reference).toContain('“成绩 0”查询入学第一个有成绩的学期');
     expect(reference).toContain('课程号精确匹配');
     expect(reference).not.toContain('hbu_jw_course_guidance_context');
 
@@ -1258,6 +1263,25 @@ describe('hbu-jw menu module', () => {
     });
   });
 
+  it('parses an optional zero-based semester index for score queries', () => {
+    expect(parseHbuJwCommand('成绩')).toEqual({
+      kind: 'term_scores',
+      mode: 'full',
+      semesterIndex: undefined,
+    });
+    expect(parseHbuJwCommand('成绩 0')).toEqual({
+      kind: 'term_scores',
+      mode: 'full',
+      semesterIndex: 0,
+    });
+    expect(parseHbuJwCommand('成绩 5')).toEqual({
+      kind: 'term_scores',
+      mode: 'full',
+      semesterIndex: 5,
+    });
+    expect(parseHbuJwCommand('成绩 -1')).toBeNull();
+  });
+
   it('builds the academic affairs menu with all exposed keywords', () => {
     const view = buildHbuJwMenuView();
 
@@ -1277,7 +1301,7 @@ describe('hbu-jw menu module', () => {
         '查询',
         [
           ['GPA', '计算推免相关GPA，排除艺术类等必修课程'],
-          ['成绩', '查看本学期成绩'],
+          ['成绩 [index]', '省略 index 查本学期；0 查入学首学期，依次递增'],
           ['匿名成绩', '查看本学期成绩，但不显示敏感数据，可查是否出分'],
           ['课程查询', '查看指定课程的分项成绩接口返回'],
           ['选课结果', '查看本学期课程、学分与选课状态'],
@@ -1306,7 +1330,7 @@ describe('hbu-jw menu module', () => {
     expect(html).toContain('网页登录成功后确认绑定');
     expect(html).toContain('解除教务账号与QQ的绑定，相关加密数据也会清除');
     expect(html).toContain('计算推免相关GPA，排除艺术类等必修课程');
-    expect(html).toContain('查看本学期成绩');
+    expect(html).toContain('省略 index 查本学期；0 查入学首学期，依次递增');
     expect(html).toContain('匿名成绩');
     expect(html).toContain('查看本学期成绩，但不显示敏感数据，可查是否出分');
     expect(html).toContain('课程查询');
@@ -1518,6 +1542,74 @@ describe('hbu-jw GPA calculation', () => {
 });
 
 describe('hbu-jw term scores module', () => {
+  it('groups historical scores chronologically and calculates GPA deltas from prior terms only', () => {
+    const allPassingRows = [
+      scoreRow({
+        id: { courseNumber: 'BASE001' },
+        courseName: '首学期基础课',
+        courseScore: 90,
+        credit: 3,
+        gradePointScore: 4,
+        academicYearCode: '2023-2024',
+        termName: '秋',
+      }),
+      scoreRow({
+        id: { courseNumber: 'TARGET_HIGH', coureSequenceNumber: '01' },
+        courseName: '先录入高绩点',
+        courseScore: 100,
+        credit: 3,
+        gradePointScore: 5,
+        academicYearCode: '2023-2024',
+        termName: '春',
+        avgcj: 86.2,
+        rank: '1/80',
+        operatingTime: '20240701080000',
+      }),
+      scoreRow({
+        id: { courseNumber: 'TARGET_LOW', coureSequenceNumber: '02' },
+        courseName: '后录入低绩点',
+        courseScore: 70,
+        credit: 3,
+        gradePointScore: 2,
+        academicYearCode: '2023-2024',
+        termName: '春',
+        operatingTime: '20240701110000',
+      }),
+      scoreRow({
+        id: { courseNumber: 'FUTURE001' },
+        courseName: '后续学期课程',
+        courseScore: 60,
+        credit: 3,
+        gradePointScore: 1,
+        academicYearCode: '2024-2025',
+        termName: '秋',
+      }),
+    ];
+
+    const terms = groupHbuJwPassingScoresByTerm(allPassingRows);
+    const selected = terms[1]!;
+    const view = buildHbuJwHistoricalTermScoresView(selected, allPassingRows, 1);
+
+    expect(terms.map(({ term }) => term.label)).toEqual([
+      '2023-2024 秋',
+      '2023-2024 春',
+      '2024-2025 秋',
+    ]);
+    expect(view.title).toBe('河北大学第 2 学期成绩');
+    expect(view.subtitle).toBe('2023-2024 春 · 2 门课程 · 6 学分');
+    expect(view.rows.map((row) => [
+      row.courseName,
+      row.scoreText,
+      row.gradePointText,
+      row.averageText,
+      row.rankText,
+      row.gpaDeltaText,
+    ])).toEqual([
+      ['先录入高绩点', '100', '5', '86.2', '1/80', '+0.500'],
+      ['后录入低绩点', '70', '2', '—', '—', '-0.833'],
+    ]);
+  });
+
   it('builds a concise term score table view with status counts', () => {
     const confirmedRow = thisTermScoreRow();
     const recordedRow = thisTermScoreRow({
@@ -1752,6 +1844,45 @@ describe('hbu-jw term scores module', () => {
     expect(getThisTermScores).toHaveBeenCalledWith(cookieJar());
     expect(getAllPassingScores).toHaveBeenCalledWith(cookieJar());
     expect(getSubitemScoreDetails).not.toHaveBeenCalled();
+  });
+
+  it('queries historical scores remotely once and serves later requests from the database', async () => {
+    const database = createDatabase();
+    const store = new HbuJwStore(database as unknown as DatabaseLike);
+    const auth = {
+      kind: 'authenticated' as const,
+      cookieJar: cookieJar(),
+      credentialVersion: 1,
+    };
+    const ensureAuthenticated = vi.fn(async () => auth);
+    const getAllPassingScores = vi.fn(async () => [
+      scoreRow({
+        id: { courseNumber: 'FIRST001', coureSequenceNumber: '01' },
+        courseName: '入学首学期课程',
+        courseScore: 95,
+        academicYearCode: '2023-2024',
+        termName: '秋',
+      }),
+    ]);
+    const client = {
+      getThisTermScores: vi.fn(),
+      getAllPassingScores,
+      getSubitemScoreDetails: vi.fn(),
+    };
+    const cache = new HbuJwAcademicCache(store, client as never, () => Date.UTC(2026, 6, 1));
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwTermScoresService({ ensureAuthenticated }, client, puppeteer, cache);
+
+    const firstReply = await service.queryTermScores(identity(), 'full', 0);
+    const secondReply = await service.queryTermScores(identity(), 'full', 0);
+
+    expect(renderMessageContent(firstReply)).not.toContain('实时查询失败');
+    expect(renderMessageContent(secondReply)).not.toContain('实时查询失败');
+    expect(getNavigatedHtml()).toContain('河北大学第 1 学期成绩');
+    expect(getNavigatedHtml()).toContain('入学首学期课程');
+    expect(getAllPassingScores).toHaveBeenCalledTimes(1);
+    expect(client.getThisTermScores).not.toHaveBeenCalled();
+    expect(client.getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 
   it('falls back to cached term score rows with an explicit database marker', async () => {

@@ -69,6 +69,24 @@ export class HbuJwAcademicCache {
     );
   }
 
+  async getAllPassingScoresPreferDatabase(
+    identity: OwnerIdentity,
+    auth: HbuJwAcademicAuthenticatedSession,
+    policy: HbuJwAcademicQueryPolicy,
+  ): Promise<HbuJwAcademicQueryResult<HbuJwScoreRow[]>> {
+    const credentialVersion = requireCredentialVersion(auth);
+    const stored = await this.readStoredList<HbuJwScoreRow>(
+      identity.ownerKey,
+      credentialVersion,
+      'passing_score',
+      'all',
+    );
+    if (stored) {
+      return { data: stored.data, source: 'database', fetchedAt: stored.fetchedAt };
+    }
+    return this.getAllPassingScores(identity, auth, policy);
+  }
+
   async getThisTermScores(
     identity: OwnerIdentity,
     auth: HbuJwAcademicAuthenticatedSession,
@@ -329,6 +347,24 @@ export class HbuJwAcademicCache {
     return {
       data: rows.map((row) => JSON.parse(row.rawJson) as T),
       fetchedAt: Math.min(...rows.map((row) => row.fetchedAt)),
+    };
+  }
+
+  private async readStoredList<T>(
+    ownerKey: string,
+    credentialVersion: number,
+    dataKind: HbuJwAcademicDataKind,
+    scopeKey: string,
+  ): Promise<{ data: T[]; fetchedAt: number } | null> {
+    const state = await this.store.getAcademicSyncState(ownerKey, credentialVersion, dataKind, scopeKey);
+    if (state?.lastSucceededAt == null) return null;
+    const rows = await this.store.listAcademicItems(ownerKey, credentialVersion, dataKind, scopeKey, 0);
+    if (rows.length !== state.rowCount) return null;
+    return {
+      data: rows.map((row) => JSON.parse(row.rawJson) as T),
+      fetchedAt: rows.length > 0
+        ? Math.min(...rows.map((row) => row.fetchedAt))
+        : state.lastSucceededAt,
     };
   }
 }
