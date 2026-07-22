@@ -1587,6 +1587,7 @@ describe('hbu-jw term scores module', () => {
     ];
 
     const terms = groupHbuJwPassingScoresByTerm(allPassingRows);
+    const firstTermView = buildHbuJwHistoricalTermScoresView(terms[0]!, allPassingRows, 0);
     const selected = terms[1]!;
     const view = buildHbuJwHistoricalTermScoresView(selected, allPassingRows, 1);
 
@@ -1595,6 +1596,7 @@ describe('hbu-jw term scores module', () => {
       '2023-2024 春',
       '2024-2025 秋',
     ]);
+    expect(firstTermView.rows[0]?.gpaDeltaText).toBe('+4.000');
     expect(view.title).toBe('河北大学第 2 学期成绩');
     expect(view.subtitle).toBe('2023-2024 春 · 2 门课程 · 6 学分');
     expect(view.rows.map((row) => [
@@ -1649,7 +1651,7 @@ describe('hbu-jw term scores module', () => {
     expect(view.recordedCount).toBe(1);
     expect(view.pendingCount).toBe(1);
     expect(view.rows.map((row) => [row.courseName, row.statusText, row.timeText, row.scoreText, row.gradePointText, row.gpaDeltaText])).toEqual([
-      ['软件工程', '确定', '—', '97', '4.5', '—'],
+      ['软件工程', '确定', '—', '97', '4.5', '+4.500'],
       ['编译原理', '已录入2', '—', '84', '—', '待确定'],
       ['网络安全基础实验', '尚未录入', '—', '—', '—', '—'],
     ]);
@@ -1813,7 +1815,7 @@ describe('hbu-jw term scores module', () => {
     expect(getNavigatedHtml()).toContain('GPA增量');
     expect(getNavigatedHtml()).toContain('已录入1');
     expect(getNavigatedHtml()).toContain('status-recorded');
-    expect(getNavigatedHtml()).toContain('gpa-missing');
+    expect(getNavigatedHtml()).toContain('gpa-positive');
     expect(getNavigatedHtml()).toContain('gpa-pending');
     expect(getNavigatedHtml()).toContain('<table>');
     expect(page.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'png' }));

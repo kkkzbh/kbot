@@ -728,11 +728,11 @@ function calculateTermScoreGpaDeltas(
     totals = nextTotals;
     remainingCurrentCourses.delete(courseNumber);
 
-    if (before == null || after == null) {
+    if (after == null) {
       result.set(key, missingGpaDelta());
       continue;
     }
-    result.set(key, formatGpaDelta(after - before));
+    result.set(key, formatGpaDelta(after - (before ?? 0)));
   }
 
   return result;
