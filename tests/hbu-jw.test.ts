@@ -76,6 +76,7 @@ vi.mock('koishi', () => {
 import {
   apply as applyHbuJwPlugin,
   buildHbuJwCapabilityReference,
+  parseCourseQueryCommand,
   shouldExposeHbuJwCapabilityReference,
   toUserMessage,
 } from '../src/plugins/hbu-jw/index.js';
@@ -90,7 +91,7 @@ import {
   matchCourseCandidates,
   renderHbuJwCourseQueryHelpImage,
   renderHbuJwCourseQueryResultHtml,
-  resolveCourseQueryTerm,
+  resolveCourseQuerySequenceNumber,
 } from '../src/plugins/hbu-jw/course-query.js';
 import { loadOrCreateKek } from '../src/plugins/hbu-jw/crypto.js';
 import {
@@ -1190,7 +1191,7 @@ describe('hbu-jw menu module', () => {
     expect(shouldExposeHbuJwCapabilityReference(session('你觉得 GPA 重要吗？'))).toBe(false);
     expect(shouldExposeHbuJwCapabilityReference(session('我去教务处拿材料'))).toBe(false);
     expect(shouldExposeHbuJwCapabilityReference(session('课程查询模式识别'))).toBe(true);
-    expect(shouldExposeHbuJwCapabilityReference(session('课程查询 模式识别 -1'))).toBe(true);
+    expect(shouldExposeHbuJwCapabilityReference(session('课程查询 软件工程 1'))).toBe(true);
     expect(shouldExposeHbuJwCapabilityReference(session('GPA 怎么查'))).toBe(true);
     expect(shouldExposeHbuJwCapabilityReference(session('教务功能怎么用'))).toBe(true);
   });
@@ -1208,10 +1209,11 @@ describe('hbu-jw menu module', () => {
 
     expect(reference).toContain('总入口：“教务”或“教务系统”');
     expect(reference).toContain('群聊中需要 @机器人');
-    expect(reference).toContain('课程查询 <课程名关键词或课程号> [学期]');
+    expect(reference).toContain('课程查询 <课程名关键词或课程号> [课序偏移]');
     expect(reference).toContain('命令名后必须有空格');
-    expect(reference).toContain('0（本学期）');
-    expect(reference).toContain('2025-2026-2-2');
+    expect(reference).toContain('0 查询课序 01');
+    expect(reference).toContain('1 查询课序 02');
+    expect(reference).toContain('只使用本学期数据');
     expect(reference).toContain('课程号精确匹配');
     expect(reference).not.toContain('hbu_jw_course_guidance_context');
 
@@ -1236,6 +1238,24 @@ describe('hbu-jw menu module', () => {
       naturalTriggerGroups: new Set(['100']),
     } as never, true);
     expect(routedGuidanceReference).toContain('hbu_jw_course_guidance_context');
+  });
+
+  it('parses the trailing course query argument as a sequence offset', () => {
+    expect(parseCourseQueryCommand('课程查询 软件工程')).toEqual({
+      kind: 'course_query',
+      courseQuery: '软件工程',
+      sequenceOffsetInput: undefined,
+    });
+    expect(parseCourseQueryCommand('课程查询 软件工程 0')).toEqual({
+      kind: 'course_query',
+      courseQuery: '软件工程',
+      sequenceOffsetInput: '0',
+    });
+    expect(parseCourseQueryCommand('课程查询 软件工程 1')).toEqual({
+      kind: 'course_query',
+      courseQuery: '软件工程',
+      sequenceOffsetInput: '1',
+    });
   });
 
   it('builds the academic affairs menu with all exposed keywords', () => {
@@ -2333,17 +2353,19 @@ describe('hbu-jw course query module', () => {
 
     expect(String(image)).toContain('image/png');
     expect(getNavigatedHtml()).toContain('课程查询');
-    expect(getNavigatedHtml()).toContain('课程查询 &lt;课程&gt; [学期]');
-    expect(getNavigatedHtml()).toContain('课程查询 模式识别');
-    expect(getNavigatedHtml()).toContain('0 是本学期');
+    expect(getNavigatedHtml()).toContain('课程查询 &lt;课程&gt; [课序偏移]');
+    expect(getNavigatedHtml()).toContain('课程查询 软件工程 1');
+    expect(getNavigatedHtml()).toContain('0 查询课序 01');
+    expect(getNavigatedHtml()).toContain('1 查询课序 02');
   });
 
-  it('resolves term offsets from the selected term in the academic term list', () => {
-    expect(resolveCourseQueryTerm(terms, '0').code).toBe('2025-2026-2-2');
-    expect(resolveCourseQueryTerm(terms, '-1').code).toBe('2025-2026-1-2');
-    expect(resolveCourseQueryTerm(terms, '2025-2026-2-2').code).toBe('2025-2026-2-2');
-    expect(() => resolveCourseQueryTerm(terms, '-2')).toThrow('没有偏移 -2');
-    expect(() => resolveCourseQueryTerm(terms, '1')).toThrow('只支持 0 或负数');
+  it('maps nonnegative sequence offsets to two-digit course sequence numbers', () => {
+    expect(resolveCourseQuerySequenceNumber('0')).toBe('01');
+    expect(resolveCourseQuerySequenceNumber('1')).toBe('02');
+    expect(resolveCourseQuerySequenceNumber('9')).toBe('10');
+    expect(() => resolveCourseQuerySequenceNumber('-1')).toThrow('必须是非负整数');
+    expect(() => resolveCourseQuerySequenceNumber('2025-2026-2-2')).toThrow('必须是非负整数');
+    expect(() => resolveCourseQuerySequenceNumber('99')).toThrow('0 到 98');
   });
 
   it('matches course numbers exactly before course name fuzzy matches', () => {
@@ -2414,7 +2436,6 @@ describe('hbu-jw course query module', () => {
         coursePropertyName: '任选',
       }),
     ]);
-    const getAllPassingScores = vi.fn(async () => []);
     const getSubitemScoreDetails = vi.fn(async () => ({
       params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01105', kxh: '02', kssj: '20260620', kcsxdm: '003' },
       message: '',
@@ -2427,7 +2448,7 @@ describe('hbu-jw course query module', () => {
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -2436,7 +2457,6 @@ describe('hbu-jw course query module', () => {
     expect(extractAtIds(reply)).toEqual(['1405359129']);
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(getThisTermScores).toHaveBeenCalledWith(cookieJar());
-    expect(getAllPassingScores).not.toHaveBeenCalled();
     expect(getSubitemScoreDetails).toHaveBeenCalledWith(
       cookieJar(),
       { zxjxjhh: '2025-2026-2-2', kch: '2023S01105', kxh: '02', kssj: '20260620', kcsxdm: '003' },
@@ -2470,7 +2490,6 @@ describe('hbu-jw course query module', () => {
         coursePropertyName: '必修',
       }),
     ]);
-    const getAllPassingScores = vi.fn(async () => []);
     const getSubitemScoreDetails = vi.fn(async () => ({
       params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01006', kxh: '01', kssj: '20260620', kcsxdm: '001' },
       message: '',
@@ -2483,7 +2502,7 @@ describe('hbu-jw course query module', () => {
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -2497,49 +2516,82 @@ describe('hbu-jw course query module', () => {
     expect(getNavigatedHtml()).not.toContain('20231202011');
   });
 
-  it('loads historical candidates from all passing scores when a previous term is selected', async () => {
+  it('uses sequence offset one to query course sequence 02', async () => {
     const ensureAuthenticated = vi.fn(async () => ({
       kind: 'authenticated' as const,
       cookieJar: cookieJar(),
     }));
     const getSubitemScoreTerms = vi.fn(async () => terms);
-    const getThisTermScores = vi.fn();
-    const getAllPassingScores = vi.fn(async () => [
-      scoreRow({
+    const getThisTermScores = vi.fn(async () => [
+      thisTermScoreRow({
         id: {
-          courseNumber: '2023D00003',
-          executiveEducationPlanNumber: '2025-2026-1-2',
-          coureSequenceNumber: '01',
-          startTime: '20260105',
+          courseNumber: '2023S01003',
+          executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
+          studentNumber: '20231202051',
         },
-        courseName: '程序设计',
-        courseAttributeCode: '001',
-        courseAttributeName: '必修',
-        examTime: '20260105',
-        xkcsxdm: '001',
+        coureSequenceNumber: '01',
+        courseName: '软件工程',
+        coursePropertyCode: '001',
+        coursePropertyName: '必修',
       }),
     ]);
     const getSubitemScoreDetails = vi.fn(async () => ({
-      params: { zxjxjhh: '2025-2026-1-2', kch: '2023D00003', kxh: '01', kssj: '20260105', kcsxdm: '001' },
+      params: { zxjxjhh: '2025-2026-2-2', kch: '2023S01003', kxh: '02', kssj: '20260620', kcsxdm: '001' },
       message: '',
-      rows: [],
+      rows: [
+        { id: { studentNumber: '20231202002', scoreTypeCode: '001' }, pscj: 96, qzcj: null, qmcj: 90, zcj: 93, remark: '2026-04-28' },
+      ],
     }));
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getAllPassingScores, getSubitemScoreDetails },
+      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
-    await service.queryCourse(identity(), { courseQuery: '程序设计', termInput: '-1' });
+    await service.queryCourse(identity(), { courseQuery: '软件工程', sequenceOffsetInput: '1' });
 
-    expect(getThisTermScores).not.toHaveBeenCalled();
-    expect(getAllPassingScores).toHaveBeenCalledWith(cookieJar());
     expect(getSubitemScoreDetails).toHaveBeenCalledWith(
       cookieJar(),
-      { zxjxjhh: '2025-2026-1-2', kch: '2023D00003', kxh: '01', kssj: '20260105', kcsxdm: '001' },
+      { zxjxjhh: '2025-2026-2-2', kch: '2023S01003', kxh: '02', kssj: '20260620', kcsxdm: '001' },
     );
-    expect(getNavigatedHtml()).toContain('接口返回 0 条分项成绩');
+    expect(getNavigatedHtml()).toContain('软件工程');
+    expect(getNavigatedHtml()).toContain('课序 02');
+    expect(getNavigatedHtml()).toContain('20231202002');
+  });
+
+  it('rejects removed term syntax as an invalid sequence offset', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: cookieJar(),
+    }));
+    const getSubitemScoreTerms = vi.fn(async () => terms);
+    const getThisTermScores = vi.fn(async () => [
+      thisTermScoreRow({
+        id: {
+          courseNumber: '2023S01003',
+          executiveEducationPlanNumber: '2025-2026-2-2',
+          examtime: '20260620',
+          studentNumber: '20231202051',
+        },
+        coureSequenceNumber: '01',
+        courseName: '软件工程',
+        coursePropertyCode: '001',
+        coursePropertyName: '必修',
+      }),
+    ]);
+    const getSubitemScoreDetails = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const service = new HbuJwCourseQueryService(
+      { ensureAuthenticated },
+      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      puppeteer,
+    );
+
+    await expect(service.queryCourse(identity(), { courseQuery: '软件工程', sequenceOffsetInput: '-1' }))
+      .rejects.toThrow('课序偏移必须是非负整数');
+    expect(getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 
   it('renders a clear empty-score message when detail rows have no score values', () => {

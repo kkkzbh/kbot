@@ -10,12 +10,10 @@ import {
   type HbuJwAcademicQueryResult,
 } from './academic-cache.js';
 import {
-  buildSubitemScoreLookParamsFromScoreRow,
   buildSubitemScoreLookParamsFromThisTermRow,
   type HbuJwHttpClient,
 } from './jw-client.js';
 import {
-  type HbuJwScoreRow,
   type HbuJwSubitemScoreDetailRow,
   type HbuJwSubitemScoreLookParams,
   type HbuJwSubitemScoreTerm,
@@ -57,7 +55,7 @@ interface HbuJwCourseQueryElementLike {
 
 export interface HbuJwCourseQueryCommandInput {
   courseQuery: string;
-  termInput?: string;
+  sequenceOffsetInput?: string;
 }
 
 export interface HbuJwCourseQueryCourseCandidate {
@@ -68,6 +66,12 @@ export interface HbuJwCourseQueryCourseCandidate {
   termCode: string;
   termLabel: string;
   params: HbuJwSubitemScoreLookParams;
+}
+
+interface HbuJwCourseQueryCandidateLoad {
+  candidates: HbuJwCourseQueryCourseCandidate[];
+  result: HbuJwAcademicQueryResult<unknown>;
+  sourceRowCount: number;
 }
 
 export interface HbuJwCourseQueryResultView {
@@ -94,9 +98,9 @@ export interface HbuJwCourseQueryDetailView {
 export class HbuJwCourseQueryService {
   constructor(
     private readonly authService: HbuJwCourseQueryAuthServiceLike,
-    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
+    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
     private readonly puppeteer: HbuJwCourseQueryPuppeteerLike,
-    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getAllPassingScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
   ) {}
 
   async queryHelp(qqUserId: string): Promise<Fragment> {
@@ -113,21 +117,24 @@ export class HbuJwCourseQueryService {
     const termsResult = await this.loadSubitemScoreTerms(identity, auth);
     queryResults.push(termsResult);
     const terms = termsResult.data;
-    const term = resolveCourseQueryTerm(terms, input.termInput ?? '0');
-    const currentTerm = requireSelectedTerm(terms);
-    const candidates = term.code === currentTerm.code
-      ? await this.loadThisTermCandidates(identity, auth, term, queryResults)
-      : await this.loadHistoricalCandidates(identity, auth, term, queryResults);
-    const matched = matchCourseCandidates(candidates, input.courseQuery);
+    const term = requireSelectedTerm(terms);
+    const candidateLoad = await this.loadThisTermCandidates(identity, auth, term, queryResults);
+    const matched = matchCourseCandidates(candidateLoad.candidates, input.courseQuery);
 
     if (matched.length === 0) {
-      throw new HbuJwUserError(`未找到课程：${input.courseQuery}。请发送“课程查询”查看格式。`);
+      throw new HbuJwUserError(formatCourseNotFoundMessage({
+        query: input.courseQuery,
+        term,
+        candidateCount: candidateLoad.candidates.length,
+        result: candidateLoad.result,
+        sourceRowCount: candidateLoad.sourceRowCount,
+      }));
     }
     if (matched.length > 1) {
       throw new HbuJwUserError(formatAmbiguousCourseMessage(input.courseQuery, matched));
     }
 
-    const course = matched[0]!;
+    const course = withSequenceOffset(matched[0]!, input.sequenceOffsetInput);
     const result = await this.loadSubitemScoreDetails(identity, auth, course.params);
     queryResults.push(result);
     const pages = buildHbuJwCourseQueryResultViews(course, result.data.rows);
@@ -141,32 +148,19 @@ export class HbuJwCourseQueryService {
     auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
     term: HbuJwSubitemScoreTerm,
     queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
-  ): Promise<HbuJwCourseQueryCourseCandidate[]> {
+  ): Promise<HbuJwCourseQueryCandidateLoad> {
     const result = this.academicCache
       ? await this.academicCache.getThisTermScores(identity, auth, hbuJwDatabaseFallbackPolicy())
       : { data: await this.jwClient.getThisTermScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
     queryResults.push(result);
-    return result.data
+    const candidates = result.data
       .filter((row) => readText(row.id?.executiveEducationPlanNumber) === term.code)
       .map((row) => candidateFromThisTermRow(row, term));
-  }
-
-  private async loadHistoricalCandidates(
-    identity: OwnerIdentity,
-    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
-    term: HbuJwSubitemScoreTerm,
-    queryResults: Array<HbuJwAcademicQueryResult<unknown>>,
-  ): Promise<HbuJwCourseQueryCourseCandidate[]> {
-    const result = this.academicCache
-      ? await this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy())
-      : { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote' as const, fetchedAt: Date.now() };
-    queryResults.push(result);
-    return result.data
-      .filter((row) => {
-        const id = isRecord(row.id) ? row.id : {};
-        return readText(id.executiveEducationPlanNumber) === term.code;
-      })
-      .map((row) => candidateFromScoreRow(row, term));
+    return {
+      candidates,
+      result,
+      sourceRowCount: result.data.length,
+    };
   }
 
   private async loadSubitemScoreTerms(
@@ -191,35 +185,22 @@ export class HbuJwCourseQueryService {
   }
 }
 
-export function resolveCourseQueryTerm(terms: HbuJwSubitemScoreTerm[], input: string): HbuJwSubitemScoreTerm {
-  const termInput = input.trim();
-  if (/^\d{4}-\d{4}-[123]-\d+$/.test(termInput)) {
-    const term = terms.find((item) => item.code === termInput);
-    if (!term) {
-      throw new HbuJwUserError(`教务学期列表中没有 ${termInput}。`);
-    }
-    return term;
+export function resolveCourseQuerySequenceNumber(input: string): string {
+  const normalized = input.trim();
+  if (!/^\d+$/.test(normalized)) {
+    throw new HbuJwUserError('课序偏移必须是非负整数，例如 0 表示课序 01，1 表示课序 02。');
   }
-  if (!/^-?\d+$/.test(termInput)) {
-    throw new HbuJwUserError('学期参数必须是 0、-1、-2 或完整学期号。');
+  const offset = Number(normalized);
+  if (!Number.isSafeInteger(offset) || offset > 98) {
+    throw new HbuJwUserError('课序偏移只支持 0 到 98，分别对应课序 01 到 99。');
   }
-  const offset = Number(termInput);
-  if (!Number.isInteger(offset) || offset > 0) {
-    throw new HbuJwUserError('学期偏移只支持 0 或负数，例如 -1 表示上一学期。');
-  }
-  const selectedIndex = terms.findIndex((term) => term.selected);
-  if (selectedIndex < 0) {
-    throw new HbuJwUserError('教务学期列表没有当前学期。');
-  }
-  const index = selectedIndex + Math.abs(offset);
-  const term = terms[index];
-  if (!term) {
-    throw new HbuJwUserError(`教务学期列表中没有偏移 ${termInput} 对应的学期。`);
-  }
-  return term;
+  return String(offset + 1).padStart(2, '0');
 }
 
-export function matchCourseCandidates(candidates: HbuJwCourseQueryCourseCandidate[], query: string): HbuJwCourseQueryCourseCandidate[] {
+export function matchCourseCandidates<T extends Pick<HbuJwCourseQueryCourseCandidate, 'courseName' | 'courseNumber'>>(
+  candidates: T[],
+  query: string,
+): T[] {
   const normalizedQuery = normalizeQuery(query);
   if (!normalizedQuery) return [];
   const exactCourseNumber = candidates.filter((course) => normalizeQuery(course.courseNumber) === normalizedQuery);
@@ -299,18 +280,19 @@ export function renderHbuJwCourseQueryHelpHtml(): string {
       <section class="help-grid">
         <article>
           <h2>命令格式</h2>
-          <p><strong>课程查询 &lt;课程&gt; [学期]</strong></p>
+          <p><strong>课程查询 &lt;课程&gt; [课序偏移]</strong></p>
           <p>课程可写课程名关键词或课程号。</p>
         </article>
         <article>
           <h2>示例</h2>
-          <p>课程查询 模式识别</p>
-          <p>课程查询 2023S01105 -1</p>
+          <p>课程查询 软件工程</p>
+          <p>课程查询 软件工程 1</p>
         </article>
         <article>
-          <h2>学期</h2>
-          <p>0 是本学期，-1 是上一学期。</p>
-          <p>也可使用 2025-2026-2-2。</p>
+          <h2>课序偏移</h2>
+          <p>省略时查询本人已选课序。</p>
+          <p>0 查询课序 01，1 查询课序 02。</p>
+          <p>课程查询仅使用本学期数据。</p>
         </article>
       </section>
       <footer>会展示教务接口返回名单，请注意发送场景。</footer>
@@ -426,16 +408,19 @@ function candidateFromThisTermRow(row: HbuJwThisTermScoreRow, term: HbuJwSubitem
   };
 }
 
-function candidateFromScoreRow(row: HbuJwScoreRow, term: HbuJwSubitemScoreTerm): HbuJwCourseQueryCourseCandidate {
-  const id = isRecord(row.id) ? row.id : {};
+function withSequenceOffset(
+  course: HbuJwCourseQueryCourseCandidate,
+  sequenceOffsetInput: string | undefined,
+): HbuJwCourseQueryCourseCandidate {
+  if (sequenceOffsetInput === undefined) return course;
+  const sequenceNumber = resolveCourseQuerySequenceNumber(sequenceOffsetInput);
   return {
-    courseName: readText(row.courseName) || '未知课程',
-    courseNumber: readText(id.courseNumber),
-    sequenceNumber: normalizeSequenceNumber(id.coureSequenceNumber),
-    propertyName: readText(row.courseAttributeName) || '未标注',
-    termCode: term.code,
-    termLabel: term.label,
-    params: buildSubitemScoreLookParamsFromScoreRow(row),
+    ...course,
+    sequenceNumber,
+    params: {
+      ...course.params,
+      kxh: sequenceNumber,
+    },
   };
 }
 
@@ -449,6 +434,27 @@ function formatAmbiguousCourseMessage(query: string, matched: HbuJwCourseQueryCo
   const lines = matched.slice(0, 8).map((course) => `${course.courseNumber} ${course.courseName} 课序${course.sequenceNumber}`);
   const suffix = matched.length > 8 ? `\n还有 ${matched.length - 8} 门未显示。` : '';
   return `“${query}”匹配到多门课程，请使用课程号或更完整名称：\n${lines.join('\n')}${suffix}`;
+}
+
+function formatCourseNotFoundMessage(args: {
+  query: string;
+  term: HbuJwSubitemScoreTerm;
+  candidateCount: number;
+  result: HbuJwAcademicQueryResult<unknown>;
+  sourceRowCount: number;
+}): string {
+  const source = args.result.source === 'remote'
+    ? `教务“本学期成绩”接口实时返回 ${args.sourceRowCount} 门课程`
+    : `教务“本学期成绩”数据库记录共 ${args.sourceRowCount} 门课程`;
+  const lines = [
+    `课程查询已完成，本学期未找到“${args.query}”。`,
+    `当前学期：${args.term.label}（${args.term.code}）。`,
+    `数据来源：${source}，其中当前学期 ${args.candidateCount} 门。`,
+  ];
+  const fallbackNotice = formatAcademicFallbackNotice([args.result]);
+  if (fallbackNotice) lines.push(fallbackNotice);
+  lines.push('教务“本学期成绩”接口没有返回该课程，Bot无法取得分项查询所需的课程参数。');
+  return lines.join('\n');
 }
 
 function interleaveImages(images: ReturnType<typeof h.image>[]): Array<ReturnType<typeof h.image> | ReturnType<typeof h.text>> {
@@ -743,10 +749,6 @@ function normalizeSequenceNumber(value: unknown): string {
 
 function readText(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function escapeHtml(value: string): string {

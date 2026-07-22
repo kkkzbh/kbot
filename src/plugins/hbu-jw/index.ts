@@ -556,7 +556,7 @@ function registerKeywordMiddleware(
         try {
           const identity = resolveOwnerIdentity(session);
           await sendHbuJwReply(nativeFeatureChat, session, command, text, await courseQueryService.queryHelp(identity.qqUserId), {
-            summary: '机器人返回了课程查询命令格式、课程匹配和学期参数说明图片。',
+            summary: '机器人返回了课程查询命令格式、课程匹配和课序偏移说明图片。',
           });
         } catch (error) {
           await sendHbuJwError(nativeFeatureChat, session, command, text, error);
@@ -569,10 +569,10 @@ function registerKeywordMiddleware(
           const identity = resolveOwnerIdentity(session);
           const reply = await courseQueryService.queryCourse(identity, {
             courseQuery: command.courseQuery,
-            termInput: command.termInput,
+            sequenceOffsetInput: command.sequenceOffsetInput,
           });
           await sendHbuJwReply(nativeFeatureChat, session, command, text, reply, {
-            summary: `机器人返回了“${command.courseQuery}”的课程分项成绩查询结果图片（学期参数：${command.termInput ?? '0'}）。`,
+            summary: `机器人返回了“${command.courseQuery}”的课程分项成绩查询结果图片（课序偏移：${command.sequenceOffsetInput ?? '本人已选课序'}）。`,
           });
         } catch (error) {
           await sendHbuJwError(nativeFeatureChat, session, command, text, error);
@@ -665,7 +665,7 @@ type HbuJwCommand =
   | { kind: 'selection_result' }
   | { kind: 'term_scores'; mode: HbuJwTermScoresMode }
   | { kind: 'course_query_help' }
-  | { kind: 'course_query'; courseQuery: string; termInput?: string }
+  | { kind: 'course_query'; courseQuery: string; sequenceOffsetInput?: string }
   | { kind: 'exam_schedule' }
   | { kind: 'course_guidance' };
 
@@ -748,8 +748,8 @@ export function buildHbuJwCapabilityReference(
     ] : []),
     '- “选课结果”代表当前选课轮次（通常是下学期），计入进行中并作为时间冲突基线；“完整课表”代表本学期。',
     '- 课程查询帮助：“课程查询”。',
-    '- 课程查询严格格式：“课程查询 <课程名关键词或课程号> [学期]”；命令名后必须有空格。',
-    '- 学期省略时使用 0（本学期）；也可用 -1、-2 等非正偏移，或完整学期号，例如 2025-2026-2-2；正数偏移无效。',
+    '- 课程查询严格格式：“课程查询 <课程名关键词或课程号> [课序偏移]”；命令名后必须有空格。',
+    '- 课序偏移省略时查询本人已选课序；0 查询课序 01，1 查询课序 02，依此类推。课程查询只使用本学期数据。',
     '- 课程优先按课程号精确匹配，再按课程名关键词匹配；匹配多门时让用户改用课程号或更完整课程名。',
     enabled
       ? '- 用户写成自然语言或格式错误时，纠正并给出最贴近意图的上述准确命令。'
@@ -790,18 +790,18 @@ function parseHbuJwCommand(text: string): HbuJwCommand | null {
   return null;
 }
 
-function parseCourseQueryCommand(text: string): HbuJwCommand | null {
+export function parseCourseQueryCommand(text: string): HbuJwCommand | null {
   const matched = text.match(/^课程查询\s+(.+)$/);
   if (!matched?.[1]) return null;
   const raw = matched[1].trim();
   if (!raw) return { kind: 'course_query_help' };
   const parts = raw.split(/\s+/);
   const last = parts.at(-1);
-  const hasTermInput = Boolean(last && (/^-?\d+$/.test(last) || /^\d{4}-\d{4}-[123]-\d+$/.test(last)));
-  const termInput = hasTermInput ? last : undefined;
-  const courseQuery = (hasTermInput ? parts.slice(0, -1) : parts).join(' ').trim();
+  const hasSequenceOffsetInput = Boolean(last && (/^-?\d+$/.test(last) || /^\d{4}-\d{4}-[123]-\d+$/.test(last)));
+  const sequenceOffsetInput = hasSequenceOffsetInput ? last : undefined;
+  const courseQuery = (hasSequenceOffsetInput ? parts.slice(0, -1) : parts).join(' ').trim();
   if (!courseQuery) return { kind: 'course_query_help' };
-  return { kind: 'course_query', courseQuery, termInput };
+  return { kind: 'course_query', courseQuery, sequenceOffsetInput };
 }
 
 function canUseHbuJwInSession(session: Session, allowedGroups: Set<string>): boolean {
