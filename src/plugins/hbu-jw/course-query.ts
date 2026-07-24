@@ -17,6 +17,7 @@ import {
   type HbuJwSubitemScoreDetailRow,
   type HbuJwSubitemScoreLookParams,
   type HbuJwSubitemScoreTerm,
+  type HbuJwScoreRow,
   HbuJwUserError,
   type HbuJwThisTermScoreRow,
   type OwnerIdentity,
@@ -74,6 +75,16 @@ interface HbuJwCourseQueryCandidateLoad {
   sourceRowCount: number;
 }
 
+export interface HbuJwOwnCourseScoreCandidate {
+  courseName: string;
+  courseNumber: string;
+  sequenceNumber: string;
+  propertyName: string;
+  academicYear: string;
+  termName: string;
+  row: HbuJwScoreRow;
+}
+
 export interface HbuJwCourseQueryResultView {
   title: string;
   subtitle: string;
@@ -95,12 +106,30 @@ export interface HbuJwCourseQueryDetailView {
   dateText: string;
 }
 
+export interface HbuJwOwnCourseScoreMetadata {
+  label: string;
+  value: string;
+}
+
+export interface HbuJwOwnCourseScoreView {
+  title: string;
+  subtitle: string;
+  courseName: string;
+  courseNumber: string;
+  sequenceNumber: string;
+  scoreText: string;
+  gradePointText: string;
+  averageText: string;
+  rankText: string;
+  metadata: HbuJwOwnCourseScoreMetadata[];
+}
+
 export class HbuJwCourseQueryService {
   constructor(
     private readonly authService: HbuJwCourseQueryAuthServiceLike,
-    private readonly jwClient: Pick<HbuJwHttpClient, 'getThisTermScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
+    private readonly jwClient: Pick<HbuJwHttpClient, 'getAllPassingScores' | 'getThisTermScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
     private readonly puppeteer: HbuJwCourseQueryPuppeteerLike,
-    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getThisTermScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
+    private readonly academicCache?: Pick<HbuJwAcademicCache, 'getAllPassingScores' | 'getThisTermScores' | 'getSubitemScoreTerms' | 'getSubitemScoreDetails'>,
   ) {}
 
   async queryHelp(qqUserId: string): Promise<Fragment> {
@@ -143,6 +172,33 @@ export class HbuJwCourseQueryService {
     return [h.at(identity.qqUserId), h.text(notice ? `\n${notice}\n` : '\n'), ...interleaveImages(images)];
   }
 
+  async queryOwnCourseScore(identity: OwnerIdentity, courseQuery: string): Promise<Fragment> {
+    const auth = await this.authService.ensureAuthenticated(identity);
+    if (auth.kind !== 'authenticated') {
+      throw new HbuJwUserError(auth.reason);
+    }
+
+    const result = await this.loadAllPassingScores(identity, auth);
+    const candidates = result.data.map(candidateFromPassingScoreRow);
+    const matched = matchCourseCandidates(candidates, courseQuery);
+    if (matched.length === 0) {
+      throw new HbuJwUserError(`全部及格成绩中未找到“${courseQuery}”。请检查课程名或改用课程号。`);
+    }
+    const distinctCourses = new Set(matched.map((course) => `${course.courseNumber}\u0000${course.courseName}`));
+    if (distinctCourses.size > 1) {
+      throw new HbuJwUserError(formatOwnCourseScoreAmbiguity(courseQuery, matched));
+    }
+
+    const views = sortOwnCourseScoreCandidates(matched).map(buildHbuJwOwnCourseScoreView);
+    const images = await Promise.all(views.map((view) => renderHbuJwOwnCourseScoreImage(this.puppeteer, view)));
+    const notice = formatAcademicFallbackNotice([result]);
+    return [
+      h.at(identity.qqUserId),
+      h.text(notice ? `\n${notice}\n` : '\n'),
+      ...interleaveImages(images),
+    ];
+  }
+
   private async loadThisTermCandidates(
     identity: OwnerIdentity,
     auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
@@ -171,6 +227,16 @@ export class HbuJwCourseQueryService {
       return this.academicCache.getSubitemScoreTerms(identity, auth, hbuJwDatabaseFallbackPolicy());
     }
     return { data: await this.jwClient.getSubitemScoreTerms(auth.cookieJar), source: 'remote', fetchedAt: Date.now() };
+  }
+
+  private async loadAllPassingScores(
+    identity: OwnerIdentity,
+    auth: { cookieJar: SerializedCookieJar; credentialVersion?: number },
+  ): Promise<HbuJwAcademicQueryResult<HbuJwScoreRow[]>> {
+    if (this.academicCache) {
+      return this.academicCache.getAllPassingScores(identity, auth, hbuJwDatabaseFallbackPolicy());
+    }
+    return { data: await this.jwClient.getAllPassingScores(auth.cookieJar), source: 'remote', fetchedAt: Date.now() };
   }
 
   private async loadSubitemScoreDetails(
@@ -249,6 +315,31 @@ export function buildHbuJwCourseQueryResultViews(
   return pages;
 }
 
+export function buildHbuJwOwnCourseScoreView(
+  course: HbuJwOwnCourseScoreCandidate,
+): HbuJwOwnCourseScoreView {
+  const source = course.row;
+  return {
+    title: '课程成绩详情',
+    subtitle: `${formatOwnCourseTerm(course)} · ${course.courseName} · 本人成绩`,
+    courseName: course.courseName,
+    courseNumber: course.courseNumber,
+    sequenceNumber: course.sequenceNumber,
+    scoreText: formatScoreCell(source.courseScore),
+    gradePointText: formatScoreCell(source.gradePointScore),
+    averageText: formatScoreCell(source.avgcj),
+    rankText: formatScoreCell(source.rank),
+    metadata: [
+      { label: '学年', value: course.academicYear || '—' },
+      { label: '学期', value: course.termName || '—' },
+      { label: '学分', value: formatScoreCell(source.credit) },
+      { label: '课程性质', value: course.propertyName },
+      { label: '考试时间', value: formatScoreCell(source.examTime ?? source.id?.startTime) },
+      { label: '录入时间', value: formatScoreCell(source.operatingTime) },
+    ],
+  };
+}
+
 export async function renderHbuJwCourseQueryHelpImage(
   puppeteer: HbuJwCourseQueryPuppeteerLike,
 ): Promise<ReturnType<typeof h.image>> {
@@ -260,6 +351,13 @@ export async function renderHbuJwCourseQueryResultImage(
   view: HbuJwCourseQueryResultView,
 ): Promise<ReturnType<typeof h.image>> {
   return renderCourseQueryImage(puppeteer, 'course-query-result.html', renderHbuJwCourseQueryResultHtml(view), '#hbu-jw-course-query-card');
+}
+
+export async function renderHbuJwOwnCourseScoreImage(
+  puppeteer: HbuJwCourseQueryPuppeteerLike,
+  view: HbuJwOwnCourseScoreView,
+): Promise<ReturnType<typeof h.image>> {
+  return renderCourseQueryImage(puppeteer, 'own-course-score.html', renderHbuJwOwnCourseScoreHtml(view), '#hbu-jw-course-query-card');
 }
 
 export function renderHbuJwCourseQueryHelpHtml(): string {
@@ -359,6 +457,46 @@ export function renderHbuJwCourseQueryResultHtml(view: HbuJwCourseQueryResultVie
 </html>`;
 }
 
+export function renderHbuJwOwnCourseScoreHtml(view: HbuJwOwnCourseScoreView): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(view.title)}</title>
+  ${courseQueryBaseStyle()}
+</head>
+<body>
+  <main id="hbu-jw-course-query-card">
+    <section class="sheet">
+      <header class="header">
+        <div class="brand">
+          <div class="seal">HBU</div>
+          <div>
+            <h1>${escapeHtml(view.title)}</h1>
+            <p>${escapeHtml(view.subtitle)}</p>
+          </div>
+        </div>
+        <div class="summary">
+          <span>${escapeHtml(view.courseNumber)}</span>
+          <span>课序 ${escapeHtml(view.sequenceNumber)}</span>
+        </div>
+      </header>
+      <section class="own-score-overview">
+        ${renderOwnScoreMetric('总评成绩', view.scoreText, true)}
+        ${renderOwnScoreMetric('绩点', view.gradePointText, true)}
+        ${renderOwnScoreMetric('班级平均', view.averageText)}
+        ${renderOwnScoreMetric('排名', view.rankText)}
+      </section>
+      <section class="own-score-metadata">
+        ${view.metadata.map(renderOwnScoreMetadata).join('')}
+      </section>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 async function renderCourseQueryImage(
   puppeteer: HbuJwCourseQueryPuppeteerLike,
   filename: string,
@@ -408,6 +546,18 @@ function candidateFromThisTermRow(row: HbuJwThisTermScoreRow, term: HbuJwSubitem
   };
 }
 
+function candidateFromPassingScoreRow(row: HbuJwScoreRow): HbuJwOwnCourseScoreCandidate {
+  return {
+    courseName: readText(row.courseName) || '未知课程',
+    courseNumber: readText(row.id?.courseNumber),
+    sequenceNumber: normalizeSequenceNumber(row.id?.coureSequenceNumber),
+    propertyName: readText(row.xkcsxmc ?? row.courseAttributeName) || '未标注',
+    academicYear: readText(row.academicYearCode),
+    termName: readText(row.termName),
+    row,
+  };
+}
+
 function withSequenceOffset(
   course: HbuJwCourseQueryCourseCandidate,
   sequenceOffsetInput: string | undefined,
@@ -434,6 +584,35 @@ function formatAmbiguousCourseMessage(query: string, matched: HbuJwCourseQueryCo
   const lines = matched.slice(0, 8).map((course) => `${course.courseNumber} ${course.courseName} 课序${course.sequenceNumber}`);
   const suffix = matched.length > 8 ? `\n还有 ${matched.length - 8} 门未显示。` : '';
   return `“${query}”匹配到多门课程，请使用课程号或更完整名称：\n${lines.join('\n')}${suffix}`;
+}
+
+function formatOwnCourseScoreAmbiguity(query: string, matched: HbuJwOwnCourseScoreCandidate[]): string {
+  const uniqueCourses = [...new Map(matched.map((course) => [
+    `${course.courseNumber}\u0000${course.courseName}`,
+    course,
+  ])).values()];
+  const lines = uniqueCourses.slice(0, 8).map((course) => `${course.courseNumber} ${course.courseName}`);
+  const suffix = uniqueCourses.length > 8 ? `\n还有 ${uniqueCourses.length - 8} 门未显示。` : '';
+  return `“${query}”匹配到多门课程，请使用课程号或更完整名称：\n${lines.join('\n')}${suffix}`;
+}
+
+function sortOwnCourseScoreCandidates(candidates: HbuJwOwnCourseScoreCandidate[]): HbuJwOwnCourseScoreCandidate[] {
+  return [...candidates].sort((left, right) => {
+    const yearComparison = right.academicYear.localeCompare(left.academicYear, 'zh-CN', { numeric: true });
+    if (yearComparison !== 0) return yearComparison;
+    return ownCourseTermOrder(right.termName) - ownCourseTermOrder(left.termName);
+  });
+}
+
+function ownCourseTermOrder(termName: string): number {
+  if (termName === '春') return 2;
+  if (termName === '秋') return 1;
+  return 0;
+}
+
+function formatOwnCourseTerm(course: HbuJwOwnCourseScoreCandidate): string {
+  const parts = [course.academicYear, course.termName].filter(Boolean);
+  return parts.length > 0 ? parts.join(' ') : '历史成绩';
 }
 
 function formatCourseNotFoundMessage(args: {
@@ -488,6 +667,20 @@ function renderDetailRow(row: HbuJwCourseQueryDetailView): string {
     <td class="num total">${escapeHtml(row.totalScore)}</td>
     <td class="date-col num">${escapeHtml(row.dateText)}</td>
   </tr>`;
+}
+
+function renderOwnScoreMetric(label: string, value: string, accent = false): string {
+  return `<article class="own-score-metric${accent ? ' accent' : ''}">
+    <span>${escapeHtml(label)}</span>
+    <strong>${escapeHtml(value)}</strong>
+  </article>`;
+}
+
+function renderOwnScoreMetadata(item: HbuJwOwnCourseScoreMetadata): string {
+  return `<article class="own-score-metadata-item">
+    <span>${escapeHtml(item.label)}</span>
+    <strong>${escapeHtml(item.value)}</strong>
+  </article>`;
 }
 
 function courseQueryBaseStyle(): string {
@@ -612,6 +805,62 @@ function courseQueryBaseStyle(): string {
     .table-wrap {
       padding: 14px 26px 28px;
       background: #fbfcfb;
+    }
+    .own-score-overview {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      padding: 24px 26px 16px;
+    }
+    .own-score-metric {
+      min-height: 112px;
+      padding: 18px 20px;
+      border: 1px solid #dce4df;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+    .own-score-metric span,
+    .own-score-metadata-item span {
+      display: block;
+      color: #718078;
+      font-size: 15px;
+      font-weight: 760;
+    }
+    .own-score-metric strong {
+      display: block;
+      margin-top: 12px;
+      color: #27353d;
+      font-size: 30px;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .own-score-metric.accent {
+      border-color: #b9d9c7;
+      background: #edf7f1;
+    }
+    .own-score-metric.accent strong { color: #1f7f52; }
+    .own-score-metadata {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin: 0 26px 24px;
+      overflow: hidden;
+      border: 1px solid #dce4df;
+      border-radius: 8px;
+      background: #dce4df;
+    }
+    .own-score-metadata-item {
+      min-height: 78px;
+      padding: 15px 17px;
+      background: #ffffff;
+    }
+    .own-score-metadata-item strong {
+      display: block;
+      margin-top: 8px;
+      color: #2b393f;
+      font-size: 17px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
     }
     table {
       width: 100%;

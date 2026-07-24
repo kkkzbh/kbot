@@ -554,6 +554,19 @@ function registerKeywordMiddleware(
         return;
       }
 
+      if (command.kind === 'course_score_detail') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          const reply = await courseQueryService.queryOwnCourseScore(identity, command.courseQuery);
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, reply, {
+            summary: `机器人返回了本人“${command.courseQuery}”的历史课程成绩详情图片。`,
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
+      }
+
       if (command.kind === 'course_query_help') {
         try {
           const identity = resolveOwnerIdentity(session);
@@ -666,6 +679,7 @@ type HbuJwCommand =
   | { kind: 'schedule'; mode: HbuJwScheduleMode }
   | { kind: 'selection_result' }
   | { kind: 'term_scores'; mode: HbuJwTermScoresMode; semesterIndex?: number }
+  | { kind: 'course_score_detail'; courseQuery: string }
   | { kind: 'course_query_help' }
   | { kind: 'course_query'; courseQuery: string; sequenceOffsetInput?: string }
   | { kind: 'exam_schedule' }
@@ -741,7 +755,7 @@ export function buildHbuJwCapabilityReference(
     `教务功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
     '- 总入口：“教务”或“教务系统”，返回完整教务菜单。',
     '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务状态”、“教务解绑”。',
-    '- 查询：“GPA”、“成绩 [index]”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
+    '- 查询：“GPA”、“成绩 [index]”、“成绩 <课程名或课程号>”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
     ...(guidanceRequested ? [
       '- AI 选课指导关键词：“选课指导”。该功能只给出指导，不执行实际选课。',
       '- 收到“选课指导”后必须严格依次调用 hbu_jw_course_guidance_context、hbu_jw_course_offerings、hbu_jw_validate_course_recommendation。禁止跳步。',
@@ -750,6 +764,7 @@ export function buildHbuJwCapabilityReference(
     ] : []),
     '- “选课结果”代表当前选课轮次（通常是下学期），计入进行中并作为时间冲突基线；“完整课表”代表本学期。',
     '- “成绩”省略 index 时查询本学期；“成绩 0”查询入学第一个有成绩的学期，index 按学期时间递增。',
+    '- “成绩 <课程名关键词或课程号>”从全部及格成绩中查询本人该门课程的总评、绩点、排名和课程信息。',
     '- 课程查询帮助：“课程查询”。',
     '- 课程查询严格格式：“课程查询 <课程名关键词或课程号> [课序偏移]”；命令名后必须有空格。',
     '- 课序偏移省略时查询本人已选课序；0 查询课序 01，1 查询课序 02，依此类推。课程查询只使用本学期数据。',
@@ -784,12 +799,21 @@ export function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '课表') return { kind: 'schedule', mode: 'current-week' };
   if (text === '完整课表') return { kind: 'schedule', mode: 'full-semester' };
   if (text === '选课结果') return { kind: 'selection_result' };
-  const termScores = text.match(/^成绩(?:\s+(\d+))?$/);
+  const termScores = text.match(/^成绩(?:\s+(.+))?$/);
   if (termScores) {
-    const semesterIndex = termScores[1] == null ? undefined : Number(termScores[1]);
-    if (semesterIndex == null || Number.isSafeInteger(semesterIndex)) {
-      return { kind: 'term_scores', mode: 'full', semesterIndex };
+    const argument = termScores[1]?.trim();
+    if (argument == null) {
+      return { kind: 'term_scores', mode: 'full', semesterIndex: undefined };
     }
+    if (/^\d+$/.test(argument)) {
+      const semesterIndex = Number(argument);
+      if (Number.isSafeInteger(semesterIndex)) {
+        return { kind: 'term_scores', mode: 'full', semesterIndex };
+      }
+      return null;
+    }
+    if (/^-\d+$/.test(argument)) return null;
+    return { kind: 'course_score_detail', courseQuery: argument };
   }
   if (text === '匿名成绩') return { kind: 'term_scores', mode: 'anonymous' };
   if (text === '课程查询') return { kind: 'course_query_help' };

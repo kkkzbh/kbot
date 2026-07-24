@@ -1219,6 +1219,8 @@ describe('hbu-jw menu module', () => {
     expect(reference).toContain('只使用本学期数据');
     expect(reference).toContain('“成绩”省略 index 时查询本学期');
     expect(reference).toContain('“成绩 0”查询入学第一个有成绩的学期');
+    expect(reference).toContain('成绩 <课程名关键词或课程号>');
+    expect(reference).toContain('从全部及格成绩中查询本人该门课程');
     expect(reference).toContain('课程号精确匹配');
     expect(reference).not.toContain('hbu_jw_course_guidance_context');
 
@@ -1280,6 +1282,22 @@ describe('hbu-jw menu module', () => {
       semesterIndex: 5,
     });
     expect(parseHbuJwCommand('成绩 -1')).toBeNull();
+    expect(parseHbuJwCommand('成绩 999999999999999999999999')).toBeNull();
+  });
+
+  it('parses a course name or course number as an own score detail query', () => {
+    expect(parseHbuJwCommand('成绩 软件工程')).toEqual({
+      kind: 'course_score_detail',
+      courseQuery: '软件工程',
+    });
+    expect(parseHbuJwCommand('成绩 模式识别 与 机器学习')).toEqual({
+      kind: 'course_score_detail',
+      courseQuery: '模式识别 与 机器学习',
+    });
+    expect(parseHbuJwCommand('成绩 2023S01003')).toEqual({
+      kind: 'course_score_detail',
+      courseQuery: '2023S01003',
+    });
   });
 
   it('builds the academic affairs menu with all exposed keywords', () => {
@@ -1302,6 +1320,7 @@ describe('hbu-jw menu module', () => {
         [
           ['GPA', '计算推免相关GPA，排除艺术类等必修课程'],
           ['成绩 [index]', '省略 index 查本学期；0 查入学首学期，依次递增'],
+          ['成绩 <课程名>', '从全部及格成绩中查看本人某门课程详情'],
           ['匿名成绩', '查看本学期成绩，但不显示敏感数据，可查是否出分'],
           ['课程查询', '查看指定课程的分项成绩接口返回'],
           ['选课结果', '查看本学期课程、学分与选课状态'],
@@ -1331,6 +1350,8 @@ describe('hbu-jw menu module', () => {
     expect(html).toContain('解除教务账号与QQ的绑定，相关加密数据也会清除');
     expect(html).toContain('计算推免相关GPA，排除艺术类等必修课程');
     expect(html).toContain('省略 index 查本学期；0 查入学首学期，依次递增');
+    expect(html).toContain('成绩 <span class="param">&lt;课程名&gt;</span>');
+    expect(html).toContain('从全部及格成绩中查看本人某门课程详情');
     expect(html).toContain('匿名成绩');
     expect(html).toContain('查看本学期成绩，但不显示敏感数据，可查是否出分');
     expect(html).toContain('课程查询');
@@ -2581,7 +2602,7 @@ describe('hbu-jw course query module', () => {
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      { getAllPassingScores: vi.fn(), getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -2601,6 +2622,87 @@ describe('hbu-jw course query module', () => {
     expect(getNavigatedHtml()).toContain('001');
     expect(getNavigatedHtml()).not.toContain('20221202010');
     expect(getNavigatedHtml()).not.toContain('20221202011');
+  });
+
+  it('queries the authenticated student all-passing scores for a historical course detail', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: cookieJar(),
+    }));
+    const getAllPassingScores = vi.fn(async () => [
+      scoreRow({
+        id: {
+          courseNumber: '2023S01003',
+          coureSequenceNumber: '01',
+          executiveEducationPlanNumber: '2023-2024-1-1',
+          startTime: '20240118',
+        },
+        courseName: '软件工程',
+        courseScore: '97',
+        gradePointScore: 4.5,
+        rank: '3/78',
+        avgcj: '88.2',
+        academicYearCode: '2023-2024',
+        termName: '秋',
+        operatingTime: '2024-01-20 10:30',
+      }),
+    ]);
+    const getThisTermScores = vi.fn();
+    const getSubitemScoreTerms = vi.fn();
+    const getSubitemScoreDetails = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwCourseQueryService(
+      { ensureAuthenticated },
+      { getAllPassingScores, getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      puppeteer,
+    );
+
+    const reply = await service.queryOwnCourseScore(identity(), '软件工程');
+    const html = getNavigatedHtml();
+
+    expect(extractAtIds(reply)).toEqual(['1405359129']);
+    expect(renderMessageContent(reply)).toContain('image/png');
+    expect(html).toContain('课程成绩详情');
+    expect(html).toContain('软件工程');
+    expect(html).toContain('总评成绩');
+    expect(html).toContain('97');
+    expect(html).toContain('4.5');
+    expect(html).toContain('3/78');
+    expect(html).toContain('88.2');
+    expect(html).toContain('2023-2024');
+    expect(html).toContain('2024-01-20');
+    expect(getAllPassingScores).toHaveBeenCalledWith(cookieJar());
+    expect(getThisTermScores).not.toHaveBeenCalled();
+    expect(getSubitemScoreTerms).not.toHaveBeenCalled();
+    expect(getSubitemScoreDetails).not.toHaveBeenCalled();
+  });
+
+  it('does not require a student number because all-passing scores are already account-scoped', async () => {
+    const ensureAuthenticated = vi.fn(async () => ({
+      kind: 'authenticated' as const,
+      cookieJar: cookieJar(),
+    }));
+    const getAllPassingScores = vi.fn(async () => [
+      scoreRow({
+        id: { courseNumber: '2023S01003' },
+        courseName: '软件工程',
+        courseScore: '90',
+      }),
+    ]);
+    const getSubitemScoreTerms = vi.fn();
+    const getThisTermScores = vi.fn();
+    const getSubitemScoreDetails = vi.fn();
+    const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
+    const service = new HbuJwCourseQueryService(
+      { ensureAuthenticated },
+      { getAllPassingScores, getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      puppeteer,
+    );
+
+    await service.queryOwnCourseScore(identity(), '软件工程');
+
+    expect(getNavigatedHtml()).toContain('90');
+    expect(getSubitemScoreDetails).not.toHaveBeenCalled();
   });
 
   it('renders the score type that contains recorded score values', async () => {
@@ -2635,7 +2737,7 @@ describe('hbu-jw course query module', () => {
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      { getAllPassingScores: vi.fn(), getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -2679,7 +2781,7 @@ describe('hbu-jw course query module', () => {
     const { puppeteer, getNavigatedHtml } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      { getAllPassingScores: vi.fn(), getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
@@ -2718,7 +2820,7 @@ describe('hbu-jw course query module', () => {
     const { puppeteer } = createPuppeteerHarness();
     const service = new HbuJwCourseQueryService(
       { ensureAuthenticated },
-      { getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
+      { getAllPassingScores: vi.fn(), getSubitemScoreTerms, getThisTermScores, getSubitemScoreDetails },
       puppeteer,
     );
 
