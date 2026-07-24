@@ -1145,7 +1145,7 @@ describe('qq voice plugin', () => {
       statusText: 'Payment Required',
       responseBody: '{"error":{"message":"You have exceeded your monthly quota","code":"quota_exceeded"}}',
       providerCode: 'quota_exceeded',
-      providerMessage: 'You have exceeded your monthly quota',
+      providerMessage: 'Model openai/auto has exceeded its monthly quota',
     });
     const chatlunaError = Object.assign(new Error(
       '使用 ChatLuna 时出现错误，错误码为 103。请联系开发者以解决此问题。',
@@ -1160,8 +1160,12 @@ describe('qq voice plugin', () => {
     );
 
     expect(userMessage).toBe(
-      'GitHub Copilot 请求失败：HTTP 402，provider_code=quota_exceeded，月度额度已用完。请等待额度重置、补充额度，或在管理页切换主聊天模型。',
+      '主聊天服务请求失败：HTTP 402，error_code=quota_exceeded，当前额度已用完。请等待额度重置、补充额度，或在管理页切换服务。',
     );
+    expect(userMessage).not.toContain('GitHub');
+    expect(userMessage).not.toContain('Copilot');
+    expect(userMessage).not.toContain('openai/auto');
+    expect(userMessage).not.toContain('You have exceeded');
     expect(session.send).not.toHaveBeenCalled();
     expect(loggerMocks.error).toHaveBeenCalledWith(
       expect.stringContaining('reply request_conversation failed before executor cleanup'),
@@ -1177,7 +1181,7 @@ describe('qq voice plugin', () => {
       'Error when calling responses',
       '402',
       'quota_exceeded',
-      'You have exceeded your monthly quota',
+      'Model openai/auto has exceeded its monthly quota',
       'false',
     );
   });

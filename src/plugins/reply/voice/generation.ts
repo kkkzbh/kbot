@@ -988,17 +988,11 @@ function formatReplyModelFailureNotice(error: unknown): string | null {
   const failure = readReplyProviderHttpFailure(error);
   if (!failure) return null;
 
-  const profile = mainChatRuntimeState.getProfile();
-  const provider = profile.tabId === 'copilot' ? 'GitHub Copilot' : '主聊天模型上游';
-  const providerCode = failure.providerCode ? `，provider_code=${failure.providerCode}` : '';
-  const providerMessage = failure.providerMessage?.replace(/\s+/g, ' ').trim();
-
   if (failure.httpStatus === 402 && failure.providerCode === 'quota_exceeded') {
-    return `${provider} 请求失败：HTTP 402${providerCode}，月度额度已用完。请等待额度重置、补充额度，或在管理页切换主聊天模型。`;
+    return '主聊天服务请求失败：HTTP 402，error_code=quota_exceeded，当前额度已用完。请等待额度重置、补充额度，或在管理页切换服务。';
   }
 
-  const detail = providerMessage ? `，${providerMessage.slice(0, 240)}` : '';
-  return `${provider} 请求失败：HTTP ${failure.httpStatus}${providerCode}${detail}`;
+  return `主聊天服务请求失败：HTTP ${failure.httpStatus}。请稍后重试；持续失败请联系管理员并提供错误发生时间。`;
 }
 
 type ReplyProviderHttpFailure = {
