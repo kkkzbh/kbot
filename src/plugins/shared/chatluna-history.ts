@@ -14,6 +14,9 @@ export type ChatLunaHistoryServiceLike = {
     defaultPreset?: unknown;
     defaultChatMode?: unknown;
   };
+  conversationRuntime?: {
+    clearConversationCache: (conversationId: string) => Promise<unknown>;
+  };
 };
 
 export type ChatLunaHistoryWriter = {
@@ -44,11 +47,21 @@ export async function createChatLunaHistoryWriter(args: {
   maxMessagesCount?: number;
 }): Promise<ChatLunaHistoryWriter> {
   const { KoishiChatMessageHistory } = ChatLunaHistory;
-
-  return new KoishiChatMessageHistory(
+  const clearConversationCache = args.chatluna.conversationRuntime?.clearConversationCache;
+  if (typeof clearConversationCache !== 'function') {
+    throw new Error('ChatLuna history writer requires conversationRuntime.clearConversationCache.');
+  }
+  const history = new KoishiChatMessageHistory(
     { database: args.database, logger: args.logger },
     args.conversationId,
     args.maxMessagesCount ?? 10_000,
     args.chatluna,
   );
+
+  return {
+    addMessages: async (messages) => {
+      await history.addMessages(messages);
+      await clearConversationCache.call(args.chatluna.conversationRuntime, args.conversationId);
+    },
+  };
 }

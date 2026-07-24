@@ -34,6 +34,14 @@ describe('chatluna search service wiring', () => {
     expect(content).not.toContain('WEB_SEARCH_');
   });
 
+  it('keeps all Copilot and Codex internal model calls on the Responses API', () => {
+    const content = readFileSync(resolve(process.cwd(), 'koishi.yml'), 'utf8');
+
+    expect(content).toContain(
+      "responseApi: ${{ env.CHATLUNA_ACTIVE_TAB === 'copilot' || env.CHATLUNA_ACTIVE_TAB === 'codex' }}",
+    );
+  });
+
   it('ships only new search-service env keys in all env files', () => {
     const files = ['.env.example', '.env.server.example', '.env.local', '.env.server']
       .filter((file) => existsSync(resolve(process.cwd(), file)));

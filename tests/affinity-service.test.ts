@@ -333,6 +333,9 @@ function createHarness(options: {
   const chatluna = {
     chat,
     contextManager,
+    conversationRuntime: {
+      clearConversationCache: vi.fn(async () => true),
+    },
   };
   const service = new AffinityService(
     db,
@@ -718,6 +721,9 @@ describe('affinity service random history sync', () => {
     const chatluna = {
       chat,
       contextManager,
+      conversationRuntime: {
+        clearConversationCache: vi.fn(async () => true),
+      },
     };
     const service = new AffinityService(
       db,

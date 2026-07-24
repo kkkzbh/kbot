@@ -186,6 +186,7 @@ plugins:
     chatluna-openai-like-adapter:0o3zho:
       platform: ${{ env.CHATLUNA_PLATFORM || 'siliconflow' }}
       nonStreaming: true
+      responseApi: ${{ env.CHATLUNA_ACTIVE_TAB === 'copilot' || env.CHATLUNA_ACTIVE_TAB === 'codex' }}
       pullModels: ${{ env.CHATLUNA_PULL_MODELS === 'true' }}
       maxContextRatio: ${{ +env.CHATLUNA_MAX_CONTEXT_RATIO || 0.35 }}
       apiKeys:

@@ -379,6 +379,9 @@ function createHarness(overrides: {
           }),
         })),
     })),
+    conversationRuntime: {
+      clearConversationCache: vi.fn(async () => true),
+    },
   };
   if (overrides.normalizeResearchReplyHistory !== false) {
     chatluna.normalizeResearchReplyHistory = vi.fn(async (room: Record<string, unknown>, finalVisibleText: string) => {
@@ -1102,6 +1105,80 @@ describe('qq voice plugin', () => {
       expect.any(String),
       'conv-request-error',
       '400 invalid_request_body',
+    );
+  });
+
+  it('reports the real Copilot quota error instead of only ChatLuna code 103', async () => {
+    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
+      CHATLUNA_ACTIVE_TAB: 'copilot',
+      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
+      CHATLUNA_COPILOT_API_KEY: 'copilot-test-key',
+      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
+    }));
+    const { ready, getPrepare, bot } = createHarness({ replyInterruptEnabled: true });
+
+    await ready();
+    await flushMicrotasks();
+
+    const prepare = getPrepare();
+    const session = createSession(bot, {
+      userId: 'u1',
+      content: '继续聊',
+      strippedContent: '继续聊',
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-copilot-quota', {
+          model: 'openai/auto',
+        }),
+        inputMessage: { content: '继续聊', additional_kwargs: {} },
+      },
+    };
+    await prepare?.(session, context);
+
+    const origin = Object.assign(new Error(
+      'Error when calling responses, Status: 402 Payment Required, Response: {"error":{"message":"You have exceeded your monthly quota","code":"quota_exceeded"}}',
+    ), {
+      name: 'ChatLunaHttpError',
+      operation: 'Error when calling responses',
+      status: 402,
+      statusText: 'Payment Required',
+      responseBody: '{"error":{"message":"You have exceeded your monthly quota","code":"quota_exceeded"}}',
+      providerCode: 'quota_exceeded',
+      providerMessage: 'You have exceeded your monthly quota',
+    });
+    const chatlunaError = Object.assign(new Error(
+      '使用 ChatLuna 时出现错误，错误码为 103。请联系开发者以解决此问题。',
+    ), {
+      name: 'ChatLunaError',
+      errorCode: 103,
+      originError: origin,
+      retryable: false,
+    });
+    const userMessage = await session.state.qqReplyTransport.handleRequestModelError(
+      chatlunaError,
+    );
+
+    expect(userMessage).toBe(
+      'GitHub Copilot 请求失败：HTTP 402，provider_code=quota_exceeded，月度额度已用完。请等待额度重置、补充额度，或在管理页切换主聊天模型。',
+    );
+    expect(session.send).not.toHaveBeenCalled();
+    expect(loggerMocks.error).toHaveBeenCalledWith(
+      expect.stringContaining('reply request_conversation failed before executor cleanup'),
+      expect.any(String),
+      'conv-copilot-quota',
+      expect.stringContaining('103'),
+    );
+    expect(loggerMocks.error).toHaveBeenCalledWith(
+      expect.stringContaining('reply model upstream failure'),
+      expect.any(String),
+      'conv-copilot-quota',
+      '103',
+      'Error when calling responses',
+      '402',
+      'quota_exceeded',
+      'You have exceeded your monthly quota',
+      'false',
     );
   });
 

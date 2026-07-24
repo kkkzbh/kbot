@@ -157,11 +157,12 @@ function trimOptionalText(value: unknown): string | null {
   return normalized || null;
 }
 
-function buildJsonError(message: string) {
+function buildJsonError(message: string, code: string, type: string) {
   return {
     error: {
       message,
-      type: 'invalid_request_error',
+      type,
+      code,
     },
   };
 }
@@ -184,14 +185,27 @@ function parseJson<T>(raw: string, label: string): T {
   }
 }
 
-async function readHttpErrorDetail(response: Response): Promise<string | null> {
-  const text = (await response.text().catch(() => '')).trim();
-  return text ? text.slice(0, 240) : null;
-}
-
-async function buildHttpError(prefix: string, response: Response): Promise<Error> {
-  const detail = await readHttpErrorDetail(response);
-  return new Error(detail ? `${prefix}：HTTP ${response.status} ${detail}` : `${prefix}：HTTP ${response.status}`);
+async function buildHttpError(prefix: string, response: Response): Promise<CopilotBridgeHttpError> {
+  const responseBody = (await response.text().catch(() => '')).trim();
+  const detail = responseBody ? responseBody.slice(0, 240) : null;
+  let providerCode: string | undefined;
+  if (responseBody) {
+    try {
+      const payload = JSON.parse(responseBody) as {
+        code?: unknown;
+        error?: { code?: unknown };
+      };
+      const rawCode = payload.error?.code ?? payload.code;
+      providerCode = typeof rawCode === 'string' && rawCode.trim() ? rawCode.trim() : undefined;
+    } catch {
+      providerCode = undefined;
+    }
+  }
+  return new CopilotBridgeHttpError(
+    response.status,
+    detail ? `${prefix}：HTTP ${response.status} ${detail}` : `${prefix}：HTTP ${response.status}`,
+    providerCode,
+  );
 }
 
 function defaultPortForProtocol(protocol: string): string {
@@ -304,7 +318,11 @@ async function fetchExternal(target: string, label: string, init: RequestInit = 
   try {
     return await fetch(target, request.init);
   } catch (error) {
-    throw new Error(formatFetchFailure(label, target, request.proxyUrl, error));
+    throw new CopilotBridgeHttpError(
+      502,
+      formatFetchFailure(label, target, request.proxyUrl, error),
+      'upstream_transport_error',
+    );
   }
 }
 
@@ -823,7 +841,11 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
     const oauth = await this.readOAuthRecord();
     if (!oauth?.githubToken) {
-      throw new Error('GitHub Copilot 尚未完成 OAuth 登录。');
+      throw new CopilotBridgeHttpError(
+        401,
+        'GitHub Copilot 尚未完成 OAuth 登录。',
+        'copilot_oauth_required',
+      );
     }
 
     const response = await fetchExternal(COPILOT_TOKEN_URL, 'Copilot session token 换取', {
@@ -1017,11 +1039,16 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
   }
 
   private buildProxyErrorResponse(error: unknown): { status: number; headers: Record<string, string>; body: string } {
-    const status = error instanceof CopilotBridgeHttpError ? error.status : 401;
+    const message = error instanceof Error ? error.message : String(error);
+    const status = error instanceof CopilotBridgeHttpError ? error.status : 502;
+    const code = error instanceof CopilotBridgeHttpError
+      ? error.providerCode ?? (status >= 500 ? 'upstream_error' : 'invalid_request_error')
+      : 'internal_bridge_error';
+    const type = status >= 500 ? 'upstream_error' : 'invalid_request_error';
     return {
       status,
       headers: { 'content-type': 'application/json; charset=utf-8' },
-      body: JSON.stringify(buildJsonError(error instanceof Error ? error.message : String(error))),
+      body: JSON.stringify(buildJsonError(message, code, type)),
     };
   }
 
@@ -1072,10 +1099,13 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
 
 class CopilotBridgeHttpError extends Error {
   readonly status: number;
+  readonly providerCode?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, providerCode?: string) {
     super(message);
+    this.name = 'CopilotBridgeHttpError';
     this.status = status;
+    this.providerCode = providerCode;
   }
 }
 
@@ -1152,6 +1182,7 @@ function normalizeCopilotAutoResponsesBody(body: unknown): unknown {
   }
 
   const normalized = { ...(body as Record<string, unknown>) };
+  delete normalized.temperature;
   const maxOutputTokens = normalized.max_output_tokens;
   if (maxOutputTokens == null) {
     normalized.max_output_tokens = COPILOT_AUTO_DEFAULT_OUTPUT_TOKENS;

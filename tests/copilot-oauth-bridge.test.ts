@@ -228,6 +228,10 @@ describe('copilot oauth bridge helpers', () => {
 
     expect(result.status).toBe(401);
     expect(result.body).toContain('GitHub Copilot 尚未完成 OAuth 登录');
+    expect(JSON.parse(result.body).error).toMatchObject({
+      type: 'invalid_request_error',
+      code: 'copilot_oauth_required',
+    });
     expect(result.body).not.toContain('gpt-4.1');
   });
 
@@ -318,6 +322,7 @@ describe('copilot oauth bridge helpers', () => {
 
     const result = await service.proxyResponses({
       model: 'openai/auto',
+      temperature: 0,
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
     });
 
@@ -358,6 +363,45 @@ describe('copilot oauth bridge helpers', () => {
       }),
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports Auto router transport failures as an upstream gateway error', async () => {
+    const dir = createTempDir();
+    const service = new CopilotOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+    });
+
+    vi.spyOn(service, 'resolveCopilotSession').mockResolvedValue({
+      token: 'copilot-session-token',
+      baseUrl: 'https://api.individual.githubcopilot.com',
+      expiresAt: Date.now() + 60_000,
+      updatedAt: Date.now(),
+    });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/models/session')) {
+        return jsonResponse(copilotAutoSessionPayload());
+      }
+      throw new Error('Client network socket disconnected before secure TLS connection was established');
+    }) as typeof fetch;
+
+    const result = await service.proxyResponses({
+      model: 'auto',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+    });
+
+    expect(result.status).toBe(502);
+    expect(result.body).toContain('Copilot Auto 模型路由失败');
+    expect(result.body).toContain('Client network socket disconnected');
+    expect(JSON.parse(result.body).error).toMatchObject({
+      type: 'upstream_error',
+      code: 'upstream_transport_error',
+    });
   });
 
   it('rejects concrete Copilot chat completions outside the Auto entry', async () => {

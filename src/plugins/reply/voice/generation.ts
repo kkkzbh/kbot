@@ -190,7 +190,7 @@ interface ReplyTransportState {
   capabilitySnapshot?: ReplyCapabilitySnapshot;
   runId?: string;
   suppressErrorNotice?: boolean;
-  handleRequestModelError?: (error: unknown) => Promise<void> | void;
+  handleRequestModelError?: (error: unknown) => Promise<string | void> | string | void;
 }
 
 interface ReplyV2State {
@@ -312,10 +312,13 @@ type ChatLunaLike = {
     }) => void;
   };
   normalizeResearchReplyHistory?: (
-    room: unknown,
+    room: Record<string, unknown>,
     finalVisibleText: string,
     updatedAt?: Date,
   ) => Promise<unknown>;
+  conversationRuntime?: {
+    clearConversationCache: (conversationId: string) => Promise<unknown>;
+  };
   chatChain?: {
     middleware: (name: string, middleware: (session: unknown, context: unknown) => Promise<number>) => {
       after: (name: string) => { before: (name: string) => unknown };
@@ -819,16 +822,14 @@ async function normalizeResearchReplyHistory(
   room: Record<string, unknown> | undefined,
   visibleHistoryText: string,
 ): Promise<void> {
-  const chatluna = (ctx.get?.('chatluna') ?? (ctx as { chatluna?: any }).chatluna) as
-    | {
-        normalizeResearchReplyHistory?: (room: Record<string, unknown>, visibleHistoryText: string) => Promise<unknown>;
-      }
-    | undefined;
+  const chatluna = (ctx.get?.('chatluna') ?? (ctx as { chatluna?: any }).chatluna) as ChatLunaLike | undefined;
   const conversationId = typeof room?.conversationId === 'string' ? room.conversationId.trim() : '';
   const normalizeHistory = requireReplyHistoryNormalizer(chatluna);
+  const clearConversationCache = requireReplyHistoryCacheInvalidator(chatluna);
   if (!conversationId) {
     throw new Error('reply runtime history normalization requires room.conversationId.');
   }
+  await clearConversationCache(conversationId);
   await normalizeHistory(room!, visibleHistoryText.trim());
 }
 
@@ -839,6 +840,17 @@ function requireReplyHistoryNormalizer(
     throw new Error('reply runtime requires chatluna.normalizeResearchReplyHistory.');
   }
   return chatluna.normalizeResearchReplyHistory.bind(chatluna);
+}
+
+function requireReplyHistoryCacheInvalidator(
+  chatluna: ChatLunaLike | undefined,
+): (conversationId: string) => Promise<unknown> {
+  const conversationRuntime = chatluna?.conversationRuntime;
+  const clearConversationCache = conversationRuntime?.clearConversationCache;
+  if (typeof clearConversationCache !== 'function') {
+    throw new Error('reply runtime requires chatluna.conversationRuntime.clearConversationCache.');
+  }
+  return clearConversationCache.bind(conversationRuntime);
 }
 
 function buildTextOnlyAssistantHistoryText(
@@ -951,10 +963,82 @@ function registerReplyRunRequestModelGuard(args: {
       conversationId ?? '<unknown>',
       message,
     );
+    const providerFailure = readReplyProviderHttpFailure(error);
+    if (providerFailure) {
+      logger.error(
+        'reply model upstream failure: runId=%s conversationId=%s chatlunaCode=%s operation=%s httpStatus=%s providerCode=%s providerMessage=%j retryable=%s',
+        runId,
+        conversationId ?? '<unknown>',
+        String(providerFailure.chatlunaCode),
+        providerFailure.operation,
+        String(providerFailure.httpStatus),
+        providerFailure.providerCode ?? '<none>',
+        providerFailure.providerMessage ?? '<none>',
+        providerFailure.retryable ? 'true' : 'false',
+      );
+    }
     if (error instanceof Error && error.stack) {
       logger.debug(error.stack);
     }
+    return formatReplyModelFailureNotice(error) ?? undefined;
   });
+}
+
+function formatReplyModelFailureNotice(error: unknown): string | null {
+  const failure = readReplyProviderHttpFailure(error);
+  if (!failure) return null;
+
+  const profile = mainChatRuntimeState.getProfile();
+  const provider = profile.tabId === 'copilot' ? 'GitHub Copilot' : '主聊天模型上游';
+  const providerCode = failure.providerCode ? `，provider_code=${failure.providerCode}` : '';
+  const providerMessage = failure.providerMessage?.replace(/\s+/g, ' ').trim();
+
+  if (failure.httpStatus === 402 && failure.providerCode === 'quota_exceeded') {
+    return `${provider} 请求失败：HTTP 402${providerCode}，月度额度已用完。请等待额度重置、补充额度，或在管理页切换主聊天模型。`;
+  }
+
+  const detail = providerMessage ? `，${providerMessage.slice(0, 240)}` : '';
+  return `${provider} 请求失败：HTTP ${failure.httpStatus}${providerCode}${detail}`;
+}
+
+type ReplyProviderHttpFailure = {
+  chatlunaCode: number;
+  operation: string;
+  httpStatus: number;
+  providerCode: string | null;
+  providerMessage: string | null;
+  retryable: boolean;
+};
+
+function readReplyProviderHttpFailure(error: unknown): ReplyProviderHttpFailure | null {
+  if (!(error instanceof Error) || error.name !== 'ChatLunaError') return null;
+  const chatlunaError = error as Error & {
+    errorCode?: unknown;
+    originError?: unknown;
+    retryable?: unknown;
+  };
+  const origin = chatlunaError.originError;
+  if (!(origin instanceof Error) || origin.name !== 'ChatLunaHttpError') return null;
+  const httpError = origin as Error & {
+    operation?: unknown;
+    status?: unknown;
+    providerCode?: unknown;
+    providerMessage?: unknown;
+  };
+  if (typeof chatlunaError.errorCode !== 'number' || typeof httpError.status !== 'number') return null;
+  if (typeof httpError.operation !== 'string' || !httpError.operation.trim()) return null;
+  return {
+    chatlunaCode: chatlunaError.errorCode,
+    operation: httpError.operation,
+    httpStatus: httpError.status,
+    providerCode: typeof httpError.providerCode === 'string' && httpError.providerCode.trim()
+      ? httpError.providerCode.trim()
+      : null,
+    providerMessage: typeof httpError.providerMessage === 'string' && httpError.providerMessage.trim()
+      ? httpError.providerMessage.trim()
+      : null,
+    retryable: chatlunaError.retryable !== false,
+  };
 }
 
 function getReplyV2State(session: SessionWithVoiceState): ReplyV2State {

@@ -200,10 +200,13 @@ describe('chatluna prompt pollution regression', () => {
   it('keeps reply request_conversation cleanup hooks wired through the request path', () => {
     const packageRoot = resolveChatlunaSourceRoot();
     const requestModelSource = readFileSync(join(packageRoot, 'src/middlewares/conversation/request_conversation.ts'), 'utf8');
+    const chainSource = readFileSync(join(packageRoot, 'src/chains/chain.ts'), 'utf8');
     const generationSource = readFileSync(join(process.cwd(), 'src/plugins/reply/voice/generation.ts'), 'utf8');
 
     expect(requestModelSource).toContain('maybeHandleReplyRequestModelError');
     expect(requestModelSource).toContain('handleRequestModelError');
+    expect(requestModelSource).toContain('e.setUserMessage(userMessage)');
+    expect(chainSource).toContain('error.getUserMessage()');
     expect(generationSource).toContain('registerReplyRunRequestModelGuard');
     expect(generationSource).toContain('suppressReplyErrorNotice(session);');
     expect(generationSource).toContain('setReplyRequestModelErrorHandler(session, undefined);');
