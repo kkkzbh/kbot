@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 
 const state = ref<any | null>(null);
 const users = ref<any[]>([]);
@@ -32,7 +32,7 @@ const tabs = [
 const currentUser = computed(() => users.value.find((item) => item.userKey === selectedUser.value));
 
 async function loadState() {
-  state.value = await api('/memory');
+  state.value = await rawApi('/memory');
 }
 
 async function loadUsers() {
@@ -40,7 +40,7 @@ async function loadUsers() {
   try {
     const query = new URLSearchParams({ page: String(userPage.page), pageSize: String(userPage.pageSize) });
     if (userPage.search) query.set('search', userPage.search);
-    const result = await api<any>(`/memory/users?${query}`);
+    const result = await rawApi<any>(`/memory/users?${query}`);
     users.value = result.items;
     userPage.total = result.total;
     if (!selectedUser.value && result.items.length) selectedUser.value = result.items[0].userKey;
@@ -52,7 +52,7 @@ async function loadRecords() {
   try {
     const query = new URLSearchParams({ page: String(recordPage.page), pageSize: String(recordPage.pageSize) });
     if (selectedUser.value && !['jobs'].includes(activeKind.value)) query.set('userKey', selectedUser.value);
-    const result = await api<any>(`/memory/${activeKind.value}?${query}`);
+    const result = await rawApi<any>(`/memory/${activeKind.value}?${query}`);
     records.value = result.items;
     recordPage.total = result.total;
   } finally { loading.value = false; }
@@ -66,7 +66,7 @@ async function selectUser(userKey: string) {
 
 async function mutate(body: any, success: string) {
   try {
-    const result = await api<any>('/memory/mutations', { method: 'POST', body: jsonBody(body) });
+    const result = await rawApi<any>('/memory/mutations', { method: 'POST', body: rawJsonBody(body) });
     if (!result.ok) ElMessage.warning('没有找到可变更的记录');
     else ElMessage.success(success);
     await Promise.all([loadState(), loadUsers(), loadRecords()]);
@@ -90,14 +90,14 @@ async function review(row: any, decision: string) {
 
 async function probe(target: string) {
   probing.value = target;
-  try { await api(`/memory/probe/${target}`, { method: 'POST', body: '{}' }); ElMessage.success(`${target} 探测完成`); await loadState(); }
+  try { await rawApi(`/memory/probe/${target}`, { method: 'POST', body: '{}' }); ElMessage.success(`${target} 探测完成`); await loadState(); }
   catch (error) { ElMessage.error(error instanceof Error ? error.message : '探测失败'); }
   finally { probing.value = ''; }
 }
 
 async function exportUser() {
   if (!selectedUser.value) return;
-  const data = await api(`/memory/export/${encodeURIComponent(selectedUser.value)}`);
+  const data = await rawApi(`/memory/export/${encodeURIComponent(selectedUser.value)}`);
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = `memory-${selectedUser.value.replaceAll(':','-')}.json`; anchor.click();

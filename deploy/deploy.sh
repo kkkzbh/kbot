@@ -3,6 +3,8 @@ set -euo pipefail
 
 HOST="${1:-km6}"
 BASE_DIR="${QQBOT_BASE_DIR:-/opt/qqbot}"
+DEPLOY_MODE="${QQBOT_DEPLOY_MODE:-install}"
+ACTIVATION_MODE="${QQBOT_DEPLOY_ACTIVATION_MODE:-start}"
 ROOT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHATLUNA_SOURCE_DIR="${CHATLUNA_SOURCE_DIR:-${ROOT_DIR}/../chatluna}"
 LLBOT_VERSION="${LLBOT_VERSION:-7.12.15}"
@@ -27,6 +29,15 @@ REMOTE_SHARED="${BASE_DIR}/shared"
 REMOTE_DATA="${BASE_DIR}/data"
 REMOTE_ENV_SERVER="${REMOTE_SHARED}/.env.server"
 LOCAL_ENV_SERVER="${QQBOT_SERVER_ENV_FILE:-${ROOT_DIR}/.env.server}"
+
+case "${DEPLOY_MODE}" in
+  install|upload-only) ;;
+  *) echo "[deploy] invalid QQBOT_DEPLOY_MODE: ${DEPLOY_MODE}" >&2; exit 2 ;;
+esac
+case "${ACTIVATION_MODE}" in
+  start|keep-stopped) ;;
+  *) echo "[deploy] invalid QQBOT_DEPLOY_ACTIVATION_MODE: ${ACTIVATION_MODE}" >&2; exit 2 ;;
+esac
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -101,6 +112,8 @@ verify_bundle() {
   require_bundle_entry "qqbot/package.json"
   require_bundle_entry "qqbot/koishi.yml"
   require_bundle_entry "qqbot/dist"
+  require_bundle_entry "qqbot/dist/tools/preset-v2-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/preset-v2-sqlite.py"
   require_bundle_entry "qqbot/deploy/installer.sh"
   require_bundle_entry "qqbot/deploy/render-systemd.mjs"
   require_bundle_entry "chatluna/packages/core/package.json"
@@ -207,7 +220,13 @@ echo "[deploy] upload ${BUNDLE_PATH} -> ${HOST}:${REMOTE_BUNDLE}"
 scp "${BUNDLE_PATH}" "${HOST}:${REMOTE_BUNDLE}.upload"
 ssh "${HOST}" "mv $(printf '%q' "${REMOTE_BUNDLE}.upload") $(printf '%q' "${REMOTE_BUNDLE}")"
 
+if [[ "${DEPLOY_MODE}" == "upload-only" ]]; then
+  echo "[deploy] coordinated release uploaded without installation"
+  echo "[deploy] bundle retained at ${HOST}:${REMOTE_BUNDLE}"
+  exit 0
+fi
+
 echo "[deploy] install on ${HOST}"
-ssh "${HOST}" "tar -xOf $(printf '%q' "${REMOTE_BUNDLE}") qqbot/deploy/installer.sh > $(printf '%q' "${REMOTE_STAGING}/installer.sh") && chmod 700 $(printf '%q' "${REMOTE_STAGING}/installer.sh") && QQBOT_BASE_DIR=$(printf '%q' "${BASE_DIR}") bash $(printf '%q' "${REMOTE_STAGING}/installer.sh") $(printf '%q' "${REMOTE_BUNDLE}") full"
+ssh "${HOST}" "tar -xOf $(printf '%q' "${REMOTE_BUNDLE}") qqbot/deploy/installer.sh > $(printf '%q' "${REMOTE_STAGING}/installer.sh") && chmod 700 $(printf '%q' "${REMOTE_STAGING}/installer.sh") && QQBOT_BASE_DIR=$(printf '%q' "${BASE_DIR}") bash $(printf '%q' "${REMOTE_STAGING}/installer.sh") $(printf '%q' "${REMOTE_BUNDLE}") full $(printf '%q' "${ACTIVATION_MODE}")"
 
 echo "[deploy] done"

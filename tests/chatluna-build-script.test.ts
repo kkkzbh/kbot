@@ -20,6 +20,9 @@ describe('chatluna build script dependency closure', () => {
 
     expect(content).toContain('MODE="${1:-build}"');
     expect(content).toContain('if [[ "$MODE" == "--check" ]]');
+    expect(content).toContain("build_stamp = lib_dir / '.qqbot-build-stamp'");
+    expect(content).toContain('src_mtime > build_stamp.stat().st_mtime');
+    expect(content).toContain('touch "$target_lib_dir/.qqbot-build-stamp"');
     expect(content).toContain('Linked ChatLuna packages need build');
     expect(content).toContain('Run: pnpm build');
   });

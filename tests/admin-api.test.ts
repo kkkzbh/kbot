@@ -50,9 +50,7 @@ afterEach(async () => {
 function createTempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'qqbot-admin-api-'));
   tempDirs.push(dir);
-  mkdirSync(join(dir, 'data/chathub/presets'), { recursive: true });
   writeFileSync(join(dir, '.env.local'), 'CHATLUNA_DEFAULT_MODEL=test-model\nQQ_VOICE_TTS_API_KEY=tts-secret-value\n', 'utf8');
-  writeFileSync(join(dir, 'data/chathub/presets/sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: hi\n', 'utf8');
   return dir;
 }
 
@@ -66,7 +64,7 @@ const config: Config = {
 
 function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
   const server = {
-    get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn(), options: vi.fn(), use: vi.fn(),
+    get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn(), options: vi.fn(), use: vi.fn(),
   };
   const database = {
     get: vi.fn(async () => []),
@@ -85,10 +83,109 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
     setInterval: vi.fn(),
     any: () => ({ before: vi.fn() }),
     bots: {},
+    chatluna: createChatLunaService(),
     ...extra,
   };
   apply(ctx as any, config);
-  return { ctx, server, database };
+  return { ctx, server, database, preset: ctx.chatluna.preset };
+}
+
+function createPresetDefinition(id = 'sakiko') {
+  return {
+    schemaVersion: 2 as const,
+    id,
+    displayName: id === 'sakiko' ? 'Sakiko' : id,
+    aliases: id === 'sakiko' ? ['小祥'] : [],
+    messages: [{ role: 'system' as const, purpose: 'description' as const, content: 'hello' }],
+    inputFormat: null,
+    lore: { defaults: {}, entries: [] },
+    authorsNote: null,
+    knowledge: null,
+    promptConfig: {},
+  };
+}
+
+function createChatLunaService() {
+  const definitions = new Map([['sakiko', createPresetDefinition()]]);
+  const revisions = new Map([['sakiko', 'revision-sakiko']]);
+  let globalDefaultPresetId = 'sakiko';
+  const missingPreset = (id: string) => Object.assign(
+    new Error(`Preset does not exist: ${id}`),
+    {
+      name: 'PresetError',
+      code: 'not_found',
+      operation: 'load',
+      stage: 'lookup',
+      presetId: id,
+      runtimeUnchanged: true,
+    },
+  );
+  const compiled = (id: string) => {
+    const definition = definitions.get(id);
+    if (!definition) throw missingPreset(id);
+    return {
+      id,
+      displayName: definition.displayName,
+      aliases: definition.aliases,
+      definition,
+      messages: [],
+      inputFormat: definition.inputFormat,
+      lore: definition.lore,
+      authorsNote: definition.authorsNote,
+      knowledge: definition.knowledge,
+      promptConfig: definition.promptConfig,
+      source: 'runtime' as const,
+      revision: revisions.get(id) ?? `revision-${id}`,
+    };
+  };
+  const preset = {
+    listPresets: vi.fn(() => ({
+      value: [...definitions.keys()].map((id) => ({
+        id,
+        displayName: definitions.get(id)!.displayName,
+        aliases: definitions.get(id)!.aliases,
+        source: 'runtime' as const,
+        hasOverride: false,
+        revision: revisions.get(id)!,
+        isGlobalDefault: id === globalDefaultPresetId,
+      })),
+    })),
+    getGlobalDefaultPresetId: vi.fn(() => ({ value: globalDefaultPresetId })),
+    getPreset: vi.fn((id: string) => ({ value: compiled(id) })),
+    getDefinition: vi.fn((id: string) => {
+      const definition = definitions.get(id);
+      if (!definition) throw missingPreset(id);
+      return structuredClone(definition);
+    }),
+    createPreset: vi.fn(async (definition: ReturnType<typeof createPresetDefinition>) => {
+      definitions.set(definition.id, structuredClone(definition));
+      revisions.set(definition.id, `revision-${definition.id}`);
+      return compiled(definition.id);
+    }),
+    updatePreset: vi.fn(async (
+      id: string,
+      definition: ReturnType<typeof createPresetDefinition>,
+      _expectedRevision: string,
+    ) => {
+      definitions.set(id, structuredClone(definition));
+      revisions.set(id, `revision-${id}-updated`);
+      return compiled(id);
+    }),
+    deletePreset: vi.fn(async (id: string, _expectedRevision: string) => {
+      definitions.delete(id);
+      revisions.delete(id);
+    }),
+    revertOverride: vi.fn(async (id: string, _expectedRevision: string) => compiled(id)),
+    setGlobalDefaultPresetId: vi.fn(async (id: string) => {
+      globalDefaultPresetId = id;
+    }),
+  };
+  return {
+    preset,
+    platform: {
+      findModel: vi.fn(() => ({ value: { maxTokens: 128_000 } })),
+    },
+  };
 }
 
 function createKoaCtx(options: { body?: unknown; host?: string; origin?: string; authorization?: string; params?: Record<string,string>; cookie?: string; path?: string; method?: string } = {}) {
@@ -131,6 +228,10 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/events/:id');
     expect(getPaths).toContain('/api/admin/v1/memory/users');
     expect(getPaths).toContain('/api/admin/v1/logs');
+    expect(getPaths).toContain('/api/admin/v1/models/runtime');
+    expect(getPaths).toContain('/api/admin/v1/model-context/blueprint');
+    expect(getPaths).toContain('/api/admin/v1/model-context/targets');
+    expect(getPaths).toContain('/api/admin/v1/model-context/snapshots/:conversationId');
     expect(getPaths).toContain('/');
     expect(getPaths).toContain('/assets/(.*)');
     expect(getPaths).toContain('/extensions/(.*)');
@@ -141,6 +242,7 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();
+    expect(postPaths).not.toContain('/api/admin/v1/presets/reorder');
   });
 
   it('restarts the services implied by pending configuration and clears apply state', async () => {
@@ -255,6 +357,32 @@ describe('independent admin API plugin', () => {
     expect(request.body).toMatchObject({ error: { code: 'unauthenticated', requestId: expect.any(String) } });
   });
 
+  it('returns live model runtime state with an ISO update timestamp', async () => {
+    const { server } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const readRuntime = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/models/runtime',
+    )?.[1];
+    const request = createKoaCtx({
+      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
+    });
+
+    await readRuntime(request);
+
+    expect(request.status).toBe(200);
+    expect(request.body).toMatchObject({
+      modelContextSize: 128_000,
+      contextLimit: 128_000,
+      pending: expect.any(Boolean),
+      updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
+  });
+
   it('never returns managed secret values from settings', async () => {
     const { server } = createRuntime(createTempDir());
     const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
@@ -309,5 +437,179 @@ describe('independent admin API plugin', () => {
       if (previous == null) delete process.env.QQ_VOICE_BRIDGE_API_KEY;
       else process.env.QQ_VOICE_BRIDGE_API_KEY = previous;
     }
+  });
+
+  it('delegates strict Preset V2 CRUD and default mutations to ChatLuna', async () => {
+    const { server, preset } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const cookie = loginCtx.cookieValues.get('qqbot_admin_session');
+    const definition = createPresetDefinition('new-role');
+
+    const create = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/presets')?.[1];
+    const createCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      body: { preset: definition },
+    });
+    await create(createCtx);
+    expect(createCtx.status).toBe(200);
+    expect(preset.createPreset).toHaveBeenCalledWith(definition);
+    expect(createCtx.body).toMatchObject({
+      preset: { id: 'new-role' },
+      revision: 'revision-new-role',
+    });
+
+    const update = server.put.mock.calls.find((call) => call[0] === '/api/admin/v1/presets/:id')?.[1];
+    const updateCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      params: { id: 'new-role' },
+      body: {
+        preset: { ...definition, displayName: 'Updated role' },
+        expectedRevision: 'revision-new-role',
+      },
+    });
+    await update(updateCtx);
+    expect(updateCtx.status).toBe(200);
+    expect(preset.updatePreset).toHaveBeenCalledWith(
+      'new-role',
+      expect.objectContaining({ displayName: 'Updated role' }),
+      'revision-new-role',
+    );
+
+    const setDefault = server.put.mock.calls.find((call) => call[0] === '/api/admin/v1/presets/default')?.[1];
+    const defaultCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      body: { id: 'new-role' },
+    });
+    await setDefault(defaultCtx);
+    expect(defaultCtx.body).toEqual({ globalDefaultPresetId: 'new-role' });
+    expect(preset.setGlobalDefaultPresetId).toHaveBeenCalledWith('new-role');
+
+    const revert = server.delete.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/presets/:id/override',
+    )?.[1];
+    const revertCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      params: { id: 'new-role' },
+      body: { expectedRevision: 'revision-new-role-updated' },
+    });
+    await revert(revertCtx);
+    expect(revertCtx.status).toBe(200);
+    expect(preset.revertOverride).toHaveBeenCalledWith(
+      'new-role',
+      'revision-new-role-updated',
+    );
+
+    const remove = server.delete.mock.calls.find((call) => call[0] === '/api/admin/v1/presets/:id')?.[1];
+    const removeCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      params: { id: 'new-role' },
+      body: { expectedRevision: 'revision-new-role-updated' },
+    });
+    await remove(removeCtx);
+    expect(removeCtx.status).toBe(204);
+    expect(preset.deletePreset).toHaveBeenCalledWith(
+      'new-role',
+      'revision-new-role-updated',
+    );
+  });
+
+  it('maps PresetError details without returning the underlying secret cause', async () => {
+    const { server, preset } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const cause = Object.assign(new Error('Bearer upstream-secret'), {
+      status: 409,
+      code: 'revision_conflict',
+      authorization: 'Bearer upstream-secret',
+    });
+    preset.updatePreset.mockRejectedValueOnce(Object.assign(
+      new Error('Preset revision is stale.', { cause }),
+      {
+        name: 'PresetError',
+        code: 'conflict',
+        operation: 'update',
+        stage: 'revision_check',
+        presetId: 'sakiko',
+        filePath: '/opt/qqbot/data/chathub/presets/sakiko.yml',
+        runtimeUnchanged: true,
+      },
+    ));
+    const update = server.put.mock.calls.find((call) => call[0] === '/api/admin/v1/presets/:id')?.[1];
+    const request = createKoaCtx({
+      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
+      origin: 'https://admin.example.com',
+      params: { id: 'sakiko' },
+      body: {
+        preset: createPresetDefinition(),
+        expectedRevision: 'stale-revision',
+      },
+    });
+
+    await update(request);
+
+    expect(request.status).toBe(409);
+    expect(request.body).toMatchObject({
+      error: {
+        code: 'conflict',
+        details: {
+          presetErrorCode: 'conflict',
+          operation: 'update',
+          stage: 'revision_check',
+          presetId: 'sakiko',
+          filePath: '/opt/qqbot/data/chathub/presets/sakiko.yml',
+          runtimeUnchanged: true,
+          upstreamStatus: 409,
+          providerCode: 'revision_conflict',
+        },
+      },
+    });
+    expect(JSON.stringify(request.body)).not.toContain('upstream-secret');
+  });
+
+  it('maps a missing preset detail lookup to a typed 404', async () => {
+    const { server } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const readPreset = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/presets/:id',
+    )?.[1];
+    const request = createKoaCtx({
+      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
+      params: { id: 'missing-role' },
+    });
+
+    await readPreset(request);
+
+    expect(request.status).toBe(404);
+    expect(request.body).toMatchObject({
+      error: {
+        code: 'not_found',
+        details: {
+          presetErrorCode: 'not_found',
+          operation: 'load',
+          stage: 'lookup',
+          presetId: 'missing-role',
+          runtimeUnchanged: true,
+        },
+      },
+    });
   });
 });

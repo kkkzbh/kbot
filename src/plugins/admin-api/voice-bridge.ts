@@ -1,15 +1,5 @@
 import { Context, h } from 'koishi';
-import {
-  createAudioDataUri,
-  createVoiceRuntimeConfigFromEnv,
-  ensureCanSendRecord,
-  isVoiceOutputConfigured,
-  synthesizeVoice,
-  type OneBotBotLike,
-  normalizeVoiceSynthesisText,
-  pickVoiceStyle,
-  type VoiceStyle,
-} from '../reply/index.js';
+import type { OneBotBotLike, VoiceStyle } from '../reply/index.js';
 import { createBotMessageDispatchers } from '../shared/outbound/index.js';
 
 export interface QqVoiceBridgeRequest {
@@ -156,6 +146,15 @@ export function parseQqVoiceBridgeRequest(payload: unknown): QqVoiceBridgeReques
 }
 
 export async function sendVoiceByBridge(ctx: Context, request: QqVoiceBridgeRequest): Promise<QqVoiceBridgeResponse> {
+  const {
+    createAudioDataUri,
+    createVoiceRuntimeConfigFromEnv,
+    ensureCanSendRecord,
+    isVoiceOutputConfigured,
+    normalizeVoiceSynthesisText,
+    pickVoiceStyle,
+    synthesizeVoice,
+  } = await import('../reply/index.js');
   const runtime = createVoiceRuntimeConfigFromEnv();
   if (!runtime.outputEnabled) {
     throw new QqVoiceBridgeHttpError(503, 'voice_output_disabled', 'QQ voice output is disabled on the server');

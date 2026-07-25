@@ -24,6 +24,7 @@ vi.mock('koishi-plugin-chatluna/utils/langchain', () => ({
   isMessageContentAudio: vi.fn(),
 }));
 vi.mock('koishi-plugin-chatluna/utils/logger', () => ({
+  logger: undefined,
   trackLogToLocal: vi.fn(),
 }));
 vi.mock('koishi-plugin-chatluna/utils/object', () => ({

@@ -134,10 +134,12 @@ EnvironmentFile=${server}
 EnvironmentFile=-${runtime}
 Environment=QQBOT_ENV_BASE_FILE=${server}
 Environment=QQBOT_ENV_OVERRIDE_FILE=${runtime}
-Environment=CHATLUNA_PRESET_DIRS=${data}/chathub/presets:${app}/data/chathub/presets
+Environment=CHATLUNA_BUNDLED_PRESET_DIR=${app}/data/chathub/presets
 Environment=CHATLUNA_RUNTIME_PRESET_DIR=${data}/chathub/presets
+Environment=CHATLUNA_ARCHIVE_DIR=${data}/chatluna/archive
 LoadCredentialEncrypted=hbu-webvpn-broker:${hbuBrokerCredential}
 Environment=HBU_JW_WEBVPN_BROKER_TOKEN_FILE=%d/hbu-webvpn-broker
+ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/archive
 ExecStart=/usr/bin/env bash -lc 'cd "${app}" && exec pnpm start:server'
 Restart=always
 RestartSec=5

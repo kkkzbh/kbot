@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 
 const state = ref<any | null>(null);
 const featureOverrides = ref<any[]>([]);
@@ -17,7 +17,7 @@ const toolDraft = reactive<any>({ toolName: '', routeProfile: 'agent', scopeKind
 const featureKeys = ['QQBOT_REALTIME_MESSAGE_ENABLED','QQ_VOICE_INPUT_ENABLED','QQ_VOICE_OUTPUT_ENABLED','CHAT_NATURAL_TRIGGER_ENABLED','QQBOT_REPLY_INTERRUPT_ENABLED'];
 
 async function load() {
-  const result = await api<any>('/policies');
+  const result = await rawApi<any>('/policies');
   state.value = result;
   featureOverrides.value = result.featureOverrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
   toolOverrides.value = result.tools.overrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
@@ -36,8 +36,8 @@ async function save() {
   saving.value = true;
   try {
     await Promise.all([
-      api('/policies/features', { method: 'PATCH', body: jsonBody({ overrides: featureOverrides.value.map(({ featureKey,scopeKind,scopeId,enabled }) => ({ featureKey,scopeKind,scopeId,enabled })) }) }),
-      api('/policies/tools', { method: 'PATCH', body: jsonBody({ overrides: toolOverrides.value.map(({ toolName,routeProfile,scopeKind,scopeId,enabled }) => ({ toolName,routeProfile,scopeKind,scopeId,enabled })) }) }),
+      rawApi('/policies/features', { method: 'PATCH', body: rawJsonBody({ overrides: featureOverrides.value.map(({ featureKey,scopeKind,scopeId,enabled }) => ({ featureKey,scopeKind,scopeId,enabled })) }) }),
+      rawApi('/policies/tools', { method: 'PATCH', body: rawJsonBody({ overrides: toolOverrides.value.map(({ toolName,routeProfile,scopeKind,scopeId,enabled }) => ({ toolName,routeProfile,scopeKind,scopeId,enabled })) }) }),
     ]);
     ElMessage.success('功能与工具策略已保存');
     await load();
@@ -47,9 +47,9 @@ async function save() {
 
 async function conversationAction(target: any, action: 'clear'|'delete') {
   await ElMessageBox.confirm(action === 'clear' ? `清空 ${target.roomName} 的聊天记录？` : `永久删除 ${target.roomName} 及关联房间？`, action === 'clear' ? '清空会话' : '删除会话', { type: 'warning' });
-  const result = await api<any>(action === 'clear' ? '/conversations/clear' : '/conversations', {
+  const result = await rawApi<any>(action === 'clear' ? '/conversations/clear' : '/conversations', {
     method: action === 'clear' ? 'POST' : 'DELETE',
-    body: jsonBody({ roomId: target.roomId, conversationId: target.conversationId }),
+    body: rawJsonBody({ roomId: target.roomId, conversationId: target.conversationId }),
   });
   ElMessage.success(action === 'clear' ? `已清理 ${result.result.deletedMessages} 条消息` : '会话与房间已删除');
   await load();

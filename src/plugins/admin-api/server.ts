@@ -10,11 +10,10 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
-import YAML from 'yaml';
 import type {
   AdminApplyReason,
   AdminApplyRestartTarget,
@@ -39,9 +38,6 @@ import type {
   EnvPatch,
   MimoModelListRequest,
   MimoModelListResponse,
-  PresetDocument,
-  PresetSource,
-  PresetSummary,
   SaveModelTabsRequest,
   SaveTtsSettingsRequest,
   SaveTtsSettingsResponse,
@@ -122,9 +118,6 @@ export type AdminRuntimeManagerOptions = {
   envBaseFilePath?: string;
   envOverrideFilePath?: string;
   ttsEnvFilePath?: string;
-  presetDirPath?: string;
-  runtimePresetDirPath?: string;
-  bundledPresetDirPaths?: string[];
   fs?: FsLike;
   execFile?: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
   fetchFn?: typeof fetch;
@@ -185,23 +178,9 @@ type ResolvedEnvFiles = {
   editTarget: string;
 };
 
-type ResolvedPresetPaths = {
-  mode: 'single' | 'layered';
-  runtimeDirPath: string;
-  bundledDirPaths: string[];
-  allDirPaths: string[];
-};
-
-type PresetOrderDocument = {
-  names?: unknown;
-};
-
 const DEFAULT_ROOT_DIR = resolve(process.cwd());
 const LOCAL_ENV_FILE_BASENAME = '.env.local';
 const SERVER_ENV_FILE_BASENAME = '.env.server';
-const PRESET_DIR_RELATIVE = 'data/chathub/presets';
-const PRESET_ORDER_FILENAME = '.admin-preset-order.json';
-const PRESET_ROLE_SET = new Set(['system', 'user', 'assistant', 'tool']);
 const RUNTIME_ENV_FILE_BASENAME = '.env.runtime';
 const LOCAL_RUNTIME_ENV_RELATIVE = join('.runtime', RUNTIME_ENV_FILE_BASENAME);
 const CHATLUNA_AGENT_CONFIG_RELATIVE = join('data', 'chatluna', 'agent', 'config.json');
@@ -326,7 +305,6 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'MEMORY_ARCHIVE_DAYS', label: '记忆归档天数', type: 'number', section: 'model' },
   { key: 'MEMORY_MAX_JOB_RETRIES', label: '记忆任务重试', type: 'number', section: 'model' },
   { key: 'MEMORY_JOB_LOCK_TIMEOUT_MS', label: '记忆任务锁超时', type: 'number', section: 'model' },
-  { key: 'CHATLUNA_DEFAULT_PRESET', label: '默认预设', type: 'text', section: 'model' },
   { key: 'CHAT_NATURAL_TRIGGER_ALIASES', label: '触发别名', type: 'text', section: 'basic' },
 ];
 
@@ -1168,40 +1146,6 @@ export function resolveBotEnvFiles(rootDir: string, env: NodeJS.ProcessEnv = pro
   };
 }
 
-function splitPresetDirs(rawValue: string | undefined, rootDir: string): string[] {
-  return [...new Set(
-    String(rawValue ?? '')
-      .split(delimiter)
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => resolvePathLike(rootDir, part)),
-  )];
-}
-
-export function resolveBotPresetPaths(rootDir: string, env: NodeJS.ProcessEnv = process.env): ResolvedPresetPaths {
-  const runtimeDir = env.CHATLUNA_RUNTIME_PRESET_DIR?.trim();
-  const configuredDirs = splitPresetDirs(env.CHATLUNA_PRESET_DIRS, rootDir);
-  if (!runtimeDir && configuredDirs.length === 0) {
-    const singleDirPath = join(rootDir, PRESET_DIR_RELATIVE);
-    return {
-      mode: 'single',
-      runtimeDirPath: singleDirPath,
-      bundledDirPaths: [],
-      allDirPaths: [singleDirPath],
-    };
-  }
-
-  const runtimeDirPath = resolvePathLike(rootDir, runtimeDir || configuredDirs[0] || join(rootDir, PRESET_DIR_RELATIVE));
-  const allDirPaths = [...new Set([runtimeDirPath, ...configuredDirs])];
-
-  return {
-    mode: 'layered',
-    runtimeDirPath,
-    bundledDirPaths: allDirPaths.filter((dirPath) => dirPath !== runtimeDirPath),
-    allDirPaths,
-  };
-}
-
 async function readFileIfExists(fsLike: FsLike, filePath: string | null): Promise<string> {
   if (!filePath) return '';
   try {
@@ -1360,81 +1304,9 @@ function withSystemdScope(scope: SystemdScope, args: string[]): string[] {
   return scope === 'user' ? ['--user', ...args] : args;
 }
 
-export function normalizePresetDocument(input: PresetDocument): PresetDocument {
-  const name = input.name.trim();
-  if (!name) throw new Error('预设名不能为空。');
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error('预设名只能包含字母、数字、点号、下划线或短横线。');
-  }
-
-  const keywords = (input.keywords ?? []).map((item) => item.trim()).filter(Boolean);
-  const prompts = (input.prompts ?? []).map((prompt) => ({
-    role: prompt.role,
-    content: prompt.content.trim(),
-  }));
-
-  if (!prompts.length) {
-    throw new Error('至少需要保留一段提示词。');
-  }
-
-  for (const prompt of prompts) {
-    if (!PRESET_ROLE_SET.has(prompt.role)) {
-      throw new Error(`不支持这个角色类型：${prompt.role}`);
-    }
-    if (!prompt.content) {
-      throw new Error('提示词内容不能为空。');
-    }
-  }
-
-  return {
-    name,
-    originalName: input.originalName?.trim() || undefined,
-    path: input.path,
-    source: input.source ?? 'runtime',
-    keywords,
-    prompts,
-  };
-}
-
-export function serializePresetDocument(input: PresetDocument): string {
-  const document = normalizePresetDocument(input);
-  return YAML.stringify({
-    keywords: document.keywords,
-    prompts: document.prompts,
-  });
-}
-
-export function parsePresetDocument(name: string, path: string, raw: string, source: PresetSource = 'runtime'): PresetDocument {
-  const parsed = YAML.parse(raw);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('预设文件格式不正确。');
-  }
-  const keywords = Array.isArray((parsed as { keywords?: unknown }).keywords)
-    ? (parsed as { keywords: unknown[] }).keywords.map((item) => String(item))
-    : [];
-  const prompts = Array.isArray((parsed as { prompts?: unknown }).prompts)
-    ? (parsed as { prompts: Array<{ role?: unknown; content?: unknown }> }).prompts.map((item) => ({
-        role: String(item?.role ?? '') as PresetDocument['prompts'][number]['role'],
-        content: String(item?.content ?? ''),
-      }))
-    : [];
-
-  return normalizePresetDocument({
-    name,
-    path,
-    source,
-    raw,
-    keywords,
-    prompts,
-  });
-}
-
 export class AdminRuntimeManager {
   readonly rootDir: string;
   readonly envFiles: ResolvedEnvFiles;
-  readonly runtimePresetDirPath: string;
-  readonly bundledPresetDirPaths: string[];
-  readonly allPresetDirPaths: string[];
   readonly ttsEnvFilePath: string;
   readonly fs: FsLike;
   readonly execFile: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
@@ -1465,24 +1337,6 @@ export class AdminRuntimeManager {
               editTarget: resolve(this.rootDir, options.envFilePath),
             }
           : resolveBotEnvFiles(this.rootDir);
-    if (options.runtimePresetDirPath || options.bundledPresetDirPaths) {
-      this.runtimePresetDirPath = options.runtimePresetDirPath
-        ? resolve(this.rootDir, options.runtimePresetDirPath)
-        : options.presetDirPath
-          ? resolve(this.rootDir, options.presetDirPath)
-          : join(this.rootDir, PRESET_DIR_RELATIVE);
-      this.bundledPresetDirPaths = (options.bundledPresetDirPaths ?? []).map((dirPath) => resolve(this.rootDir, dirPath));
-      this.allPresetDirPaths = [...new Set([this.runtimePresetDirPath, ...this.bundledPresetDirPaths])];
-    } else if (options.presetDirPath) {
-      this.runtimePresetDirPath = resolve(this.rootDir, options.presetDirPath);
-      this.bundledPresetDirPaths = [];
-      this.allPresetDirPaths = [this.runtimePresetDirPath];
-    } else {
-      const presetPaths = resolveBotPresetPaths(this.rootDir);
-      this.runtimePresetDirPath = presetPaths.runtimeDirPath;
-      this.bundledPresetDirPaths = presetPaths.bundledDirPaths;
-      this.allPresetDirPaths = presetPaths.allDirPaths;
-    }
     this.ttsEnvFilePath = options.ttsEnvFilePath
       ? resolve(this.rootDir, options.ttsEnvFilePath)
       : resolveTtsEnvFilePath(this.rootDir);
@@ -1583,16 +1437,6 @@ export class AdminRuntimeManager {
       localGateway,
       health,
     };
-  }
-
-  async getPreset(name: string): Promise<PresetDocument> {
-    const normalized = normalizePresetDocument({ name, keywords: [], prompts: [{ role: 'system', content: 'x' }] }).name;
-    const summary = await this.findPresetSummaryByName(normalized);
-    if (!summary) {
-      throw new Error(`找不到预设：${normalized}`);
-    }
-    const raw = await this.fs.readFile(summary.path, 'utf8');
-    return parsePresetDocument(normalized, summary.path, raw, summary.source);
   }
 
   syncManagedChatLunaAgentConfig(env?: Record<string, string>): string {
@@ -1807,95 +1651,6 @@ export class AdminRuntimeManager {
     return listMimoModelsFromOfficialSource(input);
   }
 
-  async savePreset(document: PresetDocument): Promise<PresetDocument> {
-    const normalized = normalizePresetDocument(document);
-    const targetPath = this.resolveRuntimePresetPath(normalized.name);
-    const sourceName = normalized.originalName?.trim() || normalized.name;
-    const sourceSummary = sourceName ? await this.findPresetSummaryByName(sourceName) : null;
-
-    if (sourceName !== normalized.name && !sourceSummary) {
-      throw new Error(`找不到预设：${sourceName}`);
-    }
-
-    const raw = serializePresetDocument(normalized);
-    await this.fs.mkdir(this.runtimePresetDirPath, { recursive: true });
-    await this.fs.writeFile(targetPath, raw, 'utf8');
-
-    if (sourceName !== normalized.name && normalized.source === 'runtime' && sourceSummary?.source === 'runtime') {
-      const sourcePath = this.resolveRuntimePresetPath(sourceName);
-      await this.fs.rm(sourcePath, { force: true });
-    }
-
-    await this.updatePresetOrder((names) => {
-      if (sourceName !== normalized.name) {
-        if (normalized.source === 'runtime') {
-          const sourceIndex = names.indexOf(sourceName);
-          if (sourceIndex >= 0) {
-            names.splice(sourceIndex, 1, normalized.name);
-          } else if (!names.includes(normalized.name)) {
-            names.push(normalized.name);
-          }
-          return names;
-        }
-
-        if (!names.includes(normalized.name)) {
-          names.push(normalized.name);
-        }
-        return names;
-      }
-
-      if (!names.includes(normalized.name)) {
-        names.push(normalized.name);
-      }
-      return names;
-    });
-
-    return {
-      ...normalized,
-      path: targetPath,
-      source: 'runtime',
-      raw,
-    };
-  }
-
-  async deletePreset(name: string, defaultPreset: string): Promise<void> {
-    const normalized = normalizePresetDocument({ name, keywords: [], prompts: [{ role: 'system', content: 'x' }] }).name;
-    if (normalized === defaultPreset) {
-      throw new Error('不能删除当前正在使用的默认预设。');
-    }
-    const preset = await this.findPresetSummaryByName(normalized);
-    if (!preset) {
-      throw new Error(`找不到预设：${normalized}`);
-    }
-    if (preset.source !== 'runtime') {
-      throw new Error('只能删除运行时预设；仓库内置预设请通过代码仓库修改。');
-    }
-    await this.fs.rm(this.resolveRuntimePresetPath(normalized), { force: true });
-    const bundledFallback = await this.findBundledPresetSummaryByName(normalized);
-    await this.updatePresetOrder((names) => (bundledFallback ? names : names.filter((item) => item !== normalized)));
-  }
-
-  async reorderPresets(names: string[]): Promise<PresetSummary[]> {
-    const normalizedNames = names.map((name) =>
-      normalizePresetDocument({ name, keywords: [], prompts: [{ role: 'system', content: 'x' }] }).name,
-    );
-    const uniqueNames = [...new Set(normalizedNames)];
-    const presets = await this.readPresetSummariesFromDisk();
-    const presetNames = presets.map((preset) => preset.name);
-
-    if (uniqueNames.length !== presetNames.length) {
-      throw new Error('预设排序数据不完整。');
-    }
-
-    const presetNameSet = new Set(presetNames);
-    if (uniqueNames.some((name) => !presetNameSet.has(name))) {
-      throw new Error('预设排序包含不存在的预设。');
-    }
-
-    await this.writePresetOrder(uniqueNames);
-    return this.sortPresetSummaries(presets, uniqueNames);
-  }
-
   async scheduleRestart(unit: BotServiceUnit): Promise<void> {
     const transientUnit = `${unit.replaceAll(/[^A-Za-z0-9]+/g, '-')}-restart-${Date.now()}`;
     const scope = this.systemdScope;
@@ -2070,121 +1825,6 @@ export class AdminRuntimeManager {
       `INVOCATION_ID=${invocationId}`,
     ], { cwd: this.rootDir, timeout: 15_000 });
     return stdout.split(/\r?\n/).filter(Boolean);
-  }
-
-  async listPresetSummaries(): Promise<PresetSummary[]> {
-    await this.fs.mkdir(this.runtimePresetDirPath, { recursive: true });
-    const presets = await this.readPresetSummariesFromDisk();
-    const order = await this.readPresetOrder();
-    return this.sortPresetSummaries(presets, order);
-  }
-
-  private async readPresetSummariesFromDisk(): Promise<PresetSummary[]> {
-    const presets = new Map<string, PresetSummary>();
-    for (const dirPath of this.allPresetDirPaths) {
-      let entries: Array<{ isFile(): boolean; name: string }>;
-      try {
-        entries = (await this.fs.readdir(dirPath, { withFileTypes: true })) as Array<{ isFile(): boolean; name: string }>;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
-          continue;
-        }
-        throw error;
-      }
-
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith('.yml')) continue;
-        const name = entry.name.slice(0, -4);
-        if (presets.has(name)) continue;
-        presets.set(name, {
-          name,
-          path: join(dirPath, entry.name),
-          source: dirPath === this.runtimePresetDirPath ? 'runtime' : 'bundled',
-        });
-      }
-    }
-
-    return [...presets.values()];
-  }
-
-  private sortPresetSummaries(presets: PresetSummary[], order: readonly string[]): PresetSummary[] {
-    const rank = new Map(order.map((name, index) => [name, index]));
-    return [...presets].sort((left, right) => {
-      const leftRank = rank.get(left.name);
-      const rightRank = rank.get(right.name);
-      if (leftRank != null || rightRank != null) {
-        if (leftRank == null) return 1;
-        if (rightRank == null) return -1;
-        return leftRank - rightRank;
-      }
-      return left.name.localeCompare(right.name, 'zh-CN');
-    });
-  }
-
-  private async readPresetOrder(): Promise<string[]> {
-    try {
-      const raw = await this.fs.readFile(this.getPresetOrderFilePath(), 'utf8');
-      const parsed = JSON.parse(raw) as PresetOrderDocument;
-      return Array.isArray(parsed?.names)
-        ? [...new Set(parsed.names.map((name) => String(name ?? '').trim()).filter(Boolean))]
-        : [];
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code === 'ENOENT') return [];
-      return [];
-    }
-  }
-
-  private async writePresetOrder(names: readonly string[]): Promise<void> {
-    const filePath = this.getPresetOrderFilePath();
-    const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-    const content = `${JSON.stringify({ names }, null, 2)}\n`;
-    await this.fs.mkdir(this.runtimePresetDirPath, { recursive: true });
-    await this.fs.writeFile(tempPath, content, 'utf8');
-    await this.fs.rename(tempPath, filePath);
-  }
-
-  private async updatePresetOrder(mutator: (names: string[]) => string[]): Promise<void> {
-    const current = await this.readPresetOrder();
-    const next = [...new Set(mutator([...current]).map((name) => name.trim()).filter(Boolean))];
-    await this.writePresetOrder(next);
-  }
-
-  private getPresetOrderFilePath(): string {
-    return join(this.runtimePresetDirPath, PRESET_ORDER_FILENAME);
-  }
-
-  resolvePresetPath(name: string): string {
-    return this.resolveRuntimePresetPath(name);
-  }
-
-  resolveRuntimePresetPath(name: string): string {
-    return join(this.runtimePresetDirPath, `${name}.yml`);
-  }
-
-  private async assertPresetExists(name: string): Promise<void> {
-    const filePath = this.resolveRuntimePresetPath(name);
-    await this.fs.access(filePath, fsConstants.F_OK);
-  }
-
-  private async findPresetSummaryByName(name: string): Promise<PresetSummary | null> {
-    const presets = await this.readPresetSummariesFromDisk();
-    return presets.find((preset) => preset.name === name) ?? null;
-  }
-
-  private async findBundledPresetSummaryByName(name: string): Promise<PresetSummary | null> {
-    for (const dirPath of this.bundledPresetDirPaths) {
-      const filePath = join(dirPath, `${name}.yml`);
-      try {
-        await this.fs.access(filePath, fsConstants.F_OK);
-        return { name, path: filePath, source: 'bundled' };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') {
-          throw error;
-        }
-      }
-    }
-    return null;
   }
 
   private async buildModelTabsPatch(input: SaveModelTabsRequest): Promise<EnvPatch> {

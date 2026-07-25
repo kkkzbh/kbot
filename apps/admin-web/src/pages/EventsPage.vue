@@ -11,7 +11,7 @@ import type {
 } from '@contracts';
 import EmptyState from '@/components/EmptyState.vue';
 import PageHeader from '@/components/PageHeader.vue';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
 const route = useRoute();
@@ -53,7 +53,7 @@ async function load(silent = false): Promise<void> {
   if (!silent) loading.value = true;
   try {
     const query = new URLSearchParams({ view: view.value, page: String(page.current), pageSize: String(page.pageSize) });
-    const result = await api<OperationalEventPage>(`/events?${query}`);
+    const result = await rawApi<OperationalEventPage>(`/events?${query}`);
     items.value = result.items;
     page.total = result.total;
     runtime.openEventCount = result.openCount;
@@ -68,7 +68,7 @@ async function openDetail(item: OperationalEventItem): Promise<void> {
   drawerOpen.value = true;
   detail.value = null;
   try {
-    detail.value = await api<OperationalEventDetail>(`/events/${item.id}`);
+    detail.value = await rawApi<OperationalEventDetail>(`/events/${item.id}`);
     await router.replace({ query: { ...route.query, id: String(item.id), view: view.value } });
   } catch (error) {
     drawerOpen.value = false;
@@ -83,13 +83,13 @@ async function runAction(item: OperationalEventItem, action: OperationalEventAct
   }
   activeAction.value = `${item.id}:${action}`;
   try {
-    const updated = await api<OperationalEventItem>(`/events/${item.id}/action`, {
+    const updated = await rawApi<OperationalEventItem>(`/events/${item.id}/action`, {
       method: 'POST',
-      body: jsonBody({ action }),
+      body: rawJsonBody({ action }),
     });
     ElMessage.success(action === 'acknowledge' ? '事件已确认' : action === 'retry' ? '重试已执行' : '任务已丢弃');
     await load(true);
-    if (drawerOpen.value && detail.value?.id === item.id) detail.value = await api<OperationalEventDetail>(`/events/${updated.id}`);
+    if (drawerOpen.value && detail.value?.id === item.id) detail.value = await rawApi<OperationalEventDetail>(`/events/${updated.id}`);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '事件操作失败');
   } finally {
@@ -100,7 +100,7 @@ async function runAction(item: OperationalEventItem, action: OperationalEventAct
 async function acknowledgeAll(): Promise<void> {
   bulkAcknowledging.value = true;
   try {
-    const result = await api<OperationalEventBulkAcknowledgeResult>('/events/acknowledge-all', { method: 'POST' });
+    const result = await rawApi<OperationalEventBulkAcknowledgeResult>('/events/acknowledge-all', { method: 'POST' });
     page.current = 1;
     page.total = 0;
     items.value = [];
@@ -108,7 +108,7 @@ async function acknowledgeAll(): Promise<void> {
     await load(true);
     if (drawerOpen.value && detail.value) {
       try {
-        detail.value = await api<OperationalEventDetail>(`/events/${detail.value.id}`);
+        detail.value = await rawApi<OperationalEventDetail>(`/events/${detail.value.id}`);
       } catch (error) {
         ElMessage.warning(error instanceof Error ? `事件详情刷新失败：${error.message}` : '事件详情刷新失败');
       }

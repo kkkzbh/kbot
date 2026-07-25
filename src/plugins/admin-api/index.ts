@@ -1,5 +1,8 @@
 import { join } from 'node:path';
 import { Context, Logger, Schema } from 'koishi';
+import type { PresetService } from 'koishi-plugin-chatluna/preset';
+import type { PlatformService } from 'koishi-plugin-chatluna/llm-core/platform/service';
+import type { ModelUsagePayload } from 'koishi-plugin-chatluna/llm-core/platform/usage';
 import { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
 import { CodexOAuthBridgeService } from '../codex-oauth/index.js';
 import type { AffinityServiceLike } from '../../types/affinity.js';
@@ -14,10 +17,14 @@ import { registerAdminApi, type AdminRuntimeServices } from './http-api.js';
 import { registerAdminStatic } from './static.js';
 import { registerInternalBridges } from './internal-bridges.js';
 import { ensureOperationalEventTables, OperationalEventService } from './operational-events.js';
+import {
+  ModelContextSnapshotStore,
+  type ModelContextPayload,
+} from './model-context.js';
 
 export const name = 'admin-api';
 export const inject = {
-  required: ['server', 'database'],
+  required: ['server', 'database', 'chatluna'],
   optional: ['memoryStatus', 'memoryAdmin', 'featurePolicy', 'toolPolicy', 'affinity'],
 } as const;
 
@@ -38,6 +45,10 @@ export const Config: Schema<Config> = Schema.object({
 });
 
 type RuntimeContext = Context & {
+  chatluna: {
+    preset: PresetService;
+    platform: PlatformService;
+  };
   memoryStatus?: MemoryStatusServiceLike;
   memoryAdmin?: MemoryAdminService;
   featurePolicy?: FeaturePolicyServiceLike;
@@ -83,8 +94,19 @@ export function apply(ctx: Context, config: Config): void {
     ttlSeconds: config.sessionTtlSeconds,
   });
   const logs = new AdminLogService();
+  const contextSnapshots = new ModelContextSnapshotStore(
+    Date.now,
+    (message) => logger.warn('%s', message),
+  );
   ensureOperationalEventTables(ctx);
   ctx.on('dispose', () => logs.dispose());
+  ctx.on('chatluna/model-context', async (payload: ModelContextPayload) => {
+    contextSnapshots.ingestContext(payload);
+  });
+  ctx.on('chatluna/model-usage', async (payload: ModelUsagePayload) => {
+    contextSnapshots.ingestUsage(payload);
+  });
+  ctx.setInterval(() => contextSnapshots.prunePending(), 30_000);
   const services: AdminRuntimeServices = {
     database: ctx.database as unknown as AdminRuntimeServices['database'],
     get memoryStatus() { return runtimeCtx.memoryStatus; },
@@ -103,7 +125,7 @@ export function apply(ctx: Context, config: Config): void {
   manager.syncManagedChatLunaAgentConfig();
 
   registerAdminApi({
-    ctx,
+    ctx: runtimeCtx,
     apiPath: config.apiPath,
     manager,
     session,
@@ -113,6 +135,7 @@ export function apply(ctx: Context, config: Config): void {
     copilotBridge,
     codexBridge,
     logger,
+    contextSnapshots,
   });
   registerAdminStatic({
     ctx,

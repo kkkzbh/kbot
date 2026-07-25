@@ -159,11 +159,15 @@ describe('chatluna prompt pollution regression', () => {
     const sharedAdapterRoot = resolveChatlunaSiblingPackageRoot('shared-adapter');
     const openAiAdapterRoot = resolveChatlunaSiblingPackageRoot('adapter-openai-like');
     const sharedAdapterRequesterSource = readFileSync(join(sharedAdapterRoot, 'src', 'requester.ts'), 'utf8');
+    const sharedAdapterControlSource = readFileSync(join(sharedAdapterRoot, 'src', 'internal_control.ts'), 'utf8');
     const openAIRequesterSource = readFileSync(join(openAiAdapterRoot, 'src', 'requester.ts'), 'utf8');
 
-    expect(sharedAdapterRequesterSource).toContain('sanitizeOverrideRequestParams');
-    expect(sharedAdapterRequesterSource).toContain("key.startsWith('qqbot_')");
-    expect(openAIRequesterSource).toContain("override['qqbot_request_mode'] === 'responses'");
+    expect(sharedAdapterRequesterSource).toContain('splitModelRequestOverrides');
+    expect(sharedAdapterRequesterSource).toContain('.providerPayload');
+    expect(sharedAdapterControlSource).toContain("key.startsWith('qqbot_')");
+    expect(sharedAdapterControlSource).toContain('internalControl');
+    expect(openAIRequesterSource).toContain('splitModelRequestOverrides');
+    expect(openAIRequesterSource).toContain("internalControl.requestMode === 'responses'");
     expect(openAIRequesterSource).toContain("responseApiCompletion(");
   });
 
@@ -228,7 +232,7 @@ describe('chatluna prompt pollution regression', () => {
     expect(requestModelSource).toContain('originContent.map(async (message) =>');
     expect(requestModelSource).not.toContain('sortContentByType(');
     expect(conversationRuntimeSource).toContain('serializeQqbotHumanMessageContent');
-    expect(sharedAdapterSource).toContain("detail: 'high'");
+    expect(sharedAdapterSource).toContain('raw.detail');
     expect(sharedAdapterSource).not.toContain("detail: 'low'");
   });
 

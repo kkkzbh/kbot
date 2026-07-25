@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 import type { SettingsField, SettingsSection } from '@contracts';
 
@@ -60,7 +60,7 @@ function groupName(key: string) {
 async function load() {
   loading.value = true;
   try {
-    const result = await api<any>(`/settings/${props.section}`);
+    const result = await rawApi<any>(`/settings/${props.section}`);
     fields.value = result.fields;
     for (const field of result.fields) {
       draft[field.key] = field.value ?? '';
@@ -84,7 +84,7 @@ async function save() {
   if (!changes.length) { ElMessage.info('当前页面没有变更'); return; }
   saving.value = true;
   try {
-    const result = await api<any>(`/settings/${props.section}`, { method: 'PATCH', body: jsonBody({ changes }) });
+    const result = await rawApi<any>(`/settings/${props.section}`, { method: 'PATCH', body: rawJsonBody({ changes }) });
     runtime.updateApply(result);
     ElMessage.success('配置已原子写入，重启后生效');
     await load();

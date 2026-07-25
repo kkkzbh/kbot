@@ -30,7 +30,7 @@ import {
 import type { BotServiceStatus, BotServiceUnit } from '@contracts';
 import { useSessionStore } from '@/stores/session';
 import { useRuntimeStore, type ApplyState } from '@/stores/runtime';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 
 type NavItem = {
   key: string;
@@ -120,7 +120,7 @@ let eventTimer: number | undefined;
 
 async function loadEventSummary(): Promise<void> {
   try {
-    const summary = await api<{ openCount: number }>('/events/summary');
+    const summary = await rawApi<{ openCount: number }>('/events/summary');
     runtime.openEventCount = summary.openCount;
   } catch {
     // The page-level API error UI remains the owner of visible fetch failures.
@@ -167,7 +167,7 @@ async function waitForRestartTargets(targets: ApplyRestartTarget[]): Promise<voi
   await delay(1_200);
   for (let attempt = 0; attempt < 45; attempt += 1) {
     try {
-      const services = await api<BotServiceStatus[]>('/services');
+      const services = await rawApi<BotServiceStatus[]>('/services');
       runtime.running = services.filter((service) => service.runtimeState === 'healthy' || service.runtimeState === 'degraded').length;
       runtime.total = services.length;
       const current = new Map(services.map((service) => [service.unit, service]));
@@ -191,9 +191,9 @@ async function applyPendingRestart(): Promise<void> {
   restartBusy.value = true;
   let submitted = false;
   try {
-    const result = await api<ApplyRestartResponse>('/apply/restart', {
+    const result = await rawApi<ApplyRestartResponse>('/apply/restart', {
       method: 'POST',
-      body: jsonBody({}),
+      body: rawJsonBody({}),
     });
     submitted = result.targets.length > 0;
     runtime.updateApply(result.apply);

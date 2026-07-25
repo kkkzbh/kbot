@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { BotServiceRuntimeState, BotServiceStatus } from '@contracts';
 import PageHeader from '@/components/PageHeader.vue';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
 const services = ref<BotServiceStatus[]>([]);
@@ -34,7 +34,7 @@ function runtimeLabel(state: BotServiceRuntimeState): string {
 async function load(silent = false): Promise<void> {
   if (!silent) loading.value = true;
   try {
-    services.value = await api<BotServiceStatus[]>('/services');
+    services.value = await rawApi<BotServiceStatus[]>('/services');
     runtime.running = services.value.filter((item) => item.runtimeState === 'healthy' || item.runtimeState === 'degraded').length;
     runtime.total = services.value.length;
   } catch (error) {
@@ -50,9 +50,9 @@ async function run(unit: string, action: string): Promise<void> {
   }
   activeAction.value = `${unit}:${action}`;
   try {
-    const result = await api<{ status: BotServiceStatus; apply: { restartRequired: boolean; reasons: string[] } }>('/services/action', {
+    const result = await rawApi<{ status: BotServiceStatus; apply: { restartRequired: boolean; reasons: string[] } }>('/services/action', {
       method: 'POST',
-      body: jsonBody({ unit, action }),
+      body: rawJsonBody({ unit, action }),
     });
     const index = services.value.findIndex((item) => item.unit === unit);
     if (index >= 0) services.value[index] = result.status;

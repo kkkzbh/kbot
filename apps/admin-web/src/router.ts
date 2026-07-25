@@ -3,6 +3,17 @@ import { useSessionStore } from '@/stores/session';
 
 export const router = createRouter({
   history: createWebHistory('/'),
+  scrollBehavior(to, _from, savedPosition) {
+    if (savedPosition) return savedPosition;
+    if (to.hash) {
+      return {
+        el: to.hash,
+        top: 72,
+        behavior: 'smooth',
+      };
+    }
+    return { top: 0 };
+  },
   routes: [
     { path: '/login', name: 'login', component: () => import('@/pages/LoginPage.vue'), meta: { public: true, title: '登录' } },
     { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '总览', description: '服务、模型与运行风险一览' } },

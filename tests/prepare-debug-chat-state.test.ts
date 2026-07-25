@@ -65,6 +65,13 @@ create table chathub_user (
   defaultRoomId integer null,
   groupId text null
 );
+create table chatluna_meta (
+  key text primary key,
+  value text null,
+  updatedAt integer not null
+);
+insert into chatluna_meta (key, value, updatedAt)
+values ('globalDefaultPresetId', '"sakiko"', 1);
       `,
     ],
     { encoding: 'utf8' },
@@ -97,7 +104,6 @@ values ('template-conv', null, 1);
       envPath,
       `
 CHATLUNA_ACTIVE_TAB=openai
-CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
 CHATLUNA_OPENAI_DEFAULT_MODEL=openai/gpt-5.4-medium-thinking
       `,
@@ -151,7 +157,6 @@ values ('91000999', 125, null);
       envPath,
       `
 CHATLUNA_ACTIVE_TAB=openai
-CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
 CHATLUNA_OPENAI_DEFAULT_MODEL=openai/gpt-5.4-medium-thinking
       `,
@@ -202,7 +207,6 @@ values ('template-conv', null, 1);
       envPath,
       `
 CHATLUNA_ACTIVE_TAB=copilot
-CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
 CHATLUNA_COPILOT_DEFAULT_MODEL=openai/auto
       `,
@@ -248,7 +252,6 @@ values ('template-conv', null, 1);
       envPath,
       `
 CHATLUNA_ACTIVE_TAB=copilot
-CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5
 CHATLUNA_COPILOT_DEFAULT_MODEL=auto
       `,
@@ -295,7 +298,6 @@ values ('template-conv', null, 1);
       baseEnvPath,
       `
 CHATLUNA_ACTIVE_TAB=copilot
-CHATLUNA_DEFAULT_PRESET=sakiko
 CHATLUNA_COPILOT_DEFAULT_MODEL=openai/auto
 CHATLUNA_OPENAI_DEFAULT_MODEL=openai/gpt-5.4-medium-thinking
       `,

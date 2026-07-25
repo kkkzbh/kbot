@@ -1,4 +1,5 @@
 import { adminErrorSchema } from '@contracts';
+import type { z } from 'zod';
 
 const API_BASE = '/api/admin/v1';
 
@@ -14,11 +15,7 @@ export class ApiError extends Error {
   }
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
-  if (response.ok) {
-    if (response.status === 204) return undefined as T;
-    return response.json() as Promise<T>;
-  }
+async function parseErrorResponse(response: Response): Promise<never> {
   const body = await response.json().catch(() => null);
   const parsed = adminErrorSchema.safeParse(body);
   if (parsed.success) {
@@ -33,18 +30,46 @@ async function parseResponse<T>(response: Response): Promise<T> {
   throw new ApiError(`Admin API 返回 HTTP ${response.status}`, response.status, 'unknown', response.headers.get('x-request-id'));
 }
 
-export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function readResponse(response: Response): Promise<unknown> {
+  if (response.ok) {
+    if (response.status === 204) return undefined;
+    return response.json();
+  }
+  return parseErrorResponse(response);
+}
+
+async function request(path: string, options: RequestInit): Promise<Response> {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-  const response = await fetch(`${API_BASE}${path}`, {
+  return fetch(`${API_BASE}${path}`, {
     ...options,
     headers,
     credentials: 'same-origin',
   });
-  return parseResponse<T>(response);
 }
 
-export function jsonBody(value: unknown): string {
+export async function api<Schema extends z.ZodTypeAny>(
+  path: string,
+  responseSchema: Schema,
+  options: RequestInit = {},
+): Promise<z.infer<Schema>> {
+  const response = await request(path, options);
+  return responseSchema.parse(await readResponse(response));
+}
+
+export async function rawApi<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await request(path, options);
+  return await readResponse(response) as T;
+}
+
+export function jsonBody<Schema extends z.ZodTypeAny>(
+  requestSchema: Schema,
+  value: unknown,
+): string {
+  return JSON.stringify(requestSchema.parse(value));
+}
+
+export function rawJsonBody(value: unknown): string {
   return JSON.stringify(value);
 }
 
@@ -55,6 +80,6 @@ export async function apiAudio(path: string, body: unknown): Promise<Blob> {
     credentials: 'same-origin',
     body: JSON.stringify(body),
   });
-  if (!response.ok) await parseResponse(response);
+  if (!response.ok) await readResponse(response);
   return response.blob();
 }

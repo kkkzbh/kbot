@@ -4,14 +4,14 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import type { BotServiceRuntimeState, BotServiceStatus, OperationalEventItem } from '@contracts';
 import EmptyState from '@/components/EmptyState.vue';
-import { api } from '@/api/client';
+import { rawApi } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
 type Overview = {
   services: BotServiceStatus[];
   serviceSummary: { total: number; running: number; healthy: number; degraded: number; stopped: number };
   currentModel: { model: string; title: string } | null;
-  defaultPreset: string | null;
+  globalDefaultPresetId: string;
   memory: { summary: { factCount: number; episodeCount: number; pendingReviewCount: number } };
   events: { openCount: number; pending: OperationalEventItem[] };
   apply: { restartRequired: boolean; reasons: string[] };
@@ -38,7 +38,7 @@ function stateClass(state: BotServiceRuntimeState): string {
 async function load(silent = false) {
   if (!silent) loading.value = true;
   try {
-    const next = await api<Overview>('/overview');
+    const next = await rawApi<Overview>('/overview');
     state.value = next;
     runtime.currentModel = next.currentModel?.model || '未配置模型';
     runtime.running = next.serviceSummary.running;
@@ -76,8 +76,8 @@ onBeforeUnmount(() => window.clearInterval(timer));
         <div><strong>{{ state.memory.summary.factCount + state.memory.summary.episodeCount }}</strong><small>{{ state.memory.summary.pendingReviewCount }} 项待审核</small></div>
       </article>
       <article class="summary-item">
-        <span>默认预设</span>
-        <div><strong>{{ state.defaultPreset || '—' }}</strong><small>{{ state.apply.restartRequired ? '等待重启' : '已应用' }}</small></div>
+        <span>全局默认预设</span>
+        <div><strong>{{ state.globalDefaultPresetId }}</strong><small>运行时已生效</small></div>
       </article>
       <button class="summary-refresh" :disabled="loading" @click="load()">{{ loading ? '刷新中' : '刷新' }}</button>
     </section>

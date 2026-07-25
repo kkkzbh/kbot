@@ -110,13 +110,18 @@ for package_dir in ordered_packages:
     src_dir = package_dir / 'src'
     lib_dir = package_dir / 'lib'
     package_json = package_dir / 'package.json'
+    build_stamp = lib_dir / '.qqbot-build-stamp'
 
     src_files = [package_json, *src_dir.rglob('*')]
     runtime_files = [*lib_dir.rglob('*.cjs'), *lib_dir.rglob('*.mjs')]
     src_mtime = max((path.stat().st_mtime for path in src_files if path.is_file()), default=0)
-    runtime_mtime = min((path.stat().st_mtime for path in runtime_files if path.is_file()), default=0)
 
-    if not lib_dir.is_dir() or not runtime_files or src_mtime > runtime_mtime:
+    if (
+        not lib_dir.is_dir()
+        or not runtime_files
+        or not build_stamp.is_file()
+        or src_mtime > build_stamp.stat().st_mtime
+    ):
         build_targets.append(package_dir.name)
 
 for target in build_targets:
@@ -134,6 +139,13 @@ if [[ "${#BUILD_TARGETS[@]}" -gt 0 ]]; then
   echo "[info] Building linked ChatLuna packages in dependency order: ${BUILD_TARGETS[*]}"
   for target in "${BUILD_TARGETS[@]}"; do
     chatluna_yarn_fast_build "$CHATLUNA_ROOT_DIR" "$target"
+    target_lib_dir="$CHATLUNA_ROOT_DIR/packages/$target/lib"
+    if [[ ! -d "$target_lib_dir" ]] || \
+      ! find "$target_lib_dir" -type f \( -name '*.cjs' -o -name '*.mjs' \) -print -quit | grep -q .; then
+      echo "[error] ChatLuna build did not produce runtime artifacts: $target" >&2
+      exit 1
+    fi
+    touch "$target_lib_dir/.qqbot-build-stamp"
   done
 else
   echo "[info] Linked ChatLuna packages are up to date."

@@ -53,6 +53,7 @@ vi.mock('koishi-plugin-chatluna/services/chat', () => ({
 }));
 
 vi.mock('koishi-plugin-chatluna/utils/logger', () => ({
+  logger: undefined,
   trackLogToLocal: vi.fn(),
 }));
 

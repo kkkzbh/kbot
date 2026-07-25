@@ -37,6 +37,7 @@ mkdir -p "$STAGE_DIST/plugins/genshin/assets"
 cp -R "$ROOT_DIR/src/plugins/genshin/assets/." "$STAGE_DIST/plugins/genshin/assets/"
 mkdir -p "$STAGE_DIST/plugins/hbu-jw/assets"
 cp -R "$ROOT_DIR/src/plugins/hbu-jw/assets/." "$STAGE_DIST/plugins/hbu-jw/assets/"
+node ./scripts/build-preset-v2-cutover-tools.mjs --out-dir "$STAGE_DIST/tools"
 node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml --dist "$STAGE_DIST"
 
 rm -rf "$NEXT_DIST" "$PREVIOUS_DIST"

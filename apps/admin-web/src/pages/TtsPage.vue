@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
-import { api, apiAudio, jsonBody } from '@/api/client';
+import { apiAudio, rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
 const state = ref<any | null>(null);
@@ -42,7 +42,7 @@ function hydrate(result: any) {
 
 async function load() {
   loading.value = true;
-  try { hydrate(await api('/tts')); }
+  try { hydrate(await rawApi('/tts')); }
   finally { loading.value = false; }
 }
 
@@ -61,7 +61,7 @@ async function save() {
   if (!botChanges.length && !localChanges.length) { ElMessage.info('当前页面没有变更'); return; }
   saving.value = true;
   try {
-    const result = await api<any>('/tts', { method: 'PATCH', body: jsonBody({ botChanges, localChanges }) });
+    const result = await rawApi<any>('/tts', { method: 'PATCH', body: rawJsonBody({ botChanges, localChanges }) });
     hydrate(result.tts);
     runtime.updateApply(result.apply);
     ElMessage.success('TTS 配置已保存');
@@ -72,7 +72,7 @@ async function save() {
 async function probe() {
   loading.value = true;
   try {
-    const result = await api<any>('/tts/probe', { method: 'POST', body: '{}' });
+    const result = await rawApi<any>('/tts/probe', { method: 'POST', body: '{}' });
     if (state.value) state.value.health = result.health;
     result.health.status === 'ok' ? ElMessage.success('TTS 健康探测通过') : ElMessage.warning(result.health.error || 'TTS 状态异常');
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '探测失败'); }

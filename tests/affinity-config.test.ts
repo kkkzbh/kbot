@@ -20,6 +20,6 @@ describe('affinity configuration', () => {
 
     expect(router).toContain("path: '/intelligence/affinity'");
     expect(router).toContain("title: '关系事件'");
-    expect(page).toContain("api('/affinity')");
+    expect(page).toContain("rawApi('/affinity')");
   });
 });

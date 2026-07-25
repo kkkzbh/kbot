@@ -115,34 +115,11 @@ export interface EnvPatch {
   [key: string]: string | null | undefined;
 }
 
-export type PresetSource = 'runtime' | 'bundled';
-
 export interface AdminEnvFilesState {
   mode: 'single' | 'layered';
   baseFile: string | null;
   overrideFile: string | null;
   editTarget: string;
-}
-
-export interface PresetPrompt {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
-}
-
-export interface PresetSummary {
-  name: string;
-  path: string;
-  source: PresetSource;
-}
-
-export interface PresetDocument {
-  name: string;
-  originalName?: string;
-  path?: string;
-  source?: PresetSource;
-  keywords: string[];
-  prompts: PresetPrompt[];
-  raw?: string;
 }
 
 export type AdminModelTabId = 'siliconflow' | 'openai' | 'codex' | 'copilot' | 'deepseek' | 'mimo';
@@ -254,10 +231,6 @@ export interface MimoModelListResponse {
   source: AdminModelListSource;
   models: AdminModelOption[];
   error: string | null;
-}
-
-export interface ReorderPresetsResponse {
-  presets: PresetSummary[];
 }
 
 export type AdminTtsHealthStatus = 'unknown' | 'ok' | 'degraded' | 'unreachable';

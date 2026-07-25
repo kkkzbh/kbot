@@ -27,6 +27,7 @@ describe('runtime startup contract', () => {
     const packageJson = JSON.parse(readRepoFile('package.json'));
     const runScript = readRepoFile('scripts/run-koishi-with-env.sh');
     const smokeScript = readRepoFile('scripts/smoke-koishi-start.sh');
+    const koishi = readRepoFile('koishi.yml');
 
     expect(packageJson.scripts.build).toBe('bash ./scripts/build-runtime.sh');
     expect(packageJson.scripts['build:runtime']).toBe('bash ./scripts/build-runtime.sh');
@@ -43,6 +44,12 @@ describe('runtime startup contract', () => {
     expect(runScript).not.toContain('./scripts/ensure-chatluna-build.sh\npnpm');
     expect(smokeScript).toContain('./scripts/ensure-chatluna-build.sh --check');
     expect(smokeScript).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
+    expect(koishi).toContain('bundledPresetDir: ${{ env.CHATLUNA_BUNDLED_PRESET_DIR }}');
+    expect(koishi).toContain('runtimePresetDir: ${{ env.CHATLUNA_RUNTIME_PRESET_DIR }}');
+    expect(koishi).toContain('archiveDir: ${{ env.CHATLUNA_ARCHIVE_DIR }}');
+    expect(koishi).not.toContain('CHATLUNA_BUNDLED_PRESET_DIR ||');
+    expect(koishi).not.toContain('CHATLUNA_RUNTIME_PRESET_DIR ||');
+    expect(koishi).not.toContain('CHATLUNA_ARCHIVE_DIR ||');
   });
 
   it('builds runtime artifacts in a staging directory before replacing dist', () => {
@@ -54,6 +61,9 @@ describe('runtime startup contract', () => {
     expect(buildScript).toContain('pnpm exec tsc -p tsconfig.build.json --outDir "$STAGE_DIST"');
     expect(buildScript).toContain('QQBOT_ADMIN_OUT_DIR="$STAGE_ADMIN_DIR" pnpm admin:build');
     expect(buildScript).toContain('cp -R "$ROOT_DIR/src/plugins/affinity/assets/." "$STAGE_DIST/plugins/affinity/assets/"');
+    expect(buildScript).toContain(
+      'node ./scripts/build-preset-v2-cutover-tools.mjs --out-dir "$STAGE_DIST/tools"',
+    );
     expect(buildScript).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml --dist "$STAGE_DIST"');
     expect(buildScript).toContain('mv "$STAGE_DIST" "$NEXT_DIST"');
     expect(buildScript).toContain('mv "$NEXT_DIST" "$DIST_DIR"');
@@ -103,6 +113,9 @@ describe('runtime startup contract', () => {
     mkdirSync(join(distDir, 'admin-web/assets'), { recursive: true });
     writeFileSync(join(distDir, 'admin-web/assets/app.js'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'admin-web/assets/app.css'), 'body{}\n', 'utf8');
+    mkdirSync(join(distDir, 'tools'), { recursive: true });
+    writeFileSync(join(distDir, 'tools/preset-v2-cutover.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/preset-v2-sqlite.py'), 'raise SystemExit(0)\n', 'utf8');
 
     const ok = spawnSync(process.execPath, [scriptPath, '--config', configPath, '--dist', distDir], {
       cwd: dir,

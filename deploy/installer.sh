@@ -3,6 +3,7 @@ set -euo pipefail
 
 BUNDLE_PATH="${1:-}"
 VERIFY_SCOPE="${2:-full}"
+ACTIVATION_MODE="${3:-start}"
 BASE_DIR="${QQBOT_BASE_DIR:-/opt/qqbot}"
 APP_ROOT="${BASE_DIR}/app"
 APP_DIR="${APP_ROOT}/qqbot"
@@ -18,10 +19,26 @@ CLOUDFLARED_GENSHIN_TOKEN_FILE="${QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE:-/etc/clo
 HBU_WEBVPN_BROKER_CREDENTIAL="${QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL:-/etc/credstore.encrypted/hbu-webvpn-broker.cred}"
 SYSTEMD_DIR="/etc/systemd/system"
 QUADLET_DIR="/etc/containers/systemd"
+ACTIVATION_STARTED=0
+
+stop_target_after_failure() {
+  local status="$?"
+  trap - EXIT
+  if [[ "${status}" -ne 0 && "${ACTIVATION_STARTED}" == "1" ]]; then
+    echo "[installer] deployment failed after activation began; stopping qqbot.target" >&2
+    systemctl stop qqbot.target >/dev/null 2>&1 || true
+  fi
+  exit "${status}"
+}
+trap stop_target_after_failure EXIT
 
 case "${VERIFY_SCOPE}" in
   koishi|full) ;;
   *) echo "[installer] invalid verify scope: ${VERIFY_SCOPE}" >&2; exit 2 ;;
+esac
+case "${ACTIVATION_MODE}" in
+  start|keep-stopped) ;;
+  *) echo "[installer] invalid activation mode: ${ACTIVATION_MODE}" >&2; exit 2 ;;
 esac
 
 if [[ -z "${BUNDLE_PATH}" || ! -f "${BUNDLE_PATH}" ]]; then
@@ -70,6 +87,7 @@ mkdir -p \
   "${DATA_DIR}/llonebot" \
   "${DATA_DIR}/llbot-runtime" \
   "${DATA_DIR}/chatluna-storage" \
+  "${DATA_DIR}/chatluna/archive" \
   "${DATA_DIR}/chathub/presets" \
   "${DATA_DIR}/chathub/stickers" \
   "${DATA_DIR}/cache/yarn" \
@@ -77,7 +95,7 @@ mkdir -p \
   "${SHARED_DIR}" \
   "${INCOMING_DIR}" \
   "${STAGING_DIR}"
-chmod 700 "${DATA_DIR}" "${SHARED_DIR}"
+chmod 700 "${DATA_DIR}" "${SHARED_DIR}" "${DATA_DIR}/chatluna/archive"
 
 if [[ ! -f "${ENV_SERVER}" ]]; then
   echo "[installer] missing server env: ${ENV_SERVER}" >&2
@@ -120,8 +138,12 @@ ensure_server_env_defaults() {
   ensure_server_env_key "GENSHIN_SIGN_ACT_ID" "e202311201442471"
   ensure_server_env_key "GENSHIN_REDEEM_GAME_VERSION" "CNRELWin6.0.0"
   ensure_server_env_key "HBU_JW_WEBVPN_BROKER_URL" "http://127.0.0.1:8789"
-  remove_env_key "${ENV_SERVER}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
-  remove_env_key "${ENV_RUNTIME}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
+  local file
+  for file in "${ENV_SERVER}" "${ENV_RUNTIME}"; do
+    remove_env_key "${file}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
+    remove_env_key "${file}" "CHATLUNA_DEFAULT_PRESET"
+    remove_env_key "${file}" "CHATLUNA_PRESET_DIRS"
+  done
   chmod 600 "${ENV_SERVER}"
 }
 ensure_server_env_defaults
@@ -145,6 +167,8 @@ require_bundle_entry "build-manifest.json"
 require_bundle_entry "qqbot/package.json"
 require_bundle_entry "qqbot/koishi.yml"
 require_bundle_entry "qqbot/dist"
+require_bundle_entry "qqbot/dist/tools/preset-v2-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/preset-v2-sqlite.py"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "chatluna/packages/core/package.json"
@@ -196,7 +220,9 @@ write_runtime_env() {
     ONEBOT_WS_ENDPOINT
     CHATLUNA_STORAGE_PATH
     CHATLUNA_STORAGE_SERVER_PATH
+    CHATLUNA_BUNDLED_PRESET_DIR
     CHATLUNA_RUNTIME_PRESET_DIR
+    CHATLUNA_ARCHIVE_DIR
     CHATLUNA_STICKER_DIR
     PUPPETEER_EXECUTABLE_PATH
   )
@@ -238,7 +264,9 @@ write_runtime_env() {
   printf '%s\n' "ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STORAGE_PATH=${DATA_DIR}/chatluna-storage" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STORAGE_SERVER_PATH=http://127.0.0.1:5140" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_BUNDLED_PRESET_DIR=${APP_DIR}/data/chathub/presets" >> "${tmp}"
   printf '%s\n' "CHATLUNA_RUNTIME_PRESET_DIR=${DATA_DIR}/chathub/presets" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_ARCHIVE_DIR=${DATA_DIR}/chatluna/archive" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STICKER_DIR=${DATA_DIR}/chathub/stickers" >> "${tmp}"
   printf '%s\n' "PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell" >> "${tmp}"
   chmod 600 "${tmp}"
@@ -283,9 +311,6 @@ write_pmhq_env() {
 }
 write_pmhq_env
 
-if [[ -z "$(find "${DATA_DIR}/chathub/presets" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" && -d "${STAGE_QQBOT}/data/chathub/presets" ]]; then
-  cp -a "${STAGE_QQBOT}/data/chathub/presets/." "${DATA_DIR}/chathub/presets/"
-fi
 if [[ -z "$(find "${DATA_DIR}/chathub/stickers" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" && -d "${STAGE_QQBOT}/data/chathub/stickers" ]]; then
   cp -a "${STAGE_QQBOT}/data/chathub/stickers/." "${DATA_DIR}/chathub/stickers/"
 fi
@@ -321,6 +346,7 @@ CHATLUNA_ROOT_DIR="${STAGE_CHATLUNA}" bash "${STAGE_QQBOT}/scripts/ensure-chatlu
 systemctl daemon-reload
 systemctl cat qqbot-pmhq.service >/dev/null
 
+ACTIVATION_STARTED=1
 if systemctl cat qqbot.target >/dev/null 2>&1; then
   systemctl stop qqbot.target
 fi
@@ -329,9 +355,14 @@ rmdir "${APP_ROOT}"
 mv "${WORK_DIR}" "${APP_ROOT}"
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
 systemctl enable qqbot.target >/dev/null
-systemctl restart qqbot.target
-QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}"
+if [[ "${ACTIVATION_MODE}" == "start" ]]; then
+  systemctl restart qqbot.target
+  QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}"
+else
+  echo "[installer] application installed with qqbot.target kept stopped"
+fi
 
 clear_managed_dir "${INCOMING_DIR}"
 clear_managed_dir "${STAGING_DIR}"
+ACTIVATION_STARTED=0
 echo "[installer] deployed single instance to ${APP_ROOT}"

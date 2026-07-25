@@ -886,6 +886,55 @@ describe('codex oauth bridge helpers', () => {
     });
   });
 
+  it('reports interrupted Codex response bodies as retryable proxy transport failures', async () => {
+    const dir = createTempDir();
+    const accessToken = fakeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, client_id: 'codex-client' });
+    writeCodexAuth(dir, {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: accessToken,
+        refresh_token: 'refresh-token',
+        account_id: 'acct-managed',
+      },
+    });
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7897');
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('ALL_PROXY', '');
+    vi.stubEnv('all_proxy', '');
+    vi.stubEnv('NO_PROXY', '');
+    vi.stubEnv('no_proxy', '');
+    const socketError = Object.assign(new Error('other side closed'), {
+      code: 'UND_ERR_SOCKET',
+    });
+    const terminated = Object.assign(new TypeError('terminated'), {
+      cause: socketError,
+    });
+    const response = new Response(null, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+    });
+    vi.spyOn(response, 'text').mockRejectedValue(terminated);
+    globalThis.fetch = vi.fn(async () => response) as typeof fetch;
+
+    const result = await createService(dir).proxyResponses({
+      model: 'openai/gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+    });
+    const error = JSON.parse(result.body).error;
+
+    expect(result.status).toBe(502);
+    expect(error).toMatchObject({
+      type: 'upstream_error',
+      code: 'upstream_transport_error',
+    });
+    expect(error.message).toContain('Codex Responses 响应体读取失败');
+    expect(error.message).toContain('UND_ERR_SOCKET');
+    expect(error.message).toContain('other side closed');
+    expect(error.message).toContain('url=https://chatgpt.com/backend-api/codex/responses');
+    expect(error.message).toContain('proxy=http://127.0.0.1:7897/');
+    expect(result.body).not.toContain(accessToken);
+  });
+
   it('repairs partially populated completed output with final Codex SSE text', async () => {
     const dir = createTempDir();
     const accessToken = fakeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, client_id: 'codex-client' });

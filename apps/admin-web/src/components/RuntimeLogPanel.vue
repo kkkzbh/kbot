@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AdminLogEntry, AdminLogsResponse } from '@contracts';
-import { api } from '@/api/client';
+import { rawApi } from '@/api/client';
 
 const MAX_VISIBLE_ENTRIES = 1_000;
 const POLL_INTERVAL_MS = 1_500;
@@ -48,7 +48,7 @@ async function loadLogs(): Promise<void> {
   if (paused.value || loading.value) return;
   loading.value = true;
   try {
-    const response = await api<AdminLogsResponse>(`/logs?after=${cursor.value}&limit=100`);
+    const response = await rawApi<AdminLogsResponse>(`/logs?after=${cursor.value}&limit=100`);
     if (response.truncated) entries.value = [];
     if (response.entries.length) {
       const seen = new Set(entries.value.map((entry) => entry.id));

@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
-import { api, jsonBody } from '@/api/client';
+import { rawApi, rawJsonBody } from '@/api/client';
 
 const state = ref<any | null>(null);
 const settings = reactive<any>({});
@@ -25,7 +25,7 @@ function hydrate(result: any) {
   clearApiKey.value = false;
 }
 
-async function load() { hydrate(await api('/affinity')); }
+async function load() { hydrate(await rawApi('/affinity')); }
 
 async function save() {
   saving.value = true;
@@ -33,9 +33,9 @@ async function save() {
     const clean = JSON.parse(JSON.stringify(settings));
     delete clean.analysisModel.apiKey;
     delete clean.analysisModel.apiKeyConfigured;
-    const result = await api<any>('/affinity/settings', {
+    const result = await rawApi<any>('/affinity/settings', {
       method: 'PATCH',
-      body: jsonBody({ settings: clean, ...(apiKey.value ? { analysisModelApiKey: apiKey.value } : {}), ...(clearApiKey.value ? { clearAnalysisModelApiKey: true } : {}) }),
+      body: rawJsonBody({ settings: clean, ...(apiKey.value ? { analysisModelApiKey: apiKey.value } : {}), ...(clearApiKey.value ? { clearAnalysisModelApiKey: true } : {}) }),
     });
     hydrate(result);
     ElMessage.success('关系事件设置已应用');
@@ -46,7 +46,7 @@ async function save() {
 async function saveScopes() {
   try {
     const payload = scopes.value.map(({ characterId, scopeKind, scopeId, enabled, proactiveEnabled, label, platform, botSelfId, channelId, guildId, conversationId }: any) => ({ characterId, scopeKind, scopeId, enabled, proactiveEnabled, label, platform, botSelfId, channelId, guildId, conversationId }));
-    hydrate(await api('/affinity/whitelist', { method: 'PATCH', body: jsonBody({ scopes: payload }) }));
+    hydrate(await rawApi('/affinity/whitelist', { method: 'PATCH', body: rawJsonBody({ scopes: payload }) }));
     ElMessage.success('范围白名单已更新');
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '白名单保存失败'); }
 }
@@ -58,7 +58,7 @@ function openAdjust(user: any) {
 
 async function adjust() {
   const body = Object.fromEntries(Object.entries(adjustment).filter(([, value]) => value !== undefined && value !== ''));
-  hydrate(await api('/affinity/adjust', { method: 'POST', body: jsonBody(body) }));
+  hydrate(await rawApi('/affinity/adjust', { method: 'POST', body: rawJsonBody(body) }));
   adjustOpen.value = false;
   ElMessage.success('用户关系状态已调整');
 }

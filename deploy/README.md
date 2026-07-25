@@ -66,6 +66,19 @@ The `qqbot` package is always built and bundled from the current `HEAD` commit. 
 
 When a full deploy is required, the script runs typecheck, tests, build, packages `qqbot` with the sibling `../chatluna` checkout, uploads one tarball, and asks the server installer to replace the single active instance. LLBot release zips are cached locally under `.tmp/deploy-cache`.
 
+For a coordinated offline migration, upload the verified release while leaving
+the active application and services unchanged:
+
+```bash
+QQBOT_DEPLOY_MODE=upload-only deploy/deploy.sh km6
+```
+
+The uploaded bundle remains at `/opt/qqbot/incoming/qqbot.tar.gz`. After the
+migration preflight and offline data changes complete, invoke the installer
+with `keep-stopped` as documented by the migration runbook. Ordinary deployment
+can also retain the stopped state with
+`QQBOT_DEPLOY_ACTIVATION_MODE=keep-stopped`.
+
 ## Services
 
 Systemd owns the application stack. PMHQ is rendered from `/etc/containers/systemd/qqbot-pmhq.container`; Quadlet generates the long-running `qqbot-pmhq.service`:

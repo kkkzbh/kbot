@@ -27,6 +27,40 @@ function setBridgeCorsHeaders(koaCtx: any): void {
   koaCtx.set('access-control-max-age', '600');
 }
 
+function logBridgeFailure(
+  logger: Logger,
+  provider: 'codex',
+  operation: 'models' | 'responses',
+  result: { status: number; body: string },
+): void {
+  if (result.status < 400) return;
+  let providerCode = '<none>';
+  let providerType = '<none>';
+  let providerMessage = '<unavailable>';
+  try {
+    const parsed = JSON.parse(result.body) as {
+      error?: { code?: unknown; type?: unknown; message?: unknown };
+    };
+    const error = parsed.error;
+    if (typeof error?.code === 'string' && error.code.trim()) providerCode = error.code.trim();
+    if (typeof error?.type === 'string' && error.type.trim()) providerType = error.type.trim();
+    if (typeof error?.message === 'string' && error.message.trim()) {
+      providerMessage = error.message.trim().slice(0, 1_000);
+    }
+  } catch {
+    providerMessage = '<non-json response>';
+  }
+  logger.error(
+    '%s bridge failure: operation=%s httpStatus=%s providerCode=%s providerType=%s providerMessage=%j',
+    provider,
+    operation,
+    String(result.status),
+    providerCode,
+    providerType,
+    providerMessage,
+  );
+}
+
 async function validateCopilotBridgeAuth(koaCtx: any, bridge: CopilotOAuthBridgeService): Promise<boolean> {
   const expected = await bridge.getRuntimeConfig();
   if (String(koaCtx.get('authorization') || '').trim() === `Bearer ${expected.apiKey}`) return true;
@@ -74,6 +108,7 @@ export function registerInternalBridges(options: {
   server.get('/api/internal/codex/v1/models', async (koaCtx: any) => {
     if (!(await validateCodexBridgeAuth(koaCtx, options.codexBridge))) return;
     const result = await options.codexBridge.proxyModels();
+    logBridgeFailure(options.logger, 'codex', 'models', result);
     koaCtx.status = result.status;
     for (const [key, value] of Object.entries(result.headers)) koaCtx.set(key, value);
     koaCtx.body = result.body;
@@ -81,6 +116,7 @@ export function registerInternalBridges(options: {
   server.post('/api/internal/codex/v1/responses', async (koaCtx: any) => {
     if (!(await validateCodexBridgeAuth(koaCtx, options.codexBridge))) return;
     const result = await options.codexBridge.proxyResponses(koaCtx.request.body);
+    logBridgeFailure(options.logger, 'codex', 'responses', result);
     koaCtx.status = result.status;
     for (const [key, value] of Object.entries(result.headers)) koaCtx.set(key, value);
     koaCtx.body = result.body;

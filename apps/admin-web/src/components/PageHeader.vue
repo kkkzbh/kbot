@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router';
 
-defineProps<{ saving?: boolean; saveLabel?: string; hideSave?: boolean }>();
+defineProps<{
+  saving?: boolean;
+  saveLabel?: string;
+  hideSave?: boolean;
+  saveDisabled?: boolean;
+}>();
 defineEmits<{ save: [] }>();
 const route = useRoute();
 </script>
@@ -15,7 +20,13 @@ const route = useRoute();
     </div>
     <div class="page-actions">
       <slot name="actions" />
-      <el-button v-if="!hideSave" type="primary" :loading="saving" @click="$emit('save')">
+      <el-button
+        v-if="!hideSave"
+        type="primary"
+        :loading="saving"
+        :disabled="saveDisabled"
+        @click="$emit('save')"
+      >
         {{ saveLabel || '保存当前页面' }}
       </el-button>
     </div>

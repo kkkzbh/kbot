@@ -55,7 +55,45 @@ describe('server runtime artifact rendering', () => {
     expect(koishi).toContain('Wants=network-online.target qqbot-llbot.service hbu-webvpn-agent.service');
     expect(koishi).toContain('LoadCredentialEncrypted=hbu-webvpn-broker:/etc/credstore.encrypted/hbu-webvpn-broker.cred');
     expect(koishi).toContain('Environment=HBU_JW_WEBVPN_BROKER_TOKEN_FILE=%d/hbu-webvpn-broker');
+    expect(koishi).toContain(`Environment=CHATLUNA_BUNDLED_PRESET_DIR=${appDir}/data/chathub/presets`);
+    expect(koishi).toContain(`Environment=CHATLUNA_RUNTIME_PRESET_DIR=${dataDir}/chathub/presets`);
+    expect(koishi).toContain(`Environment=CHATLUNA_ARCHIVE_DIR=${dataDir}/chatluna/archive`);
+    expect(koishi).toContain(`ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/archive`);
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
+  });
+
+  it('removes legacy preset environment ownership from shipped templates', () => {
+    for (const file of ['.env.example', '.env.server.example']) {
+      const content = readFileSync(join(process.cwd(), file), 'utf8');
+      expect(content).not.toMatch(/^CHATLUNA_DEFAULT_PRESET=/mu);
+      expect(content).not.toMatch(/^CHATLUNA_PRESET_DIRS=/mu);
+    }
+    expect(readFileSync(join(process.cwd(), '.env.server.example'), 'utf8')).toContain(
+      'CHATLUNA_BUNDLED_PRESET_DIR=/opt/qqbot/app/qqbot/data/chathub/presets',
+    );
+    expect(readFileSync(join(process.cwd(), '.env.server.example'), 'utf8')).toContain(
+      'CHATLUNA_RUNTIME_PRESET_DIR=/opt/qqbot/data/chathub/presets',
+    );
+    expect(readFileSync(join(process.cwd(), '.env.server.example'), 'utf8')).toContain(
+      'CHATLUNA_ARCHIVE_DIR=/opt/qqbot/data/chatluna/archive',
+    );
+
+    const installer = readFileSync(join(process.cwd(), 'deploy/installer.sh'), 'utf8');
+    expect(installer).toContain('remove_env_key "${file}" "CHATLUNA_DEFAULT_PRESET"');
+    expect(installer).toContain('remove_env_key "${file}" "CHATLUNA_PRESET_DIRS"');
+    expect(installer).toContain('trap stop_target_after_failure EXIT');
+    expect(installer).toContain('systemctl stop qqbot.target');
+    expect(installer).toContain('start|keep-stopped');
+    expect(installer).toContain('"${DATA_DIR}/chatluna/archive"');
+    expect(installer).toContain(
+      'chmod 700 "${DATA_DIR}" "${SHARED_DIR}" "${DATA_DIR}/chatluna/archive"',
+    );
+    expect(installer).toContain(
+      '"CHATLUNA_BUNDLED_PRESET_DIR=${APP_DIR}/data/chathub/presets"',
+    );
+    expect(installer).toContain(
+      '"CHATLUNA_ARCHIVE_DIR=${DATA_DIR}/chatluna/archive"',
+    );
   });
 });

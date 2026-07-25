@@ -107,6 +107,13 @@ function main() {
     if (!directoryHasFile(adminAssetsDir, /\.css$/)) missing.push(`${adminAssetsDir}/*.css`);
   }
 
+  for (const toolPath of [
+    join(distDir, 'tools/preset-v2-cutover.mjs'),
+    join(distDir, 'tools/preset-v2-sqlite.py'),
+  ]) {
+    if (!fileExists(toolPath)) missing.push(toolPath);
+  }
+
   if (missing.length > 0) {
     console.error('[error] Runtime artifacts are missing:');
     for (const filePath of missing) {

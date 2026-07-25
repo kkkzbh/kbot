@@ -12,16 +12,13 @@ import {
   listDeepSeekModelsFromOfficialSource,
   listMimoModelsFromOfficialSource,
   mergeManagedEnvRecords,
-  parsePresetDocument,
   parseSystemdShowOutput,
   resolveBackupDirectory,
   resolveBotEnvFilePath,
   resolveBotEnvFiles,
   resolveApplyRestartUnits,
   resolveManagedServiceUnits,
-  resolveBotPresetPaths,
   readManagedEnvPatchFromContent,
-  serializePresetDocument,
   writeFileAtomicWithBackup,
 } from '../src/plugins/admin-api/server.js';
 import { resolveDefaultLlmCredentials } from '../src/plugins/shared/llm/index.js';
@@ -61,7 +58,7 @@ describe('resolveApplyRestartUnits', () => {
       'qqbot-koishi.service',
     ]);
     expect(resolveApplyRestartUnits(
-      ['basic', 'preset'],
+      ['basic', 'model'],
       resolveManagedServiceUnits('/tmp/qqbot/.env.server'),
     )).toEqual(['qqbot-koishi.service']);
   });
@@ -99,16 +96,13 @@ describe('AdminRuntimeManager.restartForApplyReasons', () => {
       canRestart: true,
       canEnable: false,
     }));
-    const runServiceAction = vi.spyOn(manager, 'runServiceAction').mockImplementation(async (unit) => {
-      const status = await getServiceStatus(unit);
-      return {
-        ...status,
-        controllerState: {
-          ...status.controllerState,
-          invocationId: `after-${unit}`,
-        },
-      };
-    });
+    const runServiceAction = vi.spyOn(manager, 'runServiceAction').mockImplementation(async (unit) => ({
+      ...(await getServiceStatus(unit)),
+      controllerState: {
+        ...(await getServiceStatus(unit)).controllerState,
+        invocationId: `after-${unit}`,
+      },
+    }));
 
     await expect(manager.restartForApplyReasons(['model', 'tts'])).resolves.toEqual([
       {
@@ -384,7 +378,6 @@ describe('admin env helpers', () => {
     const merged = mergeManagedEnvRecords(
       readManagedEnvPatchFromContent([
         'CHATLUNA_DEFAULT_MODEL=base-model',
-        'CHATLUNA_DEFAULT_PRESET=sakiko',
         'HBU_JW_CREDENTIAL_KEK_PATH=/opt/qqbot/data/hbu-jw/credential-kek.key',
       ].join('\n')),
       readManagedEnvPatchFromContent([
@@ -396,7 +389,6 @@ describe('admin env helpers', () => {
 
     expect(merged).toMatchObject({
       CHATLUNA_DEFAULT_MODEL: 'runtime-model',
-      CHATLUNA_DEFAULT_PRESET: 'sakiko',
       HBU_JW_CREDENTIAL_KEK_PATH: '/opt/qqbot/data/hbu-jw/credential-kek.key',
       QQ_VOICE_OUTPUT_ENABLED: 'false',
     });
@@ -694,149 +686,6 @@ describe('admin env helpers', () => {
   });
 });
 
-describe('admin preset helpers', () => {
-  it('parses and serializes a valid preset document', () => {
-    const raw = [
-      'keywords:',
-      '  - sakiko',
-      'prompts:',
-      '  - role: system',
-      '    content: |-',
-      '      hello',
-      '',
-    ].join('\n');
-
-    const preset = parsePresetDocument('sakiko', '/tmp/sakiko.yml', raw);
-    expect(preset.name).toBe('sakiko');
-    expect(preset.prompts[0].role).toBe('system');
-
-    const serialized = serializePresetDocument(preset);
-    expect(serialized).toContain('keywords:');
-    expect(serialized).toContain('role: system');
-  });
-
-  it('rejects presets with unsupported roles', () => {
-    expect(() =>
-      serializePresetDocument({
-        name: 'bad-role',
-        keywords: [],
-        prompts: [{ role: 'moderator' as any, content: 'hi' }],
-      }),
-    ).toThrow('不支持这个角色类型');
-  });
-
-  it('prevents deleting the current default preset', async () => {
-    const dir = createTempDir();
-    const presetDir = join(dir, 'data/chathub/presets');
-    const envFilePath = join(dir, '.env.local');
-    mkdirSync(presetDir, { recursive: true });
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
-    await writeFile(join(presetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: hi\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, presetDirPath: presetDir });
-    await expect(manager.deletePreset('sakiko', 'sakiko')).rejects.toThrow('不能删除当前正在使用的默认预设');
-  });
-
-  it('lists presets by saved order and appends unordered presets alphabetically', async () => {
-    const dir = createTempDir();
-    const presetDir = join(dir, 'data/chathub/presets');
-    const envFilePath = join(dir, '.env.local');
-    mkdirSync(presetDir, { recursive: true });
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
-    await Promise.all([
-      writeFile(join(presetDir, 'empty.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: empty\n', 'utf8'),
-      writeFile(join(presetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: sakiko\n', 'utf8'),
-      writeFile(join(presetDir, 'catgirl.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: catgirl\n', 'utf8'),
-      writeFile(join(presetDir, 'sydney.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: sydney\n', 'utf8'),
-      writeFile(join(presetDir, '.admin-preset-order.json'), JSON.stringify({ names: ['sakiko', 'catgirl'] }), 'utf8'),
-    ]);
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, presetDirPath: presetDir });
-    await expect(manager.listPresetSummaries()).resolves.toEqual([
-      expect.objectContaining({ name: 'sakiko' }),
-      expect.objectContaining({ name: 'catgirl' }),
-      expect.objectContaining({ name: 'empty' }),
-      expect.objectContaining({ name: 'sydney' }),
-    ]);
-  });
-
-  it('resolves layered preset directories from runtime env vars', () => {
-    const dir = createTempDir();
-    vi.stubEnv('CHATLUNA_RUNTIME_PRESET_DIR', '/opt/qqbot/shared/presets');
-    vi.stubEnv('CHATLUNA_PRESET_DIRS', '/opt/qqbot/shared/presets:/opt/qqbot/current/data/chathub/presets');
-
-    expect(resolveBotPresetPaths(dir)).toEqual({
-      mode: 'layered',
-      runtimeDirPath: '/opt/qqbot/shared/presets',
-      bundledDirPaths: ['/opt/qqbot/current/data/chathub/presets'],
-      allDirPaths: ['/opt/qqbot/shared/presets', '/opt/qqbot/current/data/chathub/presets'],
-    });
-  });
-
-  it('merges runtime presets ahead of bundled presets and tags their source', async () => {
-    const dir = createTempDir();
-    const runtimePresetDir = join(dir, 'runtime/presets');
-    const bundledPresetDir = join(dir, 'data/chathub/presets');
-    const envFilePath = join(dir, '.env.local');
-    mkdirSync(runtimePresetDir, { recursive: true });
-    mkdirSync(bundledPresetDir, { recursive: true });
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
-    await Promise.all([
-      writeFile(join(runtimePresetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: runtime\n', 'utf8'),
-      writeFile(join(runtimePresetDir, 'runtime-only.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: runtime-only\n', 'utf8'),
-      writeFile(join(runtimePresetDir, '.admin-preset-order.json'), JSON.stringify({ names: ['sakiko', 'runtime-only'] }), 'utf8'),
-      writeFile(join(bundledPresetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: bundled\n', 'utf8'),
-      writeFile(join(bundledPresetDir, 'bundled-only.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: bundled-only\n', 'utf8'),
-    ]);
-
-    const manager = new AdminRuntimeManager({
-      rootDir: dir,
-      envFilePath,
-      runtimePresetDirPath: runtimePresetDir,
-      bundledPresetDirPaths: [bundledPresetDir],
-    });
-
-    await expect(manager.listPresetSummaries()).resolves.toEqual([
-      expect.objectContaining({ name: 'sakiko', source: 'runtime' }),
-      expect.objectContaining({ name: 'runtime-only', source: 'runtime' }),
-      expect.objectContaining({ name: 'bundled-only', source: 'bundled' }),
-    ]);
-    await expect(manager.getPreset('sakiko')).resolves.toMatchObject({
-      name: 'sakiko',
-      source: 'runtime',
-    });
-  });
-
-  it('rejects deleting a bundled-only preset and re-exposes bundled fallback after removing runtime shadow', async () => {
-    const dir = createTempDir();
-    const runtimePresetDir = join(dir, 'runtime/presets');
-    const bundledPresetDir = join(dir, 'data/chathub/presets');
-    const envFilePath = join(dir, '.env.local');
-    mkdirSync(runtimePresetDir, { recursive: true });
-    mkdirSync(bundledPresetDir, { recursive: true });
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_PRESET=sydney\n', 'utf8');
-    await Promise.all([
-      writeFile(join(runtimePresetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: runtime\n', 'utf8'),
-      writeFile(join(bundledPresetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: bundled\n', 'utf8'),
-      writeFile(join(bundledPresetDir, 'sydney.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: bundled-only\n', 'utf8'),
-    ]);
-
-    const manager = new AdminRuntimeManager({
-      rootDir: dir,
-      envFilePath,
-      runtimePresetDirPath: runtimePresetDir,
-      bundledPresetDirPaths: [bundledPresetDir],
-    });
-
-    await expect(manager.deletePreset('sydney', 'sakiko')).rejects.toThrow('只能删除运行时预设');
-    await expect(manager.deletePreset('sakiko', 'sydney')).resolves.toBeUndefined();
-    await expect(manager.getPreset('sakiko')).resolves.toMatchObject({
-      name: 'sakiko',
-      source: 'bundled',
-    });
-  });
-});
-
 describe('admin systemd helpers', () => {
   it('parses systemctl show output into service status flags', () => {
     const status = parseSystemdShowOutput(
@@ -1092,16 +941,12 @@ describe('admin manager', () => {
 
   it('reads state from .env.server when that is the active runtime env file', async () => {
     const dir = createTempDir();
-    const presetDir = join(dir, 'data/chathub/presets');
-    mkdirSync(presetDir, { recursive: true });
-    writeFileSync(join(dir, '.env.server'), 'CHATLUNA_DEFAULT_MODEL=server-model\nCHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
-    writeFileSync(join(presetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: hi\n', 'utf8');
+    writeFileSync(join(dir, '.env.server'), 'CHATLUNA_DEFAULT_MODEL=server-model\n', 'utf8');
     vi.stubEnv('QQBOT_ENV_FILE', '.env.server');
 
     const manager = new AdminRuntimeManager({ rootDir: dir });
     await expect(manager.getManagedEnv()).resolves.toMatchObject({
       CHATLUNA_DEFAULT_MODEL: 'server-model',
-      CHATLUNA_DEFAULT_PRESET: 'sakiko',
     });
     expect(manager.getEnvFilesState()).toMatchObject({
       mode: 'single',
@@ -1113,7 +958,7 @@ describe('admin manager', () => {
     const dir = createTempDir();
     const baseEnvFilePath = join(dir, '.env.server');
     const overrideEnvFilePath = join(dir, '.env.runtime');
-    writeFileSync(baseEnvFilePath, 'CHATLUNA_DEFAULT_MODEL=base-model\nCHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
+    writeFileSync(baseEnvFilePath, 'CHATLUNA_DEFAULT_MODEL=base-model\n', 'utf8');
 
     const manager = new AdminRuntimeManager({
       rootDir: dir,
@@ -1123,7 +968,6 @@ describe('admin manager', () => {
 
     await expect(manager.saveEnv({ CHATLUNA_DEFAULT_MODEL: 'runtime-model' })).resolves.toMatchObject({
       CHATLUNA_DEFAULT_MODEL: 'runtime-model',
-      CHATLUNA_DEFAULT_PRESET: 'sakiko',
     });
     expect(readFileSync(baseEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=base-model');
     expect(readFileSync(overrideEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=runtime-model');
@@ -1133,13 +977,12 @@ describe('admin manager', () => {
     const dir = createTempDir();
     const baseEnvFilePath = join(dir, '.env.local');
     const overrideEnvFilePath = join(dir, '.runtime/.env.runtime');
-    writeFileSync(baseEnvFilePath, 'CHATLUNA_DEFAULT_MODEL=base-model\nCHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
+    writeFileSync(baseEnvFilePath, 'CHATLUNA_DEFAULT_MODEL=base-model\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir });
 
     await expect(manager.saveEnv({ CHATLUNA_DEFAULT_MODEL: 'runtime-model' })).resolves.toMatchObject({
       CHATLUNA_DEFAULT_MODEL: 'runtime-model',
-      CHATLUNA_DEFAULT_PRESET: 'sakiko',
     });
     expect(readFileSync(baseEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=base-model');
     expect(readFileSync(overrideEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=runtime-model');
@@ -2204,29 +2047,4 @@ describe('admin manager', () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
-  it('persists custom preset order and removes deleted presets from it', async () => {
-    const dir = createTempDir();
-    const presetDir = join(dir, 'data/chathub/presets');
-    const envFilePath = join(dir, '.env.local');
-    mkdirSync(presetDir, { recursive: true });
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_PRESET=sakiko\n', 'utf8');
-    await Promise.all([
-      writeFile(join(presetDir, 'catgirl.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: catgirl\n', 'utf8'),
-      writeFile(join(presetDir, 'empty.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: empty\n', 'utf8'),
-      writeFile(join(presetDir, 'sakiko.yml'), 'keywords: []\nprompts:\n  - role: system\n    content: sakiko\n', 'utf8'),
-    ]);
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, presetDirPath: presetDir });
-    await expect(manager.reorderPresets(['sakiko', 'catgirl', 'empty'])).resolves.toEqual([
-      expect.objectContaining({ name: 'sakiko' }),
-      expect.objectContaining({ name: 'catgirl' }),
-      expect.objectContaining({ name: 'empty' }),
-    ]);
-
-    await manager.deletePreset('catgirl', 'sakiko');
-    await expect(manager.listPresetSummaries()).resolves.toEqual([
-      expect.objectContaining({ name: 'sakiko' }),
-      expect.objectContaining({ name: 'empty' }),
-    ]);
-  });
 });

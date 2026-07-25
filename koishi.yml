@@ -173,7 +173,9 @@ plugins:
         'openai/gpt-5.4-medium-thinking' : env.CHATLUNA_PLATFORM === 'deepseek'
         ? 'deepseek/deepseek-v4-flash' : env.CHATLUNA_PLATFORM === 'mimo' ?
         'mimo/mimo-v2.5-pro' : 'siliconflow/Pro/moonshotai/Kimi-K2.5') }}
-      defaultPreset: sakiko
+      bundledPresetDir: ${{ env.CHATLUNA_BUNDLED_PRESET_DIR }}
+      runtimePresetDir: ${{ env.CHATLUNA_RUNTIME_PRESET_DIR }}
+      archiveDir: ${{ env.CHATLUNA_ARCHIVE_DIR }}
       isLog: true
     chatluna-storage-service:attachment-storage:
       storageBackend: local

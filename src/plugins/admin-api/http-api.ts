@@ -1,6 +1,10 @@
 import type { Context, Logger } from 'koishi';
 import type {} from '@koishijs/plugin-server';
 import { z } from 'zod';
+import type {
+  PresetError,
+  PresetService,
+} from 'koishi-plugin-chatluna/preset';
 import {
   affinityAdjustRequestSchema,
   affinitySettingsRequestSchema,
@@ -12,18 +16,33 @@ import {
   memoryKindSchema,
   memoryMutationSchema,
   modelListRequestSchema,
+  modelListResponseSchema,
   modelTabsPatchRequestSchema,
+  modelTabsResponseSchema,
+  modelRuntimeStateSchema,
   oauthAttemptRequestSchema,
+  oauthMutationResponseSchema,
   oauthProviderSchema,
   operationalEventActionRequestSchema,
   operationalEventListQuerySchema,
   pageQuerySchema,
-  presetNameSchema,
-  presetReorderRequestSchema,
+  contextBlueprintQuerySchema,
+  contextBlueprintResponseSchema,
+  contextSnapshotResponseSchema,
+  contextTargetsResponseSchema,
+  presetCatalogResponseSchema,
+  presetCreateRequestSchema,
+  presetDefaultRequestSchema,
+  presetDefaultResponseSchema,
+  presetDetailResponseSchema,
+  presetIdSchema,
+  presetRevisionRequestSchema,
+  presetUpdateRequestSchema,
   serviceActionRequestSchema,
   settingsChangeSchema,
   settingsPatchRequestSchema,
   settingsSectionSchema,
+  saveModelsResponseSchema,
   toolOverridesRequestSchema,
   ttsSampleRequestSchema,
   type SettingsSection,
@@ -36,7 +55,6 @@ import type {
   AdminApplyReason,
   AdminBuiltinModelTab,
   EnvPatch,
-  PresetDocument,
   SaveModelTabsRequest,
 } from '../../types/admin.js';
 import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
@@ -57,6 +75,11 @@ import {
 } from './server.js';
 import type { AdminLogService } from './logs.js';
 import type { OperationalEventService } from './operational-events.js';
+import {
+  buildContextBlueprint,
+  buildContextTargets,
+  type ModelContextSnapshotStore,
+} from './model-context.js';
 import {
   ADMIN_SESSION_COOKIE,
   AdminHttpError,
@@ -82,7 +105,14 @@ export type AdminRuntimeServices = {
 };
 
 export type RegisterAdminApiOptions = {
-  ctx: Context;
+  ctx: Context & {
+    chatluna: {
+      preset: PresetService;
+      platform: {
+        findModel: (fullModelName: string) => { value: { maxTokens: number } | null };
+      };
+    };
+  };
   apiPath: string;
   manager: AdminRuntimeManager;
   session: AdminSessionService;
@@ -92,6 +122,7 @@ export type RegisterAdminApiOptions = {
   copilotBridge: CopilotOAuthBridgeService;
   codexBridge: CodexOAuthBridgeService;
   logger: Logger;
+  contextSnapshots: ModelContextSnapshotStore;
 };
 
 type KoaContext = any;
@@ -107,19 +138,6 @@ const ttsChangesRequestSchema = z.object({
   botChanges: z.array(settingsChangeSchema).default([]),
   localChanges: z.array(settingsChangeSchema).default([]),
 }).refine((input) => input.botChanges.length + input.localChanges.length > 0, '至少需要提交一个 TTS 配置项。');
-
-const presetPromptSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.string(),
-});
-
-const presetDocumentSchema = z.object({
-  name: presetNameSchema,
-  originalName: presetNameSchema.optional(),
-  source: z.enum(['runtime', 'bundled']).optional(),
-  keywords: z.array(z.string()),
-  prompts: z.array(presetPromptSchema).min(1),
-});
 
 class AdminApplyState {
   private readonly reasons = new Set<AdminApplyReason>();
@@ -280,6 +298,122 @@ async function domain<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+function upstreamErrorDetails(cause: unknown): Record<string, unknown> {
+  if (!cause || typeof cause !== 'object' || Array.isArray(cause)) return {};
+  const record = cause as Record<string, unknown>;
+  const status = Number(record.status ?? record.statusCode);
+  const providerCode = typeof record.code === 'string' && record.code.trim()
+    ? record.code.trim()
+    : null;
+  return {
+    ...(Number.isInteger(status) && status >= 400 && status <= 599
+      ? { upstreamStatus: status }
+      : {}),
+    ...(providerCode && !/(?:secret|token|password|credential|cookie|authorization)/i.test(providerCode)
+      ? { providerCode }
+      : {}),
+  };
+}
+
+function presetHttpError(error: PresetError): AdminHttpError {
+  const status = error.code === 'not_found'
+    ? 404
+    : error.code === 'conflict'
+      ? 409
+      : error.code === 'write' || error.code === 'reload'
+        ? 503
+        : 400;
+  const code = status === 404
+    ? 'not_found'
+    : status === 409
+      ? 'conflict'
+      : status === 503
+        ? 'service_unavailable'
+        : 'bad_request';
+  return new AdminHttpError(status, code, error.message, {
+    presetErrorCode: error.code,
+    operation: error.operation,
+    stage: error.stage,
+    presetId: error.presetId ?? null,
+    filePath: error.filePath ?? null,
+    runtimeUnchanged: error.runtimeUnchanged,
+    ...upstreamErrorDetails(error.cause),
+  });
+}
+
+function isPresetError(error: unknown): error is PresetError {
+  if (!(error instanceof Error) || error.name !== 'PresetError') return false;
+  const value = error as Partial<PresetError>;
+  return typeof value.code === 'string'
+    && typeof value.operation === 'string'
+    && typeof value.stage === 'string'
+    && value.runtimeUnchanged === true;
+}
+
+async function presetDomain<T>(operation: () => Promise<T> | T): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (isPresetError(error)) throw presetHttpError(error);
+    throw error;
+  }
+}
+
+function readPresetDetail(preset: PresetService, id: string) {
+  const definition = preset.getDefinition(id);
+  const compiled = preset.getPreset(id).value;
+  const summary = preset.listPresets().value.find((item) => item.id === id);
+  if (!summary) {
+    throw new AdminHttpError(500, 'internal_error', `已加载预设 ${id} 缺少列表元数据。`);
+  }
+  return presetDetailResponseSchema.parse({
+    preset: definition,
+    source: compiled.source,
+    hasOverride: summary.hasOverride,
+    revision: compiled.revision,
+  });
+}
+
+async function readModelRuntimeState(
+  options: RegisterAdminApiOptions,
+  updatedAt: string,
+) {
+  const configuredState = await options.manager.getModelTabsState();
+  const configured = resolveMainChatRuntimeProfileFromTabConfig(
+    configuredState.activeTab,
+    configuredState.tabs,
+  );
+  const live = mainChatRuntimeState.getProfile();
+  const pending = (
+    configured.tabId !== live.tabId
+    || configured.provider !== live.provider
+    || configured.strategyId !== live.strategyId
+    || configured.requestMode !== live.requestMode
+    || configured.structuredOutputProtocol !== live.structuredOutputProtocol
+    || configured.baseUrl.trim() !== live.baseUrl.trim()
+    || configured.apiKey.trim() !== live.apiKey.trim()
+    || configured.canonicalModel !== live.canonicalModel
+    || configured.transportModel !== live.transportModel
+    || configured.reasoningEffort !== live.reasoningEffort
+  );
+  const modelInfo = options.ctx.chatluna.platform.findModel(live.canonicalModel).value;
+  return modelRuntimeStateSchema.parse({
+    configuredModel: configured.canonicalModel || null,
+    liveModel: live.canonicalModel || null,
+    transportModel: live.transportModel || null,
+    requestMode: live.requestMode || null,
+    modelContextSize: modelInfo?.maxTokens ?? null,
+    contextLimit: options.contextSnapshots.latestContextLimit(live.canonicalModel)
+      ?? modelInfo?.maxTokens
+      ?? null,
+    pending,
+    pendingReason: pending
+      ? '已配置模型与当前加载的运行时模型不同，等待 Koishi 重启或完成热切换。'
+      : null,
+    updatedAt,
+  });
+}
+
 function requireService<T>(service: T | undefined, name: string): T {
   if (!service) throw new AdminHttpError(503, 'service_unavailable', `${name} service unavailable`);
   return service;
@@ -327,12 +461,13 @@ function clearSessionCookie(koaCtx: KoaContext, session: AdminSessionService): v
 export function registerAdminApi(options: RegisterAdminApiOptions): void {
   const apiPath = normalizeBasePath(options.apiPath);
   const applyState = new AdminApplyState();
+  let modelRuntimeUpdatedAt = new Date().toISOString();
   const router = options.ctx.server as any;
   const secretKeys = new Set(ADMIN_ENV_FIELDS.filter(isSecretField).map((field) => field.key));
   const ttsLocalKeySet = new Set<string>(TTS_LOCAL_ENV_KEYS);
   const ttsLocalSecretKeys = new Set(['VOICE_TTS_API_KEY']);
 
-  const register = (method: 'get' | 'post' | 'patch' | 'delete', path: string, handler: ApiHandler, routeOptions: ApiRouteOptions = {}) => {
+  const register = (method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string, handler: ApiHandler, routeOptions: ApiRouteOptions = {}) => {
     router[method](`${apiPath}${path}`, async (koaCtx: KoaContext) => {
       const requestId = createRequestId();
       koaCtx.set?.('x-request-id', requestId);
@@ -374,11 +509,9 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
   }, { authenticated: false, mutation: true });
 
   register('get', '/overview', async () => {
-    const [services, env, modelTabs, presets, tts, memoryStatus, memorySummary, affinity, eventSummary] = await Promise.all([
+    const [services, modelTabs, tts, memoryStatus, memorySummary, affinity, eventSummary] = await Promise.all([
       options.manager.getServiceStatuses(),
-      options.manager.getManagedEnv(),
       options.manager.getModelTabsState(),
-      options.manager.listPresetSummaries(),
       options.manager.getTtsState(),
       options.services.memoryStatus?.getSnapshot() ?? Promise.resolve(createUnavailableMemoryStatusSnapshot()),
       options.services.memoryAdmin?.getSummary() ?? Promise.resolve(unavailableMemorySummary()),
@@ -402,7 +535,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
         model: activeModel.defaultModel,
         authStatus: activeModel.authStatus,
       } : null,
-      defaultPreset: env.CHATLUNA_DEFAULT_PRESET || presets[0]?.name || null,
+      globalDefaultPresetId: options.ctx.chatluna.preset.getGlobalDefaultPresetId().value,
       memory: { status: memoryStatus, summary: memorySummary },
       tts: tts.health,
       affinity: affinity ? { available: true, enabled: affinity.settings.enabled } : { available: false, enabled: false },
@@ -472,7 +605,10 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return { section, fields: settingsFields(section, env), ...applyState.snapshot() };
   }, { mutation: true });
 
-  register('get', '/models', async () => redactModelTabs(await options.manager.getModelTabsState()));
+  register('get', '/models', async () => modelTabsResponseSchema.parse(
+    redactModelTabs(await options.manager.getModelTabsState()),
+  ));
+  register('get', '/models/runtime', () => readModelRuntimeState(options, modelRuntimeUpdatedAt));
   register('patch', '/models', async (koaCtx) => {
     const input = parseInput(modelTabsPatchRequestSchema, koaCtx.request.body);
     const current = await options.manager.getModelTabsState();
@@ -491,78 +627,124 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     const nextProfile = resolveMainChatRuntimeProfileFromTabConfig(result.modelTabs.activeTab, result.modelTabs.tabs);
     const hotSwitchable = dirtyIds.size === 1 && dirtyIds.has(nextProfile.tabId) && canHotSwitchMainChatModelOnly(mainChatRuntimeState.getProfile(), nextProfile);
     const hotSwitched = hotSwitchable ? mainChatRuntimeState.hotSwitchModel(nextProfile) : false;
+    if (hotSwitched) modelRuntimeUpdatedAt = new Date().toISOString();
     if (!hotSwitched) applyState.mark('model');
-    return {
+    return saveModelsResponseSchema.parse({
       modelTabs: redactModelTabs(result.modelTabs),
       hotSwitched,
       restartRequired: !hotSwitched,
       restartReason: hotSwitched ? null : 'Provider、接口地址、密钥或 OAuth bridge 变更需要重启 Koishi。',
       apply: applyState.snapshot(),
-    };
+    });
   }, { mutation: true });
 
   register('post', '/models/:provider/list', async (koaCtx) => {
     const provider = parseInput(z.enum(['deepseek', 'mimo', 'copilot', 'codex']), koaCtx.params.provider);
     const input = parseInput(modelListRequestSchema, koaCtx.request.body ?? {});
-    if (provider === 'deepseek') return options.manager.listDeepSeekModels(input);
-    if (provider === 'mimo') return options.manager.listMimoModels(input);
-    if (provider === 'copilot') return options.manager.listCopilotModels();
-    return options.manager.listCodexModels();
+    const result = provider === 'deepseek'
+      ? await options.manager.listDeepSeekModels(input)
+      : provider === 'mimo'
+        ? await options.manager.listMimoModels(input)
+        : provider === 'copilot'
+          ? await options.manager.listCopilotModels()
+          : await options.manager.listCodexModels();
+    return modelListResponseSchema.parse(result);
   }, { mutation: true });
 
-  register('get', '/oauth/:provider', (koaCtx) => {
+  register('get', '/oauth/:provider', async (koaCtx) => {
     const provider = parseInput(oauthProviderSchema, koaCtx.params.provider);
-    return provider === 'copilot'
-      ? options.copilotBridge.getAdminStatus({ probe: true })
-      : options.codexBridge.getAdminStatus({ probe: true });
+    return oauthMutationResponseSchema.parse(provider === 'copilot'
+      ? await options.copilotBridge.getAdminStatus({ probe: true })
+      : await options.codexBridge.getAdminStatus({ probe: true }));
   });
-  register('post', '/oauth/:provider/start', (koaCtx) => {
+  register('post', '/oauth/:provider/start', async (koaCtx) => {
     const provider = parseInput(oauthProviderSchema, koaCtx.params.provider);
-    return provider === 'copilot'
-      ? domain(() => options.copilotBridge.startLogin())
-      : domain(() => options.codexBridge.startLogin());
+    return oauthMutationResponseSchema.parse(provider === 'copilot'
+      ? await domain(() => options.copilotBridge.startLogin())
+      : await domain(() => options.codexBridge.startLogin()));
   }, { mutation: true });
-  register('post', '/oauth/:provider/poll', (koaCtx) => {
+  register('post', '/oauth/:provider/poll', async (koaCtx) => {
     const input = parseInput(oauthAttemptRequestSchema, koaCtx.request.body);
     const provider = parseInput(oauthProviderSchema, koaCtx.params.provider);
-    return provider === 'copilot'
-      ? domain(() => options.copilotBridge.pollLogin(input.attemptId))
-      : domain(() => options.codexBridge.pollLogin(input.attemptId));
+    return oauthMutationResponseSchema.parse(provider === 'copilot'
+      ? await domain(() => options.copilotBridge.pollLogin(input.attemptId))
+      : await domain(() => options.codexBridge.pollLogin(input.attemptId)));
   }, { mutation: true });
-  register('post', '/oauth/:provider/cancel', (koaCtx) => {
+  register('post', '/oauth/:provider/cancel', async (koaCtx) => {
     const input = parseInput(oauthAttemptRequestSchema, koaCtx.request.body);
     const provider = parseInput(oauthProviderSchema, koaCtx.params.provider);
-    return provider === 'copilot'
-      ? domain(() => options.copilotBridge.cancelLogin(input.attemptId))
-      : domain(() => options.codexBridge.cancelLogin(input.attemptId));
+    return oauthMutationResponseSchema.parse(provider === 'copilot'
+      ? await domain(() => options.copilotBridge.cancelLogin(input.attemptId))
+      : await domain(() => options.codexBridge.cancelLogin(input.attemptId)));
   }, { mutation: true });
-  register('post', '/oauth/:provider/logout', (koaCtx) => {
+  register('post', '/oauth/:provider/logout', async (koaCtx) => {
     const provider = parseInput(oauthProviderSchema, koaCtx.params.provider);
-    return provider === 'copilot'
-      ? domain(() => options.copilotBridge.logout())
-      : domain(() => options.codexBridge.logout());
+    return oauthMutationResponseSchema.parse(provider === 'copilot'
+      ? await domain(() => options.copilotBridge.logout())
+      : await domain(() => options.codexBridge.logout()));
   }, { mutation: true });
 
-  register('get', '/presets', async () => {
-    const [presets, env] = await Promise.all([options.manager.listPresetSummaries(), options.manager.getManagedEnv()]);
-    return { presets, defaultPreset: env.CHATLUNA_DEFAULT_PRESET || 'sakiko' };
-  });
-  register('get', '/presets/:name', (koaCtx) => domain(() => options.manager.getPreset(parseInput(presetNameSchema, koaCtx.params.name))));
+  register('get', '/presets', () => presetDomain(() => presetCatalogResponseSchema.parse({
+    presets: options.ctx.chatluna.preset.listPresets().value,
+    globalDefaultPresetId: options.ctx.chatluna.preset.getGlobalDefaultPresetId().value,
+  })));
+  register('get', '/presets/:id', (koaCtx) => presetDomain(() => readPresetDetail(
+    options.ctx.chatluna.preset,
+    parseInput(presetIdSchema, koaCtx.params.id),
+  )));
   register('post', '/presets', async (koaCtx) => {
-    const preset = await domain(() => options.manager.savePreset(parseInput(presetDocumentSchema, koaCtx.request.body) as PresetDocument));
-    applyState.mark('preset');
-    return { preset, apply: applyState.snapshot() };
+    const input = parseInput(presetCreateRequestSchema, koaCtx.request.body);
+    const preset = await presetDomain(() => options.ctx.chatluna.preset.createPreset(input.preset));
+    return readPresetDetail(options.ctx.chatluna.preset, preset.id);
   }, { mutation: true });
-  register('delete', '/presets/:name', async (koaCtx) => {
-    const env = await options.manager.getManagedEnv();
-    await domain(() => options.manager.deletePreset(parseInput(presetNameSchema, koaCtx.params.name), env.CHATLUNA_DEFAULT_PRESET || 'sakiko'));
-    applyState.mark('preset');
-    return { ok: true, apply: applyState.snapshot() };
+  register('put', '/presets/:id', async (koaCtx) => {
+    const id = parseInput(presetIdSchema, koaCtx.params.id);
+    const input = parseInput(presetUpdateRequestSchema, koaCtx.request.body);
+    const preset = await presetDomain(() => options.ctx.chatluna.preset.updatePreset(
+      id,
+      input.preset,
+      input.expectedRevision,
+    ));
+    return readPresetDetail(options.ctx.chatluna.preset, preset.id);
   }, { mutation: true });
-  register('post', '/presets/reorder', async (koaCtx) => {
-    const input = parseInput(presetReorderRequestSchema, koaCtx.request.body);
-    return { presets: await domain(() => options.manager.reorderPresets(input.names)) };
+  register('delete', '/presets/:id', async (koaCtx) => {
+    const input = parseInput(presetRevisionRequestSchema, koaCtx.request.body);
+    await presetDomain(() => options.ctx.chatluna.preset.deletePreset(
+      parseInput(presetIdSchema, koaCtx.params.id),
+      input.expectedRevision,
+    ));
+    koaCtx.status = 204;
   }, { mutation: true });
+  register('delete', '/presets/:id/override', async (koaCtx) => {
+    const input = parseInput(presetRevisionRequestSchema, koaCtx.request.body);
+    const preset = await presetDomain(() => options.ctx.chatluna.preset.revertOverride(
+      parseInput(presetIdSchema, koaCtx.params.id),
+      input.expectedRevision,
+    ));
+    return readPresetDetail(options.ctx.chatluna.preset, preset.id);
+  }, { mutation: true });
+  register('put', '/presets/default', async (koaCtx) => {
+    const input = parseInput(presetDefaultRequestSchema, koaCtx.request.body);
+    await presetDomain(() => options.ctx.chatluna.preset.setGlobalDefaultPresetId(input.id));
+    return presetDefaultResponseSchema.parse({
+      globalDefaultPresetId: options.ctx.chatluna.preset.getGlobalDefaultPresetId().value,
+    });
+  }, { mutation: true });
+  register('get', '/model-context/blueprint', (koaCtx) => presetDomain(() => {
+    const input = parseInput(contextBlueprintQuerySchema, koaCtx.query);
+    options.ctx.chatluna.preset.getDefinition(input.presetId);
+    const preset = options.ctx.chatluna.preset.getPreset(input.presetId).value;
+    return contextBlueprintResponseSchema.parse(buildContextBlueprint(preset));
+  }));
+  register('get', '/model-context/targets', async () => {
+    return contextTargetsResponseSchema.parse({
+      targets: await buildContextTargets(options.services.database),
+    });
+  });
+  register('get', '/model-context/snapshots/:conversationId', (koaCtx) => {
+    const conversationId = parseInput(z.string().trim().min(1).max(512), koaCtx.params.conversationId);
+    return contextSnapshotResponseSchema.parse(options.contextSnapshots.latest(conversationId));
+  });
 
   register('get', '/policies', async () => {
     const featurePolicy = requireService(options.services.featurePolicy, 'feature policy');

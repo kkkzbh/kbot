@@ -235,11 +235,53 @@ function formatOpenAiErrorPayload(payload: unknown): string | null {
 }
 
 async function fetchCodexExternal(target: string, label: string, init: RequestInit = {}): Promise<Response> {
+  return (await fetchCodexExternalWithContext(target, label, init)).response;
+}
+
+class CodexUpstreamTransportError extends Error {
+  readonly providerCode = 'upstream_transport_error';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'CodexUpstreamTransportError';
+  }
+}
+
+type CodexExternalFetchResult = {
+  response: Response;
+  target: string;
+  proxyUrl: string | null;
+};
+
+async function fetchCodexExternalWithContext(
+  target: string,
+  label: string,
+  init: RequestInit = {},
+): Promise<CodexExternalFetchResult> {
   const request = createProxyFetchRequest(target, init);
   try {
-    return await fetch(target, request.init);
+    return {
+      response: await fetch(target, request.init),
+      target,
+      proxyUrl: request.proxyUrl,
+    };
   } catch (error) {
-    throw new Error(formatProxyFetchFailure(label, target, request.proxyUrl, error));
+    throw new CodexUpstreamTransportError(
+      formatProxyFetchFailure(label, target, request.proxyUrl, error),
+    );
+  }
+}
+
+async function readCodexExternalText(
+  result: CodexExternalFetchResult,
+  label: string,
+): Promise<string> {
+  try {
+    return await result.response.text();
+  } catch (error) {
+    throw new CodexUpstreamTransportError(
+      formatProxyFetchFailure(label, result.target, result.proxyUrl, error),
+    );
   }
 }
 
@@ -1334,7 +1376,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
         turnId,
         windowId: this.windowId,
       });
-      const response = await fetchCodexExternal(codexBackendUrl('/responses'), 'Codex Responses 请求', {
+      const upstream = await fetchCodexExternalWithContext(codexBackendUrl('/responses'), 'Codex Responses 请求', {
         method: 'POST',
         headers: {
           ...this.buildCodexBackendHeaders(auth, 'text/event-stream, application/json', release.version, { threadId }),
@@ -1342,10 +1384,11 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
         },
         body: JSON.stringify(upstreamBody),
       });
+      const { response } = upstream;
       if (response.status === 401 && !retried) {
         return this.proxyUpstreamResponses(body, true);
       }
-      const text = await response.text();
+      const text = await readCodexExternalText(upstream, 'Codex Responses 响应体读取');
       const contentType = response.headers.get('content-type') ?? 'application/json; charset=utf-8';
       if (contentType.toLowerCase().includes('text/event-stream') || looksLikeServerSentEvents(text)) {
         const normalized = normalizeCodexResponsesSse(text);
@@ -1358,13 +1401,14 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
       };
     } catch (error) {
       const releaseError = error instanceof CodexReleaseMetadataError;
+      const transportError = error instanceof CodexUpstreamTransportError;
       return {
-        status: releaseError ? 503 : 401,
+        status: releaseError ? 503 : transportError ? 502 : 401,
         headers: { 'content-type': 'application/json; charset=utf-8' },
         body: JSON.stringify(buildJsonError(
           error instanceof Error ? error.message : String(error),
-          releaseError ? 'upstream_error' : 'invalid_request_error',
-          releaseError ? error.code : undefined,
+          releaseError || transportError ? 'upstream_error' : 'invalid_request_error',
+          releaseError ? error.code : transportError ? error.providerCode : undefined,
         )),
       };
     }

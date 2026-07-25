@@ -33,7 +33,11 @@ data/koishi.db
 downloads/
 test.png
 data/chathub/presets/*.yml
+!data/chathub/presets/catgirl.yml
+!data/chathub/presets/empty.yml
 !data/chathub/presets/sakiko.yml
+!data/chathub/presets/sakiko-cold.yml
+!data/chathub/presets/sydney.yml
 config/voice-tts.local.env
 docs/affinity-random-events-live-results.json
 web/.vitepress/dist
