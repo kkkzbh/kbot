@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import { api, jsonBody } from '@/api/client';
@@ -9,11 +9,11 @@ const modelState = ref<any | null>(null);
 const activeTab = ref('siliconflow');
 const drafts = reactive<Record<string, any>>({});
 const modelOptions = reactive<Record<string, any[]>>({});
+const modelCatalogLoading = reactive<Record<string, boolean>>({});
+const dynamicModelTabIds = new Set(['codex', 'copilot', 'deepseek', 'mimo']);
 const loading = ref(false);
 const saving = ref(false);
 const oauthBusy = ref(false);
-const relativeNow = ref(Date.now());
-let relativeClock: ReturnType<typeof setInterval> | null = null;
 const runtime = useRuntimeStore();
 const current = computed(() => drafts[activeTab.value]);
 const supportsOAuth = computed(() => ['copilot', 'codex'].includes(activeTab.value));
@@ -64,31 +64,6 @@ function formatAttemptExpiry(expiresAt: unknown): string {
   return `有效至 ${expiryFormatter.format(new Date(expiresAt))}`;
 }
 
-function formatRelativeSyncTime(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return null;
-  const elapsedMs = Math.max(0, relativeNow.value - timestamp);
-  const minutes = Math.floor(elapsedMs / 60_000);
-  if (minutes < 1) return '刚刚同步';
-  if (minutes < 60) return `${minutes} 分钟前同步`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前同步`;
-  return `${Math.floor(hours / 24)} 天前同步`;
-}
-
-function codexCatalogLabel(tab: any): string {
-  const catalog = tab?.catalog;
-  if (!catalog) return '动态目录 · 尚未同步';
-  const parts = ['动态目录'];
-  if (catalog.clientVersion) parts.push(`Codex ${catalog.clientVersion}`);
-  const synced = formatRelativeSyncTime(catalog.fetchedAt);
-  if (synced) parts.push(synced);
-  if (catalog.status === 'degraded') parts.push('同步异常');
-  if (catalog.status === 'unavailable') parts.push('尚未同步');
-  return parts.join(' · ');
-}
-
 async function copyOAuthCode() {
   const code = current.value?.oauthAttempt?.userCode;
   if (!code) return;
@@ -106,6 +81,33 @@ function openOAuthVerification() {
   window.open(verificationUri, '_blank', 'noopener,noreferrer');
 }
 
+function supportsDynamicModelList(tabId: string): boolean {
+  return dynamicModelTabIds.has(tabId);
+}
+
+async function loadModelOptions(tabId: string): Promise<void> {
+  if (!supportsDynamicModelList(tabId)
+    || Object.prototype.hasOwnProperty.call(modelOptions, tabId)
+    || modelCatalogLoading[tabId]) return;
+  const tab = drafts[tabId];
+  if (!tab) return;
+  modelCatalogLoading[tabId] = true;
+  try {
+    const result = await api<any>(`/models/${tab.id}/list`, {
+      method: 'POST',
+      body: jsonBody({ baseUrl: tab.baseUrl, ...(tab.apiKey ? { apiKey: tab.apiKey } : {}) }),
+    });
+    modelOptions[tab.id] = result.models;
+    if (tab.id === 'codex') tab.catalog = result.catalog;
+    if (result.error) ElMessage.warning(result.error);
+  } catch (error) {
+    delete modelOptions[tab.id];
+    ElMessage.error(error instanceof Error ? error.message : '模型列表自动更新失败');
+  } finally {
+    modelCatalogLoading[tabId] = false;
+  }
+}
+
 async function load() {
   loading.value = true;
   try {
@@ -116,6 +118,7 @@ async function load() {
     for (const tab of result.tabs) {
       drafts[tab.id] = { ...tab, apiKey: '', clearApiKey: false };
     }
+    await loadModelOptions(result.activeTab);
   } finally { loading.value = false; }
 }
 
@@ -160,24 +163,6 @@ async function save() {
   finally { saving.value = false; }
 }
 
-async function fetchModels() {
-  const tab = current.value;
-  if (!tab) return;
-  loading.value = true;
-  modelOptions[tab.id] = [];
-  try {
-    const result = await api<any>(`/models/${tab.id}/list`, {
-      method: 'POST',
-      body: jsonBody({ baseUrl: tab.baseUrl, ...(tab.apiKey ? { apiKey: tab.apiKey } : {}) }),
-    });
-    modelOptions[tab.id] = result.models;
-    if (tab.id === 'codex') tab.catalog = result.catalog;
-    if (result.error) ElMessage.warning(result.error);
-    else ElMessage.success(`已加载 ${result.models.length} 个模型`);
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '模型列表加载失败'); }
-  finally { loading.value = false; }
-}
-
 async function oauth(action: 'start' | 'poll' | 'logout') {
   const provider = activeTab.value;
   oauthBusy.value = true;
@@ -202,13 +187,14 @@ async function oauth(action: 'start' | 'poll' | 'logout') {
 }
 
 function handleSave() { save(); }
+watch(activeTab, (tabId) => {
+  void loadModelOptions(tabId);
+});
 onMounted(() => {
   load();
-  relativeClock = setInterval(() => { relativeNow.value = Date.now(); }, 60_000);
   window.addEventListener('admin-save', handleSave);
 });
 onBeforeUnmount(() => {
-  if (relativeClock) clearInterval(relativeClock);
   window.removeEventListener('admin-save', handleSave);
 });
 </script>
@@ -261,23 +247,17 @@ onBeforeUnmount(() => {
           <el-input v-model="current.apiKey" type="password" show-password :placeholder="current.apiKeyConfigured ? '已配置，留空保持原值' : '输入新的 API key'" :disabled="current.clearApiKey" />
           <el-checkbox v-if="current.apiKeyConfigured" v-model="current.clearApiKey">显式清空现有 API key</el-checkbox>
         </el-form-item>
-        <el-form-item>
-          <template #label>
-            <div class="model-field-label">
-              <span>默认模型</span>
-              <small
-                v-if="current.id === 'codex'"
-                class="catalog-meta"
-                :class="{ degraded: current.catalog?.status === 'degraded', unavailable: current.catalog?.status === 'unavailable' }"
-                :title="current.catalog?.error || ''"
-              >{{ codexCatalogLabel(current) }}</small>
-            </div>
-          </template>
-          <div v-if="modelOptions[current.id]?.length" class="model-picker">
-            <el-select v-model="current.defaultModel" filterable><el-option v-for="item in modelOptions[current.id]" :key="item.modelId" :label="item.label || item.modelId" :value="item.modelId" /></el-select>
-            <el-button v-if="['deepseek','mimo','copilot','codex'].includes(current.id)" :loading="loading" @click="fetchModels">拉取列表</el-button>
-          </div>
-          <el-input v-else v-model="current.defaultModel"><template #append><el-button v-if="['deepseek','mimo','copilot','codex'].includes(current.id)" @click="fetchModels">拉取列表</el-button></template></el-input>
+        <el-form-item label="默认模型">
+          <el-select
+            v-if="supportsDynamicModelList(current.id)"
+            v-model="current.defaultModel"
+            class="model-select"
+            filterable
+            :loading="modelCatalogLoading[current.id]"
+          >
+            <el-option v-for="item in modelOptions[current.id] ?? []" :key="item.modelId" :label="item.label || item.modelId" :value="item.modelId" />
+          </el-select>
+          <el-input v-else v-model="current.defaultModel" />
         </el-form-item>
         <el-form-item v-if="current.id === 'codex'" label="Reasoning effort"><el-segmented v-model="current.reasoningEffort" :options="['low','medium','high','xhigh']" /></el-form-item>
       </el-form>
@@ -287,7 +267,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.model-panel { overflow:hidden; }.model-tabs { padding:0 20px; }.model-tabs :deep(.el-tabs__header) { margin:0; }.tab-label { display:inline-flex; align-items:center; gap:7px; }.model-content { max-width:900px; padding:28px; }.model-intro { display:flex; justify-content:space-between; gap:20px; margin-bottom:22px; }.model-intro h2 { margin:3px 0 5px; font-size:20px; }.model-intro p { margin:0; color:var(--muted); font-size:11px; }.eyebrow { color:#8290a7 !important; font-size:9px !important; letter-spacing:.08em; }.oauth-card { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px 20px; padding:14px 16px; margin-bottom:22px; border:1px solid #dce4f5; border-radius:10px; background:#f7f9fe; }.oauth-summary { display:grid; grid-template-columns:auto 1fr; align-items:center; column-gap:9px; }.oauth-summary strong { color:#273348; font-size:13px; }.oauth-summary small { grid-column:2; margin-top:1px; color:#788397; font-size:10px; }.oauth-actions { display:flex; align-items:center; }.oauth-attempt { grid-column:1 / -1; display:flex; align-items:flex-end; justify-content:space-between; gap:22px; padding-top:13px; border-top:1px solid #e1e7f2; }.oauth-code > span { display:block; margin-bottom:5px; color:#7d8899; font-size:9px; font-weight:700; letter-spacing:.08em; }.oauth-code > div { display:flex; align-items:center; gap:4px; }.oauth-code code { min-width:148px; padding:7px 10px; border:1px solid #d9e1ee; border-radius:7px; color:#26344d; background:#fff; font-family:"SFMono-Regular",Consolas,monospace; font-size:15px; font-weight:700; letter-spacing:.08em; line-height:1; text-align:center; user-select:all; }.oauth-code small { display:block; margin-top:5px; color:#8a94a4; font-size:9px; }.oauth-attempt-actions { display:flex; align-items:center; gap:8px; }.oauth-attempt-actions :deep(.el-button + .el-button) { margin-left:0; }.model-form { max-width:720px; }.model-field-label { display:flex; align-items:baseline; gap:10px; }.catalog-meta { color:#8791a2; font-size:9px; font-weight:400; }.catalog-meta.degraded { color:#b9822b; }.catalog-meta.unavailable { color:#a65d63; }.model-picker { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; width:100%; }.contract-strip { display:grid; grid-template-columns:140px 1fr; gap:7px 18px; margin-top:24px; padding:14px; border-radius:8px; color:#727d8f; background:#f7f8fa; font-size:10px; }.contract-strip strong { color:#455064; font-family:monospace; }
+.model-panel { overflow:hidden; }.model-tabs { padding:0 20px; }.model-tabs :deep(.el-tabs__header) { margin:0; }.tab-label { display:inline-flex; align-items:center; gap:7px; }.model-content { max-width:900px; padding:28px; }.model-intro { display:flex; justify-content:space-between; gap:20px; margin-bottom:22px; }.model-intro h2 { margin:3px 0 5px; font-size:20px; }.model-intro p { margin:0; color:var(--muted); font-size:11px; }.eyebrow { color:#8290a7 !important; font-size:9px !important; letter-spacing:.08em; }.oauth-card { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px 20px; padding:14px 16px; margin-bottom:22px; border:1px solid #dce4f5; border-radius:10px; background:#f7f9fe; }.oauth-summary { display:grid; grid-template-columns:auto 1fr; align-items:center; column-gap:9px; }.oauth-summary strong { color:#273348; font-size:13px; }.oauth-summary small { grid-column:2; margin-top:1px; color:#788397; font-size:10px; }.oauth-actions { display:flex; align-items:center; }.oauth-attempt { grid-column:1 / -1; display:flex; align-items:flex-end; justify-content:space-between; gap:22px; padding-top:13px; border-top:1px solid #e1e7f2; }.oauth-code > span { display:block; margin-bottom:5px; color:#7d8899; font-size:9px; font-weight:700; letter-spacing:.08em; }.oauth-code > div { display:flex; align-items:center; gap:4px; }.oauth-code code { min-width:148px; padding:7px 10px; border:1px solid #d9e1ee; border-radius:7px; color:#26344d; background:#fff; font-family:"SFMono-Regular",Consolas,monospace; font-size:15px; font-weight:700; letter-spacing:.08em; line-height:1; text-align:center; user-select:all; }.oauth-code small { display:block; margin-top:5px; color:#8a94a4; font-size:9px; }.oauth-attempt-actions { display:flex; align-items:center; gap:8px; }.oauth-attempt-actions :deep(.el-button + .el-button) { margin-left:0; }.model-form { max-width:720px; }.model-select { width:100%; }.contract-strip { display:grid; grid-template-columns:140px 1fr; gap:7px 18px; margin-top:24px; padding:14px; border-radius:8px; color:#727d8f; background:#f7f8fa; font-size:10px; }.contract-strip strong { color:#455064; font-family:monospace; }
 @media (max-width:760px) {
   .model-content { padding:20px 16px; }
   .oauth-card { grid-template-columns:1fr; }
