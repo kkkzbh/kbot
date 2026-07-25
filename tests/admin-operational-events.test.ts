@@ -150,4 +150,39 @@ describe('operational event service', () => {
     ]);
     expect(await service.summary()).toMatchObject({ openCount: 0, pending: [] });
   });
+
+  it('acknowledges every open event across pagination in one operation', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+    const now = Date.now();
+    for (let index = 0; index < 25; index += 1) {
+      await database.create('admin_operational_event', {
+        sourceKey: `event:${index}`,
+        source: 'systemd',
+        type: 'service_start_failed',
+        severity: 'error',
+        status: 'open',
+        resolution: null,
+        title: `事件 ${index}`,
+        summary: '测试事件',
+        unit: 'qqbot-pmhq.service',
+        invocationId: null,
+        memoryJobId: null,
+        memoryCandidateId: null,
+        occurredAt: now + index,
+        acknowledgedAt: null,
+        resolvedAt: null,
+        updatedAt: now,
+      });
+    }
+
+    await expect(service.acknowledgeAll()).resolves.toEqual({ acknowledgedCount: 25 });
+    expect((await service.list({ view: 'pending', page: 1, pageSize: 20 })).items).toHaveLength(0);
+    expect((await service.list({ view: 'history', page: 1, pageSize: 20 })).total).toBe(25);
+    await expect(service.acknowledgeAll()).resolves.toEqual({ acknowledgedCount: 0 });
+  });
 });

@@ -414,6 +414,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return options.events.list(parseInput(operationalEventListQuerySchema, koaCtx.query));
   });
   register('get', '/events/summary', () => options.events.summary());
+  register('post', '/events/acknowledge-all', () => domain(() => options.events.acknowledgeAll()), { mutation: true });
   register('get', '/events/:id', (koaCtx) => domain(() => options.events.detail(
     parseInput(z.coerce.number().int().positive(), koaCtx.params.id),
   )));

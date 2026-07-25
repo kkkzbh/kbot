@@ -12,6 +12,7 @@ import type {
   OperationalEventStatus,
   OperationalEventType,
 } from '../../types/admin.js';
+import type { OperationalEventBulkAcknowledgeResult } from '../../admin/contracts/index.js';
 import type { MemoryAdminService, MemoryOperationalAttentionItem } from '../memory/index.js';
 import { redactAdminLogContent } from './logs.js';
 import type { AdminRuntimeManager } from './server.js';
@@ -360,5 +361,17 @@ export class OperationalEventService {
       return toItem(await this.getRecord(id));
     }
     throw new Error(`事件 ${id} 无法执行 ${action}`);
+  }
+
+  async acknowledgeAll(): Promise<OperationalEventBulkAcknowledgeResult> {
+    const records = await this.database.get(EVENT_TABLE, { status: 'open' }) as OperationalEventRecord[];
+    if (!records.length) return { acknowledgedCount: 0 };
+    const now = Date.now();
+    await this.database.set(
+      EVENT_TABLE,
+      { status: 'open' },
+      { status: 'acknowledged', acknowledgedAt: now, updatedAt: now },
+    );
+    return { acknowledgedCount: records.length };
   }
 }

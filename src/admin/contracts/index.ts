@@ -219,6 +219,11 @@ export type MemoryKind = z.infer<typeof memoryKindSchema>;
 export type MemoryMutation = z.infer<typeof memoryMutationSchema>;
 export type OperationalEventListQuery = z.infer<typeof operationalEventListQuerySchema>;
 export type OperationalEventActionRequest = z.infer<typeof operationalEventActionRequestSchema>;
+
+export interface OperationalEventBulkAcknowledgeResult {
+  acknowledgedCount: number;
+}
+
 export type {
   BotServiceStatus,
   BotServiceRuntimeState,

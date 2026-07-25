@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type {
   OperationalEventAction,
+  OperationalEventBulkAcknowledgeResult,
   OperationalEventDetail,
   OperationalEventItem,
   OperationalEventPage,
@@ -20,6 +21,7 @@ const view = ref<'pending' | 'history'>(route.query.view === 'history' ? 'histor
 const items = ref<OperationalEventItem[]>([]);
 const loading = ref(false);
 const activeAction = ref('');
+const bulkAcknowledging = ref(false);
 const detail = ref<OperationalEventDetail | null>(null);
 const drawerOpen = ref(false);
 const page = reactive({ current: 1, pageSize: 20, total: 0 });
@@ -95,6 +97,32 @@ async function runAction(item: OperationalEventItem, action: OperationalEventAct
   }
 }
 
+async function acknowledgeAll(): Promise<void> {
+  bulkAcknowledging.value = true;
+  try {
+    const result = await api<OperationalEventBulkAcknowledgeResult>('/events/acknowledge-all', { method: 'POST' });
+    page.current = 1;
+    page.total = 0;
+    items.value = [];
+    runtime.openEventCount = 0;
+    await load(true);
+    if (drawerOpen.value && detail.value) {
+      try {
+        detail.value = await api<OperationalEventDetail>(`/events/${detail.value.id}`);
+      } catch (error) {
+        ElMessage.warning(error instanceof Error ? `事件详情刷新失败：${error.message}` : '事件详情刷新失败');
+      }
+    }
+    ElMessage.success(result.acknowledgedCount
+      ? `已确认 ${result.acknowledgedCount} 条待处理事件`
+      : '当前没有待处理事件');
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '一键确认失败');
+  } finally {
+    bulkAcknowledging.value = false;
+  }
+}
+
 function closeDrawer(): void {
   const query = { ...route.query };
   delete query.id;
@@ -127,16 +155,29 @@ onBeforeUnmount(() => window.clearInterval(timer));
   </PageHeader>
   <article class="panel event-panel">
     <div class="panel-head"><div><h2>事件中心</h2><p>运行故障、dead letter 与人工审核的统一处理入口</p></div></div>
-    <el-tabs v-model="view" class="event-tabs">
-      <el-tab-pane name="pending"><template #label>待处理 <el-badge v-if="runtime.openEventCount" :value="runtime.openEventCount" :max="99" /></template></el-tab-pane>
-      <el-tab-pane label="事件历史" name="history" />
-    </el-tabs>
+    <div class="event-tabs-toolbar">
+      <el-tabs v-model="view" class="event-tabs">
+        <el-tab-pane name="pending"><template #label>待处理 <el-badge v-if="runtime.openEventCount" :value="runtime.openEventCount" :max="99" /></template></el-tab-pane>
+        <el-tab-pane label="事件历史" name="history" />
+      </el-tabs>
+      <el-button
+        v-if="view === 'pending'"
+        size="small"
+        type="primary"
+        plain
+        :disabled="runtime.openEventCount === 0 || Boolean(activeAction)"
+        :loading="bulkAcknowledging"
+        @click="acknowledgeAll"
+      >
+        一键确认
+      </el-button>
+    </div>
     <el-table v-if="items.length" v-loading="loading" :data="items" style="width:100%" @row-click="openDetail">
       <el-table-column label="事件" min-width="340"><template #default="scope"><strong>{{ scope.row.title }}</strong><p>{{ scope.row.summary }}</p></template></el-table-column>
       <el-table-column label="来源" width="110"><template #default="scope">{{ sourceLabel(scope.row) }}</template></el-table-column>
       <el-table-column label="状态" width="110"><template #default="scope"><el-tag size="small" :type="statusType(scope.row)" effect="light">{{ statusLabel(scope.row) }}</el-tag></template></el-table-column>
       <el-table-column label="发生时间" width="175"><template #default="scope">{{ new Date(scope.row.occurredAt).toLocaleString() }}</template></el-table-column>
-      <el-table-column v-if="view === 'pending'" label="操作" width="230" fixed="right"><template #default="scope"><div class="table-actions" @click.stop><el-button v-if="scope.row.availableActions.includes('acknowledge')" size="small" :loading="activeAction === `${scope.row.id}:acknowledge`" @click="runAction(scope.row, 'acknowledge')">确认</el-button><el-button v-if="scope.row.availableActions.includes('retry')" size="small" type="primary" plain :loading="activeAction === `${scope.row.id}:retry`" @click="runAction(scope.row, 'retry')">重试</el-button><el-button v-if="scope.row.availableActions.includes('discard')" size="small" type="danger" plain :loading="activeAction === `${scope.row.id}:discard`" @click="runAction(scope.row, 'discard')">丢弃</el-button></div></template></el-table-column>
+      <el-table-column v-if="view === 'pending'" label="操作" width="230" fixed="right"><template #default="scope"><div class="table-actions" @click.stop><el-button v-if="scope.row.availableActions.includes('acknowledge')" size="small" :disabled="bulkAcknowledging" :loading="activeAction === `${scope.row.id}:acknowledge`" @click="runAction(scope.row, 'acknowledge')">确认</el-button><el-button v-if="scope.row.availableActions.includes('retry')" size="small" type="primary" plain :disabled="bulkAcknowledging" :loading="activeAction === `${scope.row.id}:retry`" @click="runAction(scope.row, 'retry')">重试</el-button><el-button v-if="scope.row.availableActions.includes('discard')" size="small" type="danger" plain :disabled="bulkAcknowledging" :loading="activeAction === `${scope.row.id}:discard`" @click="runAction(scope.row, 'discard')">丢弃</el-button></div></template></el-table-column>
     </el-table>
     <EmptyState v-else :title="view === 'pending' ? '当前没有待处理事件' : '当前没有历史事件'" description="事件采集器每 10 秒同步一次。" />
     <div v-if="page.total > page.pageSize" class="event-pagination"><el-pagination layout="total, prev, pager, next" :current-page="page.current" :page-size="page.pageSize" :total="page.total" @current-change="page.current=$event;load()" /></div>
@@ -154,7 +195,7 @@ onBeforeUnmount(() => window.clearInterval(timer));
         <dt v-if="detail.unit">服务</dt><dd v-if="detail.unit" class="mono">{{ detail.unit }}</dd>
         <dt v-if="detail.invocationId">Invocation</dt><dd v-if="detail.invocationId" class="mono">{{ detail.invocationId }}</dd>
       </dl>
-      <div class="detail-actions"><el-button @click="router.push(detail.targetPath)">打开对应页面</el-button><el-button v-if="detail.availableActions.includes('acknowledge')" @click="runAction(detail, 'acknowledge')">确认已知</el-button><el-button v-if="detail.availableActions.includes('retry')" type="primary" plain @click="runAction(detail, 'retry')">重试</el-button><el-button v-if="detail.availableActions.includes('discard')" type="danger" plain @click="runAction(detail, 'discard')">丢弃</el-button></div>
+      <div class="detail-actions"><el-button @click="router.push(detail.targetPath)">打开对应页面</el-button><el-button v-if="detail.availableActions.includes('acknowledge')" :disabled="bulkAcknowledging" @click="runAction(detail, 'acknowledge')">确认已知</el-button><el-button v-if="detail.availableActions.includes('retry')" type="primary" plain :disabled="bulkAcknowledging" @click="runAction(detail, 'retry')">重试</el-button><el-button v-if="detail.availableActions.includes('discard')" type="danger" plain :disabled="bulkAcknowledging" @click="runAction(detail, 'discard')">丢弃</el-button></div>
       <section v-if="detail.journal.length" class="journal"><h3>对应 journal</h3><pre>{{ detail.journal.join('\n') }}</pre></section>
     </div>
   </el-drawer>
@@ -162,8 +203,10 @@ onBeforeUnmount(() => window.clearInterval(timer));
 
 <style scoped>
 .event-panel { overflow:hidden; }
-.event-tabs { padding:0 16px; }
+.event-tabs-toolbar { display:flex; align-items:center; gap:16px; padding:0 16px; border-bottom:1px solid var(--line); }
+.event-tabs { min-width:0; flex:1; }
 .event-tabs :deep(.el-tabs__header) { margin:0; }
+.event-tabs :deep(.el-tabs__nav-wrap::after) { display:none; }
 .event-tabs :deep(.el-badge) { margin-left:8px; }
 .event-panel strong { color:#374151; font-size:11px; }
 .event-panel p { max-width:680px; overflow:hidden; margin:4px 0 0; color:#7d8797; font-size:10px; line-height:1.45; text-overflow:ellipsis; white-space:nowrap; }

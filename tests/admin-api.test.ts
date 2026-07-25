@@ -133,6 +133,7 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/assets/(.*)');
     expect(getPaths).toContain('/extensions/(.*)');
     expect(postPaths).toContain('/api/admin/v1/session');
+    expect(postPaths).toContain('/api/admin/v1/events/acknowledge-all');
     expect(postPaths).toContain('/api/admin/v1/events/:id/action');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
