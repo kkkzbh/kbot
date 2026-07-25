@@ -51,6 +51,30 @@ export function apply(ctx: Context, config: Config): void {
   const envFiles = resolveBotEnvFiles(ctx.baseDir);
   const copilotBridge = new CopilotOAuthBridgeService({ rootDir: ctx.baseDir, envFiles });
   const codexBridge = new CodexOAuthBridgeService({ rootDir: ctx.baseDir, envFiles });
+  const refreshCodexReleaseMetadata = async () => {
+    const state = await codexBridge.refreshReleaseMetadata({ force: true });
+    if (state.status === 'ready') {
+      try {
+        const models = await codexBridge.listModelOptions();
+        logger.debug(
+          'Codex dynamic catalog synchronized: version=%s models=%d',
+          state.clientVersion,
+          models.length,
+        );
+      } catch (error) {
+        logger.warn(
+          'Codex dynamic catalog synchronization degraded: %s',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return;
+    }
+    logger.warn('Codex release metadata synchronization degraded: %s', state.error);
+  };
+  void refreshCodexReleaseMetadata();
+  ctx.setInterval(() => {
+    void refreshCodexReleaseMetadata();
+  }, 60 * 60 * 1000);
   const manager = new AdminRuntimeManager({ rootDir: ctx.baseDir, copilotBridge, codexBridge });
   const session = new AdminSessionService({
     accessToken: config.accessToken,

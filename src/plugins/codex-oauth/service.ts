@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile, mkdir } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   AdminAuthStatus,
+  CodexCatalogState,
   CodexAuthAttempt,
   CodexAuthState,
 } from '../../types/admin.js';
@@ -11,18 +11,29 @@ import {
   createProxyFetchRequest,
   formatProxyFetchFailure,
 } from '../shared/proxy-fetch.js';
+import { registerCodexDynamicModelOptions } from '../shared/llm/index.js';
+import {
+  CodexReleaseMetadataError,
+  CodexReleaseMetadataProvider,
+  type CodexReleaseMetadataRecord,
+} from './release-metadata.js';
+import {
+  readJsonIfExists,
+  readTextIfExists,
+  writeFileAtomic,
+  writeJsonFile,
+} from './state-files.js';
 
 const DEFAULT_KOISHI_PORT = '5140';
 const DEFAULT_CODEX_BACKEND_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const DEFAULT_CODEX_AUTH_BASE_URL = 'https://auth.openai.com';
 const DEFAULT_CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const DEFAULT_CODEX_ORIGINATOR = 'codex_cli_rs';
-const DEFAULT_CODEX_CLIENT_VERSION = '0.139.0';
 const TOKEN_EXPIRY_SKEW_MS = 5 * 60 * 1000;
+const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
 const CODEX_BRIDGE_PATH = '/api/internal/codex/v1';
 const CODEX_DEVICE_POLL_INTERVAL_SEC = 5;
 const CODEX_DEVICE_EXPIRES_IN_SEC = 15 * 60;
-let cachedInstalledCodexClientVersion: string | null | undefined;
 
 type ResolvedEnvFiles = {
   mode: 'single' | 'layered';
@@ -105,6 +116,24 @@ type CodexBackendAuthContext = {
   isFedrampAccount: boolean;
 };
 
+type CachedCodexModelCatalog = {
+  clientVersion: string;
+  etag: string | null;
+  fetchedAt: number;
+  models: CodexModelOption[];
+};
+
+class CodexModelCatalogError extends Error {
+  readonly code = 'codex_model_catalog_unavailable';
+  readonly upstreamStatus: number | null;
+
+  constructor(message: string, upstreamStatus: number | null = null) {
+    super(message);
+    this.name = 'CodexModelCatalogError';
+    this.upstreamStatus = upstreamStatus;
+  }
+}
+
 export interface CodexModelOption {
   modelId: string;
   label: string;
@@ -118,19 +147,15 @@ export type CodexAdminStatus = Pick<
 export interface CodexBridgeStateProvider {
   getRuntimeConfig(): Promise<CodexBridgeRuntimeConfig>;
   getAdminStatus(options?: { probe?: boolean }): Promise<CodexAdminStatus>;
+  getCatalogStatus(): Promise<CodexCatalogState>;
+  refreshReleaseMetadata(options?: { force?: boolean }): Promise<CodexCatalogState>;
   startLogin?: () => Promise<CodexAdminStatus>;
   pollLogin?: (attemptId: string) => Promise<CodexAdminStatus>;
   cancelLogin?: (attemptId: string) => Promise<CodexAdminStatus>;
   logout?: () => Promise<CodexAdminStatus>;
-  proxyModels?: () => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  proxyModels?: (options?: { forceRefresh?: boolean }) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
   proxyResponses?: (body: unknown) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
 }
-
-const STATIC_CODEX_MODEL_OPTIONS: readonly CodexModelOption[] = [
-  { modelId: 'gpt-5.5', label: 'GPT-5.5' },
-  { modelId: 'gpt-5.4', label: 'GPT-5.4' },
-  { modelId: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
-];
 
 function trimOptionalText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -138,47 +163,14 @@ function trimOptionalText(value: unknown): string | null {
   return normalized || null;
 }
 
-function buildJsonError(message: string) {
+function buildJsonError(message: string, type = 'invalid_request_error', code?: string) {
   return {
     error: {
       message,
-      type: 'invalid_request_error',
+      type,
+      ...(code ? { code } : {}),
     },
   };
-}
-
-function parseJson<T>(raw: string, label: string): T {
-  try {
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    throw new Error(`${label} 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-async function readTextIfExists(filePath: string): Promise<string | null> {
-  try {
-    return await readFile(filePath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return null;
-    throw error;
-  }
-}
-
-async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
-  const raw = await readTextIfExists(filePath);
-  if (!raw) return null;
-  return parseJson<T>(raw, filePath);
-}
-
-async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(tempPath, content, 'utf8');
-  await rename(tempPath, filePath);
-}
-
-async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
-  await writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function resolveCodexStateDir(rootDir: string, envFiles: ResolvedEnvFiles): string {
@@ -228,30 +220,6 @@ function codexBackendUrl(pathname: string): string {
 
 function codexOriginator(): string {
   return trimOptionalText(process.env.CODEX_ORIGINATOR) ?? DEFAULT_CODEX_ORIGINATOR;
-}
-
-function parseCodexVersionOutput(output: string): string | null {
-  return trimOptionalText(output.match(/\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/)?.[1]);
-}
-
-function resolveInstalledCodexClientVersion(): string | null {
-  if (cachedInstalledCodexClientVersion !== undefined) return cachedInstalledCodexClientVersion;
-  try {
-    cachedInstalledCodexClientVersion = parseCodexVersionOutput(execFileSync('codex', ['--version'], {
-      encoding: 'utf8',
-      timeout: 1000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }));
-  } catch {
-    cachedInstalledCodexClientVersion = null;
-  }
-  return cachedInstalledCodexClientVersion;
-}
-
-function codexClientVersion(): string {
-  return trimOptionalText(process.env.CODEX_CLIENT_VERSION)
-    ?? resolveInstalledCodexClientVersion()
-    ?? DEFAULT_CODEX_CLIENT_VERSION;
 }
 
 function formatOpenAiErrorPayload(payload: unknown): string | null {
@@ -422,7 +390,7 @@ export function filterCodexModelCatalog(payload: unknown): CodexModelOption[] {
   return result;
 }
 
-function buildOpenAIModelsPayload(models: readonly CodexModelOption[]) {
+function buildOpenAIModelsPayload(models: readonly CodexModelOption[], catalog: CodexCatalogState) {
   return {
     object: 'list',
     data: models.map((model) => ({
@@ -435,6 +403,10 @@ function buildOpenAIModelsPayload(models: readonly CodexModelOption[]) {
         structured_outputs: true,
       },
     })),
+    qqbot: {
+      source: 'dynamic',
+      catalog,
+    },
   };
 }
 
@@ -803,7 +775,12 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
   readonly stateDir: string;
   readonly authFilePath: string;
   readonly secretFilePath: string;
+  readonly releaseMetadataProvider: CodexReleaseMetadataProvider;
   private refreshPromise: Promise<CodexAuthRecord> | null = null;
+  private readonly modelCatalogCache = new Map<string, CachedCodexModelCatalog>();
+  private activeCatalogClientVersion: string | null = null;
+  private modelCatalogError: string | null = null;
+  private modelCatalogSyncedAt: string | null = null;
   private readonly loginAttempts = new Map<string, StoredCodexAuthAttempt>();
   private readonly installationId = randomUUID();
   private readonly sessionId = randomUUID();
@@ -812,12 +789,15 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
   constructor(args: {
     rootDir: string;
     envFiles: ResolvedEnvFiles;
+    releaseMetadataProvider?: CodexReleaseMetadataProvider;
   }) {
     this.rootDir = args.rootDir;
     this.envFiles = args.envFiles;
     this.stateDir = resolveCodexStateDir(this.rootDir, this.envFiles);
     this.authFilePath = join(this.stateDir, 'codex-chatgpt.oauth.json');
     this.secretFilePath = join(this.stateDir, 'codex-oauth.bridge-secret');
+    this.releaseMetadataProvider = args.releaseMetadataProvider
+      ?? new CodexReleaseMetadataProvider({ stateDir: this.stateDir });
   }
 
   async getRuntimeConfig(): Promise<CodexBridgeRuntimeConfig> {
@@ -825,6 +805,35 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
       baseUrl: buildCodexBridgeBaseUrl(process.env),
       apiKey: await this.ensureBridgeSecret(),
     };
+  }
+
+  async getCatalogStatus(): Promise<CodexCatalogState> {
+    const release = await this.releaseMetadataProvider.getState();
+    if (release.status === 'unavailable') return release;
+    if (this.modelCatalogError) {
+      return {
+        ...release,
+        status: 'degraded',
+        fetchedAt: this.modelCatalogSyncedAt ?? release.fetchedAt,
+        error: this.modelCatalogError,
+      };
+    }
+    return {
+      ...release,
+      fetchedAt: this.modelCatalogSyncedAt ?? release.fetchedAt,
+    };
+  }
+
+  async refreshReleaseMetadata(options: { force?: boolean } = {}): Promise<CodexCatalogState> {
+    const previousVersion = (await this.releaseMetadataProvider.getState()).clientVersion;
+    const state = await this.releaseMetadataProvider.refresh(options);
+    if (state.clientVersion && previousVersion && state.clientVersion !== previousVersion) {
+      this.modelCatalogCache.clear();
+      this.activeCatalogClientVersion = state.clientVersion;
+      this.modelCatalogSyncedAt = null;
+      registerCodexDynamicModelOptions([]);
+    }
+    return state;
   }
 
   async getAdminStatus(options: { probe?: boolean } = {}): Promise<CodexAdminStatus> {
@@ -993,22 +1002,48 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     };
   }
 
-  async proxyModels(): Promise<{ status: number; headers: Record<string, string>; body: string }> {
-    const models = await this.listModelOptions();
-    return {
-      status: 200,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-      body: JSON.stringify(buildOpenAIModelsPayload(models.length > 0 ? models : STATIC_CODEX_MODEL_OPTIONS)),
-    };
+  async proxyModels(options: { forceRefresh?: boolean } = {}): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    try {
+      const models = await this.listModelOptions(options);
+      const catalog = await this.getCatalogStatus();
+      return {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(buildOpenAIModelsPayload(models, catalog)),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const releaseError = error instanceof CodexReleaseMetadataError;
+      const catalogError = error instanceof CodexModelCatalogError;
+      return {
+        status: releaseError ? 503 : 502,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(buildJsonError(
+          message,
+          'upstream_error',
+          releaseError
+            ? error.code
+            : catalogError
+              ? error.code
+              : 'codex_model_catalog_unavailable',
+        )),
+      };
+    }
   }
 
   async proxyResponses(body: unknown): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     return this.proxyUpstreamResponses(normalizeCodexRequestBody(body), false);
   }
 
-  async listModelOptions(): Promise<CodexModelOption[]> {
-    const fromBackend = await this.readModelCatalogFromBackend();
-    return fromBackend.length > 0 ? fromBackend : [...STATIC_CODEX_MODEL_OPTIONS];
+  async listModelOptions(options: { forceRefresh?: boolean } = {}): Promise<CodexModelOption[]> {
+    try {
+      const models = await this.readModelCatalogFromBackend(options);
+      this.modelCatalogError = null;
+      return models;
+    } catch (error) {
+      this.modelCatalogError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
   }
 
   private async ensureBridgeSecret(): Promise<string> {
@@ -1184,16 +1219,16 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
   private buildCodexBackendHeaders(
     auth: CodexBackendAuthContext,
     accept: string,
+    clientVersion: string,
     requestIds?: { threadId: string },
   ): Record<string, string> {
-    const version = codexClientVersion();
     const headers: Record<string, string> = {
       Accept: accept,
       Authorization: `Bearer ${auth.accessToken}`,
       'ChatGPT-Account-ID': auth.accountId,
       originator: codexOriginator(),
-      'User-Agent': `${codexOriginator()}/${version}`,
-      version,
+      'User-Agent': `${codexOriginator()}/${clientVersion}`,
+      version: clientVersion,
     };
     if (requestIds) {
       headers['session-id'] = this.sessionId;
@@ -1205,27 +1240,82 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     return headers;
   }
 
-  private async readModelCatalogFromBackend(): Promise<CodexModelOption[]> {
-    try {
-      const firstAuth = await this.resolveBackendAuthContext({ forceRefresh: false });
-      const url = new URL(codexBackendUrl('/models'));
-      url.searchParams.set('client_version', codexClientVersion());
-      let response = await fetchCodexExternal(url.toString(), 'Codex 模型列表请求', {
-        method: 'GET',
-        headers: this.buildCodexBackendHeaders(firstAuth, 'application/json'),
-      });
-      if (response.status === 401) {
-        const refreshedAuth = await this.resolveBackendAuthContext({ forceRefresh: true });
-        response = await fetchCodexExternal(url.toString(), 'Codex 模型列表请求', {
-          method: 'GET',
-          headers: this.buildCodexBackendHeaders(refreshedAuth, 'application/json'),
-        });
-      }
-      if (!response.ok) return [];
-      return filterCodexModelCatalog(await response.json().catch(() => null));
-    } catch {
-      return [];
+  private async readModelCatalogFromBackend(options: { forceRefresh?: boolean }): Promise<CodexModelOption[]> {
+    const release = await this.releaseMetadataProvider.requireFresh();
+    this.activateCatalogVersion(release);
+    const cached = this.modelCatalogCache.get(release.version);
+    if (!options.forceRefresh && cached && Date.now() - cached.fetchedAt < MODEL_CATALOG_TTL_MS) {
+      return cached.models.map((model) => ({ ...model }));
     }
+
+    const url = new URL(codexBackendUrl('/models'));
+    url.searchParams.set('client_version', release.version);
+    const request = async (forceAuthRefresh: boolean): Promise<Response> => {
+      const auth = await this.resolveBackendAuthContext({ forceRefresh: forceAuthRefresh });
+      const headers = this.buildCodexBackendHeaders(auth, 'application/json', release.version);
+      if (cached?.etag) headers['If-None-Match'] = cached.etag;
+      return fetchCodexExternal(url.toString(), 'Codex 模型列表请求', {
+        method: 'GET',
+        headers,
+      });
+    };
+
+    let response = await request(false);
+    if (response.status === 401) {
+      response = await request(true);
+    }
+    if (response.status === 304) {
+      if (!cached) {
+        throw new CodexModelCatalogError('Codex 模型列表返回 HTTP 304，但当前 clientVersion 没有可复用缓存。', 304);
+      }
+      cached.fetchedAt = Date.now();
+      this.modelCatalogSyncedAt = new Date(cached.fetchedAt).toISOString();
+      return cached.models.map((model) => ({ ...model }));
+    }
+    if (!response.ok) {
+      const raw = await response.text();
+      let detail = trimOptionalText(raw);
+      try {
+        detail = formatOpenAiErrorPayload(JSON.parse(raw)) ?? detail;
+      } catch {
+        // Preserve the upstream text when the error body is not JSON.
+      }
+      throw new CodexModelCatalogError(
+        `Codex 模型列表请求失败：HTTP ${response.status}${detail ? ` / ${detail.slice(0, 240)}` : ''}`,
+        response.status,
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      throw new CodexModelCatalogError(
+        `Codex 模型列表响应不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+        response.status,
+      );
+    }
+    const models = filterCodexModelCatalog(payload);
+    if (models.length === 0) {
+      throw new CodexModelCatalogError('Codex 模型列表没有可见且支持 API 的模型。', response.status);
+    }
+    this.modelCatalogCache.set(release.version, {
+      clientVersion: release.version,
+      etag: trimOptionalText(response.headers.get('etag')),
+      fetchedAt: Date.now(),
+      models: models.map((model) => ({ ...model })),
+    });
+    this.modelCatalogSyncedAt = new Date().toISOString();
+    registerCodexDynamicModelOptions(models);
+    return models;
+  }
+
+  private activateCatalogVersion(release: CodexReleaseMetadataRecord): void {
+    if (this.activeCatalogClientVersion === release.version) return;
+    this.modelCatalogCache.clear();
+    this.activeCatalogClientVersion = release.version;
+    this.modelCatalogSyncedAt = null;
+    registerCodexDynamicModelOptions([]);
   }
 
   private async proxyUpstreamResponses(
@@ -1234,6 +1324,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
   ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
     try {
       const auth = await this.resolveBackendAuthContext({ forceRefresh: retried });
+      const release = await this.releaseMetadataProvider.requireLastKnown();
       const threadId = randomUUID();
       const turnId = randomUUID();
       const upstreamBody = withCodexClientMetadata(body ?? {}, {
@@ -1246,7 +1337,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
       const response = await fetchCodexExternal(codexBackendUrl('/responses'), 'Codex Responses 请求', {
         method: 'POST',
         headers: {
-          ...this.buildCodexBackendHeaders(auth, 'text/event-stream, application/json', { threadId }),
+          ...this.buildCodexBackendHeaders(auth, 'text/event-stream, application/json', release.version, { threadId }),
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(upstreamBody),
@@ -1266,10 +1357,15 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
         body: text,
       };
     } catch (error) {
+      const releaseError = error instanceof CodexReleaseMetadataError;
       return {
-        status: 401,
+        status: releaseError ? 503 : 401,
         headers: { 'content-type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(buildJsonError(error instanceof Error ? error.message : String(error))),
+        body: JSON.stringify(buildJsonError(
+          error instanceof Error ? error.message : String(error),
+          releaseError ? 'upstream_error' : 'invalid_request_error',
+          releaseError ? error.code : undefined,
+        )),
       };
     }
   }

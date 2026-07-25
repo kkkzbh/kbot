@@ -10,9 +10,15 @@ import {
   filterCodexModelCatalog,
   resolveCodexStateDir,
 } from '../src/plugins/codex-oauth/service.js';
+import {
+  CODEX_RELEASE_METADATA_TTL_MS,
+  CODEX_RELEASE_METADATA_URL,
+  CodexReleaseMetadataProvider,
+} from '../src/plugins/codex-oauth/release-metadata.js';
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
+const TEST_CODEX_VERSION = '0.145.0';
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -36,6 +42,7 @@ function fakeJwt(payload: Record<string, unknown>): string {
 }
 
 function createService(dir: string) {
+  writeCodexReleaseMetadata(dir);
   return new CodexOAuthBridgeService({
     rootDir: dir,
     envFiles: {
@@ -45,6 +52,27 @@ function createService(dir: string) {
       editTarget: join(dir, '.env.local'),
     },
   });
+}
+
+function writeCodexReleaseMetadata(
+  dir: string,
+  overrides: Partial<{
+    version: string;
+    releaseTag: string;
+    etag: string;
+    fetchedAt: string;
+  }> = {},
+): void {
+  const version = overrides.version ?? TEST_CODEX_VERSION;
+  const stateDir = join(dir, '.runtime');
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, 'codex-release-metadata.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    version,
+    releaseTag: overrides.releaseTag ?? `rust-v${version}`,
+    etag: overrides.etag ?? '"release-etag"',
+    fetchedAt: overrides.fetchedAt ?? new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8');
 }
 
 function writeCodexAuth(dir: string, auth: unknown): void {
@@ -79,6 +107,129 @@ describe('codex oauth bridge helpers', () => {
 
     vi.stubEnv('KOISHI_PORT', '6151');
     expect(buildCodexBridgeBaseUrl(process.env)).toBe('http://127.0.0.1:6151/api/internal/codex/v1');
+  });
+
+  it('synchronizes official release metadata with ETag revalidation and atomic state', async () => {
+    const dir = createTempDir();
+    let now = Date.parse('2026-07-25T00:00:00.000Z');
+    const fetchFn = vi.fn()
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get('if-none-match')).toBeNull();
+        return new Response(JSON.stringify({
+          tag_name: 'rust-v0.145.0',
+          draft: false,
+          prerelease: false,
+        }), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            ETag: '"release-v145"',
+          },
+        });
+      })
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get('if-none-match')).toBe('"release-v145"');
+        return new Response(null, { status: 304 });
+      });
+    const provider = new CodexReleaseMetadataProvider({
+      stateDir: join(dir, '.runtime'),
+      fetchFn: fetchFn as typeof fetch,
+      now: () => now,
+    });
+
+    await expect(provider.refresh({ force: true })).resolves.toMatchObject({
+      status: 'ready',
+      clientVersion: '0.145.0',
+      fetchedAt: '2026-07-25T00:00:00.000Z',
+    });
+    expect(JSON.parse(readFileSync(join(dir, '.runtime/codex-release-metadata.json'), 'utf8'))).toEqual({
+      schemaVersion: 1,
+      version: '0.145.0',
+      releaseTag: 'rust-v0.145.0',
+      etag: '"release-v145"',
+      fetchedAt: '2026-07-25T00:00:00.000Z',
+    });
+
+    now += CODEX_RELEASE_METADATA_TTL_MS;
+    await expect(provider.refresh()).resolves.toMatchObject({
+      status: 'ready',
+      clientVersion: '0.145.0',
+      fetchedAt: '2026-07-25T01:00:00.000Z',
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls.every(([url]) => url === CODEX_RELEASE_METADATA_URL)).toBe(true);
+  });
+
+  it('marks release metadata degraded after a failed refresh and keeps the last confirmed version', async () => {
+    const dir = createTempDir();
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        tag_name: 'rust-v0.145.0',
+        draft: false,
+        prerelease: false,
+      }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          ETag: '"release-v145"',
+        },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'rate limit exceeded' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    const provider = new CodexReleaseMetadataProvider({
+      stateDir: join(dir, '.runtime'),
+      fetchFn: fetchFn as typeof fetch,
+    });
+
+    await provider.refresh({ force: true });
+    await expect(provider.refresh({ force: true })).resolves.toMatchObject({
+      status: 'degraded',
+      clientVersion: '0.145.0',
+      error: expect.stringContaining('HTTP 403 / rate limit exceeded'),
+    });
+    expect(JSON.parse(readFileSync(join(dir, '.runtime/codex-release-metadata.json'), 'utf8'))).toMatchObject({
+      version: '0.145.0',
+      releaseTag: 'rust-v0.145.0',
+    });
+  });
+
+  it('rejects draft, prerelease, and malformed release tags without manufacturing a client version', async () => {
+    const fixtures = [
+      {
+        payload: { tag_name: 'rust-v9.9.9', draft: true, prerelease: false },
+        error: 'draft',
+      },
+      {
+        payload: { tag_name: 'rust-v9.9.9', draft: false, prerelease: true },
+        error: 'prerelease',
+      },
+      {
+        payload: { tag_name: 'v9.9.9', draft: false, prerelease: false },
+        error: 'release tag',
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const dir = createTempDir();
+      const provider = new CodexReleaseMetadataProvider({
+        stateDir: join(dir, '.runtime'),
+        fetchFn: vi.fn(async () => new Response(JSON.stringify(fixture.payload), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            ETag: '"unconfirmed"',
+          },
+        })) as typeof fetch,
+      });
+
+      await expect(provider.refresh({ force: true })).resolves.toMatchObject({
+        status: 'unavailable',
+        clientVersion: null,
+        error: expect.stringContaining(fixture.error),
+      });
+    }
   });
 
   it('filters Codex catalog to visible API-supported model slugs', () => {
@@ -417,7 +568,6 @@ describe('codex oauth bridge helpers', () => {
 
   it('serves models from Codex catalog and proxies responses with stripped model ids', async () => {
     const dir = createTempDir();
-    vi.stubEnv('CODEX_CLIENT_VERSION', '0.139.0-test');
     const accessToken = fakeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, client_id: 'codex-client' });
     writeCodexAuth(dir, {
       auth_mode: 'chatgpt',
@@ -429,15 +579,15 @@ describe('codex oauth bridge helpers', () => {
     });
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === 'https://chatgpt.com/backend-api/codex/models?client_version=0.139.0-test') {
+      if (url === `https://chatgpt.com/backend-api/codex/models?client_version=${TEST_CODEX_VERSION}`) {
         expect(init).toMatchObject({ method: 'GET' });
         expect(init?.headers).toMatchObject({
           Accept: 'application/json',
           Authorization: `Bearer ${accessToken}`,
           'ChatGPT-Account-ID': 'acct-managed',
           originator: 'codex_cli_rs',
-          'User-Agent': 'codex_cli_rs/0.139.0-test',
-          version: '0.139.0-test',
+          'User-Agent': `codex_cli_rs/${TEST_CODEX_VERSION}`,
+          version: TEST_CODEX_VERSION,
         });
         return new Response(JSON.stringify({
           models: [
@@ -454,8 +604,8 @@ describe('codex oauth bridge helpers', () => {
           'ChatGPT-Account-ID': 'acct-managed',
           originator: 'codex_cli_rs',
           'Content-Type': 'application/json',
-          'User-Agent': 'codex_cli_rs/0.139.0-test',
-          version: '0.139.0-test',
+          'User-Agent': `codex_cli_rs/${TEST_CODEX_VERSION}`,
+          version: TEST_CODEX_VERSION,
         });
         expect(init?.headers).toEqual(expect.objectContaining({
           'session-id': expect.any(String),
@@ -511,6 +661,8 @@ describe('codex oauth bridge helpers', () => {
       ],
     });
     expect(models.body).not.toContain(accessToken);
+    const cachedModels = await service.proxyModels();
+    expect(cachedModels).toEqual(models);
 
     const result = await service.proxyResponses({
       model: 'openai/gpt-5.5',
@@ -526,6 +678,112 @@ describe('codex oauth bridge helpers', () => {
       body: '{"ok":true}',
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns an explicit upstream error without static models when catalog synchronization fails', async () => {
+    const dir = createTempDir();
+    writeCodexAuth(dir, {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: fakeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+        account_id: 'acct-managed',
+      },
+    });
+    globalThis.fetch = vi.fn(async (url: string) => {
+      expect(url).toBe(`https://chatgpt.com/backend-api/codex/models?client_version=${TEST_CODEX_VERSION}`);
+      return new Response(JSON.stringify({
+        error: {
+          code: 'catalog_unavailable',
+          message: 'catalog unavailable',
+        },
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const result = await createService(dir).proxyModels();
+
+    expect(result.status).toBe(502);
+    expect(JSON.parse(result.body)).toEqual({
+      error: {
+        message: 'Codex 模型列表请求失败：HTTP 502 / catalog_unavailable / catalog unavailable',
+        type: 'upstream_error',
+        code: 'codex_model_catalog_unavailable',
+      },
+    });
+    expect(result.body).not.toContain('"data"');
+  });
+
+  it('keys the five-minute model cache by confirmed clientVersion and invalidates it on release change', async () => {
+    const dir = createTempDir();
+    writeCodexAuth(dir, {
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: fakeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+        account_id: 'acct-managed',
+      },
+    });
+    const releaseFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        tag_name: 'rust-v0.145.0',
+        draft: false,
+        prerelease: false,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"v145"' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        tag_name: 'rust-v0.146.0',
+        draft: false,
+        prerelease: false,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"v146"' },
+      }));
+    const provider = new CodexReleaseMetadataProvider({
+      stateDir: join(dir, '.runtime'),
+      fetchFn: releaseFetch as typeof fetch,
+    });
+    const backendFetch = vi.fn(async (url: string) => {
+      const version = new URL(url).searchParams.get('client_version');
+      return new Response(JSON.stringify({
+        models: [{
+          slug: `model-${version}`,
+          display_name: `Model ${version}`,
+          visibility: 'list',
+          supported_in_api: true,
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: `"models-${version}"` },
+      });
+    });
+    globalThis.fetch = backendFetch as typeof fetch;
+    const service = new CodexOAuthBridgeService({
+      rootDir: dir,
+      envFiles: {
+        mode: 'single',
+        baseFilePath: join(dir, '.env.local'),
+        overrideFilePath: null,
+        editTarget: join(dir, '.env.local'),
+      },
+      releaseMetadataProvider: provider,
+    });
+
+    await service.refreshReleaseMetadata({ force: true });
+    const first = await service.proxyModels({ forceRefresh: true });
+    const cached = await service.proxyModels();
+    await service.refreshReleaseMetadata({ force: true });
+    const upgraded = await service.proxyModels({ forceRefresh: true });
+
+    expect(JSON.parse(first.body).data[0].id).toBe('model-0.145.0');
+    expect(cached.body).toBe(first.body);
+    expect(JSON.parse(upgraded.body).data[0].id).toBe('model-0.146.0');
+    expect(backendFetch.mock.calls.map(([url]) => new URL(url).searchParams.get('client_version'))).toEqual([
+      '0.145.0',
+      '0.146.0',
+    ]);
   });
 
   it('lifts ChatLuna system inputs into top-level Codex instructions before proxying responses', async () => {

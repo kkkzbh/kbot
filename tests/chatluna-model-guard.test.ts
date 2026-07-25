@@ -10,6 +10,7 @@ import {
   inferPlatformFromBaseUrl,
   isSupportedMainChatModelForTab,
   normalizeRawModelName,
+  registerCodexDynamicModelOptions,
   resolveMainChatRuntimeProfileFromEnv,
   resolvePlatform,
   supportsStructuredReplyJsonSchema,
@@ -24,6 +25,7 @@ import { syncRoomModelToMainChatRuntime } from '../src/plugins/model-guard/hot-s
 import { deriveOneBotAvatarUrl, resolveSessionAvatarUrl, resolveSessionDisplayName, resolveSessionQqNick } from '../src/plugins/shared/session/index.js';
 
 afterEach(() => {
+  registerCodexDynamicModelOptions([]);
   mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
 });
 
@@ -167,6 +169,7 @@ describe('buildStructuredReplyModelOverride', () => {
 
 describe('supportsStructuredReplyJsonSchema', () => {
   it('supports both the Kimi and OpenAI gpt-5.4 main-chat families', () => {
+    registerCodexDynamicModelOptions([{ modelId: 'gpt-5.5', label: 'GPT-5.5' }]);
     expect(supportsStructuredReplyJsonSchema('Pro/moonshotai/Kimi-K2.5')).toBe(true);
     expect(supportsStructuredReplyJsonSchema('siliconflow/Pro/moonshotai/Kimi-K2.5')).toBe(true);
     expect(supportsStructuredReplyJsonSchema('openai/gpt-5.4')).toBe(true);
@@ -288,6 +291,7 @@ describe('buildReplyOutputContract', () => {
   });
 
   it('routes Codex OAuth models to Responses API native structured outputs', () => {
+    registerCodexDynamicModelOptions([{ modelId: 'gpt-5.5', label: 'GPT-5.5' }]);
     expect(
       buildReplyOutputContract({
         model: 'openai/gpt-5.5',
@@ -392,6 +396,10 @@ describe('buildReplyOutputContract', () => {
 
 describe('isSupportedMainChatModelForTab', () => {
   it('enforces the fixed model whitelist for built-in tabs', () => {
+    registerCodexDynamicModelOptions([
+      { modelId: 'gpt-5.5', label: 'GPT-5.5' },
+      { modelId: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    ]);
     expect(isSupportedMainChatModelForTab('siliconflow', 'Pro/moonshotai/Kimi-K2.5')).toBe(true);
     expect(isSupportedMainChatModelForTab('siliconflow', 'siliconflow/Pro/moonshotai/Kimi-K2.5')).toBe(true);
     expect(isSupportedMainChatModelForTab('siliconflow', 'openai/gpt-5.4-medium-thinking')).toBe(false);

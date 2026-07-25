@@ -20,6 +20,7 @@ import type {
   AdminBuiltinModelTab,
   AdminAuthStatus,
   CodexAuthAttempt,
+  CodexCatalogState,
   CopilotAuthAttempt,
   AdminModelOption,
   AdminModelTabId,
@@ -61,8 +62,6 @@ import {
   normalizeDeepSeekModelId,
   normalizeMainChatBuiltinTabId,
   normalizeMimoModelId,
-  registerCodexDynamicModelOptions,
-  type CodexModelOption,
   resolveMainChatActiveTabFromEnv,
   resolveMainChatTabStateFromEnv,
   validateMainChatTabModel,
@@ -173,7 +172,8 @@ type CodexBridgeAdminState = {
 type CodexBridgeStateProvider = {
   getRuntimeConfig: () => Promise<CodexBridgeRuntimeConfig>;
   getAdminStatus: (options?: { probe?: boolean }) => Promise<CodexBridgeAdminState>;
-  proxyModels?: () => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  getCatalogStatus: () => Promise<CodexCatalogState>;
+  proxyModels?: (options?: { forceRefresh?: boolean }) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
 };
 
 type ResolvedEnvFiles = {
@@ -720,12 +720,52 @@ function unavailableCopilotModelList(error: string | null): CopilotModelListResp
   };
 }
 
-function unavailableCodexModelList(error: string | null): CodexModelListResponse {
+function unavailableCodexCatalog(error: string): CodexCatalogState {
+  return {
+    source: 'dynamic',
+    status: 'unavailable',
+    clientVersion: null,
+    fetchedAt: null,
+    error,
+  };
+}
+
+function unavailableCodexModelList(error: string | null, catalog: CodexCatalogState): CodexModelListResponse {
   return {
     source: 'dynamic',
     models: [],
     error,
+    catalog,
   };
+}
+
+function parseCodexCatalogState(payload: unknown): CodexCatalogState | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const qqbot = (payload as { qqbot?: unknown }).qqbot;
+  if (!qqbot || typeof qqbot !== 'object' || Array.isArray(qqbot)) return null;
+  const catalog = (qqbot as { catalog?: unknown }).catalog;
+  if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) return null;
+  const value = catalog as Partial<CodexCatalogState>;
+  if (value.source !== 'dynamic') return null;
+  if (!['ready', 'degraded', 'unavailable'].includes(String(value.status))) return null;
+  return {
+    source: 'dynamic',
+    status: value.status as CodexCatalogState['status'],
+    clientVersion: typeof value.clientVersion === 'string' ? value.clientVersion : null,
+    fetchedAt: typeof value.fetchedAt === 'string' ? value.fetchedAt : null,
+    error: typeof value.error === 'string' ? value.error : null,
+  };
+}
+
+function parseBridgeErrorMessage(body: string): string | null {
+  try {
+    const payload = JSON.parse(body) as { error?: { message?: unknown } };
+    return typeof payload.error?.message === 'string' && payload.error.message.trim()
+      ? payload.error.message.trim()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function listCopilotModelsFromOAuthBridge(
@@ -769,14 +809,20 @@ export async function listCopilotModelsFromOAuthBridge(
 export async function listCodexModelsFromOAuthBridge(
   bridge: CodexBridgeStateProvider | undefined,
 ): Promise<CodexModelListResponse> {
+  const bridgeUnavailable = 'Codex OAuth bridge is unavailable.';
   if (!bridge?.proxyModels) {
-    return unavailableCodexModelList('Codex OAuth bridge is unavailable.');
+    return unavailableCodexModelList(bridgeUnavailable, unavailableCodexCatalog(bridgeUnavailable));
   }
 
+  let catalog = await bridge.getCatalogStatus().catch((error) => unavailableCodexCatalog(
+    error instanceof Error ? error.message : String(error),
+  ));
   try {
-    const response = await bridge.proxyModels();
+    const response = await bridge.proxyModels({ forceRefresh: true });
+    catalog = await bridge.getCatalogStatus().catch(() => catalog);
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`Codex /models returned HTTP ${response.status}: ${response.body.slice(0, 240)}`);
+      const detail = parseBridgeErrorMessage(response.body) ?? response.body.slice(0, 240);
+      throw new Error(`Codex /models returned HTTP ${response.status}: ${detail}`);
     }
 
     let payload: unknown;
@@ -787,21 +833,18 @@ export async function listCodexModelsFromOAuthBridge(
     }
 
     const models = parseCodexModelListPayload(payload);
+    catalog = parseCodexCatalogState(payload) ?? catalog;
     if (models.length === 0) {
       throw new Error('Codex /models returned no visible API-supported models.');
     }
-    registerCodexDynamicModelOptions(models.map((model): CodexModelOption => ({
-      modelId: model.modelId,
-      label: model.label,
-    })));
-
     return {
       source: 'dynamic',
       models,
       error: null,
+      catalog,
     };
   } catch (error) {
-    return unavailableCodexModelList(error instanceof Error ? error.message : String(error));
+    return unavailableCodexModelList(error instanceof Error ? error.message : String(error), catalog);
   }
 }
 
@@ -2241,7 +2284,7 @@ export class AdminRuntimeManager {
       return state;
     }
 
-    const [copilotRuntime, copilotState, codexRuntime, codexState] = await Promise.all([
+    const [copilotRuntime, copilotState, codexRuntime, codexState, codexCatalog] = await Promise.all([
       this.copilotBridge?.getRuntimeConfig().catch(() => null) ?? Promise.resolve(null),
       this.copilotBridge?.getAdminStatus({ probe: false }).catch((error) => ({
         authKind: 'oauth_device' as const,
@@ -2259,6 +2302,9 @@ export class AdminRuntimeManager {
         tokenExpiresAt: null,
         attempt: null,
       })) ?? Promise.resolve(null),
+      this.codexBridge?.getCatalogStatus().catch((error) => unavailableCodexCatalog(
+        error instanceof Error ? error.message : String(error),
+      )) ?? Promise.resolve(null),
     ]);
     return {
       activeTab: state.activeTab,
@@ -2284,6 +2330,7 @@ export class AdminRuntimeManager {
             authError: codexState.authError,
             tokenExpiresAt: codexState.tokenExpiresAt,
             oauthAttempt: codexState.attempt,
+            catalog: codexCatalog,
             baseUrl: codexRuntime.baseUrl,
             apiKey: codexRuntime.apiKey,
           };

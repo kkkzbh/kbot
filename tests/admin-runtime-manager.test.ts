@@ -7,6 +7,7 @@ import {
   applyEnvPatchToContent,
   buildModelTabsStateFromEnv,
   AdminRuntimeManager,
+  listCodexModelsFromOAuthBridge,
   listCopilotModelsFromOAuthBridge,
   listDeepSeekModelsFromOfficialSource,
   listMimoModelsFromOfficialSource,
@@ -71,6 +72,13 @@ function createCopilotBridgeWithModels(models: unknown[]) {
 }
 
 function createCodexBridgeWithModels(models: unknown[]) {
+  const catalog = {
+    source: 'dynamic' as const,
+    status: 'ready' as const,
+    clientVersion: '0.145.0',
+    fetchedAt: '2026-07-25T00:00:00.000Z',
+    error: null,
+  };
   return {
     getRuntimeConfig: async () => ({
       baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
@@ -84,10 +92,11 @@ function createCodexBridgeWithModels(models: unknown[]) {
       tokenExpiresAt: Date.now() + 60_000,
       attempt: null,
     }),
+    getCatalogStatus: async () => catalog,
     proxyModels: async () => ({
       status: 200,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: models }),
+      body: JSON.stringify({ data: models, qqbot: { source: 'dynamic', catalog } }),
     }),
   };
 }
@@ -134,6 +143,13 @@ it('keeps pending OAuth device details in the model tabs state', async () => {
         authError: null,
         tokenExpiresAt: null,
         attempt,
+      }),
+      getCatalogStatus: async () => ({
+        source: 'dynamic' as const,
+        status: 'unavailable' as const,
+        clientVersion: null,
+        fetchedAt: null,
+        error: 'Codex release metadata 尚未同步。',
       }),
     },
   });
@@ -551,6 +567,52 @@ describe('admin env helpers', () => {
       source: 'dynamic',
       models: [],
       error: expect.stringContaining('bridge is unavailable'),
+    });
+  });
+
+  it('forces Codex release and catalog refresh for a user-requested model list', async () => {
+    const proxyModels = vi.fn(async () => ({
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        error: {
+          message: 'Codex GitHub release metadata 请求失败：HTTP 403 / rate limit exceeded',
+          type: 'upstream_error',
+          code: 'codex_release_metadata_unavailable',
+        },
+      }),
+    }));
+    const catalog = {
+      source: 'dynamic' as const,
+      status: 'degraded' as const,
+      clientVersion: '0.145.0',
+      fetchedAt: '2026-07-25T00:00:00.000Z',
+      error: 'Codex GitHub release metadata 请求失败：HTTP 403 / rate limit exceeded',
+    };
+
+    const result = await listCodexModelsFromOAuthBridge({
+      getRuntimeConfig: async () => ({
+        baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
+        apiKey: 'codex-bridge-secret',
+      }),
+      getAdminStatus: async () => ({
+        authKind: 'codex_oauth' as const,
+        authStatus: 'ready' as const,
+        accountLabel: 'codex-user',
+        authError: null,
+        tokenExpiresAt: Date.now() + 60_000,
+        attempt: null,
+      }),
+      getCatalogStatus: async () => catalog,
+      proxyModels,
+    });
+
+    expect(proxyModels).toHaveBeenCalledWith({ forceRefresh: true });
+    expect(result).toEqual({
+      source: 'dynamic',
+      models: [],
+      error: 'Codex /models returned HTTP 503: Codex GitHub release metadata 请求失败：HTTP 403 / rate limit exceeded',
+      catalog,
     });
   });
 });

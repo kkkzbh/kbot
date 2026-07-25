@@ -142,6 +142,15 @@ export type AdminModelTabId = 'siliconflow' | 'openai' | 'codex' | 'copilot' | '
 export type AdminAuthKind = 'manual' | 'oauth_device' | 'codex_oauth';
 export type AdminAuthStatus = 'unauthenticated' | 'pending' | 'ready' | 'expired' | 'error';
 export type AdminModelListSource = 'dynamic' | 'static';
+export type CodexCatalogSyncStatus = 'ready' | 'degraded' | 'unavailable';
+
+export interface CodexCatalogState {
+  source: 'dynamic';
+  status: CodexCatalogSyncStatus;
+  clientVersion: string | null;
+  fetchedAt: string | null;
+  error: string | null;
+}
 
 export interface CopilotAuthAttempt {
   attemptId: string;
@@ -180,6 +189,7 @@ export interface AdminBuiltinModelTab {
   authError?: string | null;
   tokenExpiresAt?: number | null;
   oauthAttempt?: CopilotAuthAttempt | CodexAuthAttempt | null;
+  catalog?: CodexCatalogState | null;
   baseUrl: string;
   apiKey: string;
   defaultModel: string;
@@ -225,6 +235,7 @@ export interface CodexModelListResponse {
   source: AdminModelListSource;
   models: AdminModelOption[];
   error: string | null;
+  catalog: CodexCatalogState;
 }
 
 export interface MimoModelListRequest {

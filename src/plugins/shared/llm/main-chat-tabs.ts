@@ -132,7 +132,7 @@ export const OPENAI_DEFAULT_MODEL = 'openai/gpt-5.4-medium-thinking';
 export const SILICONFLOW_DEFAULT_BASE_URL = 'https://api.siliconflow.cn/v1';
 export const SILICONFLOW_DEFAULT_MODEL = 'Pro/moonshotai/Kimi-K2.5';
 export const CODEX_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:5140/api/internal/codex/v1';
-export const CODEX_DEFAULT_MODEL = 'openai/gpt-5.5';
+export const CODEX_DEFAULT_MODEL = '';
 export const CODEX_DEFAULT_REASONING_EFFORT = 'medium' as const satisfies MainChatReasoningEffort;
 export const COPILOT_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:5140/api/internal/copilot/v1';
 export const COPILOT_AUTO_MODEL_ID = 'auto';
@@ -181,12 +181,6 @@ export const MIMO_CHAT_MODEL_OPTIONS = [
   { modelId: 'mimo-v2-omni', label: 'MiMo V2 Omni' },
 ] as const satisfies readonly MimoModelOption[];
 
-export const CODEX_MODEL_OPTIONS = [
-  { modelId: 'gpt-5.5', label: 'GPT-5.5' },
-  { modelId: 'gpt-5.4', label: 'GPT-5.4' },
-  { modelId: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
-] as const satisfies readonly CodexModelOption[];
-
 export const CODEX_REASONING_EFFORT_OPTIONS = [
   { id: 'low', label: '低' },
   { id: 'medium', label: '中' },
@@ -212,10 +206,11 @@ const codexDynamicModelOptions = new Map<string, CodexModelOption>();
 export function getCodexModelOption(model?: string | null): CodexModelOption | null {
   const normalized = normalizeCodexModelId(model);
   if (!normalized) return null;
-  return codexDynamicModelOptions.get(normalized) ?? CODEX_MODEL_OPTIONS.find((option) => option.modelId === normalized) ?? null;
+  return codexDynamicModelOptions.get(normalized) ?? null;
 }
 
 export function registerCodexDynamicModelOptions(models: readonly CodexModelOption[]): void {
+  codexDynamicModelOptions.clear();
   for (const model of models) {
     const modelId = normalizeCodexModelId(model.modelId);
     if (!modelId) continue;
@@ -1080,7 +1075,7 @@ const CODEX_UI_SCHEMA: BuiltinTabUiSchema = {
   apiKeyVisible: false,
   modelInputKind: 'select-dynamic',
   modelOptions: [],
-  allowedModelExamples: CODEX_MODEL_OPTIONS.map((option) => option.modelId),
+  allowedModelExamples: [],
   allowedModelsDescription: 'Codex Tab 只能选择当前可见且 supported_in_api=true 的模型；OAuth、bridge 地址和内部密钥由机器人后台接管。',
   secondaryAction: 'codex-oauth',
 };
@@ -1224,15 +1219,11 @@ export function validateMainChatTabModel(
       return { ok: true };
     }
 
-    const fallbackIds = CODEX_MODEL_OPTIONS.map((option) => option.modelId);
-    if (!transportModel || (trimmed.includes('/') && !trimmed.startsWith('openai/'))) {
-      return {
-        ok: false,
-        message: `Codex Tab 默认模型必须是 openai/<slug> 或 <slug>。${schema.allowedModelsDescription}`,
-        suggestions: fallbackIds,
-      };
-    }
-    return { ok: true };
+    return {
+      ok: false,
+      message: 'Codex Tab 当前没有经过上游确认的模型目录，请先成功拉取列表。',
+      suggestions: [],
+    };
   }
 
   if (id === 'copilot') {
