@@ -54,6 +54,9 @@ import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
 import type {
   AdminApplyReason,
   AdminBuiltinModelTab,
+  AdminModelOption,
+  AdminModelTabId,
+  CodexCatalogState,
   EnvPatch,
   SaveModelTabsRequest,
 } from '../../types/admin.js';
@@ -63,7 +66,11 @@ import {
   canHotSwitchMainChatModelOnly,
   mainChatRuntimeState,
 } from '../shared/llm/main-chat-runtime.js';
-import { resolveMainChatRuntimeProfileFromTabConfig } from '../shared/llm/index.js';
+import {
+  getBuiltinMainChatTabDefinition,
+  getMainChatProviderStrategy,
+  resolveMainChatRuntimeProfileFromTabConfig,
+} from '../shared/llm/index.js';
 import { createUnavailableMemoryStatusSnapshot } from '../shared/memory-status.js';
 import type { MemoryAdminService } from '../memory/index.js';
 import { TTS_LOCAL_ENV_KEYS } from './tts.js';
@@ -244,12 +251,75 @@ function buildEnvPatch(
 function redactModelTabs(tabs: { activeTab: string; tabs: AdminBuiltinModelTab[] }) {
   return {
     activeTab: tabs.activeTab,
-    tabs: tabs.tabs.map(({ apiKey, ...tab }) => ({
-      ...tab,
+    tabs: tabs.tabs.map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      provider: tab.provider,
+      strategyId: tab.strategyId,
+      requestMode: tab.requestMode,
+      structuredOutputProtocol: tab.structuredOutputProtocol,
+      description: tab.description,
+      modelHint: tab.modelHint,
+      authKind: tab.authKind,
+      authStatus: tab.authStatus,
+      ...(tab.accountLabel === undefined ? {} : { accountLabel: tab.accountLabel }),
+      ...(tab.authError === undefined ? {} : { authError: tab.authError }),
+      ...(tab.tokenExpiresAt === undefined ? {} : { tokenExpiresAt: tab.tokenExpiresAt }),
+      ...(tab.oauthAttempt === undefined ? {} : { oauthAttempt: tab.oauthAttempt }),
+      ...(tab.catalog === undefined ? {} : { catalog: tab.catalog }),
+      baseUrl: tab.baseUrl,
       apiKey: null,
-      apiKeyConfigured: Boolean(apiKey),
+      apiKeyConfigured: Boolean(tab.apiKey),
+      defaultModel: tab.defaultModel,
+      ...(tab.reasoningEffort === undefined ? {} : { reasoningEffort: tab.reasoningEffort }),
+      ...(tab.canonicalModel ? { canonicalModel: tab.canonicalModel } : {}),
+      ...(tab.transportModel ? { transportModel: tab.transportModel } : {}),
     })),
   };
+}
+
+type InternalModelListResult = {
+  source: 'dynamic' | 'static';
+  models: AdminModelOption[];
+  error: string | null;
+  catalog?: CodexCatalogState;
+};
+
+function serializeModelList(
+  tabId: Extract<AdminModelTabId, 'codex' | 'copilot' | 'deepseek' | 'mimo'>,
+  result: InternalModelListResult,
+) {
+  const definition = getBuiltinMainChatTabDefinition(tabId);
+  const strategy = getMainChatProviderStrategy(definition.strategyId);
+  const models = result.models.map((model) => {
+    const canonicalModel = strategy.normalizeModel(model.modelId);
+    if (!canonicalModel) {
+      throw new Error(`${definition.title} 模型目录包含无法规范化的模型 ID：${model.modelId}`);
+    }
+    const transportModel = strategy.transportModel(canonicalModel);
+    if (!transportModel) {
+      throw new Error(`${definition.title} 模型目录无法生成 transport model：${canonicalModel}`);
+    }
+    return {
+      canonicalModel,
+      transportModel,
+      label: model.label,
+      ...(model.rateLabel ? { rateLabel: model.rateLabel } : {}),
+      ...(model.requestMode ? { requestMode: model.requestMode } : {}),
+      ...(model.structuredOutputProtocol
+        ? { structuredOutputProtocol: model.structuredOutputProtocol }
+        : {}),
+      ...(model.metadataTags ? { metadataTags: model.metadataTags } : {}),
+      ...(model.deprecated === undefined ? {} : { deprecated: model.deprecated }),
+      ...(model.deprecationDate ? { deprecationDate: model.deprecationDate } : {}),
+    };
+  });
+  return modelListResponseSchema.parse({
+    source: result.source,
+    models,
+    error: result.error,
+    ...(result.catalog ? { catalog: result.catalog } : {}),
+  });
 }
 
 function redactTtsState(state: Awaited<ReturnType<AdminRuntimeManager['getTtsState']>>) {
@@ -648,7 +718,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
         : provider === 'copilot'
           ? await options.manager.listCopilotModels()
           : await options.manager.listCodexModels();
-    return modelListResponseSchema.parse(result);
+    return serializeModelList(provider, result);
   }, { mutation: true });
 
   register('get', '/oauth/:provider', async (koaCtx) => {

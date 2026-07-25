@@ -87,9 +87,17 @@ describe('admin shared contracts', () => {
       activeTab: 'openai',
       tabs: [{ ...tab, leakedSecret: 'secret' }],
     })).toThrow();
+    expect(() => modelTabsResponseSchema.parse({
+      activeTab: 'openai',
+      tabs: [{ ...tab, defaultModel: '' }],
+    })).toThrow();
     expect(modelListResponseSchema.parse({
       source: 'dynamic',
-      models: [{ modelId: 'gpt-test', label: 'GPT Test' }],
+      models: [{
+        canonicalModel: 'openai/gpt-test',
+        transportModel: 'gpt-test',
+        label: 'GPT Test',
+      }],
       error: null,
     }).models).toHaveLength(1);
     expect(oauthMutationResponseSchema.parse({

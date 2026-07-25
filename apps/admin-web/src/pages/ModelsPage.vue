@@ -13,36 +13,41 @@ import {
   oauthMutationResponseSchema,
   saveModelsResponseSchema,
   type ModelAuthStatus,
-  type ModelListResponse,
   type ModelOption,
   type ModelRuntimeState,
-  type ModelTab,
   type ModelTabId,
-  type ModelTabPatch,
   type ModelTabsResponse,
   type OAuthMutationResponse,
 } from '@contracts';
 import PageHeader from '@/components/PageHeader.vue';
 import { api, jsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
+import {
+  buildModelTabsPatchRequest,
+  errorMessage,
+  loadModelPageConfiguration,
+  modelOptionValue,
+  omitProviderModelOptions,
+  requireCacheableModelOptions,
+  toModelDraft,
+  type ModelDraft,
+} from './model-page-state';
 
 const MODEL_TAB_IDS: readonly ModelTabId[] = ['siliconflow', 'openai', 'codex', 'copilot', 'deepseek', 'mimo'];
 const DYNAMIC_MODEL_TAB_IDS = new Set<ModelTabId>(['codex', 'copilot', 'deepseek', 'mimo']);
 
 type OAuthProvider = Extract<ModelTabId, 'copilot' | 'codex'>;
 
-type ModelDraft = Omit<ModelTab, 'apiKey'> & {
-  apiKey: string;
-  clearApiKey: boolean;
-};
-
 const modelState = ref<ModelTabsResponse | null>(null);
 const modelRuntime = ref<ModelRuntimeState | null>(null);
+const modelLoadError = ref<string | null>(null);
+const runtimeLoadError = ref<string | null>(null);
 const activeTab = ref<ModelTabId>('siliconflow');
 const drafts = reactive<Partial<Record<ModelTabId, ModelDraft>>>({});
-const modelOptions = reactive<Partial<Record<ModelTabId, ModelOption[]>>>({});
+const modelOptions = ref<Partial<Record<ModelTabId, ModelOption[]>>>({});
 const modelCatalogLoading = reactive<Partial<Record<ModelTabId, boolean>>>({});
 const loading = ref(false);
+const runtimeLoading = ref(false);
 const saving = ref(false);
 const oauthBusy = ref(false);
 const runtime = useRuntimeStore();
@@ -51,16 +56,9 @@ const current = computed(() => drafts[activeTab.value]);
 const supportsOAuth = computed(() => ['copilot', 'codex'].includes(activeTab.value));
 const hasUnsavedChanges = computed(() => {
   const saved = modelState.value;
-  if (!saved || saved.activeTab !== activeTab.value) return Boolean(saved);
-  return saved.tabs.some((tab) => {
-    const draft = drafts[tab.id];
-    if (!draft) return true;
-    return draft.baseUrl !== tab.baseUrl
-      || draft.defaultModel !== tab.defaultModel
-      || draft.reasoningEffort !== tab.reasoningEffort
-      || draft.apiKey.length > 0
-      || draft.clearApiKey;
-  });
+  return saved
+    ? buildModelTabsPatchRequest(saved, drafts, activeTab.value) !== null
+    : false;
 });
 const oauthStatusLabels: Record<ModelAuthStatus, string> = {
   unauthenticated: '尚未连接',
@@ -117,8 +115,13 @@ function isOAuthProvider(value: ModelTabId): value is OAuthProvider {
   return value === 'copilot' || value === 'codex';
 }
 
-function toDraft(tab: ModelTab): ModelDraft {
-  return { ...tab, apiKey: '', clearApiKey: false };
+function apiKeyPlaceholder(tab: ModelDraft): string {
+  if (!tab.apiKeyConfigured) return '输入新的 API key';
+  const saved = modelState.value?.tabs.find((item) => item.id === tab.id);
+  if (saved && saved.baseUrl.trim().replace(/\/+$/u, '') !== tab.baseUrl.trim().replace(/\/+$/u, '')) {
+    return '接口地址已改变，请输入对应 API key 或显式清空现有密钥';
+  }
+  return '已配置，留空保持原值';
 }
 
 async function copyOAuthCode() {
@@ -140,6 +143,20 @@ function openOAuthVerification() {
 
 async function loadModelRuntime() {
   modelRuntime.value = await api('/models/runtime', modelRuntimeStateSchema);
+  runtimeLoadError.value = null;
+}
+
+async function retryModelRuntime() {
+  if (runtimeLoading.value) return;
+  runtimeLoading.value = true;
+  try {
+    await loadModelRuntime();
+  } catch (error) {
+    modelRuntime.value = null;
+    runtimeLoadError.value = errorMessage(error, '模型运行状态加载失败');
+  } finally {
+    runtimeLoading.value = false;
+  }
 }
 
 function supportsDynamicModelList(tabId: ModelTabId): boolean {
@@ -148,7 +165,7 @@ function supportsDynamicModelList(tabId: ModelTabId): boolean {
 
 async function loadModelOptions(tabId: ModelTabId): Promise<void> {
   if (!supportsDynamicModelList(tabId)
-    || Object.prototype.hasOwnProperty.call(modelOptions, tabId)
+    || Object.prototype.hasOwnProperty.call(modelOptions.value, tabId)
     || modelCatalogLoading[tabId]) return;
   const tab = drafts[tabId];
   if (!tab) return;
@@ -161,14 +178,15 @@ async function loadModelOptions(tabId: ModelTabId): Promise<void> {
         { baseUrl: tab.baseUrl, ...(tab.apiKey ? { apiKey: tab.apiKey } : {}) },
       ),
     });
-    modelOptions[tab.id] = result.models;
     if (tab.id === 'codex') {
       if (!result.catalog) throw new Error('Codex 模型目录响应缺少 catalog。');
       tab.catalog = result.catalog;
     }
+    requireCacheableModelOptions(result);
+    modelOptions.value[tab.id] = result.models;
     if (result.error) ElMessage.warning(result.error);
   } catch (error) {
-    delete modelOptions[tab.id];
+    modelOptions.value = omitProviderModelOptions(modelOptions.value, tab.id);
     ElMessage.error(error instanceof Error ? error.message : '模型列表自动更新失败');
   } finally {
     modelCatalogLoading[tabId] = false;
@@ -176,25 +194,24 @@ async function loadModelOptions(tabId: ModelTabId): Promise<void> {
 }
 
 async function load() {
+  if (loading.value) return;
   loading.value = true;
+  void retryModelRuntime();
   try {
-    const [result, runtimeState] = await Promise.all([
-      api('/models', modelTabsResponseSchema),
-      api('/models/runtime', modelRuntimeStateSchema),
-    ]);
-    for (const id of MODEL_TAB_IDS) {
-      delete modelOptions[id];
-      delete drafts[id];
+    const result = await loadModelPageConfiguration(api('/models', modelTabsResponseSchema));
+    modelLoadError.value = result.requiredError;
+    if (result.modelState) {
+      for (const id of MODEL_TAB_IDS) delete drafts[id];
+      for (const tab of result.modelState.tabs) drafts[tab.id] = toModelDraft(tab);
+      modelOptions.value = {};
+      activeTab.value = result.modelState.activeTab;
+      modelState.value = result.modelState;
+      await loadModelOptions(result.modelState.activeTab);
+    } else {
+      for (const id of MODEL_TAB_IDS) delete drafts[id];
+      modelOptions.value = {};
+      modelState.value = null;
     }
-    modelState.value = result;
-    modelRuntime.value = runtimeState;
-    activeTab.value = result.activeTab;
-    for (const tab of result.tabs) {
-      drafts[tab.id] = toDraft(tab);
-    }
-    await loadModelOptions(result.activeTab);
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '模型状态加载失败');
   } finally {
     loading.value = false;
   }
@@ -216,35 +233,25 @@ async function refreshSavedState() {
 }
 
 async function save() {
-  if (!current.value || !hasUnsavedChanges.value || saving.value) return;
+  if (!modelState.value || !current.value || saving.value) return;
+  const request = buildModelTabsPatchRequest(modelState.value, drafts, activeTab.value);
+  if (!request) return;
   saving.value = true;
   try {
-    const tab = current.value;
-    const payload: ModelTabPatch = {
-      id: tab.id,
-      baseUrl: tab.baseUrl,
-      defaultModel: tab.defaultModel,
-      reasoningEffort: tab.reasoningEffort,
-    };
-    if (tab.apiKey) payload.apiKey = tab.apiKey;
-    if (tab.clearApiKey) payload.clearApiKey = true;
-    const request = {
-      activeTab: activeTab.value,
-      tabs: [payload],
-      dirtyTabIds: [activeTab.value],
-    };
     const result = await api('/models', saveModelsResponseSchema, {
       method: 'PATCH',
       body: jsonBody(modelTabsPatchRequestSchema, request),
     });
     modelState.value = result.modelTabs;
-    for (const next of result.modelTabs.tabs) drafts[next.id] = toDraft(next);
+    for (const next of result.modelTabs.tabs) drafts[next.id] = toModelDraft(next);
     runtime.currentModel = drafts[activeTab.value]?.defaultModel ?? activeTab.value;
     runtime.updateApply(result.apply);
     try {
       await loadModelRuntime();
     } catch (error) {
-      ElMessage.warning(`模型配置已保存，运行态刷新失败：${error instanceof Error ? error.message : '未知错误'}`);
+      modelRuntime.value = null;
+      runtimeLoadError.value = errorMessage(error, '模型运行状态加载失败');
+      ElMessage.warning(`模型配置已保存，运行态刷新失败：${runtimeLoadError.value}`);
       return;
     }
     ElMessage.success(result.hotSwitched ? '模型已热切换' : '模型配置已保存，重启后生效');
@@ -286,7 +293,10 @@ async function oauth(action: 'start' | 'poll' | 'logout') {
     tab.authStatus = result.authStatus;
     tab.accountLabel = result.accountLabel;
     tab.authError = result.authError;
+    tab.tokenExpiresAt = result.tokenExpiresAt;
     tab.oauthAttempt = result.attempt;
+    modelOptions.value = omitProviderModelOptions(modelOptions.value, provider);
+    await loadModelOptions(provider);
     ElMessage.success(action === 'start' ? 'OAuth 设备登录已启动' : action === 'logout' ? 'OAuth 已退出' : `OAuth 状态：${result.authStatus}`);
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
@@ -330,12 +340,26 @@ onBeforeUnmount(() => {
     </template>
   </PageHeader>
   <article class="panel model-panel" v-loading="loading && !modelState">
+    <section v-if="modelLoadError" class="load-error-card">
+      <div>
+        <strong>模型配置加载失败</strong>
+        <p>{{ modelLoadError }}</p>
+      </div>
+      <el-button type="primary" plain :loading="loading" @click="load">重试加载</el-button>
+    </section>
     <el-tabs v-if="modelState" v-model="activeTab" class="model-tabs">
       <el-tab-pane v-for="tab in modelState.tabs" :key="tab.id" :name="tab.id">
         <template #label><span class="tab-label"><i class="status-dot" :class="tab.authStatus === 'ready' || tab.authKind === 'manual' && tab.apiKeyConfigured ? 'ok' : 'warn'" />{{ tab.title }}</span></template>
       </el-tab-pane>
     </el-tabs>
-    <section v-if="modelRuntime" class="runtime-overview">
+    <section v-if="modelState && runtimeLoadError" class="runtime-error-card">
+      <div>
+        <strong>运行状态暂时不可用</strong>
+        <p>{{ runtimeLoadError }}。已保存的模型配置仍可查看和编辑。</p>
+      </div>
+      <el-button plain :loading="runtimeLoading" @click="retryModelRuntime">重试运行状态</el-button>
+    </section>
+    <section v-if="modelState && modelRuntime" class="runtime-overview">
       <div class="runtime-overview-head">
         <div>
           <p class="eyebrow">MODEL RUNTIME</p>
@@ -418,7 +442,7 @@ onBeforeUnmount(() => {
       <el-form label-position="top" class="model-form">
         <el-form-item label="API base URL"><el-input v-model="current.baseUrl" /></el-form-item>
         <el-form-item v-if="!supportsOAuth" label="API key">
-          <el-input v-model="current.apiKey" type="password" show-password :placeholder="current.apiKeyConfigured ? '已配置，留空保持原值' : '输入新的 API key'" :disabled="current.clearApiKey" />
+          <el-input v-model="current.apiKey" type="password" show-password :placeholder="apiKeyPlaceholder(current)" :disabled="current.clearApiKey" />
           <el-checkbox v-if="current.apiKeyConfigured" v-model="current.clearApiKey">显式清空现有 API key</el-checkbox>
         </el-form-item>
         <el-form-item label="默认模型">
@@ -427,9 +451,20 @@ onBeforeUnmount(() => {
             v-model="current.defaultModel"
             class="model-select"
             :loading="modelCatalogLoading[current.id]"
+            filterable
             placeholder="请选择模型"
           >
-            <el-option v-for="item in modelOptions[current.id] ?? []" :key="item.modelId" :label="item.label || item.modelId" :value="item.modelId" />
+            <el-option
+              v-for="item in modelOptions[current.id] ?? []"
+              :key="modelOptionValue(item)"
+              :label="item.label"
+              :value="modelOptionValue(item)"
+            >
+              <div class="model-option">
+                <span>{{ item.label }}</span>
+                <small>{{ item.transportModel }}</small>
+              </div>
+            </el-option>
           </el-select>
           <el-input v-else v-model="current.defaultModel" placeholder="请输入模型 ID" />
         </el-form-item>
@@ -454,6 +489,12 @@ onBeforeUnmount(() => {
 .runtime-grid small { color:#929baa; font-size:9px; }
 .pending-reason { display:flex; gap:8px; margin:12px 0 0; padding:9px 12px; border-radius:7px; color:#865f1f; background:#fff7e8; font-size:10px; }
 .pending-reason strong { flex:0 0 auto; }
+.load-error-card, .runtime-error-card { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:16px 20px; border-bottom:1px solid #f2c7c7; color:#9b3535; background:#fff4f4; }
+.runtime-error-card { border-bottom-color:#f1d7a6; color:#805d1f; background:#fff9ed; }
+.load-error-card strong, .runtime-error-card strong { display:block; font-size:13px; }
+.load-error-card p, .runtime-error-card p { margin:4px 0 0; font-size:10px; line-height:1.5; }
+.model-option { display:flex; align-items:center; justify-content:space-between; gap:18px; width:100%; }
+.model-option small { overflow:hidden; color:#929baa; font-family:"SFMono-Regular",Consolas,monospace; font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
 @media (max-width:760px) {
   .model-content { padding:20px 16px; }
   .runtime-overview { padding:18px 16px; }
@@ -464,5 +505,6 @@ onBeforeUnmount(() => {
   .oauth-actions { justify-content:flex-start; }
   .oauth-attempt { align-items:flex-start; flex-direction:column; gap:14px; }
   .oauth-attempt-actions { width:100%; flex-wrap:wrap; }
+  .load-error-card, .runtime-error-card { align-items:flex-start; flex-direction:column; }
 }
 </style>

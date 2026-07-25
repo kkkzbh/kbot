@@ -482,9 +482,41 @@ export function syncManagedChatLunaAgentConfig(rootDir: string, env: Record<stri
   return configPath;
 }
 
+function toAdminBuiltinModelTab(
+  state: ReturnType<typeof resolveMainChatTabStateFromEnv>,
+): AdminBuiltinModelTab {
+  return {
+    id: state.id,
+    title: state.title,
+    provider: state.provider,
+    strategyId: state.strategyId,
+    requestMode: state.requestMode,
+    structuredOutputProtocol: state.structuredOutputProtocol,
+    description: state.description,
+    modelHint: state.modelHint,
+    authKind: state.authKind,
+    authStatus: state.authStatus,
+    accountLabel: state.accountLabel,
+    authError: state.authError,
+    baseUrl: state.baseUrl,
+    apiKey: state.apiKey,
+    defaultModel: state.defaultModel,
+    reasoningEffort: state.reasoningEffort,
+    ...(state.canonicalModel ? { canonicalModel: state.canonicalModel } : {}),
+    ...(state.transportModel ? { transportModel: state.transportModel } : {}),
+  };
+}
+
+function resolveAdminBuiltinModelTabFromEnv(
+  id: AdminModelTabId,
+  env: Record<string, string>,
+): AdminBuiltinModelTab {
+  return toAdminBuiltinModelTab(resolveMainChatTabStateFromEnv(id, env));
+}
+
 export function buildModelTabsStateFromEnv(env: Record<string, string>): AdminModelTabsState {
   const activeTab = resolveMainChatActiveTabFromEnv(env) as AdminModelTabId;
-  const tabs = MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => resolveMainChatTabStateFromEnv(id, env) as AdminBuiltinModelTab);
+  const tabs = MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => resolveAdminBuiltinModelTabFromEnv(id, env));
 
   return {
     activeTab,
@@ -511,6 +543,31 @@ function normalizeDeepSeekBaseUrl(value: unknown): string {
 
 function normalizeMimoBaseUrl(value: unknown): string {
   return normalizeProviderBaseUrl(value, MIMO_DEFAULT_BASE_URL);
+}
+
+function assertStoredCredentialEndpointOwnership(
+  providedById: ReadonlyMap<AdminModelTabId, Partial<AdminBuiltinModelTab>>,
+  existingById: Readonly<Record<AdminModelTabId, AdminBuiltinModelTab>>,
+): void {
+  for (const [id, provided] of providedById) {
+    const existing = existingById[id];
+    if (existing.authKind !== 'manual' || !existing.apiKey || provided.apiKey !== undefined) {
+      continue;
+    }
+    const definition = getBuiltinMainChatTabDefinition(id);
+    const normalizeBaseUrl = id === 'deepseek'
+      ? normalizeDeepSeekBaseUrl
+      : id === 'mimo'
+        ? normalizeMimoBaseUrl
+        : (value: unknown) => String(value ?? '').trim().replace(/\/+$/u, '');
+    const existingBaseUrl = normalizeBaseUrl(existing.baseUrl);
+    const nextBaseUrl = normalizeBaseUrl(provided.baseUrl ?? existing.baseUrl);
+    if (nextBaseUrl !== existingBaseUrl) {
+      throw new Error(
+        `${definition.title} API base URL 已改变；已存 API key 只绑定原接口。请提交新 API key 或显式清空现有密钥。`,
+      );
+    }
+  }
 }
 
 function normalizeDeepSeekModelList(models: readonly AdminModelOption[]): AdminModelOption[] {
@@ -942,7 +999,7 @@ function normalizeModelTabInput(
   options: NormalizeModelTabInputOptions = {},
 ): AdminBuiltinModelTab {
   const id = normalizeMainChatBuiltinTabId(input?.id) as AdminModelTabId;
-  const fallbackTab = options.existing ?? (resolveMainChatTabStateFromEnv(id, readManagedEnvFromContent('')) as AdminBuiltinModelTab);
+  const fallbackTab = options.existing ?? resolveAdminBuiltinModelTabFromEnv(id, readManagedEnvFromContent(''));
   const definition = getBuiltinMainChatTabDefinition(id);
   const strategy = getMainChatProviderStrategy(definition.strategyId);
   const rawModel = String(input?.defaultModel ?? fallbackTab.defaultModel ?? '').trim();
@@ -1635,8 +1692,33 @@ export class AdminRuntimeManager {
     };
   }
 
+  private async resolveConfiguredModelListRequest(
+    tabId: Extract<AdminModelTabId, 'deepseek' | 'mimo'>,
+    input: DeepSeekModelListRequest | MimoModelListRequest,
+  ): Promise<DeepSeekModelListRequest | MimoModelListRequest> {
+    if (input.apiKey !== undefined) return input;
+    const state = buildModelTabsStateFromEnv(await this.readCurrentBotEnv());
+    const configured = state.tabs.find((tab) => tab.id === tabId);
+    if (!configured) {
+      throw new Error(`缺少内置模型 Tab：${tabId}`);
+    }
+    const normalizeBaseUrl = tabId === 'deepseek' ? normalizeDeepSeekBaseUrl : normalizeMimoBaseUrl;
+    const configuredBaseUrl = normalizeBaseUrl(configured.baseUrl);
+    const requestedBaseUrl = input.baseUrl?.trim()
+      ? normalizeBaseUrl(input.baseUrl)
+      : configuredBaseUrl;
+    return {
+      baseUrl: requestedBaseUrl,
+      ...(requestedBaseUrl === configuredBaseUrl && configured.apiKey
+        ? { apiKey: configured.apiKey }
+        : {}),
+    };
+  }
+
   async listDeepSeekModels(input: DeepSeekModelListRequest): Promise<DeepSeekModelListResponse> {
-    return listDeepSeekModelsFromOfficialSource(input);
+    return listDeepSeekModelsFromOfficialSource(
+      await this.resolveConfiguredModelListRequest('deepseek', input),
+    );
   }
 
   async listCopilotModels(): Promise<CopilotModelListResponse> {
@@ -1648,7 +1730,9 @@ export class AdminRuntimeManager {
   }
 
   async listMimoModels(input: MimoModelListRequest): Promise<MimoModelListResponse> {
-    return listMimoModelsFromOfficialSource(input);
+    return listMimoModelsFromOfficialSource(
+      await this.resolveConfiguredModelListRequest('mimo', input),
+    );
   }
 
   async scheduleRestart(unit: BotServiceUnit): Promise<void> {
@@ -1850,9 +1934,25 @@ export class AdminRuntimeManager {
     const existingByTab = Object.fromEntries(
       MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => [
         id,
-        resolveMainChatTabStateFromEnv(id, currentEnvFromDisk) as AdminBuiltinModelTab,
+        resolveAdminBuiltinModelTabFromEnv(id, currentEnvFromDisk),
       ]),
     ) as Record<AdminModelTabId, AdminBuiltinModelTab>;
+
+    const providedById = new Map<AdminModelTabId, Partial<AdminBuiltinModelTab>>();
+    for (const item of providedTabs) {
+      const rawId = String(item?.id ?? '').trim();
+      let id: AdminModelTabId;
+      try {
+        id = normalizeMainChatBuiltinTabId(rawId) as AdminModelTabId;
+      } catch {
+        throw new Error(`未知模型 Tab：${rawId}`);
+      }
+      if (providedById.has(id)) {
+        throw new Error(`重复模型 Tab：${id}`);
+      }
+      providedById.set(id, item);
+    }
+    assertStoredCredentialEndpointOwnership(providedById, existingByTab);
 
     let codexModelIds: string[] | undefined;
     if (dirtyIds.has('codex')) {
@@ -1872,33 +1972,18 @@ export class AdminRuntimeManager {
       copilotModelIds = copilotModels.models.map((model) => model.modelId);
     }
 
-    const deepseekInput = providedTabs.find((item) => String(item?.id ?? '').trim() === 'deepseek');
+    const deepseekInput = providedById.get('deepseek');
     const deepseekModels = await this.listDeepSeekModels({
       baseUrl: deepseekInput?.baseUrl ?? existingByTab.deepseek.baseUrl,
-      apiKey: deepseekInput?.apiKey !== undefined ? deepseekInput.apiKey : existingByTab.deepseek.apiKey,
+      ...(deepseekInput?.apiKey !== undefined ? { apiKey: deepseekInput.apiKey } : {}),
     });
     const deepseekModelIds = deepseekModels.models.map((model) => model.modelId);
-    const mimoInput = providedTabs.find((item) => String(item?.id ?? '').trim() === 'mimo');
+    const mimoInput = providedById.get('mimo');
     const mimoModels = await this.listMimoModels({
       baseUrl: mimoInput?.baseUrl ?? existingByTab.mimo.baseUrl,
-      apiKey: mimoInput?.apiKey !== undefined ? mimoInput.apiKey : existingByTab.mimo.apiKey,
+      ...(mimoInput?.apiKey !== undefined ? { apiKey: mimoInput.apiKey } : {}),
     });
     const mimoModelIds = mimoModels.models.map((model) => model.modelId);
-
-    const providedById = new Map<AdminModelTabId, Partial<AdminBuiltinModelTab>>();
-    for (const item of providedTabs) {
-      const rawId = String(item?.id ?? '').trim();
-      let id: AdminModelTabId;
-      try {
-        id = normalizeMainChatBuiltinTabId(rawId) as AdminModelTabId;
-      } catch {
-        throw new Error(`未知模型 Tab：${rawId}`);
-      }
-      if (providedById.has(id)) {
-        throw new Error(`重复模型 Tab：${id}`);
-      }
-      providedById.set(id, item);
-    }
 
     const tabs: AdminBuiltinModelTab[] = MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => {
       const provided = providedById.get(id);

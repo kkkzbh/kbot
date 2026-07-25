@@ -250,11 +250,19 @@ export const modelTabSchema = z.object({
   baseUrl: z.string(),
   apiKey: z.null(),
   apiKeyConfigured: z.boolean(),
-  defaultModel: z.string().min(1),
+  defaultModel: z.string(),
   reasoningEffort: modelReasoningEffortSchema.nullable().optional(),
   canonicalModel: z.string().min(1).optional(),
   transportModel: z.string().min(1).optional(),
-}).strict();
+}).strict().superRefine((tab, context) => {
+  if (tab.id !== 'codex' && tab.defaultModel.trim().length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['defaultModel'],
+      message: '只有尚未选择动态目录模型的 Codex Tab 可以返回空 defaultModel。',
+    });
+  }
+});
 
 export const modelTabsResponseSchema = z.object({
   activeTab: modelTabIdSchema,
@@ -262,7 +270,8 @@ export const modelTabsResponseSchema = z.object({
 }).strict();
 
 export const modelOptionSchema = z.object({
-  modelId: z.string().min(1),
+  canonicalModel: z.string().min(1),
+  transportModel: z.string().min(1),
   label: z.string().min(1),
   rateLabel: z.string().min(1).optional(),
   requestMode: modelRequestModeSchema.optional(),

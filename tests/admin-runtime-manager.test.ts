@@ -422,6 +422,7 @@ describe('admin env helpers', () => {
     } as Record<string, string>);
 
     expect(state.activeTab).toBe('openai');
+    expect(state.tabs.every((tab) => !Object.hasOwn(tab, 'tabId'))).toBe(true);
     expect(state.tabs).toEqual([
       expect.objectContaining({
         id: 'siliconflow',
@@ -586,6 +587,103 @@ describe('admin env helpers', () => {
         { modelId: 'mimo-v2-omni' },
       ],
     });
+  });
+
+  it('uses stored provider credentials only for their configured model endpoints', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.local');
+    writeFileSync(envFilePath, [
+      'CHATLUNA_DEEPSEEK_BASE_URL=https://api.deepseek.com',
+      'CHATLUNA_DEEPSEEK_API_KEY=stored-deepseek-key',
+      'CHATLUNA_MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1',
+      'CHATLUNA_MIMO_API_KEY=stored-mimo-key',
+      '',
+    ].join('\n'), 'utf8');
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === 'https://api.deepseek.com/models') {
+        expect(init?.headers).toMatchObject({ Authorization: 'Bearer stored-deepseek-key' });
+        return new Response(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }] }), { status: 200 });
+      }
+      if (url === 'https://token-plan-cn.xiaomimimo.com/v1/models') {
+        expect(init?.headers).toMatchObject({ Authorization: 'Bearer stored-mimo-key' });
+        return new Response(JSON.stringify({ data: [{ id: 'mimo-v2.5-pro' }] }), { status: 200 });
+      }
+      throw new Error(`unexpected model endpoint: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
+
+    await expect(manager.listDeepSeekModels({
+      baseUrl: 'https://api.deepseek.com/',
+    })).resolves.toMatchObject({ source: 'dynamic', error: null });
+    await expect(manager.listMimoModels({
+      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1/',
+    })).resolves.toMatchObject({ source: 'dynamic', error: null });
+    const customEndpoint = await manager.listDeepSeekModels({
+      baseUrl: 'https://untrusted.example.com/v1',
+    });
+
+    expect(customEndpoint).toMatchObject({ source: 'static' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(customEndpoint)).not.toContain('stored-deepseek-key');
+  });
+
+  it.each([
+    {
+      id: 'openai',
+      title: 'OpenAI',
+      envPrefix: 'CHATLUNA_OPENAI',
+      baseUrl: 'https://api.openai.example.com/v1',
+      defaultModel: 'openai/gpt-5.4-medium-thinking',
+    },
+    {
+      id: 'deepseek',
+      title: 'DeepSeek',
+      envPrefix: 'CHATLUNA_DEEPSEEK',
+      baseUrl: 'https://api.deepseek.com',
+      defaultModel: 'deepseek/deepseek-v4-flash',
+    },
+    {
+      id: 'mimo',
+      title: 'MIMO',
+      envPrefix: 'CHATLUNA_MIMO',
+      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+      defaultModel: 'mimo/mimo-v2.5-pro',
+    },
+  ] as const)('rejects rebinding a stored $title credential to a changed endpoint during save', async ({
+    id,
+    title,
+    envPrefix,
+    baseUrl,
+    defaultModel,
+  }) => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.local');
+    writeFileSync(envFilePath, [
+      `CHATLUNA_ACTIVE_TAB=${id}`,
+      `${envPrefix}_BASE_URL=${baseUrl}`,
+      `${envPrefix}_API_KEY=stored-provider-key`,
+      `${envPrefix}_DEFAULT_MODEL=${defaultModel}`,
+      '',
+    ].join('\n'), 'utf8');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: 'deepseek-v4-flash' }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
+
+    await expect(manager.saveModelTabs({
+      activeTab: id,
+      dirtyTabIds: [id],
+      tabs: [{
+        id,
+        baseUrl: 'https://untrusted.example.com/v1',
+        defaultModel,
+      }] as any,
+    })).rejects.toThrow(new RegExp(`${title}.*API key`));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(readFileSync(envFilePath, 'utf8')).not.toContain('untrusted.example.com');
   });
 
   it('returns the Copilot Auto entry from the OAuth bridge', async () => {

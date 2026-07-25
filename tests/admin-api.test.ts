@@ -383,6 +383,77 @@ describe('independent admin API plugin', () => {
     });
   });
 
+  it('returns strict model tab DTOs without internal runtime identity fields', async () => {
+    const { server } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const readModels = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/models',
+    )?.[1];
+    const request = createKoaCtx({
+      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
+    });
+
+    await readModels(request);
+
+    expect(request.status).toBe(200);
+    expect(request.body).toMatchObject({
+      activeTab: 'siliconflow',
+      tabs: expect.arrayContaining([
+        expect.objectContaining({ id: 'siliconflow', apiKey: null }),
+        expect.objectContaining({ id: 'openai', apiKey: null }),
+        expect.objectContaining({ id: 'codex', apiKey: null }),
+        expect.objectContaining({ id: 'copilot', apiKey: null }),
+        expect.objectContaining({ id: 'deepseek', apiKey: null }),
+        expect.objectContaining({ id: 'mimo', apiKey: null }),
+      ]),
+    });
+    expect((request.body as { tabs: Record<string, unknown>[] }).tabs).toHaveLength(6);
+    expect((request.body as { tabs: Record<string, unknown>[] }).tabs).toSatisfy(
+      (tabs: Record<string, unknown>[]) => tabs.every((tab) => !Object.hasOwn(tab, 'tabId')),
+    );
+    expect((request.body as { tabs: { id: string; defaultModel: string }[] }).tabs).toContainEqual(
+      expect.objectContaining({ id: 'codex', defaultModel: '' }),
+    );
+  });
+
+  it('returns canonical and transport identities for dynamic model options', async () => {
+    const { server } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const listModels = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/models/:provider/list',
+    )?.[1];
+    const request = createKoaCtx({
+      origin: 'https://admin.example.com',
+      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
+      params: { provider: 'deepseek' },
+      body: {},
+    });
+
+    await listModels(request);
+
+    expect(request.status).toBe(200);
+    expect(request.body).toMatchObject({
+      source: 'static',
+      models: expect.arrayContaining([
+        expect.objectContaining({
+          canonicalModel: 'deepseek/deepseek-v4-flash',
+          transportModel: 'deepseek-v4-flash',
+        }),
+      ]),
+    });
+    expect(JSON.stringify(request.body)).not.toContain('"modelId"');
+  });
+
   it('never returns managed secret values from settings', async () => {
     const { server } = createRuntime(createTempDir());
     const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
