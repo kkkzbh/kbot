@@ -60,6 +60,7 @@ function createCopilotBridgeWithModels(models: unknown[]) {
       authStatus: 'ready' as const,
       accountLabel: 'tester',
       authError: null,
+      attempt: null,
     }),
     proxyModels: async () => ({
       status: 200,
@@ -103,6 +104,47 @@ function createSystemdShowExec(activeState = 'inactive') {
     stderr: '',
   });
 }
+
+it('keeps pending OAuth device details in the model tabs state', async () => {
+  const dir = createTempDir();
+  const envFilePath = join(dir, '.env.local');
+  writeFileSync(envFilePath, 'CHATLUNA_ACTIVE_TAB=codex\n', 'utf8');
+  const attempt = {
+    attemptId: 'attempt-123',
+    userCode: 'ABCD-EFGH',
+    verificationUri: 'https://auth.openai.com/codex/device',
+    expiresAt: Date.now() + 900_000,
+    intervalSec: 5,
+    nextPollAt: Date.now(),
+    state: 'pending' as const,
+    error: null,
+  };
+  const manager = new AdminRuntimeManager({
+    rootDir: dir,
+    envFilePath,
+    codexBridge: {
+      getRuntimeConfig: async () => ({
+        baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
+        apiKey: 'codex-bridge-secret',
+      }),
+      getAdminStatus: async () => ({
+        authKind: 'codex_oauth' as const,
+        authStatus: 'pending' as const,
+        accountLabel: null,
+        authError: null,
+        tokenExpiresAt: null,
+        attempt,
+      }),
+    },
+  });
+
+  const state = await manager.getModelTabsState();
+
+  expect(state.tabs.find((tab) => tab.id === 'codex')).toMatchObject({
+    authStatus: 'pending',
+    oauthAttempt: attempt,
+  });
+});
 
 function createMinimalWav(): Uint8Array {
   const sampleRate = 32000;
@@ -490,6 +532,7 @@ describe('admin env helpers', () => {
         authStatus: 'expired' as const,
         accountLabel: 'tester',
         authError: 'Copilot session token 换取失败：HTTP 401',
+        attempt: null,
       }),
       proxyModels: async () => {
         throw new Error('proxyModels should not be called when auth is expired');

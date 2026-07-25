@@ -15,6 +15,56 @@ const oauthBusy = ref(false);
 const runtime = useRuntimeStore();
 const current = computed(() => drafts[activeTab.value]);
 const supportsOAuth = computed(() => ['copilot', 'codex'].includes(activeTab.value));
+const oauthStatusLabels: Record<string, string> = {
+  unauthenticated: '尚未连接',
+  pending: '等待设备确认',
+  ready: '已连接',
+  expired: '登录已过期',
+  error: '连接异常',
+};
+const expiryFormatter = new Intl.DateTimeFormat('zh-CN', {
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+function oauthStatusLabel(status: string): string {
+  return oauthStatusLabels[status] ?? status;
+}
+
+function oauthStatusClass(status: string): 'ok' | 'warn' | 'error' {
+  if (status === 'ready') return 'ok';
+  if (status === 'error') return 'error';
+  return 'warn';
+}
+
+function oauthStatusDetail(tab: any): string {
+  if (tab.authStatus === 'pending' && tab.oauthAttempt) return '请在验证页面输入下方设备码';
+  if (tab.authStatus === 'pending') return '登录信息不可用，请重新登录';
+  if (tab.authStatus === 'ready') return tab.accountLabel || 'OAuth 凭据可用';
+  return tab.authError || '尚未连接账号';
+}
+
+function formatAttemptExpiry(expiresAt: unknown): string {
+  if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) return '有效期由验证页面显示';
+  return `有效至 ${expiryFormatter.format(new Date(expiresAt))}`;
+}
+
+async function copyOAuthCode() {
+  const code = current.value?.oauthAttempt?.userCode;
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    ElMessage.success('设备码已复制');
+  } catch {
+    ElMessage.error('设备码复制失败，请手动选择复制');
+  }
+}
+
+function openOAuthVerification() {
+  const verificationUri = current.value?.oauthAttempt?.verificationUri;
+  if (!verificationUri) return;
+  window.open(verificationUri, '_blank', 'noopener,noreferrer');
+}
 
 async function load() {
   loading.value = true;
@@ -88,7 +138,6 @@ async function oauth(action: 'start' | 'poll' | 'logout') {
     current.value.accountLabel = result.accountLabel;
     current.value.authError = result.authError;
     current.value.oauthAttempt = result.attempt;
-    if (result.attempt?.verificationUri) window.open(result.attempt.verificationUri, '_blank', 'noopener');
     ElMessage.success(action === 'start' ? 'OAuth 设备登录已启动' : action === 'logout' ? 'OAuth 已退出' : `OAuth 状态：${result.authStatus}`);
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : 'OAuth 操作失败'); }
   finally { oauthBusy.value = false; }
@@ -110,8 +159,26 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
     <div v-if="current" class="model-content">
       <div class="model-intro"><div><p class="eyebrow">{{ current.strategyId }}</p><h2>{{ current.title }}</h2><p>{{ current.description }}</p></div><el-tag effect="plain">{{ current.requestMode }}</el-tag></div>
       <div v-if="supportsOAuth" class="oauth-card">
-        <div><span class="status-dot" :class="current.authStatus === 'ready' ? 'ok' : 'warn'" /><strong>OAuth {{ current.authStatus }}</strong><small>{{ current.accountLabel || current.authError || '尚未连接账号' }}</small></div>
-        <div><el-button v-if="current.authStatus !== 'ready'" :loading="oauthBusy" @click="oauth('start')">启动登录</el-button><el-button v-if="current.oauthAttempt" :loading="oauthBusy" @click="oauth('poll')">检查状态</el-button><el-button v-if="current.authStatus === 'ready'" type="danger" plain :loading="oauthBusy" @click="oauth('logout')">退出 OAuth</el-button></div>
+        <div class="oauth-summary">
+          <span class="status-dot" :class="oauthStatusClass(current.authStatus)" />
+          <strong>{{ oauthStatusLabel(current.authStatus) }}</strong>
+          <small>{{ oauthStatusDetail(current) }}</small>
+        </div>
+        <div class="oauth-actions">
+          <el-button v-if="current.authStatus !== 'ready' && (current.authStatus !== 'pending' || !current.oauthAttempt)" :loading="oauthBusy" @click="oauth('start')">{{ current.authStatus === 'unauthenticated' ? '启动登录' : '重新登录' }}</el-button>
+          <el-button v-if="current.authStatus === 'ready'" type="danger" plain :loading="oauthBusy" @click="oauth('logout')">退出 OAuth</el-button>
+        </div>
+        <div v-if="current.authStatus === 'pending' && current.oauthAttempt" class="oauth-attempt">
+          <div class="oauth-code">
+            <span>设备码</span>
+            <div><code>{{ current.oauthAttempt.userCode }}</code><el-button text size="small" @click="copyOAuthCode">复制</el-button></div>
+            <small>{{ formatAttemptExpiry(current.oauthAttempt.expiresAt) }}</small>
+          </div>
+          <div class="oauth-attempt-actions">
+            <el-button @click="openOAuthVerification">打开验证页</el-button>
+            <el-button type="primary" :loading="oauthBusy" @click="oauth('poll')">我已完成，检查状态</el-button>
+          </div>
+        </div>
       </div>
       <el-form label-position="top" class="model-form">
         <el-form-item label="API base URL"><el-input v-model="current.baseUrl" /></el-form-item>
@@ -131,5 +198,12 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 </template>
 
 <style scoped>
-.model-panel { overflow:hidden; }.model-tabs { padding:0 20px; }.model-tabs :deep(.el-tabs__header) { margin:0; }.tab-label { display:inline-flex; align-items:center; gap:7px; }.model-content { max-width:900px; padding:28px; }.model-intro { display:flex; justify-content:space-between; gap:20px; margin-bottom:22px; }.model-intro h2 { margin:3px 0 5px; font-size:20px; }.model-intro p { margin:0; color:var(--muted); font-size:11px; }.eyebrow { color:#8290a7 !important; font-size:9px !important; letter-spacing:.08em; }.oauth-card { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:14px 16px; margin-bottom:22px; border:1px solid #dce4f5; border-radius:10px; background:#f7f9fe; }.oauth-card > div:first-child { display:grid; grid-template-columns:auto 1fr; align-items:center; column-gap:9px; }.oauth-card small { grid-column:2; color:#788397; font-size:10px; }.model-form { max-width:720px; }.contract-strip { display:grid; grid-template-columns:140px 1fr; gap:7px 18px; margin-top:24px; padding:14px; border-radius:8px; color:#727d8f; background:#f7f8fa; font-size:10px; }.contract-strip strong { color:#455064; font-family:monospace; }
+.model-panel { overflow:hidden; }.model-tabs { padding:0 20px; }.model-tabs :deep(.el-tabs__header) { margin:0; }.tab-label { display:inline-flex; align-items:center; gap:7px; }.model-content { max-width:900px; padding:28px; }.model-intro { display:flex; justify-content:space-between; gap:20px; margin-bottom:22px; }.model-intro h2 { margin:3px 0 5px; font-size:20px; }.model-intro p { margin:0; color:var(--muted); font-size:11px; }.eyebrow { color:#8290a7 !important; font-size:9px !important; letter-spacing:.08em; }.oauth-card { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px 20px; padding:14px 16px; margin-bottom:22px; border:1px solid #dce4f5; border-radius:10px; background:#f7f9fe; }.oauth-summary { display:grid; grid-template-columns:auto 1fr; align-items:center; column-gap:9px; }.oauth-summary strong { color:#273348; font-size:13px; }.oauth-summary small { grid-column:2; margin-top:1px; color:#788397; font-size:10px; }.oauth-actions { display:flex; align-items:center; }.oauth-attempt { grid-column:1 / -1; display:flex; align-items:flex-end; justify-content:space-between; gap:22px; padding-top:13px; border-top:1px solid #e1e7f2; }.oauth-code > span { display:block; margin-bottom:5px; color:#7d8899; font-size:9px; font-weight:700; letter-spacing:.08em; }.oauth-code > div { display:flex; align-items:center; gap:4px; }.oauth-code code { min-width:148px; padding:7px 10px; border:1px solid #d9e1ee; border-radius:7px; color:#26344d; background:#fff; font-family:"SFMono-Regular",Consolas,monospace; font-size:15px; font-weight:700; letter-spacing:.08em; line-height:1; text-align:center; user-select:all; }.oauth-code small { display:block; margin-top:5px; color:#8a94a4; font-size:9px; }.oauth-attempt-actions { display:flex; align-items:center; gap:8px; }.oauth-attempt-actions :deep(.el-button + .el-button) { margin-left:0; }.model-form { max-width:720px; }.contract-strip { display:grid; grid-template-columns:140px 1fr; gap:7px 18px; margin-top:24px; padding:14px; border-radius:8px; color:#727d8f; background:#f7f8fa; font-size:10px; }.contract-strip strong { color:#455064; font-family:monospace; }
+@media (max-width:760px) {
+  .model-content { padding:20px 16px; }
+  .oauth-card { grid-template-columns:1fr; }
+  .oauth-actions { justify-content:flex-start; }
+  .oauth-attempt { align-items:flex-start; flex-direction:column; gap:14px; }
+  .oauth-attempt-actions { width:100%; flex-wrap:wrap; }
+}
 </style>

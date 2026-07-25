@@ -179,6 +179,7 @@ export interface AdminBuiltinModelTab {
   accountLabel?: string | null;
   authError?: string | null;
   tokenExpiresAt?: number | null;
+  oauthAttempt?: CopilotAuthAttempt | CodexAuthAttempt | null;
   baseUrl: string;
   apiKey: string;
   defaultModel: string;

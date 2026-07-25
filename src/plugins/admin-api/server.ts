@@ -19,6 +19,8 @@ import type {
   AdminEnvFilesState,
   AdminBuiltinModelTab,
   AdminAuthStatus,
+  CodexAuthAttempt,
+  CopilotAuthAttempt,
   AdminModelOption,
   AdminModelTabId,
   AdminModelTabsState,
@@ -145,6 +147,7 @@ type CopilotBridgeAdminState = {
   authStatus: AdminAuthStatus;
   accountLabel: string | null;
   authError: string | null;
+  attempt: CopilotAuthAttempt | null;
 };
 
 type CopilotBridgeStateProvider = {
@@ -164,7 +167,7 @@ type CodexBridgeAdminState = {
   accountLabel: string | null;
   authError: string | null;
   tokenExpiresAt: number | null;
-  attempt?: unknown;
+  attempt: CodexAuthAttempt | null;
 };
 
 type CodexBridgeStateProvider = {
@@ -2245,6 +2248,7 @@ export class AdminRuntimeManager {
         authStatus: 'error' as const,
         accountLabel: null,
         authError: error instanceof Error ? error.message : String(error),
+        attempt: null,
       })) ?? Promise.resolve(null),
       this.codexBridge?.getRuntimeConfig().catch(() => null) ?? Promise.resolve(null),
       this.codexBridge?.getAdminStatus({ probe: false }).catch((error) => ({
@@ -2253,6 +2257,7 @@ export class AdminRuntimeManager {
         accountLabel: null,
         authError: error instanceof Error ? error.message : String(error),
         tokenExpiresAt: null,
+        attempt: null,
       })) ?? Promise.resolve(null),
     ]);
     return {
@@ -2265,6 +2270,7 @@ export class AdminRuntimeManager {
             authStatus: copilotState.authStatus,
             accountLabel: copilotState.accountLabel,
             authError: copilotState.authError,
+            oauthAttempt: copilotState.attempt,
             baseUrl: copilotRuntime.baseUrl,
             apiKey: copilotRuntime.apiKey,
           };
@@ -2277,6 +2283,7 @@ export class AdminRuntimeManager {
             accountLabel: codexState.accountLabel,
             authError: codexState.authError,
             tokenExpiresAt: codexState.tokenExpiresAt,
+            oauthAttempt: codexState.attempt,
             baseUrl: codexRuntime.baseUrl,
             apiKey: codexRuntime.apiKey,
           };
