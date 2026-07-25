@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { ProxyAgent, type Dispatcher } from 'undici';
 import type {
   AdminAuthStatus,
   CopilotAuthAttempt,
@@ -13,6 +12,10 @@ import {
   type CopilotModelOption,
   type MainChatRequestMode,
 } from '../shared/llm/index.js';
+import {
+  createProxyFetchRequest,
+  formatProxyFetchFailure,
+} from '../shared/proxy-fetch.js';
 
 const DEFAULT_KOISHI_PORT = '5140';
 const DEFAULT_CLIENT_ID = 'Iv1.b507a08c87ecfe98';
@@ -25,7 +28,6 @@ const SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1000;
 const AUTO_ROUTER_TIMEOUT_MS = 10_000;
 const COPILOT_AUTO_MIN_OUTPUT_TOKENS = 512;
 const COPILOT_AUTO_DEFAULT_OUTPUT_TOKENS = 4096;
-const proxyAgents = new Map<string, ProxyAgent>();
 
 type ResolvedEnvFiles = {
   mode: 'single' | 'layered';
@@ -109,10 +111,6 @@ type CopilotRouterDecisionResponse = {
 type DeviceLoginAttempt = CopilotAuthAttempt & {
   deviceCode: string;
   intervalMs: number;
-};
-
-type FetchInitWithDispatcher = RequestInit & {
-  dispatcher?: Dispatcher;
 };
 
 export type CopilotAdminStatus = Pick<
@@ -208,119 +206,14 @@ async function buildHttpError(prefix: string, response: Response): Promise<Copil
   );
 }
 
-function defaultPortForProtocol(protocol: string): string {
-  if (protocol === 'http:') return '80';
-  if (protocol === 'https:') return '443';
-  return '';
-}
-
-function parseNoProxyEntry(entry: string): { host: string; port: string | null } {
-  const value = entry.trim().toLowerCase();
-  if (!value) return { host: '', port: null };
-  if (value.startsWith('[')) {
-    const end = value.indexOf(']');
-    if (end >= 0) {
-      const host = value.slice(1, end);
-      const rest = value.slice(end + 1);
-      return { host, port: rest.startsWith(':') ? rest.slice(1) : null };
-    }
-  }
-  const lastColon = value.lastIndexOf(':');
-  if (lastColon > 0 && value.indexOf(':') === lastColon) {
-    const port = value.slice(lastColon + 1);
-    if (/^\d+$/.test(port)) return { host: value.slice(0, lastColon), port };
-  }
-  return { host: value, port: null };
-}
-
-function matchesNoProxyHost(host: string, pattern: string): boolean {
-  if (pattern === '*') return true;
-  if (pattern.startsWith('*.')) {
-    const suffix = pattern.slice(1);
-    return host.endsWith(suffix) && host.length > suffix.length;
-  }
-  if (pattern.startsWith('.')) {
-    const suffix = pattern.slice(1);
-    return host === suffix || host.endsWith(pattern);
-  }
-  return host === pattern;
-}
-
-function shouldBypassProxy(url: URL, env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = trimOptionalText(env.NO_PROXY) ?? trimOptionalText(env.no_proxy);
-  if (!raw) return false;
-  const host = url.hostname.toLowerCase();
-  const port = url.port || defaultPortForProtocol(url.protocol);
-  return raw.split(',').some((entry) => {
-    const parsed = parseNoProxyEntry(entry);
-    if (!parsed.host) return false;
-    if (parsed.port && parsed.port !== port) return false;
-    return matchesNoProxyHost(host, parsed.host);
-  });
-}
-
-function resolveProxyUrl(target: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const url = new URL(target);
-  if (shouldBypassProxy(url, env)) return null;
-  const proxy =
-    url.protocol === 'http:'
-      ? trimOptionalText(env.HTTP_PROXY) ?? trimOptionalText(env.http_proxy) ?? trimOptionalText(env.ALL_PROXY) ?? trimOptionalText(env.all_proxy)
-      : trimOptionalText(env.HTTPS_PROXY) ?? trimOptionalText(env.https_proxy) ?? trimOptionalText(env.ALL_PROXY) ?? trimOptionalText(env.all_proxy);
-  if (!proxy) return null;
-  const parsed = new URL(proxy);
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`Copilot OAuth 代理协议不支持：${parsed.protocol}，请使用 http 或 https 代理。`);
-  }
-  return parsed.toString();
-}
-
-function redactProxyUrl(proxyUrl: string): string {
-  const url = new URL(proxyUrl);
-  if (url.username || url.password) {
-    url.username = '***';
-    url.password = '';
-  }
-  return url.toString();
-}
-
-function getProxyAgent(proxyUrl: string): ProxyAgent {
-  const current = proxyAgents.get(proxyUrl);
-  if (current) return current;
-  const agent = new ProxyAgent(proxyUrl);
-  proxyAgents.set(proxyUrl, agent);
-  return agent;
-}
-
-function createFetchInit(target: string, init: RequestInit = {}): { init: FetchInitWithDispatcher; proxyUrl: string | null } {
-  const proxyUrl = resolveProxyUrl(target);
-  if (!proxyUrl) return { init, proxyUrl: null };
-  return {
-    init: {
-      ...init,
-      dispatcher: getProxyAgent(proxyUrl),
-    },
-    proxyUrl,
-  };
-}
-
-function formatFetchFailure(label: string, target: string, proxyUrl: string | null, error: unknown): string {
-  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : null;
-  const causeCode = typeof cause === 'object' && cause && 'code' in cause ? String((cause as { code?: unknown }).code ?? '') : '';
-  const causeMessage = cause instanceof Error ? cause.message : '';
-  const message = error instanceof Error ? error.message : String(error);
-  const detail = [causeCode, causeMessage || message].filter(Boolean).join(' ');
-  const proxy = proxyUrl ? `，proxy=${redactProxyUrl(proxyUrl)}` : '';
-  return `${label}失败：${detail || message}（url=${target}${proxy}）`;
-}
-
 async function fetchExternal(target: string, label: string, init: RequestInit = {}): Promise<Response> {
-  const request = createFetchInit(target, init);
+  const request = createProxyFetchRequest(target, init);
   try {
     return await fetch(target, request.init);
   } catch (error) {
     throw new CopilotBridgeHttpError(
       502,
-      formatFetchFailure(label, target, request.proxyUrl, error),
+      formatProxyFetchFailure(label, target, request.proxyUrl, error),
       'upstream_transport_error',
     );
   }

@@ -251,6 +251,47 @@ describe('codex oauth bridge helpers', () => {
     await expect(service.startLogin()).rejects.not.toThrow(/access_token|refresh_token/i);
   });
 
+  it('uses HTTPS_PROXY for Codex device-code requests', async () => {
+    const dir = createTempDir();
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7897');
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('NO_PROXY', '');
+    vi.stubEnv('no_proxy', '');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      device_auth_id: 'device-proxy',
+      user_code: 'PROXY-123',
+      interval: 5,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await createService(dir).startLogin();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://auth.openai.com/api/accounts/deviceauth/usercode',
+      expect.objectContaining({
+        dispatcher: expect.any(Object),
+      }),
+    );
+  });
+
+  it('respects NO_PROXY for Codex device-code requests', async () => {
+    const dir = createTempDir();
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7897');
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('NO_PROXY', 'auth.openai.com');
+    vi.stubEnv('no_proxy', '');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      device_auth_id: 'device-direct',
+      user_code: 'DIRECT-12',
+      interval: 5,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await createService(dir).startLogin();
+
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('dispatcher');
+  });
+
   it('refreshes near-expiry Codex OAuth tokens and preserves managed auth state atomically', async () => {
     const dir = createTempDir();
     const oldAccess = fakeJwt({

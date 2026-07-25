@@ -7,6 +7,10 @@ import type {
   CodexAuthAttempt,
   CodexAuthState,
 } from '../../types/admin.js';
+import {
+  createProxyFetchRequest,
+  formatProxyFetchFailure,
+} from '../shared/proxy-fetch.js';
 
 const DEFAULT_KOISHI_PORT = '5140';
 const DEFAULT_CODEX_BACKEND_BASE_URL = 'https://chatgpt.com/backend-api/codex';
@@ -260,6 +264,15 @@ function formatOpenAiErrorPayload(payload: unknown): string | null {
   const type = trimOptionalText(record.type);
   const message = trimOptionalText(record.message);
   return [code, type, message].filter(Boolean).join(' / ') || null;
+}
+
+async function fetchCodexExternal(target: string, label: string, init: RequestInit = {}): Promise<Response> {
+  const request = createProxyFetchRequest(target, init);
+  try {
+    return await fetch(target, request.init);
+  } catch (error) {
+    throw new Error(formatProxyFetchFailure(label, target, request.proxyUrl, error));
+  }
 }
 
 function decodeJwtPayload(token: string | null | undefined): Record<string, unknown> | null {
@@ -1046,7 +1059,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
 
   private async requestDeviceCode(): Promise<CodexDeviceCodeResponse & { __code_verifier: string; __client_id: string }> {
     const clientId = resolveClientId(null);
-    const response = await fetch(codexDeviceCodeUrl(), {
+    const response = await fetchCodexExternal(codexDeviceCodeUrl(), 'Codex OAuth 设备码申请', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -1072,7 +1085,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
   }
 
   private async pollDeviceToken(attempt: StoredCodexAuthAttempt): Promise<CodexDeviceTokenResponse> {
-    const response = await fetch(codexDeviceTokenUrl(), {
+    const response = await fetchCodexExternal(codexDeviceTokenUrl(), 'Codex OAuth 登录轮询', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -1100,7 +1113,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     if (!attempt.codeVerifier) {
       throw new Error('Codex OAuth 登录失败：轮询响应缺少 code_verifier。');
     }
-    const response = await fetch(codexTokenUrl(), {
+    const response = await fetchCodexExternal(codexTokenUrl(), 'Codex OAuth token 交换', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -1150,7 +1163,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
 
   private async refreshAuthRecord(auth: CodexAuthRecord, refreshToken: string): Promise<CodexAuthRecord> {
     const clientId = resolveClientId(auth);
-    const response = await fetch(codexTokenUrl(), {
+    const response = await fetchCodexExternal(codexTokenUrl(), 'Codex OAuth token 刷新', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -1197,13 +1210,13 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
       const firstAuth = await this.resolveBackendAuthContext({ forceRefresh: false });
       const url = new URL(codexBackendUrl('/models'));
       url.searchParams.set('client_version', codexClientVersion());
-      let response = await fetch(url.toString(), {
+      let response = await fetchCodexExternal(url.toString(), 'Codex 模型列表请求', {
         method: 'GET',
         headers: this.buildCodexBackendHeaders(firstAuth, 'application/json'),
       });
       if (response.status === 401) {
         const refreshedAuth = await this.resolveBackendAuthContext({ forceRefresh: true });
-        response = await fetch(url.toString(), {
+        response = await fetchCodexExternal(url.toString(), 'Codex 模型列表请求', {
           method: 'GET',
           headers: this.buildCodexBackendHeaders(refreshedAuth, 'application/json'),
         });
@@ -1230,7 +1243,7 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
         turnId,
         windowId: this.windowId,
       });
-      const response = await fetch(codexBackendUrl('/responses'), {
+      const response = await fetchCodexExternal(codexBackendUrl('/responses'), 'Codex Responses 请求', {
         method: 'POST',
         headers: {
           ...this.buildCodexBackendHeaders(auth, 'text/event-stream, application/json', { threadId }),
