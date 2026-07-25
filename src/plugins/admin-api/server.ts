@@ -16,6 +16,8 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import YAML from 'yaml';
 import type {
+  AdminApplyReason,
+  AdminApplyRestartTarget,
   AdminEnvFilesState,
   AdminBuiltinModelTab,
   AdminAuthStatus,
@@ -1329,6 +1331,27 @@ export function resolveManagedServiceUnits(baseFilePath: string | null | undefin
   return ADMIN_SERVICE_UNITS;
 }
 
+export function resolveApplyRestartUnits(
+  reasons: readonly AdminApplyReason[],
+  managedUnits: readonly BotServiceUnit[],
+): BotServiceUnit[] {
+  const managed = new Set(managedUnits);
+  const units: BotServiceUnit[] = [];
+  if (reasons.includes('tts')) {
+    if (!managed.has('qqbot-voice-tts.service')) {
+      throw new Error('当前运行角色无法重启待应用的 TTS 服务。');
+    }
+    units.push('qqbot-voice-tts.service');
+  }
+  if (reasons.some((reason) => reason !== 'tts')) {
+    if (!managed.has('qqbot-koishi.service')) {
+      throw new Error('当前运行角色无法重启待应用的 Koishi 服务。');
+    }
+    units.push('qqbot-koishi.service');
+  }
+  return units;
+}
+
 function resolveSystemdScope(baseFilePath: string | null | undefined): SystemdScope {
   return isServerEnvFilePath(baseFilePath) ? 'system' : 'user';
 }
@@ -1906,6 +1929,21 @@ export class AdminRuntimeManager {
     const timeout = unit === 'qqbot-pmhq.service' && (action === 'start' || action === 'restart') ? 180_000 : 15_000;
     await this.execFile('systemctl', withSystemdScope(this.systemdScope, [action, unit]), { cwd: this.rootDir, timeout });
     return this.getServiceStatus(unit);
+  }
+
+  async restartForApplyReasons(reasons: readonly AdminApplyReason[]): Promise<AdminApplyRestartTarget[]> {
+    const units = resolveApplyRestartUnits(reasons, this.managedServiceUnits);
+    const targets = await Promise.all(units.map(async (unit) => {
+      const status = await this.getServiceStatus(unit);
+      return {
+        unit,
+        previousInvocationId: status.controllerState.invocationId,
+      };
+    }));
+    for (const unit of units) {
+      await this.runServiceAction(unit, 'restart');
+    }
+    return targets;
   }
 
   async getServiceStatuses(): Promise<BotServiceStatus[]> {

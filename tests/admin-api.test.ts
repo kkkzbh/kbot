@@ -39,9 +39,11 @@ vi.mock('koishi', () => {
   };
 });
 import { apply, type Config } from '../src/plugins/admin-api/index.js';
+import { AdminRuntimeManager } from '../src/plugins/admin-api/server.js';
 
 const tempDirs: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -135,9 +137,55 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/session');
     expect(postPaths).toContain('/api/admin/v1/events/acknowledge-all');
     expect(postPaths).toContain('/api/admin/v1/events/:id/action');
+    expect(postPaths).toContain('/api/admin/v1/apply/restart');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();
+  });
+
+  it('restarts the services implied by pending configuration and clears apply state', async () => {
+    const restartForApplyReasons = vi
+      .spyOn(AdminRuntimeManager.prototype, 'restartForApplyReasons')
+      .mockResolvedValue([{
+        unit: 'qqbot-koishi.service',
+        previousInvocationId: 'old-invocation',
+      }]);
+    const { server } = createRuntime(createTempDir());
+    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const patchSettings = server.patch.mock.calls.find((call) => call[0] === '/api/admin/v1/settings/:section')?.[1];
+    const restart = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/apply/restart')?.[1];
+    const loginCtx = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+    });
+    await login(loginCtx);
+    const cookie = loginCtx.cookieValues.get('qqbot_admin_session');
+
+    const patchCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      params: { section: 'basic' },
+      body: { changes: [{ key: 'CHAT_NATURAL_TRIGGER_ALIASES', value: '小Q' }] },
+    });
+    await patchSettings(patchCtx);
+    expect((patchCtx.body as any).restartRequired).toBe(true);
+
+    const restartCtx = createKoaCtx({
+      cookie,
+      origin: 'https://admin.example.com',
+      body: {},
+    });
+    await restart(restartCtx);
+
+    expect(restartForApplyReasons).toHaveBeenCalledWith(['basic']);
+    expect(restartCtx.status).toBe(200);
+    expect(restartCtx.body).toEqual({
+      targets: [{
+        unit: 'qqbot-koishi.service',
+        previousInvocationId: 'old-invocation',
+      }],
+      apply: { restartRequired: false, reasons: [] },
+    });
   });
 
   it('serves root and nested SPA routes from explicit router handlers', async () => {

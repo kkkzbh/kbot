@@ -17,6 +17,7 @@ import {
   resolveBackupDirectory,
   resolveBotEnvFilePath,
   resolveBotEnvFiles,
+  resolveApplyRestartUnits,
   resolveManagedServiceUnits,
   resolveBotPresetPaths,
   readManagedEnvPatchFromContent,
@@ -47,6 +48,82 @@ describe('resolveBackupDirectory', () => {
     expect(resolveBackupDirectory(rootDir, join(rootDir, 'config/voice-tts.local.env'))).toBe(join(rootDir, 'config/backup'));
     expect(resolveBackupDirectory(rootDir, join(rootDir, '.runtime/.env.runtime'))).toBe(join(rootDir, '.runtime/backup'));
     expect(resolveBackupDirectory(rootDir, join(rootDir, '.env.local'))).toBe(join(rootDir, 'backup'));
+  });
+});
+
+describe('resolveApplyRestartUnits', () => {
+  it('maps configuration reasons to the minimal ordered service plan', () => {
+    expect(resolveApplyRestartUnits(
+      ['tts', 'model', 'features'],
+      resolveManagedServiceUnits('/tmp/qqbot/.env.local'),
+    )).toEqual([
+      'qqbot-voice-tts.service',
+      'qqbot-koishi.service',
+    ]);
+    expect(resolveApplyRestartUnits(
+      ['basic', 'preset'],
+      resolveManagedServiceUnits('/tmp/qqbot/.env.server'),
+    )).toEqual(['qqbot-koishi.service']);
+  });
+
+  it('fails directly when a pending reason targets an unmanaged service', () => {
+    expect(() => resolveApplyRestartUnits(
+      ['tts'],
+      resolveManagedServiceUnits('/tmp/qqbot/.env.server'),
+    )).toThrow('当前运行角色无法重启待应用的 TTS 服务');
+  });
+});
+
+describe('AdminRuntimeManager.restartForApplyReasons', () => {
+  it('captures current invocations and restarts TTS before Koishi', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.local');
+    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
+    const getServiceStatus = vi.spyOn(manager, 'getServiceStatus').mockImplementation(async (unit) => ({
+      unit,
+      description: unit,
+      runtimeState: 'healthy',
+      controllerState: {
+        loadState: 'loaded',
+        activeState: 'active',
+        subState: 'running',
+        unitFileState: 'enabled',
+        result: 'success',
+        invocationId: `before-${unit}`,
+      },
+      checkedAt: Date.now(),
+      healthDetail: 'healthy',
+      canStart: false,
+      canStop: true,
+      canRestart: true,
+      canEnable: false,
+    }));
+    const runServiceAction = vi.spyOn(manager, 'runServiceAction').mockImplementation(async (unit) => {
+      const status = await getServiceStatus(unit);
+      return {
+        ...status,
+        controllerState: {
+          ...status.controllerState,
+          invocationId: `after-${unit}`,
+        },
+      };
+    });
+
+    await expect(manager.restartForApplyReasons(['model', 'tts'])).resolves.toEqual([
+      {
+        unit: 'qqbot-voice-tts.service',
+        previousInvocationId: 'before-qqbot-voice-tts.service',
+      },
+      {
+        unit: 'qqbot-koishi.service',
+        previousInvocationId: 'before-qqbot-koishi.service',
+      },
+    ]);
+    expect(runServiceAction.mock.calls.map(([unit, action]) => [unit, action])).toEqual([
+      ['qqbot-voice-tts.service', 'restart'],
+      ['qqbot-koishi.service', 'restart'],
+    ]);
   });
 });
 

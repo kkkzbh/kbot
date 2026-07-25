@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia';
 
+export type ApplyState = {
+  restartRequired: boolean;
+  reasons: string[];
+};
+
 export const useRuntimeStore = defineStore('runtime', {
   state: () => ({
     currentModel: '加载中',
@@ -10,7 +15,7 @@ export const useRuntimeStore = defineStore('runtime', {
     restartReasons: [] as string[],
   }),
   actions: {
-    updateApply(apply?: { restartRequired: boolean; reasons: string[] }) {
+    updateApply(apply?: ApplyState) {
       if (!apply) return;
       this.restartRequired = apply.restartRequired;
       this.restartReasons = apply.reasons;

@@ -29,6 +29,8 @@ export type ServiceAction = 'start' | 'stop' | 'restart' | 'enable';
 
 export type BotServiceRuntimeState = 'healthy' | 'degraded' | 'stopped' | 'unknown';
 
+export type AdminApplyReason = 'basic' | 'features' | 'model' | 'preset' | 'tts';
+
 export type BotServiceUnit =
   | 'qqbot.target'
   | 'qqbot-pmhq.service'
@@ -57,6 +59,11 @@ export interface BotServiceStatus {
   canStop: boolean;
   canRestart: boolean;
   canEnable: boolean;
+}
+
+export interface AdminApplyRestartTarget {
+  unit: BotServiceUnit;
+  previousInvocationId: string | null;
 }
 
 export type OperationalEventSource = 'systemd' | 'memory';

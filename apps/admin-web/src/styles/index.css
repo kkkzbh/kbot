@@ -50,8 +50,11 @@ a { color: inherit; text-decoration: none; }
 kbd { padding: 2px 6px; border: 1px solid #dfe3ea; border-bottom-width: 2px; border-radius: 5px; color: #7b8493; background: #fff; font-size: 10px; }
 .topbar-state { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12px; }
 .model-chip { max-width: 240px; overflow: hidden; padding: 5px 9px; border-radius: 6px; color: #3a5cbc; background: var(--accent-soft); text-overflow: ellipsis; white-space: nowrap; }
-.restart-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 6px; color: #8b621c; background: #fff4d8; font-size: 11px; font-weight: 650; }
+.restart-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 0; border-radius: 6px; color: #8b621c; background: #fff4d8; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
 .restart-chip:hover { color: #6f4d11; background: #ffedc1; }
+.restart-chip:disabled { cursor: wait; opacity: .75; }
+.restart-chip.busy svg { animation: restart-spin .9s linear infinite; }
+@keyframes restart-spin { to { transform: rotate(360deg); } }
 .topbar-health { display: flex; align-items: center; gap: 6px; color: #557063; }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #a1a7b3; }
 .status-dot.ok { background: var(--success); box-shadow: 0 0 0 3px rgba(33,166,122,.12); }

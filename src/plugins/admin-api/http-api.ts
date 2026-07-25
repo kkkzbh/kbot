@@ -32,7 +32,13 @@ import type { AffinityServiceLike } from '../../types/affinity.js';
 import type { FeaturePolicyServiceLike } from '../../types/feature-policy.js';
 import type { MemoryStatusServiceLike } from '../../types/memory.js';
 import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
-import type { AdminBuiltinModelTab, EnvPatch, PresetDocument, SaveModelTabsRequest } from '../../types/admin.js';
+import type {
+  AdminApplyReason,
+  AdminBuiltinModelTab,
+  EnvPatch,
+  PresetDocument,
+  SaveModelTabsRequest,
+} from '../../types/admin.js';
 import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
 import type { CodexOAuthBridgeService } from '../codex-oauth/index.js';
 import {
@@ -116,10 +122,14 @@ const presetDocumentSchema = z.object({
 });
 
 class AdminApplyState {
-  private readonly reasons = new Set<string>();
+  private readonly reasons = new Set<AdminApplyReason>();
 
-  mark(reason: string): void {
+  mark(reason: AdminApplyReason): void {
     this.reasons.add(reason);
+  }
+
+  clear(reasons: readonly AdminApplyReason[]): void {
+    for (const reason of reasons) this.reasons.delete(reason);
   }
 
   clearForService(unit: string, action: string): void {
@@ -128,7 +138,7 @@ class AdminApplyState {
     if (unit === 'qqbot-voice-tts.service') this.reasons.delete('tts');
   }
 
-  snapshot(): { restartRequired: boolean; reasons: string[] } {
+  snapshot(): { restartRequired: boolean; reasons: AdminApplyReason[] } {
     return { restartRequired: this.reasons.size > 0, reasons: [...this.reasons] };
   }
 }
@@ -407,6 +417,25 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     const status = await domain(() => options.manager.runServiceAction(input.unit, input.action));
     applyState.clearForService(input.unit, input.action);
     return { status, apply: applyState.snapshot() };
+  }, { mutation: true });
+
+  register('post', '/apply/restart', async () => {
+    const pending = applyState.snapshot();
+    if (!pending.restartRequired) {
+      return { targets: [], apply: pending };
+    }
+    try {
+      const targets = await options.manager.restartForApplyReasons(pending.reasons);
+      applyState.clear(pending.reasons);
+      return { targets, apply: applyState.snapshot() };
+    } catch (error) {
+      throw new AdminHttpError(
+        503,
+        'service_unavailable',
+        `待应用配置重启失败：${error instanceof Error ? error.message : String(error)}`,
+        { operation: 'restart_pending_configuration', reasons: pending.reasons },
+      );
+    }
   }, { mutation: true });
 
   register('get', '/events', async (koaCtx) => {

@@ -17,6 +17,19 @@ let relativeClock: ReturnType<typeof setInterval> | null = null;
 const runtime = useRuntimeStore();
 const current = computed(() => drafts[activeTab.value]);
 const supportsOAuth = computed(() => ['copilot', 'codex'].includes(activeTab.value));
+const hasUnsavedChanges = computed(() => {
+  const saved = modelState.value;
+  if (!saved || saved.activeTab !== activeTab.value) return Boolean(saved);
+  return saved.tabs.some((tab: any) => {
+    const draft = drafts[tab.id];
+    if (!draft) return true;
+    return draft.baseUrl !== tab.baseUrl
+      || draft.defaultModel !== tab.defaultModel
+      || draft.reasoningEffort !== tab.reasoningEffort
+      || draft.apiKey.length > 0
+      || draft.clearApiKey;
+  });
+});
 const oauthStatusLabels: Record<string, string> = {
   unauthenticated: '尚未连接',
   pending: '等待设备确认',
@@ -106,6 +119,21 @@ async function load() {
   } finally { loading.value = false; }
 }
 
+async function refreshSavedState() {
+  if (hasUnsavedChanges.value) {
+    try {
+      await ElMessageBox.confirm(
+        '当前页面的未保存修改会被丢弃，并重新读取服务端已保存配置与运行状态。',
+        '放弃未保存修改？',
+        { type: 'warning', confirmButtonText: '放弃并刷新', cancelButtonText: '继续编辑' },
+      );
+    } catch {
+      return;
+    }
+  }
+  await load();
+}
+
 async function save() {
   if (!current.value) return;
   saving.value = true;
@@ -186,7 +214,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="loading" @click="load">重新载入</el-button></template></PageHeader>
+  <PageHeader :saving="saving" @save="save">
+    <template #actions>
+      <el-button
+        :loading="loading"
+        :title="hasUnsavedChanges ? '丢弃未保存修改并读取服务端状态' : '读取最新服务端配置与运行状态'"
+        @click="refreshSavedState"
+      >
+        {{ hasUnsavedChanges ? '放弃修改' : '刷新状态' }}
+      </el-button>
+    </template>
+  </PageHeader>
   <article class="panel model-panel" v-loading="loading && !modelState">
     <el-tabs v-if="modelState" v-model="activeTab" class="model-tabs">
       <el-tab-pane v-for="tab in modelState.tabs" :key="tab.id" :name="tab.id">

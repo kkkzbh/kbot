@@ -27,9 +27,10 @@ import {
   UserRoundCog,
   Volume2,
 } from '@lucide/vue';
+import type { BotServiceStatus, BotServiceUnit } from '@contracts';
 import { useSessionStore } from '@/stores/session';
-import { useRuntimeStore } from '@/stores/runtime';
-import { api } from '@/api/client';
+import { useRuntimeStore, type ApplyState } from '@/stores/runtime';
+import { api, jsonBody } from '@/api/client';
 
 type NavItem = {
   key: string;
@@ -39,6 +40,14 @@ type NavItem = {
   children?: NavItem[];
 };
 type NavGroup = { label: string; items: NavItem[] };
+type ApplyRestartTarget = {
+  unit: BotServiceUnit;
+  previousInvocationId: string | null;
+};
+type ApplyRestartResponse = {
+  targets: ApplyRestartTarget[];
+  apply: ApplyState;
+};
 
 const groups: NavGroup[] = [
   { label: '总览', items: [{ key: 'overview', label: '运行总览', path: '/', icon: LayoutDashboard }] },
@@ -83,6 +92,7 @@ const runtime = useRuntimeStore();
 const mobileOpen = ref(false);
 const commandOpen = ref(false);
 const commandQuery = ref('');
+const restartBusy = ref(false);
 const expandedBranches = reactive<Record<string, boolean>>({});
 const isLogin = computed(() => route.name === 'login');
 const filteredCommands = computed(() => {
@@ -92,9 +102,20 @@ const filteredCommands = computed(() => {
     : item.path ? [{ ...item, group: group.label }] : []))
     .filter((item) => !query || `${item.label} ${item.group}`.toLowerCase().includes(query));
 });
+const restartReasonLabels: Record<string, string> = {
+  basic: '基础设置',
+  features: '功能设置',
+  model: '模型接口',
+  preset: '角色预设',
+  tts: '语音服务',
+};
 const restartTitle = computed(() => runtime.restartReasons.length
-  ? `配置等待重启：${runtime.restartReasons.join(' · ')}`
+  ? `点击应用：${runtime.restartReasons.map((reason) => restartReasonLabels[reason] ?? reason).join(' · ')}`
   : '配置等待重启');
+const restartUnitLabels: Partial<Record<BotServiceUnit, string>> = {
+  'qqbot-koishi.service': 'Koishi',
+  'qqbot-voice-tts.service': '语音服务',
+};
 let eventTimer: number | undefined;
 
 async function loadEventSummary(): Promise<void> {
@@ -136,6 +157,60 @@ async function logout() {
   await session.logout();
   ElMessage.success('管理会话已退出');
   await router.push('/login');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitForRestartTargets(targets: ApplyRestartTarget[]): Promise<void> {
+  await delay(1_200);
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    try {
+      const services = await api<BotServiceStatus[]>('/services');
+      runtime.running = services.filter((service) => service.runtimeState === 'healthy' || service.runtimeState === 'degraded').length;
+      runtime.total = services.length;
+      const current = new Map(services.map((service) => [service.unit, service]));
+      const ready = targets.every((target) => {
+        const status = current.get(target.unit);
+        if (!status || (status.runtimeState !== 'healthy' && status.runtimeState !== 'degraded')) return false;
+        const invocationId = status.controllerState.invocationId;
+        return target.previousInvocationId === null || invocationId !== target.previousInvocationId;
+      });
+      if (ready) return;
+    } catch {
+      // Koishi 的计划重启会短暂中断 Admin API，恢复后继续验证新的 invocation。
+    }
+    await delay(1_000);
+  }
+  throw new Error('相关服务已收到重启指令，但 45 秒内没有恢复为新的运行实例。');
+}
+
+async function applyPendingRestart(): Promise<void> {
+  if (!runtime.restartRequired || restartBusy.value) return;
+  restartBusy.value = true;
+  let submitted = false;
+  try {
+    const result = await api<ApplyRestartResponse>('/apply/restart', {
+      method: 'POST',
+      body: jsonBody({}),
+    });
+    submitted = result.targets.length > 0;
+    runtime.updateApply(result.apply);
+    if (!submitted) {
+      ElMessage.info('当前没有等待应用的重启项');
+      return;
+    }
+    await waitForRestartTargets(result.targets);
+    const labels = result.targets.map((target) => restartUnitLabels[target.unit] ?? target.unit);
+    ElMessage.success(`${labels.join('、')} 已重启，配置已生效`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '智能重启失败';
+    if (submitted) ElMessage.warning(message);
+    else ElMessage.error(message);
+  } finally {
+    restartBusy.value = false;
+  }
 }
 
 function handleKeyboard(event: KeyboardEvent) {
@@ -211,10 +286,17 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
         </button>
         <div class="topbar-state">
           <span class="model-chip">{{ runtime.currentModel }}</span>
-          <router-link v-if="runtime.restartRequired" class="restart-chip" to="/runtime/services" :title="restartTitle">
+          <button
+            v-if="runtime.restartRequired || restartBusy"
+            class="restart-chip"
+            :class="{ busy: restartBusy }"
+            :disabled="restartBusy"
+            :title="restartBusy ? '正在重启待应用配置涉及的服务' : restartTitle"
+            @click="applyPendingRestart"
+          >
             <RotateCw :size="13" :stroke-width="2" />
-            <span>待重启</span>
-          </router-link>
+            <span>{{ restartBusy ? '重启中' : '待重启' }}</span>
+          </button>
           <span class="topbar-health"><i class="status-dot ok" />运行中</span>
           <el-button text @click="logout">退出</el-button>
         </div>
