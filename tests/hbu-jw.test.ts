@@ -431,7 +431,7 @@ function thisSemesterSchedulePayload() {
             examTypeName: '',
             attendClassTeacher: '王老师* ',
             selectCourseStatusName: '选中',
-            timeAndPlaceList: [],
+            timeAndPlaceList: null,
           },
         ],
       },
@@ -3490,6 +3490,7 @@ describe('hbu-jw http client', () => {
       teachingBuildingName: 'A5座',
       classroomName: '312',
     });
+    expect(schedule.courses[2]?.timeAndPlaceList).toEqual([]);
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
       'https://zhjw.hbu.cn/student/courseSelect/thisSemesterCurriculum/index',
       'https://zhjw.hbu.cn/student/courseSelect/thisSemesterCurriculum/token/ajaxStudentSchedule/curr/callback',

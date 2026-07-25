@@ -1523,7 +1523,7 @@ function parseCourseSelectionResultPayload(payload: unknown): HbuJwCourseSelecti
 }
 
 function parseCourseSelectionCourse(value: unknown): HbuJwCourseSelectionCourse {
-  if (!isRecord(value) || !isRecord(value.id) || !Array.isArray(value.timeAndPlaceList)) {
+  if (!isRecord(value) || !isRecord(value.id)) {
     throw new HbuJwQueryError('选课结果接口结构异常。');
   }
   return {
@@ -1540,7 +1540,7 @@ function parseCourseSelectionCourse(value: unknown): HbuJwCourseSelectionCourse 
     selectCourseStatusName: String(value.selectCourseStatusName ?? '').trim(),
     restrictedCondition: String(value.restrictedCondition ?? '').trim(),
     courseSelectionTime: String(value.courseSelectionTime ?? '').trim(),
-    timeAndPlaceList: value.timeAndPlaceList.map(parseScheduleTimeAndPlace),
+    timeAndPlaceList: parseScheduleTimeAndPlaceList(value.timeAndPlaceList, '选课结果接口结构异常。'),
   };
 }
 
@@ -1551,7 +1551,7 @@ function readCourseSelectionRequiredString(value: unknown, label: string): strin
 }
 
 function parseScheduleCourse(value: unknown): HbuJwScheduleCourse {
-  if (!isRecord(value) || !isRecord(value.id) || !Array.isArray(value.timeAndPlaceList)) {
+  if (!isRecord(value) || !isRecord(value.id)) {
     throw new HbuJwQueryError('本学期课表接口结构异常。');
   }
   const courseNumber = readRequiredString(value.id.coureNumber, '课程号');
@@ -1568,8 +1568,16 @@ function parseScheduleCourse(value: unknown): HbuJwScheduleCourse {
     examTypeName: String(value.examTypeName ?? '').trim(),
     teacherName: String(value.attendClassTeacher ?? '').replace(/\s+/g, ' ').trim(),
     selectCourseStatusName: String(value.selectCourseStatusName ?? '').trim(),
-    timeAndPlaceList: value.timeAndPlaceList.map(parseScheduleTimeAndPlace),
+    timeAndPlaceList: parseScheduleTimeAndPlaceList(value.timeAndPlaceList, '本学期课表接口结构异常。'),
   };
+}
+
+function parseScheduleTimeAndPlaceList(value: unknown, invalidMessage: string): HbuJwScheduleTimeAndPlace[] {
+  if (value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new HbuJwQueryError(invalidMessage);
+  }
+  return value.map(parseScheduleTimeAndPlace);
 }
 
 function parseScheduleTimeAndPlace(value: unknown): HbuJwScheduleTimeAndPlace {
