@@ -7,10 +7,10 @@ import {
   resolveUserTurnIntentState,
 } from '../reply/index.js';
 import {
-  resolvePlatform,
-  resolveMainChatModelDescriptor,
-} from '../shared/llm/index.js';
-import { mainChatRuntimeState } from '../shared/llm/main-chat-runtime.js';
+  CanonicalModelBindingResolver,
+  type ResolvedModelBinding,
+  type ModelConfigService,
+} from '../model-config/index.js';
 import {
   resolveChatLunaRoomLike,
   type QqbotChatLunaRoomLike,
@@ -19,14 +19,14 @@ import {
 import { beginPromptAssemblyTurn, registerPromptFragment } from '../shared/prompt-context/index.js';
 import { resolveSessionDisplayName } from '../shared/session/index.js';
 import { getNaturalTriggerState } from '../triggers/group-natural/index.js';
-import { syncRoomModelToMainChatRuntime } from './hot-switch.js';
+import { syncRoomModelToMainBinding } from './hot-switch.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
 };
 
 export const name = 'chatluna-model-guard';
-export const inject = ['chatluna', 'database'];
+export const inject = ['chatluna', 'database', 'modelConfig'];
 
 export interface Config {}
 
@@ -55,7 +55,10 @@ type ChatLunaLike = {
   };
 };
 
-type ContextServices = { chatluna?: ChatLunaLike };
+type ContextServices = {
+  chatluna?: ChatLunaLike;
+  modelConfig?: ModelConfigService;
+};
 
 type MiddlewareContextLike = {
   command?: string;
@@ -92,6 +95,7 @@ async function resolveOrEnsureReplyRoom(
   chatluna: ChatLunaLike,
   session: Session,
   context: MiddlewareContextLike,
+  mainBinding: ResolvedModelBinding,
 ): Promise<QqbotChatLunaRoomLike | undefined> {
   const resolved = resolveChatLunaRoomLike(context.options);
   if (resolved) return resolved;
@@ -118,15 +122,13 @@ async function resolveOrEnsureReplyRoom(
   if (!bindingKey || !preset || !chatMode) {
     throw new Error('ChatLuna resolved conversation context is incomplete for QQ reply activation.');
   }
-  const profile = mainChatRuntimeState.getProfile();
-  const descriptor = resolveMainChatModelDescriptor({
-    tabId: profile.tabId,
-    model: profile.canonicalModel,
-  });
+  if (!mainBinding.target || !mainBinding.model) {
+    throw new Error('main.chat did not resolve to a dedicated model.');
+  }
   const conversation = await conversationService.createConversation(session, {
     bindingKey,
     title: trimOptionalText(currentRecord?.presetLane) ?? 'New Conversation',
-    model: descriptor.canonicalModel,
+    model: mainBinding.model,
     preset,
     chatMode,
   });
@@ -148,8 +150,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   const ensureModelGuardRegistered = (): boolean => {
     if (modelGuardRegistered) return true;
     const chatluna = services.chatluna;
+    const modelConfig = services.modelConfig;
     const chain = chatluna?.chatChain;
-    if (!chatluna || !chain) return false;
+    if (!chatluna || !chain || !modelConfig) return false;
 
     chain
       .middleware('qqbot_turn_context', async (rawSession, rawContext) => {
@@ -218,11 +221,24 @@ export function apply(ctx: Context, config: Config = {}): void {
           }
 
           const session = rawSession as Session;
-          const room = await resolveOrEnsureReplyRoom(chatluna, session, context);
+          const mainBinding = new CanonicalModelBindingResolver(
+            modelConfig.getRuntimeSnapshot(),
+          ).resolve('main.chat');
+          if (!mainBinding.target) {
+            throw new Error('main.chat binding is not dedicated.');
+          }
+          const room = await resolveOrEnsureReplyRoom(
+            chatluna,
+            session,
+            context,
+            mainBinding,
+          );
           if (!room) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
 
-          const syncResult = await syncRoomModelToMainChatRuntime({
+          const syncResult = await syncRoomModelToMainBinding({
             room,
+            target: mainBinding.target,
+            revision: mainBinding.revision,
             clearCache: chatluna.clearCache?.bind(chatluna),
             updateConversationModel: (conversationId, model) => (
               ctx.database as unknown as {
@@ -233,11 +249,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           updateResolvedConversationModel(context.options, room.model);
           if (syncResult.changed) {
             logger.info(
-              'hot-switched conversation model for guard (conversationId=%s, model=%s, generation=%s, strategy=%s, requestMode=%s).',
+              'synchronized conversation model binding (conversationId=%s, model=%s, revision=%s, connection=%s, requestMode=%s).',
               trimOptionalText(room.conversationId) ?? '<unknown>',
               syncResult.canonicalModel,
-              String(syncResult.generation),
-              syncResult.strategyId,
+              String(syncResult.revision),
+              syncResult.connectionId,
               syncResult.requestMode,
             );
           }
@@ -249,7 +265,10 @@ export function apply(ctx: Context, config: Config = {}): void {
               originalRoomModel: syncResult.originalModel,
               effectiveModel: syncResult.canonicalModel,
               effectiveTransportModel: syncResult.transportModel,
-              effectiveStrategyId: syncResult.strategyId,
+              effectiveConnectionId: syncResult.connectionId,
+              effectiveModelId: syncResult.modelId,
+              effectiveAdapter: syncResult.adapter,
+              modelConfigRevision: syncResult.revision,
               effectiveRequestMode: syncResult.requestMode,
               effectiveOutputProtocol: syncResult.outputProtocol,
               preset: trimOptionalText(room.preset) ?? null,
@@ -257,8 +276,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           );
           if (!room.model) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
 
-          const platform = resolvePlatform(room.model);
-          if (platform && chatluna.awaitLoadPlatform) {
+          const platform = `qqbot-${mainBinding.target.connection.id}`;
+          if (chatluna.awaitLoadPlatform) {
             try {
               await chatluna.awaitLoadPlatform(platform, 15000);
             } catch (error) {

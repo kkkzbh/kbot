@@ -160,8 +160,11 @@ vi.mock('../src/plugins/shared/prompt-context/index.js', async () => {
 import { sendVoiceByBridge } from '../src/plugins/admin-api/voice-bridge.js';
 import { apply, deliverStandaloneReplyPlan, ensureCanSendRecord, inject } from '../src/plugins/reply/index.js';
 import { ReplyRuntime } from '../src/plugins/reply/runtime/index.js';
-import { resolveMainChatRuntimeProfileFromEnv } from '../src/plugins/shared/llm/index.js';
-import { mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
+import type { ModelRuntimeSnapshot } from '../src/plugins/model-config/index.js';
+import {
+  createTestModelRuntime,
+  type TestModelRuntimeOptions,
+} from './model-runtime-fixture.js';
 
 type Middleware = (session: Record<string, any>, next: () => Promise<unknown>) => Promise<unknown>;
 type EventHandler = (...args: any[]) => Promise<unknown> | unknown;
@@ -279,6 +282,8 @@ function createHarness(overrides: {
   normalizeResearchReplyHistoryImpl?: (room: Record<string, unknown>, finalVisibleText: string) => Promise<unknown>;
   chatChainInitially?: boolean;
   contextManager?: boolean;
+  modelOptions?: TestModelRuntimeOptions;
+  mutateModelSnapshot?: (snapshot: ModelRuntimeSnapshot) => void;
 } = {}) {
   const middlewares: Middleware[] = [];
   const events = new Map<string, EventHandler[]>();
@@ -402,6 +407,8 @@ function createHarness(overrides: {
   if (overrides.chatChainInitially !== false) {
     chatluna.chatChain = chatChain;
   }
+  const models = createTestModelRuntime(overrides.modelOptions);
+  overrides.mutateModelSnapshot?.(models.snapshot);
 
   const ctx = {
     bots: [bot],
@@ -417,6 +424,7 @@ function createHarness(overrides: {
         return true;
       }),
     },
+    modelConfig: models.modelConfig,
     database,
     get: vi.fn((name: string) => {
       if (name !== 'chatluna') return undefined;
@@ -492,7 +500,7 @@ function createSession(bot: Record<string, any>, overrides: Record<string, unkno
 function createPluginRoom(conversationId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     conversationId,
-    model: 'Pro/moonshotai/Kimi-K2.5',
+    model: 'qqbot-primary/main-chat',
     preset: 'sakiko',
     chatMode: 'plugin',
     ...overrides,
@@ -709,24 +717,32 @@ describe('qq voice plugin', () => {
     vi.stubEnv('QQBOT_REPLY_INTERRUPT_ENABLED', 'false');
     vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'true');
     vi.stubEnv('CHAT_NATURAL_TRIGGER_GROUPS', 'group-100');
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
   });
 
   it('declares required services so reply plan middleware can register on the live chat chain', () => {
     if (Array.isArray(inject)) {
-      expect(inject).toEqual(expect.arrayContaining(['chatluna', 'database', 'featurePolicy']));
+      expect(inject).toEqual(expect.arrayContaining([
+        'chatluna',
+        'database',
+        'featurePolicy',
+        'modelConfig',
+      ]));
       return;
     }
 
     expect(inject).toEqual(
       expect.objectContaining({
-        required: expect.arrayContaining(['chatluna', 'database', 'featurePolicy']),
+        required: expect.arrayContaining([
+          'chatluna',
+          'database',
+          'featurePolicy',
+          'modelConfig',
+        ]),
       }),
     );
   });
@@ -1109,12 +1125,6 @@ describe('qq voice plugin', () => {
   });
 
   it('reports the real Copilot quota error instead of only ChatLuna code 103', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'copilot-test-key',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-    }));
     const { ready, getPrepare, bot } = createHarness({ replyInterruptEnabled: true });
 
     await ready();
@@ -1129,7 +1139,7 @@ describe('qq voice plugin', () => {
     const context = {
       options: {
         conversation: createPluginConversation('conv-copilot-quota', {
-          model: 'openai/auto',
+          model: 'qqbot-primary/main-chat',
         }),
         inputMessage: { content: '继续聊', additional_kwargs: {} },
       },
@@ -1489,7 +1499,7 @@ describe('qq voice plugin', () => {
           conversationId: 'conv-1',
           conversation: {
             id: 'conv-1',
-            model: 'Pro/moonshotai/Kimi-K2.5',
+            model: 'qqbot-primary/main-chat',
             preset: 'sakiko',
             chatMode: 'plugin',
           },
@@ -1580,13 +1590,9 @@ describe('qq voice plugin', () => {
 
   it('keeps CHAT_REPLY_V1 rules in the agent system envelope and final response contract', async () => {
     vi.stubEnv('QQ_VOICE_OUTPUT_LANGUAGE', 'ja');
-    const profile = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'deepseek',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek-v4-pro',
-    });
-    mainChatRuntimeState.initialize(profile);
     const { ready, getPrepare, getPolicy, getPromptCompiler, bot, inject } = createHarness({
       pluginConfig: { voiceOutputLanguage: 'ja' },
+      modelOptions: { mainProtocol: 'chat_reply_v1' },
     });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
 
@@ -1602,7 +1608,7 @@ describe('qq voice plugin', () => {
     });
     const context = {
       options: {
-        conversation: createPluginConversation('conv-chat-reply-v1', { model: 'deepseek/deepseek-v4-pro' }),
+        conversation: createPluginConversation('conv-chat-reply-v1'),
         inputMessage: {
           content: '我的性格是怎样的？',
           additional_kwargs: {},
@@ -1779,7 +1785,7 @@ describe('qq voice plugin', () => {
     const context = {
       options: {
         conversation: createPluginConversation('conv-chat', {
-          model: 'Pro/moonshotai/Kimi-K2.5',
+          model: 'qqbot-primary/main-chat',
           preset: 'sakiko',
           chatMode: 'chat',
         }),
@@ -2956,20 +2962,15 @@ describe('qq voice plugin', () => {
   });
 
   it('rejects plugin rooms when the runtime model does not support structured json schema', async () => {
-    const { ready, getPrepare, bot, chatluna } = createHarness();
+    const { ready, getPrepare, bot, chatluna } = createHarness({
+      mutateModelSnapshot(snapshot) {
+        const mainModel = snapshot.models.find((model) => model.id === 'main-chat');
+        if (!mainModel) throw new Error('test main model is missing.');
+        mainModel.capabilities.structuredOutput = false;
+        mainModel.structuredOutputProtocol = null;
+      },
+    });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
-    const unsupportedProfile = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    });
-    mainChatRuntimeState.initialize({
-      ...unsupportedProfile,
-      defaultModel: 'openai/gpt-5.2',
-      canonicalModel: 'openai/gpt-5.2',
-      transportModel: 'gpt-5.2',
-    });
 
     await ready();
     await flushMicrotasks();
@@ -2981,9 +2982,7 @@ describe('qq voice plugin', () => {
     });
     const context = {
       options: {
-        conversation: createPluginConversation('conv-research', {
-          model: 'openai/gpt-5.4-medium-thinking',
-        }),
+        conversation: createPluginConversation('conv-research'),
         inputMessage: {
           content: '查一下液态玻璃是什么',
           additional_kwargs: {},
@@ -2991,7 +2990,9 @@ describe('qq voice plugin', () => {
       },
     };
 
-    await expect(prepare?.(session, context)).rejects.toThrow('requires a supported main chat model');
+    await expect(prepare?.(session, context)).rejects.toThrow(
+      'main.chat requires structuredOutput capability',
+    );
     expect(chatluna.createChatModel).not.toHaveBeenCalled();
   });
 

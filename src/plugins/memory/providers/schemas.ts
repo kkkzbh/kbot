@@ -195,17 +195,10 @@ export function buildMemoryExtractionPrompt(
     '每个 fact/episode 必须设置 subject、ownerSpeakerId、evidenceMessageIds、evidenceSpeakerIds；自动写入候选必须 subject=target_user、ownerSpeakerId 等于目标 speaker_id，证据消息必须来自 target 行。',
   ];
 
-  if (protocol === 'plain_text_memory_v1') {
-    base.push(
-      '只输出一个 <memory_extraction> bounded block，不要输出解释。',
-      '每行格式只能是：',
-      `FACT|subject=target_user|owner=${target.speakerId}|evidenceMessages=<message_id>|evidenceSpeakers=${target.speakerId}|kind=preference|topic=answer-style|visibility=global|sensitivity=low|confidence=0.82|importance=0.70|用户喜欢简洁直接的技术回答`,
-      `EPISODE|subject=target_user|owner=${target.speakerId}|evidenceMessages=<message_id>|evidenceSpeakers=${target.speakerId}|title=重构 memory|date=2026-06-09|visibility=private_only|sensitivity=personal|confidence=0.80|importance=0.70|用户正在重构 kbot 的长期记忆系统`,
-      'DROP|群聊玩笑，不应泛化为全局偏好',
-    );
-  } else {
-    base.push('严格按提供的 JSON schema 输出 facts、episodes、drops。');
-  }
+  base.push(
+    `输出协议：${protocol}。`,
+    '严格按提供的 JSON schema 输出 facts、episodes、drops。',
+  );
 
   return [...base, '对话记录：', transcript].join('\n');
 }

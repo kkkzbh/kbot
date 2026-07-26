@@ -1,0 +1,163 @@
+import {
+  contextPresetCatalogResponseSchema,
+  contextPresetCreateRequestSchema,
+  contextPresetDefaultRequestSchema,
+  contextPresetDefaultResponseSchema,
+  contextPresetDetailResponseSchema,
+  contextPresetPreviewRequestSchema,
+  contextPresetPreviewResponseSchema,
+  contextPresetUpdateRequestSchema,
+  emptyResponseSchema,
+  presetRevisionRequestSchema,
+  rolePresetCatalogResponseSchema,
+  rolePresetCreateRequestSchema,
+  rolePresetDetailResponseSchema,
+  rolePresetUpdateRequestSchema,
+  type ContextPresetBlock,
+  type ContextPresetCatalogResponse,
+  type ContextPresetDefinitionV1,
+  type ContextPresetDetailResponse,
+  type ContextPresetPreviewResponse,
+  type ResolvedContextBlock,
+  type RolePresetCatalogResponse,
+  type RolePresetDefinitionV1,
+  type RolePresetDetailResponse,
+} from '@contracts';
+import { api, jsonBody } from '@/api/client';
+
+export type {
+  ContextPresetBlock,
+  ContextPresetCatalogResponse,
+  ContextPresetDefinitionV1,
+  ContextPresetDetailResponse,
+  ContextPresetPreviewResponse,
+  ResolvedContextBlock,
+  RolePresetCatalogResponse,
+  RolePresetDefinitionV1,
+  RolePresetDetailResponse,
+};
+
+export type ContextBlockType = ResolvedContextBlock['type'];
+export type StoredContextBlockType = ContextPresetBlock['type'];
+export type RepeatableContextBlockType = Extract<
+  StoredContextBlockType,
+  'knowledge' | 'lore' | 'authorsNote'
+>;
+export type BudgetedContextBlock = Extract<
+  ContextPresetBlock,
+  { budgetPriority: number; maxTokens: number | null }
+>;
+export type RoleContextBlock = Extract<ContextPresetBlock, { type: 'role' }>;
+export type LoreContextBlock = Extract<ContextPresetBlock, { type: 'lore' }>;
+export type AuthorsNoteContextBlock = Extract<ContextPresetBlock, { type: 'authorsNote' }>;
+export type KnowledgeContextBlock = Extract<ContextPresetBlock, { type: 'knowledge' }>;
+export type ModelOutputContextBlock = Extract<ContextPresetBlock, { type: 'modelOutput' }>;
+export type RolePresetMessage = RolePresetDefinitionV1['messages'][number];
+
+export async function listContextPresets(): Promise<ContextPresetCatalogResponse> {
+  return api('/context-presets', contextPresetCatalogResponseSchema);
+}
+
+export async function getContextPreset(id: string): Promise<ContextPresetDetailResponse> {
+  return api(`/context-presets/${encodeURIComponent(id)}`, contextPresetDetailResponseSchema);
+}
+
+export async function createContextPreset(
+  contextPreset: ContextPresetDefinitionV1,
+): Promise<ContextPresetDetailResponse> {
+  return api('/context-presets', contextPresetDetailResponseSchema, {
+    method: 'POST',
+    body: jsonBody(contextPresetCreateRequestSchema, { contextPreset }),
+  });
+}
+
+export async function updateContextPreset(
+  id: string,
+  contextPreset: ContextPresetDefinitionV1,
+  expectedRevision: string,
+): Promise<ContextPresetDetailResponse> {
+  return api(`/context-presets/${encodeURIComponent(id)}`, contextPresetDetailResponseSchema, {
+    method: 'PUT',
+    body: jsonBody(contextPresetUpdateRequestSchema, { contextPreset, expectedRevision }),
+  });
+}
+
+export async function deleteContextPreset(id: string, expectedRevision: string): Promise<void> {
+  await api(`/context-presets/${encodeURIComponent(id)}`, emptyResponseSchema, {
+    method: 'DELETE',
+    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
+  });
+}
+
+export async function deleteContextPresetOverride(
+  id: string,
+  expectedRevision: string,
+): Promise<ContextPresetDetailResponse> {
+  return api(`/context-presets/${encodeURIComponent(id)}/override`, contextPresetDetailResponseSchema, {
+    method: 'DELETE',
+    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
+  });
+}
+
+export async function setDefaultContextPreset(
+  id: string,
+): Promise<{ globalDefaultContextPresetId: string }> {
+  return api('/context-presets/default', contextPresetDefaultResponseSchema, {
+    method: 'PUT',
+    body: jsonBody(contextPresetDefaultRequestSchema, { id }),
+  });
+}
+
+export async function previewContextPreset(
+  contextPreset: ContextPresetDefinitionV1,
+): Promise<ContextPresetPreviewResponse> {
+  return api('/context-presets/preview', contextPresetPreviewResponseSchema, {
+    method: 'POST',
+    body: jsonBody(contextPresetPreviewRequestSchema, { contextPreset }),
+  });
+}
+
+export async function listRolePresets(): Promise<RolePresetCatalogResponse> {
+  return api('/role-presets', rolePresetCatalogResponseSchema);
+}
+
+export async function getRolePreset(id: string): Promise<RolePresetDetailResponse> {
+  return api(`/role-presets/${encodeURIComponent(id)}`, rolePresetDetailResponseSchema);
+}
+
+export async function createRolePreset(
+  rolePreset: RolePresetDefinitionV1,
+): Promise<RolePresetDetailResponse> {
+  return api('/role-presets', rolePresetDetailResponseSchema, {
+    method: 'POST',
+    body: jsonBody(rolePresetCreateRequestSchema, { rolePreset }),
+  });
+}
+
+export async function updateRolePreset(
+  id: string,
+  rolePreset: RolePresetDefinitionV1,
+  expectedRevision: string,
+): Promise<RolePresetDetailResponse> {
+  return api(`/role-presets/${encodeURIComponent(id)}`, rolePresetDetailResponseSchema, {
+    method: 'PUT',
+    body: jsonBody(rolePresetUpdateRequestSchema, { rolePreset, expectedRevision }),
+  });
+}
+
+export async function deleteRolePreset(id: string, expectedRevision: string): Promise<void> {
+  await api(`/role-presets/${encodeURIComponent(id)}`, emptyResponseSchema, {
+    method: 'DELETE',
+    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
+  });
+}
+
+export async function deleteRolePresetOverride(
+  id: string,
+  expectedRevision: string,
+): Promise<RolePresetDetailResponse> {
+  return api(`/role-presets/${encodeURIComponent(id)}/override`, rolePresetDetailResponseSchema, {
+    method: 'DELETE',
+    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
+  });
+}

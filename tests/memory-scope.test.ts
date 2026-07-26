@@ -110,7 +110,7 @@ function candidate(
     suggestedVisibility: finalVisibility ?? 'global',
     finalVisibility,
     dropReason: null,
-    providerRoute: 'plain_text_memory_v1',
+    providerRoute: 'native_chat_json_schema',
     rawTextHash: null,
     createdAt: 1,
     reviewedAt: 2,

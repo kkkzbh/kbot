@@ -34,11 +34,6 @@ describe('qq voice config wiring', () => {
     expect(content).not.toContain('maxPdfPreviewPagesPerFile:');
     expect(content).not.toContain('historyWindow: ${{ +env.QQBOT_ATTACHMENT_HISTORY_WINDOW || 80 }}');
     expect(content).not.toContain('QQBOT_ATTACHMENT_MAX_REQUEST_BODY_BYTES');
-    expect(content).toContain("platform: ${{ env.CHATLUNA_PLATFORM || 'siliconflow' }}");
-    expect(content).toContain('defaultModel: >-');
-    expect(content).toContain("env.CHATLUNA_DEFAULT_MODEL || (env.CHATLUNA_PLATFORM === 'openai'");
-    expect(content).toContain("maxContextRatio: ${{ +env.CHATLUNA_MAX_CONTEXT_RATIO || 0.35 }}");
-    expect(content).toContain("pullModels: ${{ env.CHATLUNA_PULL_MODELS === 'true' }}");
     expect(content).toContain('chatluna-agent:computer-agent: {}');
   });
 
@@ -150,7 +145,7 @@ describe('qq voice config wiring', () => {
   });
 
   it('keeps the sakiko preset free of runtime transport protocol text and deprecated tag contracts', () => {
-    const content = readFileSync(resolve(process.cwd(), 'data/chathub/presets/sakiko.yml'), 'utf8');
+    const content = readFileSync(resolve(process.cwd(), 'data/chathub/role-presets/sakiko.yml'), 'utf8');
 
     expect(content).not.toContain('# 回复组织原则');
     expect(content).not.toContain('你的最终回复只输出一个合法的 ReplyPlan JSON 对象本身');
@@ -172,9 +167,11 @@ describe('qq voice config wiring', () => {
 
   it('lets stickers sync resolve local env first and server env second', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/stickers-sync.mjs'), 'utf8');
+    const localIndex = content.indexOf("path.resolve(rootDir, '.env.local')");
+    const serverIndex = content.indexOf("path.resolve(rootDir, '.env.server')");
 
-    expect(content).toContain("path.resolve(ROOT_DIR, '.env.local')");
-    expect(content).toContain("path.resolve(ROOT_DIR, '.env.server')");
-    expect(content).not.toContain("path.resolve(ROOT_DIR, '.env')");
+    expect(localIndex).toBeGreaterThanOrEqual(0);
+    expect(serverIndex).toBeGreaterThan(localIndex);
+    expect(content).not.toContain("path.resolve(rootDir, '.env')");
   });
 });

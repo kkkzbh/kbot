@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
 import { HumanMessage } from '@langchain/core/messages';
 import { createChatLunaHistoryWriter } from '../src/plugins/shared/chatluna-history.js';
+import { resolveChatlunaCoreRoot } from './helpers/chatluna-paths.js';
+
+const require = createRequire(resolve(process.cwd(), 'tests/chatluna-history.test.ts'));
 
 describe('ChatLuna history writer runtime boundary', () => {
   it('loads ChatLuna message history through the runtime CommonJS export', async () => {
@@ -22,6 +28,25 @@ describe('ChatLuna history writer runtime boundary', () => {
     });
 
     expect(writer.addMessages).toBeTypeOf('function');
+  });
+
+  it('loads ChatLuna prompt modules through CommonJS package exports', () => {
+    const promptModule = require('koishi-plugin-chatluna/llm-core/prompt');
+    const chainPromptModule = require('koishi-plugin-chatluna/llm-core/chain/prompt');
+
+    expect(promptModule.ChatLunaContextManagerService).toBeTypeOf('function');
+    expect(chainPromptModule.ChatLunaChatPrompt).toBeTypeOf('function');
+  });
+
+  it('keeps the context trace registry in one CommonJS export', () => {
+    const coreRoot = resolveChatlunaCoreRoot();
+    const modelArtifact = readFileSync(join(coreRoot, 'lib/llm-core/platform/model.cjs'), 'utf8');
+    const chainPromptArtifact = readFileSync(join(coreRoot, 'lib/llm-core/chain/prompt.cjs'), 'utf8');
+
+    expect(modelArtifact).toContain('require("koishi-plugin-chatluna/context-trace")');
+    expect(chainPromptArtifact).toContain('require("koishi-plugin-chatluna/context-trace")');
+    expect(modelArtifact).not.toContain('function takeContextTrace');
+    expect(chainPromptArtifact).not.toContain('function registerContextTrace');
   });
 
   it('invalidates the cached ChatInterface after direct history writes', async () => {

@@ -6,6 +6,7 @@ DB_PATH="${QQBOT_KOISHI_DB_PATH:-$ROOT_DIR/data/koishi.db}"
 BOT_ENV_FILE="${QQBOT_ENV_FILE:-$ROOT_DIR/.env.local}"
 BOT_ENV_BASE_FILE="${QQBOT_ENV_BASE_FILE:-}"
 BOT_ENV_OVERRIDE_FILE="${QQBOT_ENV_OVERRIDE_FILE:-}"
+EXPLICIT_MODEL_CONFIG_PATH="${QQBOT_MODEL_CONFIG_PATH:-}"
 FAKE_USER_ID="${FAKE_USER_ID:-}"
 CHAT_MODE="${1:-${CHAT_MODE:-}}"
 ROOM_PREFIX="${ROOM_PREFIX:-codex-debug}"
@@ -22,7 +23,10 @@ Description:
 
 Environment:
   QQBOT_KOISHI_DB_PATH  Override sqlite db path (default: data/koishi.db)
-  QQBOT_ENV_FILE        Bot env file used to resolve the active built-in tab and runtime model
+  QQBOT_MODEL_CONFIG_PATH
+                        Explicit canonical model-config path. When unset, resolve
+                        it from the layered bot env files.
+  QQBOT_ENV_FILE        Bot env file used to resolve QQBOT_MODEL_CONFIG_PATH
   FAKE_USER_ID          Required fake private-chat user id
   CHAT_MODE             Optional fallback for the positional chat mode
   ROOM_PREFIX           Debug room name prefix (default: codex-debug)
@@ -78,7 +82,7 @@ else
   fi
 fi
 
-if [[ ! -f "$BASE_ENV_FILE" ]]; then
+if [[ ! -f "$BASE_ENV_FILE" && -z "$EXPLICIT_MODEL_CONFIG_PATH" ]]; then
   echo "[error] Missing bot env file: $BASE_ENV_FILE" >&2
   exit 1
 fi
@@ -93,18 +97,22 @@ if [[ -z "$CHAT_MODE" ]]; then
   exit 2
 fi
 
-export DB_PATH BASE_ENV_FILE OVERRIDE_ENV_FILE FAKE_USER_ID CHAT_MODE ROOM_PREFIX
+export ROOT_DIR DB_PATH BASE_ENV_FILE OVERRIDE_ENV_FILE EXPLICIT_MODEL_CONFIG_PATH
+export FAKE_USER_ID CHAT_MODE ROOM_PREFIX
 
 python3 <<'PY'
 import os
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
 
+root_dir = Path(os.environ['ROOT_DIR'])
 db_path = os.environ['DB_PATH']
 base_env_file = os.environ['BASE_ENV_FILE']
 override_env_file = os.environ.get('OVERRIDE_ENV_FILE', '').strip()
+explicit_model_config_path = os.environ.get('EXPLICIT_MODEL_CONFIG_PATH', '').strip()
 fake_user_id = os.environ['FAKE_USER_ID']
 chat_mode = os.environ['CHAT_MODE'].strip()
 room_prefix = os.environ['ROOM_PREFIX']
@@ -114,7 +122,11 @@ def parse_env_file(path: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw_line in Path(path).read_text(encoding='utf-8').splitlines():
         line = raw_line.strip()
-        if not line or line.startswith('#') or '=' not in line:
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            line = line[7:].lstrip()
+        if '=' not in line:
             continue
         key, value = line.split('=', 1)
         key = key.strip()
@@ -127,42 +139,86 @@ def parse_env_file(path: str) -> dict[str, str]:
         values[key] = value
     return values
 
-def resolve_runtime_model(env_values: dict[str, str]) -> str:
-    active_tab = env_values.get('CHATLUNA_ACTIVE_TAB', '').strip()
-    tab_model_key = {
-        'openai': 'CHATLUNA_OPENAI_DEFAULT_MODEL',
-        'siliconflow': 'CHATLUNA_SILICONFLOW_DEFAULT_MODEL',
-        'copilot': 'CHATLUNA_COPILOT_DEFAULT_MODEL',
-    }.get(active_tab)
-    if tab_model_key is not None:
-        model = (
-            env_values.get(tab_model_key, '').strip() or
-            env_values.get('CHATLUNA_DEFAULT_MODEL', '').strip()
-        )
-    else:
-        model = env_values.get('CHATLUNA_DEFAULT_MODEL', '').strip()
-
-    if not model:
-        raise RuntimeError(f'no runtime main-chat model found in env file: {base_env_file}')
-    return normalize_canonical_model(active_tab, model)
-
-def normalize_canonical_model(active_tab: str, model: str) -> str:
-    value = model.strip()
-    if not value:
-        return value
-    if active_tab in ('openai', 'copilot'):
-        if value.startswith('github-copilot/'):
-            value = value.split('/', 1)[1].strip()
-        if value.startswith('openai/'):
-            return value
-        if '/' not in value:
-            return f'openai/{value}'
+def require_list(document: dict[str, object], key: str) -> list[object]:
+    value = document.get(key)
+    if not isinstance(value, list):
+        raise RuntimeError(f'canonical model-config field {key} must be an array')
     return value
 
-env_values = parse_env_file(base_env_file)
+def resolve_main_chat_model(model_config_path: Path) -> str:
+    try:
+        document = json.loads(model_config_path.read_text(encoding='utf-8'))
+    except FileNotFoundError as error:
+        raise RuntimeError(f'canonical model-config does not exist: {model_config_path}') from error
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f'canonical model-config is invalid JSON at {model_config_path}: {error.msg}'
+        ) from error
+
+    if not isinstance(document, dict):
+        raise RuntimeError(f'canonical model-config root must be an object: {model_config_path}')
+
+    main_bindings = [
+        binding
+        for binding in require_list(document, 'bindings')
+        if isinstance(binding, dict) and binding.get('workload') == 'main.chat'
+    ]
+    if len(main_bindings) != 1:
+        raise RuntimeError(
+            f'canonical model-config must contain exactly one main.chat binding: {model_config_path}'
+        )
+    binding = main_bindings[0]
+    if binding.get('mode') != 'dedicated':
+        raise RuntimeError('canonical model-config main.chat binding must use dedicated mode')
+
+    connection_id = binding.get('connectionId')
+    model_id = binding.get('modelId')
+    if not isinstance(connection_id, str) or not re.fullmatch(
+        r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?', connection_id
+    ):
+        raise RuntimeError('canonical model-config main.chat connectionId is invalid')
+    if not isinstance(model_id, str) or not re.fullmatch(
+        r'[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?', model_id
+    ):
+        raise RuntimeError('canonical model-config main.chat modelId is invalid')
+
+    connections = require_list(document, 'connections')
+    if not any(
+        isinstance(connection, dict) and connection.get('id') == connection_id
+        for connection in connections
+    ):
+        raise RuntimeError(
+            f'canonical model-config main.chat references missing connection: {connection_id}'
+        )
+
+    models = require_list(document, 'models')
+    if not any(
+        isinstance(model, dict)
+        and model.get('connectionId') == connection_id
+        and model.get('id') == model_id
+        for model in models
+    ):
+        raise RuntimeError(
+            f'canonical model-config main.chat references missing model: {connection_id}/{model_id}'
+        )
+
+    return f'qqbot-{connection_id}/{model_id}'
+
+env_values = parse_env_file(base_env_file) if Path(base_env_file).exists() else {}
 if override_env_file and Path(override_env_file).exists():
     env_values.update(parse_env_file(override_env_file))
-model_from_env = resolve_runtime_model(env_values)
+configured_model_config_path = (
+    explicit_model_config_path
+    or env_values.get('QQBOT_MODEL_CONFIG_PATH', '').strip()
+)
+if not configured_model_config_path:
+    raise RuntimeError(
+        'QQBOT_MODEL_CONFIG_PATH is missing from the explicit environment and layered bot env'
+    )
+model_config_path = Path(configured_model_config_path)
+if not model_config_path.is_absolute():
+    model_config_path = root_dir / model_config_path
+model_from_config = resolve_main_chat_model(model_config_path.resolve())
 
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
@@ -199,7 +255,7 @@ try:
         """
     ).fetchone()
 
-    model = model_from_env
+    model = model_from_config
     password = str(template['password']) if template and template['password'] else ''
 
     updated_room_ids = []

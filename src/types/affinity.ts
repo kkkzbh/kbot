@@ -55,22 +55,6 @@ export type AffinityAuditEventType =
   | 'panel_history_synced'
   | 'panel_history_sync_skipped'
   | 'admin_update';
-export type AffinityAnalysisRequestMode = 'chat_completions' | 'responses';
-export type AffinityAnalysisStructuredOutputProtocol =
-  | 'native_chat_json_schema'
-  | 'native_responses_json_schema'
-  | 'chat_reply_v1'
-  | 'json_mode';
-
-export interface AffinityAnalysisModelConfig {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  requestMode: AffinityAnalysisRequestMode;
-  structuredOutputProtocol: AffinityAnalysisStructuredOutputProtocol;
-  timeoutMs: number;
-}
-
 export interface AffinityConfigRecord {
   id: number;
   key: string;
@@ -234,7 +218,6 @@ export interface AffinitySettings {
   randomCountWeights: [number, number, number, number];
   enabledDirections: AffinityRandomDirection[];
   webSourceEnabled: boolean;
-  analysisModel: Partial<AffinityAnalysisModelConfig>;
 }
 
 export interface AffinityStateSummary {

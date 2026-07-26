@@ -7,12 +7,6 @@ import type {
   CopilotAuthState,
 } from '../../types/admin.js';
 import {
-  COPILOT_AUTO_MODEL_ID,
-  COPILOT_MODEL_OPTIONS,
-  type CopilotModelOption,
-  type MainChatRequestMode,
-} from '../shared/llm/index.js';
-import {
   createProxyFetchRequest,
   formatProxyFetchFailure,
 } from '../shared/proxy-fetch.js';
@@ -28,6 +22,29 @@ const SESSION_EXPIRY_SKEW_MS = 5 * 60 * 1000;
 const AUTO_ROUTER_TIMEOUT_MS = 10_000;
 const COPILOT_AUTO_MIN_OUTPUT_TOKENS = 512;
 const COPILOT_AUTO_DEFAULT_OUTPUT_TOKENS = 4096;
+const COPILOT_AUTO_MODEL_ID = 'auto';
+
+type MainChatRequestMode = 'chat_completions' | 'responses';
+
+interface CopilotModelOption {
+  modelId: string;
+  label: string;
+  rateLabel?: string;
+  requestMode: MainChatRequestMode;
+  structuredOutputProtocol:
+    | 'native_chat_json_schema'
+    | 'native_responses_json_schema';
+  deprecated?: boolean;
+}
+
+const COPILOT_MODEL_OPTIONS = [
+  {
+    modelId: COPILOT_AUTO_MODEL_ID,
+    label: 'Auto',
+    requestMode: 'responses',
+    structuredOutputProtocol: 'native_responses_json_schema',
+  },
+] as const satisfies readonly CopilotModelOption[];
 
 type ResolvedEnvFiles = {
   mode: 'single' | 'layered';
@@ -620,12 +637,9 @@ export class CopilotOAuthBridgeService implements CopilotBridgeStateProvider {
     const persisted = trimOptionalText(await readTextIfExists(this.secretFilePath));
     if (persisted) return persisted;
 
-    const fallback =
-      trimOptionalText(process.env.CHATLUNA_COPILOT_API_KEY) ??
-      `qqbot-copilot-${randomBytes(24).toString('hex')}`;
-
-    await writeFileAtomic(this.secretFilePath, `${fallback}\n`);
-    return fallback;
+    const generated = `qqbot-copilot-${randomBytes(24).toString('hex')}`;
+    await writeFileAtomic(this.secretFilePath, `${generated}\n`);
+    return generated;
   }
 
   private async readOAuthRecord(): Promise<CopilotOAuthRecord | null> {

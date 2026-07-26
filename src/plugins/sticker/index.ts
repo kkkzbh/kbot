@@ -10,13 +10,20 @@ import {
   resolveChatLunaRoomLike,
   type QqbotChatLunaContextOptionsLike,
 } from '../shared/chatluna-conversation.js';
+import type { ModelRuntimeClient } from '../model-config/index.js';
+import {
+  StickerMaintenanceService,
+  type StickerMaintenanceServiceLike,
+} from './maintenance.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
 };
 
 export const name = 'chatluna-sticker';
-export const inject = ['chatluna'];
+export const inject = {
+  required: ['chatluna', 'modelRuntime'],
+} as const;
 export {
   createStickerHistoryLine,
   resolveStickerSelection,
@@ -27,6 +34,11 @@ export {
   type StickerCatalogEntry,
   type StickerMatch,
 } from './selection.js';
+export {
+  StickerMaintenanceService,
+  type StickerIndexMaintenanceResult,
+  type StickerMaintenanceServiceLike,
+} from './maintenance.js';
 
 const logger = new Logger(name);
 let runtimeStickerDir = '';
@@ -64,7 +76,10 @@ type ChatLunaLike = {
 
 type ContextWithChatLuna = Context & {
   chatluna?: ChatLunaLike;
+  modelRuntime: ModelRuntimeClient;
   get?: (name: string) => unknown;
+  provide?: (name: string) => void;
+  set?: (name: string, value: unknown) => void;
 };
 
 function isReplyPlanSessionAvailable(session: Session): boolean {
@@ -133,6 +148,20 @@ export function apply(ctx: Context, config: Config): void {
   } else {
     logger.info('loaded sticker catalog with %d entry(ies).', catalog.entries.length);
   }
+  const runtimeCtx = ctx as ContextWithChatLuna;
+  const maintenance = new StickerMaintenanceService({
+    stickerDir,
+    modelRuntime: runtimeCtx.modelRuntime,
+    onCatalogWritten: () => {
+      const updatedCatalog = loadStickerCatalog(stickerDir);
+      if (!updatedCatalog) {
+        throw new Error('刚写入的 sticker catalog 无法加载。');
+      }
+      setRuntimeStickerCatalog(stickerDir, updatedCatalog);
+      logger.info('reloaded sticker catalog with %d entry(ies).', updatedCatalog.entries.length);
+    },
+  });
+  provideStickerMaintenance(runtimeCtx, maintenance);
 
   let policyRegistered = false;
   const ensurePolicyRegistered = (): boolean => {
@@ -170,4 +199,15 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('chatluna/chat-chain-added', () => {
     ensurePolicyRegistered();
   });
+}
+
+function provideStickerMaintenance(
+  ctx: ContextWithChatLuna,
+  service: StickerMaintenanceServiceLike,
+): void {
+  if (typeof ctx.provide !== 'function' || typeof ctx.set !== 'function') {
+    throw new Error('Koishi context cannot provide stickerMaintenance.');
+  }
+  ctx.provide('stickerMaintenance');
+  ctx.set('stickerMaintenance', service);
 }

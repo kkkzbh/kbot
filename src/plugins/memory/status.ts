@@ -8,11 +8,14 @@ import type {
   MemoryStatusServiceLike,
   MemoryStatusSnapshot,
 } from '../../types/memory.js';
+import type { ModelRuntimeClient } from '../model-config/index.js';
 import { createUnavailableMemoryStatusSnapshot } from '../shared/memory-status.js';
-import type { MemoryEmbedRuntime } from './providers/embedding-client.js';
-import { isEmbedRuntimeConfigured } from './providers/embedding-client.js';
-import type { MemoryProviderProfile } from './providers/router.js';
-import { isMemoryProviderConfigured } from './providers/router.js';
+import {
+  isEmbeddingWorkloadEnabled,
+} from './providers/embedding-client.js';
+import {
+  isMemoryExtractWorkloadEnabled,
+} from './providers/router.js';
 
 export { createUnavailableMemoryStatusSnapshot };
 
@@ -31,8 +34,6 @@ export interface MemoryStatusRuntimeLike {
   enabled: boolean;
   readEnabled: boolean;
   writeEnabled: boolean;
-  extract: MemoryProviderProfile;
-  embed: MemoryEmbedRuntime;
 }
 
 function createEmptyOperationStatus(): OperationStatusDraft {
@@ -75,9 +76,10 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
 
   constructor(
     private readonly runtime: MemoryStatusRuntimeLike,
+    private readonly modelRuntime: ModelRuntimeClient,
     private readonly store: { getJobSummary: () => Promise<MemoryQueueSummary> },
     private readonly embedProbe: () => Promise<void>,
-    private readonly extractionProbe?: () => Promise<void>,
+    private readonly extractionProbe: () => Promise<void>,
   ) {}
 
   recordAttempt(kind: 'extract' | 'embed', source: Exclude<MemoryStatusSource, null>, at = Date.now()): void {
@@ -126,39 +128,43 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
 
   async getSnapshot(): Promise<MemoryStatusSnapshot> {
     const jobs = await this.store.getJobSummary();
+    const extractBinding = this.modelRuntime.resolve('memory.extract');
+    const embedBinding = this.modelRuntime.resolve('memory.embedding');
+    const extractConfigured = isMemoryExtractWorkloadEnabled(this.modelRuntime);
+    const embedConfigured = isEmbeddingWorkloadEnabled(this.modelRuntime);
     return {
       available: true,
       enabled: this.runtime.enabled,
       readEnabled: this.runtime.readEnabled,
       writeEnabled: this.runtime.writeEnabled,
-      extractConfigured: isMemoryProviderConfigured(this.runtime.extract),
-      embedConfigured: isEmbedRuntimeConfigured(this.runtime.embed),
-      extractModel: this.runtime.extract.model,
-      embedBaseUrl: this.runtime.embed.baseUrl,
-      embedModel: this.runtime.embed.model,
+      extractConfigured,
+      embedConfigured,
+      extractModel: extractBinding.model ?? '',
+      embedModel: embedBinding.model ?? '',
       jobs,
       providerRoutes: [...this.routeStats.values()],
       lastMaintenanceAt: this.lastMaintenanceAt,
-      extract: toOperationSnapshot(this.extract, isMemoryProviderConfigured(this.runtime.extract)),
-      embed: toOperationSnapshot(this.embed, isEmbedRuntimeConfigured(this.runtime.embed)),
+      extract: toOperationSnapshot(this.extract, extractConfigured),
+      embed: toOperationSnapshot(this.embed, embedConfigured),
     };
   }
 
   async probeEmbedding(): Promise<MemoryProbeResult> {
-    return this.runProbe('embedding', 'embed', this.embedProbe, isEmbedRuntimeConfigured(this.runtime.embed));
+    return this.runProbe(
+      'embedding',
+      'embed',
+      this.embedProbe,
+      isEmbeddingWorkloadEnabled(this.modelRuntime),
+    );
   }
 
   async probeExtraction(): Promise<MemoryProbeResult> {
     return this.runProbe(
       'extraction',
       'extract',
-      this.extractionProbe ?? (async () => {}),
-      isMemoryProviderConfigured(this.runtime.extract),
+      this.extractionProbe,
+      isMemoryExtractWorkloadEnabled(this.modelRuntime),
     );
-  }
-
-  async probeProvider(): Promise<MemoryProbeResult> {
-    return this.probeExtraction();
   }
 
   private async runProbe(

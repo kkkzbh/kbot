@@ -13,7 +13,7 @@ Production is deployed as one clean instance on `km6`. The server runs the full 
   .staging/   install transaction area, cleared after deploy
 ```
 
-`app` contains the bundled `qqbot` and `chatluna` trees. `data` contains databases, QQ login state, LLBot runtime state, ChatLuna storage, presets, stickers, and caches. `shared` contains `.env.server` and the generated `.env.runtime`.
+`app` contains the bundled `qqbot` and `chatluna` trees. `data` contains databases, QQ login state, LLBot runtime state, ChatLuna storage, runtime context and role preset catalogs, stickers, and caches. `shared` contains `.env.server` and the generated `.env.runtime`.
 
 The deploy scripts may replace only `/opt/qqbot/app` and may clear only `/opt/qqbot/incoming` and `/opt/qqbot/.staging`. They must preserve `/opt/qqbot/data` and `/opt/qqbot/shared`.
 
@@ -66,18 +66,28 @@ The `qqbot` package is always built and bundled from the current `HEAD` commit. 
 
 When a full deploy is required, the script runs typecheck, tests, build, packages `qqbot` with the sibling `../chatluna` checkout, uploads one tarball, and asks the server installer to replace the single active instance. LLBot release zips are cached locally under `.tmp/deploy-cache`.
 
-For a coordinated offline migration, upload the verified release while leaving
-the active application and services unchanged:
+For the one-time Context/Role preset cutover, follow
+[`docs/context-preset-cutover.md`](../docs/context-preset-cutover.md). The
+runbook uploads the verified release while leaving the active application and
+services unchanged:
 
 ```bash
 QQBOT_DEPLOY_MODE=upload-only deploy/deploy.sh km6
 ```
 
-The uploaded bundle remains at `/opt/qqbot/incoming/qqbot.tar.gz`. After the
-migration preflight and offline data changes complete, invoke the installer
-with `keep-stopped` as documented by the migration runbook. Ordinary deployment
-can also retain the stopped state with
-`QQBOT_DEPLOY_ACTIVATION_MODE=keep-stopped`.
+The uploaded bundle remains at `/opt/qqbot/incoming/qqbot.tar.gz`. The
+installer owns the stopped migration transaction after the read-only
+preflight. Ordinary deployment can retain the stopped state with
+`QQBOT_DEPLOY_ACTIVATION_MODE=keep-stopped`; that mode deliberately keeps the
+legacy runtime catalog until an explicit start and successful verification.
+
+The same coordinated installer owns the one-time canonical model configuration
+cutover. Follow
+[`docs/model-config-cutover.md`](../docs/model-config-cutover.md) to prepare the
+explicit ambiguity mapping, review the zero-write preflight contract, and
+verify the cross-migration rollback material. A clean installation must import
+or initialize an explicit canonical model-config document and KEK before
+startup; the installer never guesses model credentials or endpoints.
 
 ## Services
 

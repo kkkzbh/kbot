@@ -3,14 +3,16 @@ import { Context, Logger, Schema } from 'koishi';
 import type { PresetService } from 'koishi-plugin-chatluna/preset';
 import type { PlatformService } from 'koishi-plugin-chatluna/llm-core/platform/service';
 import type { ModelUsagePayload } from 'koishi-plugin-chatluna/llm-core/platform/usage';
-import { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
-import { CodexOAuthBridgeService } from '../codex-oauth/index.js';
+import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
+import type { CodexOAuthBridgeService } from '../codex-oauth/index.js';
+import type { ModelConfigService } from '../model-config/index.js';
 import type { AffinityServiceLike } from '../../types/affinity.js';
 import type { FeaturePolicyServiceLike } from '../../types/feature-policy.js';
 import type { MemoryStatusServiceLike } from '../../types/memory.js';
 import type { MemoryAdminService } from '../memory/index.js';
 import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
-import { AdminRuntimeManager, resolveBotEnvFiles } from './server.js';
+import type { StickerMaintenanceService } from '../../types/model-config.js';
+import { AdminRuntimeManager } from './server.js';
 import { AdminSessionService } from './session.js';
 import { AdminLogService } from './logs.js';
 import { registerAdminApi, type AdminRuntimeServices } from './http-api.js';
@@ -24,8 +26,15 @@ import {
 
 export const name = 'admin-api';
 export const inject = {
-  required: ['server', 'database', 'chatluna'],
-  optional: ['memoryStatus', 'memoryAdmin', 'featurePolicy', 'toolPolicy', 'affinity'],
+  required: ['server', 'database', 'chatluna', 'modelConfig', 'codexBridge', 'copilotBridge'],
+  optional: [
+    'memoryStatus',
+    'memoryAdmin',
+    'featurePolicy',
+    'toolPolicy',
+    'affinity',
+    'stickerMaintenance',
+  ],
 } as const;
 
 export interface Config {
@@ -49,44 +58,23 @@ type RuntimeContext = Context & {
     preset: PresetService;
     platform: PlatformService;
   };
+  modelConfig: ModelConfigService;
+  codexBridge: CodexOAuthBridgeService;
+  copilotBridge: CopilotOAuthBridgeService;
   memoryStatus?: MemoryStatusServiceLike;
   memoryAdmin?: MemoryAdminService;
   featurePolicy?: FeaturePolicyServiceLike;
   toolPolicy?: ToolPolicyServiceLike;
   affinity?: AffinityServiceLike;
+  stickerMaintenance?: StickerMaintenanceService;
 };
 
 export function apply(ctx: Context, config: Config): void {
   const logger = new Logger('admin-api');
   const runtimeCtx = ctx as RuntimeContext;
-  const envFiles = resolveBotEnvFiles(ctx.baseDir);
-  const copilotBridge = new CopilotOAuthBridgeService({ rootDir: ctx.baseDir, envFiles });
-  const codexBridge = new CodexOAuthBridgeService({ rootDir: ctx.baseDir, envFiles });
-  const refreshCodexReleaseMetadata = async () => {
-    const state = await codexBridge.refreshReleaseMetadata({ force: true });
-    if (state.status === 'ready') {
-      try {
-        const models = await codexBridge.listModelOptions();
-        logger.debug(
-          'Codex dynamic catalog synchronized: version=%s models=%d',
-          state.clientVersion,
-          models.length,
-        );
-      } catch (error) {
-        logger.warn(
-          'Codex dynamic catalog synchronization degraded: %s',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-      return;
-    }
-    logger.warn('Codex release metadata synchronization degraded: %s', state.error);
-  };
-  void refreshCodexReleaseMetadata();
-  ctx.setInterval(() => {
-    void refreshCodexReleaseMetadata();
-  }, 60 * 60 * 1000);
-  const manager = new AdminRuntimeManager({ rootDir: ctx.baseDir, copilotBridge, codexBridge });
+  const copilotBridge = runtimeCtx.copilotBridge;
+  const codexBridge = runtimeCtx.codexBridge;
+  const manager = new AdminRuntimeManager({ rootDir: ctx.baseDir });
   const session = new AdminSessionService({
     accessToken: config.accessToken,
     sessionSecret: config.sessionSecret,
@@ -114,6 +102,7 @@ export function apply(ctx: Context, config: Config): void {
     get featurePolicy() { return runtimeCtx.featurePolicy; },
     get toolPolicy() { return runtimeCtx.toolPolicy; },
     get affinity() { return runtimeCtx.affinity; },
+    get stickerMaintenance() { return runtimeCtx.stickerMaintenance; },
   };
   const events = new OperationalEventService(
     services.database,
@@ -136,6 +125,7 @@ export function apply(ctx: Context, config: Config): void {
     codexBridge,
     logger,
     contextSnapshots,
+    modelConfig: runtimeCtx.modelConfig,
   });
   registerAdminStatic({
     ctx,

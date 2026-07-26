@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, inject } from '../src/plugins/triggers/group-natural/index.js';
+import type {
+  ModelRuntimeClient,
+  ModelRuntimeExecutionRequest,
+} from '../src/plugins/model-config/index.js';
 import type { NaturalTriggerState } from '../src/plugins/triggers/group-natural/state.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 vi.mock('koishi', () => {
   type MockSchemaNode = {
@@ -48,6 +53,7 @@ type AllowReplyResolver = (arg: { session: Record<string, any>; context: unknown
 
 function createHarness(
   overrides: Record<string, unknown> = {},
+  services: { modelRuntime?: ModelRuntimeClient } = {},
 ): {
   middleware: Middleware;
   chatChainMiddlewares: Map<string, ChatChainMiddleware>;
@@ -86,6 +92,8 @@ function createHarness(
   const featurePolicy = {
     resolveFeatureEnabled: vi.fn(async () => true),
   };
+  const modelRuntime = services.modelRuntime
+    ?? createTestModelRuntime({ naturalTriggerMode: 'disabled' }).modelRuntime;
   const ctx: Record<string, unknown> = {
     middleware: vi.fn((handler: Middleware) => {
       middlewares.push(handler);
@@ -97,6 +105,7 @@ function createHarness(
     }),
     chatluna: chatlunaService,
     featurePolicy,
+    modelRuntime,
   };
 
   apply(ctx as never, {
@@ -109,11 +118,6 @@ function createHarness(
     spamWindowMs: 10_000,
     spamThreshold: 10,
     spamMuteMs: 180_000,
-    decisionEnabled: false,
-    decisionBaseUrl: 'https://decision.example/v1',
-    decisionApiKey: '',
-    decisionModel: '',
-    decisionTimeoutMs: 4_000,
     decisionMinConfidence: 0.62,
     ...overrides,
   });
@@ -182,7 +186,9 @@ describe('group natural trigger middleware', () => {
   });
 
   it('declares runtime services as required injections', () => {
-    expect(inject).toEqual({ required: ['chatluna', 'featurePolicy'] });
+    expect(inject).toEqual({
+      required: ['chatluna', 'featurePolicy', 'modelRuntime'],
+    });
   });
 
   it('fails fast without the required feature policy service', () => {
@@ -205,11 +211,6 @@ describe('group natural trigger middleware', () => {
         spamWindowMs: 10_000,
         spamThreshold: 10,
         spamMuteMs: 180_000,
-        decisionEnabled: false,
-        decisionBaseUrl: 'https://decision.example/v1',
-        decisionApiKey: '',
-        decisionModel: '',
-        decisionTimeoutMs: 4_000,
         decisionMinConfidence: 0.62,
       }),
     ).toThrow('group-natural-trigger requires featurePolicy service.');
@@ -223,6 +224,9 @@ describe('group natural trigger middleware', () => {
       featurePolicy: {
         resolveFeatureEnabled: vi.fn(),
       },
+      modelRuntime: createTestModelRuntime({
+        naturalTriggerMode: 'disabled',
+      }).modelRuntime,
     };
 
     expect(() =>
@@ -236,11 +240,6 @@ describe('group natural trigger middleware', () => {
         spamWindowMs: 10_000,
         spamThreshold: 10,
         spamMuteMs: 180_000,
-        decisionEnabled: false,
-        decisionBaseUrl: 'https://decision.example/v1',
-        decisionApiKey: '',
-        decisionModel: '',
-        decisionTimeoutMs: 4_000,
         decisionMinConfidence: 0.62,
       }),
     ).toThrow('group-natural-trigger requires chatluna.registerAllowReplyResolver.');
@@ -450,29 +449,16 @@ describe('group natural trigger middleware', () => {
   });
 
   it('sends only the user message content to the decision model', async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: '{"trigger":true,"confidence":0.9}',
-              },
-            },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
+    const execute = vi.fn(async (_request: ModelRuntimeExecutionRequest) => ({
+      text: '{"trigger":true,"confidence":0.9}',
+    }));
+    const { modelRuntime } = createTestModelRuntime({
+      naturalTriggerMode: 'dedicated',
+      executor: { execute },
+    });
     const { middleware } = createHarness({
       replyIntervalMs: 0,
-      decisionEnabled: true,
-      decisionBaseUrl: 'https://decision.example/v1',
-      decisionApiKey: 'test-key',
-      decisionModel: 'test-model',
-    });
+    }, { modelRuntime });
 
     const result = await runAndCapture(
       middleware,
@@ -481,15 +467,21 @@ describe('group natural trigger middleware', () => {
       }),
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const firstCall = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit | undefined] | undefined;
-    const requestInit = firstCall?.[1];
-    const requestBody = JSON.parse(String(requestInit?.body ?? '{}')) as {
-      messages?: Array<{ role?: string; content?: string }>;
-    };
-
-    expect(requestBody.messages?.[1]?.role).toBe('user');
-    expect(requestBody.messages?.[1]?.content).toBe('消息: 普通闲聊一下');
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      target: expect.objectContaining({
+        canonicalModel: 'qqbot-primary/natural-trigger',
+      }),
+      payload: expect.objectContaining({
+        messages: expect.arrayContaining([
+          { role: 'user', content: '消息: 普通闲聊一下' },
+        ]),
+        structuredOutput: expect.objectContaining({
+          name: 'natural_trigger_decision',
+          strict: true,
+        }),
+      }),
+    }));
     expect(result.naturalTrigger).toEqual({ reason: 'model', explicit: false });
   });
 

@@ -1,10 +1,5 @@
 import { createHash } from 'node:crypto';
-import type {
-  CompiledPreset,
-  PresetDefinitionV2,
-} from 'koishi-plugin-chatluna/preset-schema';
 import {
-  CONTEXT_BLUEPRINT,
   redactDataUrls,
   redactSensitiveUrls,
   summarizeDataUrl,
@@ -14,7 +9,6 @@ import {
 import type { ModelUsagePayload } from 'koishi-plugin-chatluna/llm-core/platform/usage';
 import type {
   AdminJsonValue,
-  ContextBlueprintResponse,
   ContextSnapshot,
   ContextSnapshotResponse,
   ContextTarget,
@@ -714,134 +708,6 @@ export class ModelContextSnapshotStore {
       this.unavailable.delete(oldest);
     }
   }
-}
-
-function presetSources(
-  stage: string,
-  definition: PresetDefinitionV2,
-): ContextBlueprintResponse['sections'][number]['sources'] {
-  if (stage === 'system_prompts') {
-    return [
-      {
-        id: 'core-instructions',
-        label: 'ChatLuna core instructions',
-        path: 'runtime.coreInstructions',
-      },
-      ...definition.messages.map((message, index) => ({
-        id: `preset-message-${index}`,
-        label: `Preset message ${index + 1}`,
-        path: `messages[${index}]`,
-        role: message.role,
-        ...(message.purpose ? { purpose: message.purpose } : {}),
-        content: sanitizeContextValue(message.content),
-      })),
-    ];
-  }
-  if (stage === 'chat_history') {
-    return [{ id: 'chat-history', label: 'Conversation message history', path: 'conversation.messages' }];
-  }
-  if (stage === 'long_history') {
-    return [
-      {
-        id: 'long-memory-template',
-        label: 'Long-memory template',
-        path: 'promptConfig.longMemoryPrompt',
-        content: definition.promptConfig.longMemoryPrompt ?? null,
-      },
-      {
-        id: 'knowledge-prompt',
-        label: 'Knowledge prompt',
-        path: 'knowledge.prompt',
-        content: definition.knowledge?.prompt ?? null,
-      },
-      {
-        id: 'knowledge-sources',
-        label: 'Knowledge sources',
-        path: 'knowledge.sources',
-        content: sanitizeContextValue(definition.knowledge?.sources ?? []),
-      },
-      {
-        id: 'long-memory-extract-template',
-        label: 'Long-memory extraction template',
-        path: 'promptConfig.longMemoryExtractPrompt',
-        content: definition.promptConfig.longMemoryExtractPrompt ?? null,
-      },
-      {
-        id: 'long-memory-new-question-template',
-        label: 'Long-memory new-question template',
-        path: 'promptConfig.longMemoryNewQuestionPrompt',
-        content: definition.promptConfig.longMemoryNewQuestionPrompt ?? null,
-      },
-      { id: 'documents', label: 'Request documents', path: 'runtime.documents' },
-    ];
-  }
-  if (stage === 'injections') {
-    return [
-      {
-        id: 'lore',
-        label: 'Lore defaults and entries',
-        path: 'lore',
-        content: sanitizeContextValue(definition.lore),
-      },
-      {
-        id: 'lore-template',
-        label: 'Lore rendering template',
-        path: 'promptConfig.loreBooksPrompt',
-        content: definition.promptConfig.loreBooksPrompt ?? null,
-      },
-      {
-        id: 'authors-note',
-        label: 'Authors note',
-        path: 'authorsNote',
-        content: sanitizeContextValue(definition.authorsNote),
-      },
-      { id: 'runtime-injections', label: 'Runtime injections', path: 'runtime.injections' },
-    ];
-  }
-  if (stage === 'input') {
-    return [
-      {
-        id: 'input-format',
-        label: 'Preset input format',
-        path: 'inputFormat',
-        content: definition.inputFormat,
-      },
-      { id: 'current-input', label: 'Current user input', path: 'request.input' },
-    ];
-  }
-  if (stage === 'scratchpad') {
-    return [
-      {
-        id: 'react-instruction',
-        label: 'ReAct instruction',
-        path: 'promptConfig.reActInstruction',
-        content: definition.promptConfig.reActInstruction ?? null,
-      },
-      { id: 'agent-scratchpad', label: 'Agent scratchpad', path: 'agent.scratchpad' },
-    ];
-  }
-  if (stage === 'after_scratchpad') {
-    return [
-      { id: 'qqbot-fragments', label: 'QQBot runtime fragments', path: 'qqbot.contextFragments' },
-      { id: 'reply-protocol', label: 'Reply protocol', path: 'qqbot.replyProtocol' },
-    ];
-  }
-  return [{ id: 'tool-definitions', label: 'Tool definitions', path: 'request.tools' }];
-}
-
-export function buildContextBlueprint(preset: CompiledPreset): ContextBlueprintResponse {
-  return {
-    presetId: preset.id,
-    presetRevision: preset.revision,
-    sections: CONTEXT_BLUEPRINT.map((stage) => ({
-      id: stage.id,
-      order: stage.order,
-      label: stage.title,
-      description: stage.description,
-      dynamic: stage.dynamic,
-      sources: presetSources(stage.id, preset.definition),
-    })),
-  };
 }
 
 export async function buildContextTargets(

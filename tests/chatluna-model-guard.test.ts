@@ -1,33 +1,25 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildProactiveOpeningState,
   resolveUserTurnIntentState,
 } from '../src/plugins/reply/prompt/turn-context.js';
 import {
-  buildReplyOutputContract,
-  buildStructuredReplyModelOverride,
-  buildSiliconFlowKimiK25NonThinkingOverride,
-  inferPlatformFromBaseUrl,
-  isSupportedMainChatModelForTab,
-  normalizeRawModelName,
-  registerCodexDynamicModelOptions,
-  resolveMainChatRuntimeProfileFromEnv,
-  resolvePlatform,
-  supportsStructuredReplyJsonSchema,
+  buildModelReplyOutputContract,
+  buildModelRequestOverrides,
 } from '../src/plugins/shared/llm/index.js';
 import {
   buildChatReplyV1OutputContractLines,
   buildNativeJsonOutputContractLines,
   buildReplySemanticContractLines,
 } from '../src/plugins/shared/llm/reply-output-contract.js';
-import { canHotSwitchMainChatModelOnly, mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
-import { syncRoomModelToMainChatRuntime } from '../src/plugins/model-guard/hot-switch.js';
-import { deriveOneBotAvatarUrl, resolveSessionAvatarUrl, resolveSessionDisplayName, resolveSessionQqNick } from '../src/plugins/shared/session/index.js';
-
-afterEach(() => {
-  registerCodexDynamicModelOptions([]);
-  mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
-});
+import { syncRoomModelToMainBinding } from '../src/plugins/model-guard/hot-switch.js';
+import {
+  deriveOneBotAvatarUrl,
+  resolveSessionAvatarUrl,
+  resolveSessionDisplayName,
+  resolveSessionQqNick,
+} from '../src/plugins/shared/session/index.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 function assertStrictRequiredForAllObjects(schema: unknown): void {
   const visit = (node: unknown): void => {
@@ -51,138 +43,8 @@ function assertStrictRequiredForAllObjects(schema: unknown): void {
   visit(schema);
 }
 
-describe('resolvePlatform', () => {
-  it('returns platform from provider/model format', () => {
-    expect(resolvePlatform('deepseek/deepseek-chat')).toBe('deepseek');
-    expect(resolvePlatform('Pro/moonshotai/Kimi-K2.5')).toBe('siliconflow');
-  });
-
-  it('returns null for invalid model values', () => {
-    expect(resolvePlatform(undefined)).toBeNull();
-    expect(resolvePlatform('')).toBeNull();
-    expect(resolvePlatform('   ')).toBeNull();
-    expect(resolvePlatform('deepseek')).toBeNull();
-    expect(resolvePlatform('/deepseek-chat')).toBeNull();
-  });
-});
-
-describe('normalizeRawModelName', () => {
-  it('keeps provider/model unchanged', () => {
-    expect(normalizeRawModelName('deepseek/deepseek-chat')).toBe('deepseek/deepseek-chat');
-  });
-
-  it('normalizes vendor/model names through the preferred platform', () => {
-    expect(
-      normalizeRawModelName('Pro/moonshotai/Kimi-K2.5', {
-        availableModels: ['siliconflow/Pro/moonshotai/Kimi-K2.5'],
-        preferredPlatform: 'siliconflow',
-      }),
-    ).toBe('Pro/moonshotai/Kimi-K2.5');
-  });
-
-  it('resolves plain model by available model suffix', () => {
-    expect(
-      normalizeRawModelName('deepseek-chat', {
-        availableModels: ['deepseek/deepseek-chat', 'openai/gpt-4o-mini'],
-      }),
-    ).toBe('deepseek/deepseek-chat');
-  });
-
-  it('resolves plain MIMO chat models by available model suffix', () => {
-    expect(
-      normalizeRawModelName('mimo-v2.5-pro', {
-        availableModels: ['mimo/mimo-v2.5-pro'],
-        preferredPlatform: 'mimo',
-      }),
-    ).toBe('mimo/mimo-v2.5-pro');
-  });
-
-  it('falls back to preferred platform when suffix is ambiguous', () => {
-    expect(
-      normalizeRawModelName('chat', {
-        availableModels: ['deepseek/chat', 'openai/chat'],
-        preferredPlatform: 'openai',
-      }),
-    ).toBe('openai/chat');
-  });
-
-  it('fills missing model with default model', () => {
-    expect(
-      normalizeRawModelName('', {
-        defaultModel: 'deepseek/deepseek-chat',
-      }),
-    ).toBe('deepseek/deepseek-chat');
-  });
-
-  it('treats the chatluna none sentinel as missing model', () => {
-    expect(
-      normalizeRawModelName('无', {
-        defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-      }),
-    ).toBe('Pro/moonshotai/Kimi-K2.5');
-  });
-});
-
-describe('buildSiliconFlowKimiK25NonThinkingOverride', () => {
-  it('returns a non-thinking override for SiliconFlow Kimi K2.5', () => {
-    expect(buildSiliconFlowKimiK25NonThinkingOverride('Pro/moonshotai/Kimi-K2.5')).toEqual({
-      thinking: {
-        type: 'disabled',
-      },
-    });
-    expect(buildSiliconFlowKimiK25NonThinkingOverride('siliconflow/Pro/moonshotai/Kimi-K2.5')).toEqual({
-      thinking: {
-        type: 'disabled',
-      },
-    });
-  });
-
-  it('returns null for non-Kimi-K2.5 models', () => {
-    expect(buildSiliconFlowKimiK25NonThinkingOverride('deepseek/deepseek-chat')).toBeNull();
-    expect(buildSiliconFlowKimiK25NonThinkingOverride('siliconflow/Pro/moonshotai/Kimi-K2-Instruct-0905')).toBeNull();
-  });
-});
-
-describe('buildStructuredReplyModelOverride', () => {
-  it('keeps the Kimi non-thinking override and keeps OpenAI on chat completions mode', () => {
-    expect(buildStructuredReplyModelOverride('Pro/moonshotai/Kimi-K2.5')).toEqual({
-      thinking: {
-        type: 'disabled',
-      },
-    });
-    expect(buildStructuredReplyModelOverride('openai/gpt-5.4-medium-thinking')).toEqual({
-      qqbot_canonical_model: 'openai/gpt-5.4-medium-thinking',
-      qqbot_transport_model: 'gpt-5.4-medium-thinking',
-      qqbot_tool_profile: 'qqbot_openai_main_chat',
-      reasoning: {
-        effort: 'medium',
-      },
-    });
-    expect(buildStructuredReplyModelOverride('openai/auto')).toEqual({
-      qqbot_request_mode: 'responses',
-      qqbot_canonical_model: 'openai/auto',
-      qqbot_transport_model: 'auto',
-      qqbot_tool_profile: 'qqbot_openai_main_chat',
-    });
-  });
-});
-
-describe('supportsStructuredReplyJsonSchema', () => {
-  it('supports both the Kimi and OpenAI gpt-5.4 main-chat families', () => {
-    registerCodexDynamicModelOptions([{ modelId: 'gpt-5.5', label: 'GPT-5.5' }]);
-    expect(supportsStructuredReplyJsonSchema('Pro/moonshotai/Kimi-K2.5')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('siliconflow/Pro/moonshotai/Kimi-K2.5')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('openai/gpt-5.4')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('openai/gpt-5.4-medium-thinking')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('openai/gpt-5.5')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('openai/auto')).toBe(true);
-    expect(supportsStructuredReplyJsonSchema('openai/gpt-5-mini')).toBe(false);
-    expect(supportsStructuredReplyJsonSchema('openai/gemini-3.1-pro-preview')).toBe(false);
-  });
-});
-
-describe('buildReplyOutputContract', () => {
-  it('documents generic image final replies without disabled tool-specific guidance', () => {
+describe('canonical main chat reply contract', () => {
+  it('documents generic image final replies without tool-specific coupling', () => {
     expect(buildReplySemanticContractLines().join('\n')).toContain(
       '如果工具结果里带有 `image.assetRef`，且该图片就是当前答案的一部分',
     );
@@ -195,584 +57,271 @@ describe('buildReplyOutputContract', () => {
     expect(buildReplySemanticContractLines().join('\n')).not.toContain('cf_user_profile');
   });
 
-  it('injects the configured voice output language into json schema and text protocol contracts', () => {
-    const schemaContract = buildReplyOutputContract({
-      model: 'openai/gpt-5.4-medium-thinking',
-      canVoice: true,
-      voiceOutputLanguage: 'ja',
-    });
-    expect(JSON.stringify(schemaContract.schema)).toContain('Write this content directly in 日语');
-
-    const textContract = buildReplyOutputContract({
-      model: 'deepseek/deepseek-v4-flash',
-      canVoice: true,
-      voiceOutputLanguage: 'ja',
-    });
-    expect(textContract.instruction).toContain('当前语音输出目标语言：日语');
-    expect(textContract.instruction).toContain('|本当にうれしいです。');
-  });
-
-  it('routes schema-capable providers to native json_schema', () => {
-    expect(
-      buildReplyOutputContract({
-        model: 'Pro/moonshotai/Kimi-K2.5',
-      }),
-    ).toMatchObject({
-      requestMode: 'chat_completions',
-      protocol: 'native_chat_json_schema',
-      schema: expect.objectContaining({
-        title: 'StructuredReply',
-      }),
-      instruction: null,
-      overrideRequestParams: {
-        thinking: {
-          type: 'disabled',
-        },
+  it('derives native chat JSON schema and request overrides from model metadata', () => {
+    const { mainTarget } = createTestModelRuntime({
+      mainRequestDefaults: {
+        temperature: 0.4,
+        topP: 0.9,
+        maxOutputTokens: 4096,
+        reasoningEffort: 'high',
+        thinkingMode: 'disabled',
       },
     });
 
-    expect(
-      buildReplyOutputContract({
-        model: 'openai/gpt-5.4-medium-thinking',
-      }),
-    ).toMatchObject({
+    const contract = buildModelReplyOutputContract({
+      canonicalModel: mainTarget.canonicalModel,
+      model: mainTarget.model,
+      canMention: true,
+      canVoice: true,
+      voiceOutputLanguage: 'ja',
+    });
+
+    expect(contract).toMatchObject({
       requestMode: 'chat_completions',
       protocol: 'native_chat_json_schema',
-      schema: expect.objectContaining({
-        title: 'StructuredReply',
-      }),
+      schema: expect.objectContaining({ title: 'StructuredReply' }),
       instruction: null,
       overrideRequestParams: {
-        qqbot_canonical_model: 'openai/gpt-5.4-medium-thinking',
-        qqbot_transport_model: 'gpt-5.4-medium-thinking',
-        reasoning: {
-          effort: 'medium',
-        },
+        qqbot_request_mode: 'chat_completions',
+        qqbot_canonical_model: 'qqbot-primary/main-chat',
+        qqbot_transport_model: 'provider-main-chat',
+        qqbot_tool_profile: 'qqbot_openai_main_chat',
+        temperature: 0.4,
+        top_p: 0.9,
+        max_tokens: 4096,
+        reasoning: { effort: 'high' },
+        thinking: { type: 'disabled' },
       },
+    });
+    expect(JSON.stringify(contract.schema)).toContain(
+      'Write this content directly in 日语',
+    );
+    expect(JSON.stringify(contract.schema)).toContain(
+      'To mention a group member, write @name followed by a space directly in this text.',
+    );
+    assertStrictRequiredForAllObjects(contract.schema);
+  });
+
+  it('derives Responses API output shape without provider-name heuristics', () => {
+    const { mainTarget } = createTestModelRuntime({
+      mainRequestMode: 'responses',
+      mainProtocol: 'native_responses_json_schema',
+      mainRequestDefaults: { maxOutputTokens: 2048 },
+    });
+
+    expect(buildModelReplyOutputContract({
+      canonicalModel: mainTarget.canonicalModel,
+      model: mainTarget.model,
+    })).toMatchObject({
+      requestMode: 'responses',
+      protocol: 'native_responses_json_schema',
+      schema: expect.objectContaining({ title: 'StructuredReply' }),
+      instruction: null,
+      overrideRequestParams: expect.objectContaining({
+        qqbot_request_mode: 'responses',
+        qqbot_canonical_model: 'qqbot-primary/main-chat',
+        qqbot_transport_model: 'provider-main-chat',
+        max_output_tokens: 2048,
+      }),
     });
   });
 
-  it('routes DeepSeek chat completions through the plain text reply protocol', () => {
-    expect(
-      buildReplyOutputContract({
-        model: 'deepseek/deepseek-v4-flash',
-      }),
-    ).toMatchObject({
+  it('derives the text protocol directly from the configured model profile', () => {
+    const { mainTarget } = createTestModelRuntime({
+      mainProtocol: 'chat_reply_v1',
+    });
+
+    const contract = buildModelReplyOutputContract({
+      canonicalModel: mainTarget.canonicalModel,
+      model: mainTarget.model,
+      canVoice: true,
+      voiceOutputLanguage: 'ja',
+    });
+
+    expect(contract).toMatchObject({
       requestMode: 'chat_completions',
       protocol: 'chat_reply_v1',
       schema: null,
       instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
-      overrideRequestParams: {
-        qqbot_canonical_model: 'deepseek/deepseek-v4-flash',
-        qqbot_transport_model: 'deepseek-v4-flash',
-        qqbot_tool_profile: 'qqbot_openai_main_chat',
-      },
+      overrideRequestParams: expect.objectContaining({
+        qqbot_canonical_model: 'qqbot-primary/main-chat',
+      }),
     });
+    expect(contract.instruction).toContain('当前语音输出目标语言：日语');
   });
 
-  it('routes the Copilot Auto entry through Responses API native structured outputs', () => {
-    expect(
-      buildReplyOutputContract({
-        model: 'openai/auto',
-      }),
-    ).toMatchObject({
-      requestMode: 'responses',
-      protocol: 'native_responses_json_schema',
-      schema: expect.objectContaining({
-        title: 'StructuredReply',
-      }),
-      instruction: null,
-      overrideRequestParams: {
-        qqbot_request_mode: 'responses',
-        qqbot_canonical_model: 'openai/auto',
-        qqbot_transport_model: 'auto',
-      },
-    });
-  });
+  it('keeps canonical identity and transport identity separate', () => {
+    const { mainTarget } = createTestModelRuntime();
 
-  it('routes Codex OAuth models to Responses API native structured outputs', () => {
-    registerCodexDynamicModelOptions([{ modelId: 'gpt-5.5', label: 'GPT-5.5' }]);
-    expect(
-      buildReplyOutputContract({
-        model: 'openai/gpt-5.5',
-      }),
-    ).toMatchObject({
-      requestMode: 'responses',
-      protocol: 'native_responses_json_schema',
-      schema: expect.objectContaining({
-        title: 'StructuredReply',
-      }),
-      instruction: null,
-      overrideRequestParams: {
-        qqbot_request_mode: 'responses',
-        qqbot_canonical_model: 'openai/gpt-5.5',
-        qqbot_transport_model: 'gpt-5.5',
-        qqbot_tool_profile: 'qqbot_openai_main_chat',
-        reasoning: {
-          effort: 'medium',
+    expect(buildModelRequestOverrides({
+      canonicalModel: mainTarget.canonicalModel,
+      model: mainTarget.model,
+    })).toEqual(expect.objectContaining({
+      qqbot_canonical_model: 'qqbot-primary/main-chat',
+      qqbot_transport_model: 'provider-main-chat',
+    }));
+  });
+});
+
+describe('canonical model runtime failure behavior', () => {
+  it('fails a disabled workload without executing or falling back to main.chat', async () => {
+    const execute = vi.fn();
+    const { modelRuntime } = createTestModelRuntime({
+      naturalTriggerMode: 'disabled',
+      executor: { execute },
+    });
+
+    await expect(modelRuntime.executeChat({
+      workload: 'naturalTrigger.decision',
+      request: {
+        messages: [{ role: 'user', content: 'should the bot reply?' }],
+        structuredOutput: {
+          name: 'natural_trigger_decision',
+          schema: { type: 'object' },
+          strict: true,
         },
       },
+    })).rejects.toMatchObject({
+      code: 'runtime_operation_invalid',
+      workload: 'naturalTrigger.decision',
     });
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it('keeps mentions inline in message content schema', () => {
-    const schema = buildReplyOutputContract({
-      model: 'openai/gpt-5.4-medium-thinking',
-      canMention: true,
-    }).schema as {
-      properties?: {
-        outbound_messages?: {
-          anyOf?: Array<{
-            items?: {
-              anyOf?: Array<{
-                title?: string;
-                description?: string;
-                anyOf?: Array<{ title?: string; description?: string; properties?: Record<string, { description?: string }> }>;
-                properties?: Record<string, { description?: string }>;
-              }>;
-            };
-          }>;
-        };
-      };
-    };
+  it('preserves the canonical workload when its only executor fails', async () => {
+    const execute = vi.fn(async () => {
+      throw new Error('primary upstream unavailable');
+    });
+    const { modelRuntime } = createTestModelRuntime({
+      affinityMode: 'inheritMain',
+      executor: { execute },
+    });
 
-    const rawMessageSchemas = schema.properties?.outbound_messages?.anyOf?.find((item) => item.items?.anyOf)?.items?.anyOf ?? [];
-    const messageSchemas = rawMessageSchemas.flatMap((item) => item.anyOf ?? [item]);
-    const textMessage = messageSchemas.find((item) => item.title === 'MessageItem') as
-      | {
-          description?: string;
-          required?: string[];
-          properties?: Record<string, { description?: string }>;
-        }
-      | undefined;
-
-    expect(textMessage?.description).toBe('Ordinary chat message.');
-    expect(textMessage?.properties?.type?.description).toBe('Ordinary chat message.');
-    expect(textMessage?.properties?.content?.description).toBe(
-      'Ordinary conversational plain text for this chat message. To mention a group member, write @name followed by a space directly in this text.',
-    );
-    expect(textMessage?.properties?.mentions).toBeUndefined();
-    expect(textMessage?.required).toEqual(['type', 'content']);
-    assertStrictRequiredForAllObjects(schema);
-
-    const structuredBlock = messageSchemas.find((item) => item.title === 'StructuredBlockItem') as
-      | {
-          description?: string;
-          properties?: Record<string, { description?: string }>;
-        }
-      | undefined;
-    expect(structuredBlock?.description).toBe('Structured text that should stay intact in one message.');
-    expect(structuredBlock?.properties?.type?.description).toBe('Structured text that should stay intact in one message.');
-    expect(structuredBlock?.properties?.content?.description).toBe('Structured text to keep intact, such as code, lists, or quotes.');
-
-    const privateSchema = buildReplyOutputContract({
-      model: 'openai/gpt-5.4-medium-thinking',
-      canMention: false,
-    }).schema as {
-      properties?: {
-        outbound_messages?: {
-          anyOf?: Array<{
-            items?: {
-              anyOf?: Array<{
-                title?: string;
-                description?: string;
-                anyOf?: Array<{ title?: string }>;
-              }>;
-            };
-          }>;
-        };
-      };
-    };
-
-    const privateRawSchemas = privateSchema.properties?.outbound_messages?.anyOf?.find((item) => item.items?.anyOf)?.items?.anyOf ?? [];
-    const privateMessageSchemas = privateRawSchemas.flatMap((item) => item.anyOf ?? [item]);
-    const privateTextMessage = privateMessageSchemas.find((item) => item.title === 'MessageItem') as
-      | { properties?: Record<string, unknown> }
-      | undefined;
-    expect(privateTextMessage?.properties?.mentions).toBeUndefined();
-    assertStrictRequiredForAllObjects(privateSchema);
+    await expect(modelRuntime.executeChat({
+      workload: 'affinity.analysis',
+      request: {
+        messages: [{ role: 'user', content: 'analyze this event' }],
+        structuredOutput: {
+          name: 'affinity_event_analysis',
+          schema: { type: 'object' },
+          strict: true,
+        },
+      },
+    })).rejects.toMatchObject({
+      code: 'upstream_failed',
+      workload: 'affinity.analysis',
+      connectionId: 'primary',
+      modelId: 'main-chat',
+    });
+    expect(execute).toHaveBeenCalledOnce();
   });
 });
 
-describe('isSupportedMainChatModelForTab', () => {
-  it('enforces the fixed model whitelist for built-in tabs', () => {
-    registerCodexDynamicModelOptions([
-      { modelId: 'gpt-5.5', label: 'GPT-5.5' },
-      { modelId: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-    ]);
-    expect(isSupportedMainChatModelForTab('siliconflow', 'Pro/moonshotai/Kimi-K2.5')).toBe(true);
-    expect(isSupportedMainChatModelForTab('siliconflow', 'siliconflow/Pro/moonshotai/Kimi-K2.5')).toBe(true);
-    expect(isSupportedMainChatModelForTab('siliconflow', 'openai/gpt-5.4-medium-thinking')).toBe(false);
-    expect(isSupportedMainChatModelForTab('openai', 'openai/gpt-5.4-medium-thinking')).toBe(true);
-    expect(isSupportedMainChatModelForTab('openai', 'openai/gpt-5.2')).toBe(false);
-    expect(isSupportedMainChatModelForTab('codex', 'openai/gpt-5.5')).toBe(true);
-    expect(isSupportedMainChatModelForTab('codex', 'gpt-5.4-mini')).toBe(true);
-    expect(isSupportedMainChatModelForTab('codex', 'bad model')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-5.4')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/auto')).toBe(true);
-    expect(isSupportedMainChatModelForTab('copilot', 'Auto')).toBe(true);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-4.1')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-5-mini')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4.1')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4o-mini')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'gpt-4o')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/gpt-4o')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'github-copilot/claude-haiku-4.5')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'openai/gemini-3.1-pro-preview')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'gemini-3-flash-preview')).toBe(false);
-    expect(isSupportedMainChatModelForTab('copilot', 'bad model')).toBe(false);
-    expect(isSupportedMainChatModelForTab('deepseek', 'deepseek-v4-flash')).toBe(true);
-    expect(isSupportedMainChatModelForTab('deepseek', 'deepseek/deepseek-v4-pro')).toBe(true);
-    expect(isSupportedMainChatModelForTab('deepseek', 'not-official')).toBe(false);
-    expect(isSupportedMainChatModelForTab('deepseek', 'openai/deepseek-v4-pro')).toBe(false);
-    expect(isSupportedMainChatModelForTab('mimo', 'mimo-v2.5-pro')).toBe(true);
-    expect(isSupportedMainChatModelForTab('mimo', 'mimo/mimo-v2.5-pro')).toBe(true);
-    expect(isSupportedMainChatModelForTab('mimo', 'mimo-v2.5-tts')).toBe(false);
-  });
-});
-
-describe('canHotSwitchMainChatModelOnly', () => {
-  it('does not hot switch the Copilot Auto entry', () => {
-    const current = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
+describe('syncRoomModelToMainBinding', () => {
+  it('synchronizes a stale room to the resolved canonical binding', async () => {
+    const { mainTarget, snapshot } = createTestModelRuntime({
+      revision: 11,
+      mainRequestMode: 'responses',
+      mainProtocol: 'native_responses_json_schema',
     });
-    const next = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
-    });
-
-    expect(canHotSwitchMainChatModelOnly(current, next)).toBe(false);
-  });
-
-  it('allows hot switching static OpenAI model variants on the same endpoint', () => {
-    const current = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    });
-    const next = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-high-thinking',
-    });
-
-    expect(canHotSwitchMainChatModelOnly(current, next)).toBe(true);
-  });
-});
-
-describe('inferPlatformFromBaseUrl', () => {
-  it('infers platform from base url', () => {
-    expect(inferPlatformFromBaseUrl('https://api.siliconflow.cn/v1')).toBe('siliconflow');
-    expect(inferPlatformFromBaseUrl('https://api.deepseek.com/v1')).toBe('deepseek');
-    expect(inferPlatformFromBaseUrl('https://api.openai.com/v1')).toBe('openai');
-    expect(inferPlatformFromBaseUrl('https://api.anthropic.com')).toBe('anthropic');
-    expect(inferPlatformFromBaseUrl('https://shell.wyzai.top/v1')).toBe('openai');
-    expect(inferPlatformFromBaseUrl('https://token-plan-cn.xiaomimimo.com/v1')).toBe('mimo');
-  });
-});
-
-describe('resolveMainChatRuntimeProfileFromEnv', () => {
-  it('resolves active built-in tab into a runtime profile with strategy metadata', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'openai',
-        CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-        CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-        CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-      }),
-    ).toMatchObject({
-      tabId: 'openai',
-      provider: 'openai',
-      strategyId: 'openai-gpt54-main-chat',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'native_chat_json_schema',
-      baseUrl: 'https://shell.wyzai.top/v1',
-      defaultModel: 'openai/gpt-5.4-medium-thinking',
-    });
-  });
-
-  it('does not initialize inactive provider configuration', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'openai',
-        CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-        CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-        CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-        CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/removed-model',
-      }),
-    ).toMatchObject({
-      tabId: 'openai',
-      defaultModel: 'openai/gpt-5.4-medium-thinking',
-    });
-  });
-
-  it('normalizes legacy siliconflow model ids and locks the siliconflow base url', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'siliconflow',
-        CHATLUNA_BASE_URL: 'https://custom.invalid/v1',
-        CHATLUNA_API_KEY: 'sk-siliconflow',
-        CHATLUNA_DEFAULT_MODEL: 'siliconflow/Pro/moonshotai/Kimi-K2.5',
-        CHATLUNA_SILICONFLOW_BASE_URL: 'https://custom.invalid/v1',
-        CHATLUNA_SILICONFLOW_API_KEY: 'sk-siliconflow',
-        CHATLUNA_SILICONFLOW_DEFAULT_MODEL: 'siliconflow/Pro/moonshotai/Kimi-K2.5',
-      }),
-    ).toMatchObject({
-      tabId: 'siliconflow',
-      provider: 'siliconflow',
-      requestMode: 'chat_completions',
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-      canonicalModel: 'Pro/moonshotai/Kimi-K2.5',
-      transportModel: 'Pro/moonshotai/Kimi-K2.5',
-    });
-  });
-
-  it('resolves the copilot tab into a Copilot OAuth runtime profile', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'copilot',
-        CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-        CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-        CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-      }),
-    ).toMatchObject({
-      tabId: 'copilot',
-      provider: 'openai',
-      strategyId: 'copilot-github-oauth-main-chat',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      defaultModel: 'openai/auto',
-      canonicalModel: 'openai/auto',
-      transportModel: 'auto',
-    });
-  });
-
-  it('resolves the Codex tab into a ChatGPT OAuth Responses runtime profile', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'codex',
-        CHATLUNA_CODEX_BASE_URL: 'http://127.0.0.1:5140/api/internal/codex/v1',
-        CHATLUNA_CODEX_API_KEY: 'codex-bridge-secret',
-        CHATLUNA_CODEX_DEFAULT_MODEL: 'openai/gpt-5.5',
-        CHATLUNA_CODEX_REASONING_EFFORT: 'high',
-      }),
-    ).toMatchObject({
-      tabId: 'codex',
-      provider: 'openai',
-      strategyId: 'codex-chatgpt-oauth-main-chat',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      authKind: 'codex_oauth',
-      baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-      defaultModel: 'openai/gpt-5.5',
-      reasoningEffort: 'high',
-      canonicalModel: 'openai/gpt-5.5',
-      transportModel: 'gpt-5.5',
-    });
-  });
-
-  it('normalizes raw Copilot Auto into the OAuth runtime profile', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'copilot',
-        CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-        CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-        CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
-      }),
-    ).toMatchObject({
-      tabId: 'copilot',
-      provider: 'openai',
-      strategyId: 'copilot-github-oauth-main-chat',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      defaultModel: 'openai/auto',
-      canonicalModel: 'openai/auto',
-      transportModel: 'auto',
-    });
-  });
-
-  it('resolves the DeepSeek tab into an official chat completions runtime profile', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'deepseek',
-        CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
-        CHATLUNA_DEEPSEEK_API_KEY: 'sk-deepseek',
-        CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek-v4-pro',
-      }),
-    ).toMatchObject({
-      tabId: 'deepseek',
-      provider: 'deepseek',
-      strategyId: 'deepseek-official-main-chat',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-      baseUrl: 'https://api.deepseek.com',
-      defaultModel: 'deepseek/deepseek-v4-pro',
-      canonicalModel: 'deepseek/deepseek-v4-pro',
-      transportModel: 'deepseek-v4-pro',
-    });
-  });
-
-  it('resolves the MIMO tab into a chat completions runtime profile', () => {
-    expect(
-      resolveMainChatRuntimeProfileFromEnv({
-        CHATLUNA_ACTIVE_TAB: 'mimo',
-        CHATLUNA_MIMO_BASE_URL: 'https://token-plan-cn.xiaomimimo.com/v1',
-        CHATLUNA_MIMO_API_KEY: 'sk-mimo',
-        CHATLUNA_MIMO_DEFAULT_MODEL: 'mimo-v2.5-pro',
-      }),
-    ).toMatchObject({
-      tabId: 'mimo',
-      provider: 'mimo',
-      strategyId: 'mimo-official-main-chat',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'native_chat_json_schema',
-      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-      defaultModel: 'mimo/mimo-v2.5-pro',
-      canonicalModel: 'mimo/mimo-v2.5-pro',
-      transportModel: 'mimo-v2.5-pro',
-    });
-    expect(isSupportedMainChatModelForTab('mimo', 'mimo/mimo-v2.5-pro')).toBe(true);
-    expect(isSupportedMainChatModelForTab('mimo', 'mimo-v2.5-tts')).toBe(false);
-  });
-});
-
-describe('syncRoomModelToMainChatRuntime', () => {
-  it('lazily overwrites stale room models and clears the cached conversation', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-    }));
-
     const room = {
       roomId: 1,
       conversationId: 'conv-1',
-      model: 'openai/gpt-4.1',
+      model: 'qqbot-obsolete/old-model',
     };
     const clearCache = vi.fn(async () => undefined);
     const updateConversationModel = vi.fn(async () => undefined);
 
-    await expect(syncRoomModelToMainChatRuntime({ room, clearCache, updateConversationModel })).resolves.toMatchObject({
+    await expect(syncRoomModelToMainBinding({
+      room,
+      target: mainTarget,
+      revision: snapshot.revision,
+      clearCache,
+      updateConversationModel,
+    })).resolves.toMatchObject({
       changed: true,
-      originalModel: 'openai/gpt-4.1',
-      generation: 0,
-      canonicalModel: 'openai/auto',
-      transportModel: 'auto',
-      strategyId: 'copilot-github-oauth-main-chat',
+      originalModel: 'qqbot-obsolete/old-model',
+      revision: 11,
+      canonicalModel: 'qqbot-primary/main-chat',
+      transportModel: 'provider-main-chat',
+      connectionId: 'primary',
+      modelId: 'main-chat',
+      adapter: 'openaiCompatible',
       requestMode: 'responses',
       outputProtocol: 'native_responses_json_schema',
     });
-    expect(room.model).toBe('openai/auto');
+    expect(room.model).toBe('qqbot-primary/main-chat');
     expect(clearCache).toHaveBeenCalledWith(room);
-    expect(updateConversationModel).toHaveBeenCalledWith('conv-1', 'openai/auto');
+    expect(updateConversationModel).toHaveBeenCalledWith(
+      'conv-1',
+      'qqbot-primary/main-chat',
+    );
   });
 });
 
 describe('chatluna user turn handling', () => {
-  it('resolves group nickname with || fallback chain (handles empty string)', () => {
-    // Group card (群名片) takes priority
-    expect(
-      resolveSessionDisplayName({
-        author: { nick: '群内昵称', name: 'QQ昵称' },
-        username: '平台昵称',
-        userId: '123456',
-      }),
-    ).toBe('群内昵称');
-    // Empty group card falls back to username
-    expect(
-      resolveSessionDisplayName({
-        author: { nick: '', name: 'QQ昵称' },
-        username: '平台昵称',
-        userId: '123456',
-      }),
-    ).toBe('平台昵称');
-    // Whitespace-only group card falls back to username
-    expect(
-      resolveSessionDisplayName({
-        author: { nick: '  ', name: 'QQ昵称' },
-        username: '平台昵称',
-        userId: '123456',
-      }),
-    ).toBe('平台昵称');
-    // Missing group card falls back through chain
-    expect(
-      resolveSessionDisplayName({
-        author: { name: 'QQ昵称' },
-        username: '',
-        userId: '123456',
-      }),
-    ).toBe('QQ昵称');
-    // All empty falls back to userId
-    expect(
-      resolveSessionDisplayName({
-        author: { name: '' },
-        username: '',
-        userId: '123456',
-      }),
-    ).toBe('123456');
-    // Everything missing falls back to '用户'
-    expect(
-      resolveSessionDisplayName({
-        author: { name: '' },
-        username: '',
-        userId: '',
-      }),
-    ).toBe('用户');
+  it('resolves group nickname with an explicit priority chain', () => {
+    expect(resolveSessionDisplayName({
+      author: { nick: '群内昵称', name: 'QQ昵称' },
+      username: '平台昵称',
+      userId: '123456',
+    })).toBe('群内昵称');
+    expect(resolveSessionDisplayName({
+      author: { nick: '', name: 'QQ昵称' },
+      username: '平台昵称',
+      userId: '123456',
+    })).toBe('平台昵称');
+    expect(resolveSessionDisplayName({
+      author: { nick: '  ', name: 'QQ昵称' },
+      username: '平台昵称',
+      userId: '123456',
+    })).toBe('平台昵称');
+    expect(resolveSessionDisplayName({
+      author: { name: 'QQ昵称' },
+      username: '',
+      userId: '123456',
+    })).toBe('QQ昵称');
+    expect(resolveSessionDisplayName({
+      author: { name: '' },
+      username: '',
+      userId: '123456',
+    })).toBe('123456');
+    expect(resolveSessionDisplayName({
+      author: { name: '' },
+      username: '',
+      userId: '',
+    })).toBe('用户');
   });
 
-  it('falls back when group card is invisible unicode', () => {
-    // U+2062 INVISIBLE TIMES should be treated as empty display name.
-    expect(
-      resolveSessionDisplayName({
-        author: { nick: '⁢', name: 'QQ昵称' },
-        username: '平台昵称',
-        userId: '123456',
-      }),
-    ).toBe('平台昵称');
+  it('ignores invisible unicode display names', () => {
+    expect(resolveSessionDisplayName({
+      author: { nick: '⁢', name: 'QQ昵称' },
+      username: '平台昵称',
+      userId: '123456',
+    })).toBe('平台昵称');
+    expect(resolveSessionDisplayName({
+      author: { nick: '⁢', name: '​' },
+      username: '⁠',
+      userId: '123456',
+    })).toBe('123456');
   });
 
-  it('falls back when all higher-priority names are invisible unicode', () => {
-    expect(
-      resolveSessionDisplayName({
-        author: { nick: '⁢', name: '​' },
-        username: '⁠',
-        userId: '123456',
-      }),
-    ).toBe('123456');
-  });
-
-  it('resolves QQ nickname without letting group card override it', () => {
-    expect(
-      resolveSessionQqNick({
-        author: { nick: '群名片', name: 'QQ昵称' },
-        username: '平台昵称',
-        userId: '123456',
-      }),
-    ).toBe('QQ昵称');
-    expect(
-      resolveSessionQqNick({
-        author: { nick: '群名片', name: '' },
-        username: '平台昵称',
-        userId: '123456',
-      }),
-    ).toBe('平台昵称');
-    expect(
-      resolveSessionQqNick({
-        author: { nick: '群名片', name: '' },
-        username: '',
-        userId: '123456',
-      }),
-    ).toBe('123456');
+  it('resolves QQ nickname without letting a group card override it', () => {
+    expect(resolveSessionQqNick({
+      author: { nick: '群名片', name: 'QQ昵称' },
+      username: '平台昵称',
+      userId: '123456',
+    })).toBe('QQ昵称');
+    expect(resolveSessionQqNick({
+      author: { nick: '群名片', name: '' },
+      username: '平台昵称',
+      userId: '123456',
+    })).toBe('平台昵称');
+    expect(resolveSessionQqNick({
+      author: { nick: '群名片', name: '' },
+      username: '',
+      userId: '123456',
+    })).toBe('123456');
   });
 
   it('resolves onebot avatar from session and falls back to qlogo', () => {
@@ -787,13 +336,14 @@ describe('chatluna user turn handling', () => {
       userId: '123456',
       author: { avatar: 'https://example.com/author.png' },
     })).toBe('https://example.com/author.png');
-    expect(resolveSessionAvatarUrl({ platform: 'onebot', userId: '123456' })).toBe(
-      'https://q.qlogo.cn/headimg_dl?dst_uin=123456&spec=100',
-    );
+    expect(resolveSessionAvatarUrl({
+      platform: 'onebot',
+      userId: '123456',
+    })).toBe('https://q.qlogo.cn/headimg_dl?dst_uin=123456&spec=100');
     expect(deriveOneBotAvatarUrl('abc')).toBeNull();
   });
 
-  it('treats mention-only or punctuation-only turns as proactive openings', () => {
+  it('distinguishes proactive openings from short explicit requests', () => {
     expect(resolveUserTurnIntentState('', '<at id="1" name="小祥"/>')).toEqual({
       mode: 'proactive_opening',
       normalizedText: '',
@@ -804,28 +354,18 @@ describe('chatluna user turn handling', () => {
       normalizedText: '',
       reason: 'punctuation_only',
     });
-  });
-
-  it('keeps short but substantive turns as explicit requests', () => {
     expect(resolveUserTurnIntentState('在吗', '在吗')).toEqual({
       mode: 'explicit_request',
       normalizedText: '在吗',
       reason: 'user_message_present',
     });
-    expect(resolveUserTurnIntentState('今天呢', '今天呢')).toEqual({
-      mode: 'explicit_request',
-      normalizedText: '今天呢',
-      reason: 'user_message_present',
-    });
   });
 
   it('builds proactive opening state with topic-priority guardrails', () => {
-    expect(
-      buildProactiveOpeningState({
-        mode: 'proactive_opening',
-        reason: 'empty_or_mention_only',
-      }),
-    ).toEqual({
+    expect(buildProactiveOpeningState({
+      mode: 'proactive_opening',
+      reason: 'empty_or_mention_only',
+    })).toEqual({
       mode: 'proactive_opening',
       userTurn: {
         questionTarget: 'none',

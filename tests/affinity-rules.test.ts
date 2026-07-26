@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MainChatRuntimeProfile } from '../src/plugins/shared/llm/main-chat-tabs.js';
 import {
   createInitialState,
   createRandomScheduleTimes,
@@ -8,7 +7,9 @@ import {
   type AffinityEventAnalysis,
   type AffinityStateInput,
 } from '../src/plugins/affinity/rules.js';
-import { analyzeAffinityEvent, resolveAnalysisModelConfig } from '../src/plugins/affinity/analysis.js';
+import { analyzeAffinityEvent } from '../src/plugins/affinity/analysis.js';
+import type { ModelRuntimeExecutionRequest } from '../src/plugins/model-config/index.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 function analysis(eventType: AffinityEventAnalysis['eventType'], overrides: Partial<AffinityEventAnalysis> = {}): AffinityEventAnalysis {
   return {
@@ -23,27 +24,6 @@ function analysis(eventType: AffinityEventAnalysis['eventType'], overrides: Part
     reasonCode: `test_${eventType}`,
     ...overrides,
   };
-}
-
-function mainProfile(): MainChatRuntimeProfile {
-  return {
-    tabId: 'deepseek',
-    id: 'deepseek',
-    title: 'DeepSeek',
-    provider: 'deepseek',
-    strategyId: 'deepseek-official-main-chat',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-    authKind: 'manual',
-    authStatus: 'ready',
-    baseUrl: 'https://api.deepseek.com',
-    apiKey: 'main-key',
-    defaultModel: 'deepseek-v4-flash',
-    canonicalModel: 'deepseek-v4-flash',
-    transportModel: 'deepseek-v4-flash',
-    description: '',
-    modelHint: '',
-  } as MainChatRuntimeProfile;
 }
 
 describe('affinity rules', () => {
@@ -111,30 +91,36 @@ describe('affinity rules', () => {
     }
   });
 
-  it('uses the main chat model when analysis model core fields are empty', () => {
-    const resolved = resolveAnalysisModelConfig({
-      baseUrl: '',
-      apiKey: '',
-      model: '',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-      timeoutMs: 7000,
-    }, mainProfile());
+  it('executes affinity analysis through the canonical inheritMain binding', async () => {
+    const execute = vi.fn(async (_request: ModelRuntimeExecutionRequest) => ({
+      text: JSON.stringify(analysis('offer_tea')),
+    }));
+    const { modelRuntime } = createTestModelRuntime({
+      affinityMode: 'inheritMain',
+      executor: { execute },
+    });
 
-    expect(resolved.baseUrl).toBe('https://api.deepseek.com');
-    expect(resolved.apiKey).toBe('main-key');
-    expect(resolved.model).toBe('deepseek-v4-flash');
-    expect(resolved.timeoutMs).toBe(7000);
-  });
+    const result = await analyzeAffinityEvent({
+      text: 'saki 我给你泡一杯红茶。',
+      openThreads: [],
+      randomPending: false,
+      relationSummary: {},
+    }, modelRuntime);
 
-  it('rejects partial analysis model configuration', () => {
-    expect(() => resolveAnalysisModelConfig({
-      baseUrl: 'https://example.com/v1',
-      apiKey: '',
-      model: 'x',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-    }, mainProfile())).toThrow(/完整配置/);
+    expect(result.eventType).toBe('offer_tea');
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      operation: 'chat',
+      target: expect.objectContaining({
+        canonicalModel: 'qqbot-primary/main-chat',
+      }),
+      payload: expect.objectContaining({
+        structuredOutput: expect.objectContaining({
+          name: 'affinity_event_analysis',
+          strict: true,
+        }),
+      }),
+    }));
   });
 
   it('routes natural replies to an active proactive random thread before greeting triggers', async () => {
@@ -143,7 +129,13 @@ describe('affinity rules', () => {
       openThreads: ['random:local_thread: SCC 缩点遗留讨论'],
       randomPending: true,
       relationSummary: {},
-    }, null);
+    }, createTestModelRuntime({
+      executor: {
+        async execute() {
+          throw new Error('analysis unavailable');
+        },
+      },
+    }).modelRuntime);
 
     expect(result).toEqual(expect.objectContaining({
       route: 'random_event_reply',
@@ -152,41 +144,48 @@ describe('affinity rules', () => {
     }));
   });
 
-  it('ignores non-thread relationship keywords when the analysis model is unavailable', async () => {
+  it('does not apply relationship keyword heuristics when canonical analysis fails', async () => {
+    const onModelError = vi.fn();
     const result = await analyzeAffinityEvent({
       text: 'saki 我给你泡一杯红茶，不急，等你想说再说。',
       openThreads: [],
       randomPending: false,
       relationSummary: {},
-    }, null);
+    }, createTestModelRuntime({
+      executor: {
+        async execute() {
+          throw new Error('analysis unavailable');
+        },
+      },
+    }).modelRuntime, { onModelError });
 
     expect(result).toEqual(expect.objectContaining({
       route: 'ignore',
       eventType: 'none',
       effectTier: 'ignore',
-      reasonCode: 'analysis_model_unavailable',
+      reasonCode: 'analysis_model_error',
+    }));
+    expect(onModelError).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'ModelConfigError',
+      operation: 'execute',
+      stage: 'transport',
+      workload: 'affinity.analysis',
     }));
   });
 
   it('ignores invalid model output instead of applying relationship heuristics', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ output_text: 'not json' }),
-    })));
-
     const result = await analyzeAffinityEvent({
       text: 'saki 我给你泡一杯红茶。',
       openThreads: [],
       randomPending: false,
       relationSummary: {},
-    }, {
-      baseUrl: 'https://example.com/v1',
-      apiKey: 'sk-test',
-      model: 'test-model',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      timeoutMs: 1000,
-    });
+    }, createTestModelRuntime({
+      executor: {
+        async execute() {
+          return { text: 'not json' };
+        },
+      },
+    }).modelRuntime);
 
     expect(result).toEqual(expect.objectContaining({
       route: 'ignore',

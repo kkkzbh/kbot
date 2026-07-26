@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { Logger } from 'koishi';
 import type { MemoryJobRecord, MemoryJobType } from '../../types/memory.js';
+import type { ModelRuntimeClient } from '../model-config/index.js';
 import type { MemoryRuntimeConfig } from './config.js';
 import { runDeterministicPrivacyGuard } from './gates.js';
-import { embedTexts, isEmbedRuntimeConfigured } from './providers/embedding-client.js';
+import {
+  embedTexts,
+} from './providers/embedding-client.js';
 import { isNonRetryableMemoryProviderError } from './providers/http-error.js';
-import { extractMemoryCandidates, isMemoryProviderConfigured } from './providers/router.js';
+import {
+  extractMemoryCandidates,
+  isMemoryExtractWorkloadEnabled,
+} from './providers/router.js';
 import type { MemoryStatusService } from './status.js';
 import type {
   ConsolidateJobPayload,
@@ -20,6 +26,7 @@ const logger = new Logger('memory');
 export async function processExtractJob(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
+  modelRuntime: ModelRuntimeClient,
   status: MemoryStatusService,
   job: MemoryJobRecord,
 ): Promise<void> {
@@ -28,7 +35,7 @@ export async function processExtractJob(
     await store.completeJob(job);
     return;
   }
-  if (!isMemoryProviderConfigured(runtime.extract)) {
+  if (!isMemoryExtractWorkloadEnabled(modelRuntime)) {
     await store.audit({
       userKey: payload.address.userKey,
       contextKey: payload.address.contextKey,
@@ -57,7 +64,7 @@ export async function processExtractJob(
       speakerName: payload.targetSpeakerName,
     },
     turns,
-    providerProfile: runtime.extract,
+    modelRuntime,
     maxFacts: runtime.maxFacts,
     maxEpisodes: runtime.maxEpisodes,
   });
@@ -132,13 +139,16 @@ export async function processConsolidateJob(
 export async function processEmbedJobs(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
+  modelRuntime: ModelRuntimeClient,
   jobs: MemoryJobRecord[],
 ): Promise<void> {
   if (!jobs.length) return;
-  if (!isEmbedRuntimeConfigured(runtime.embed)) {
+  const binding = modelRuntime.resolve('memory.embedding');
+  if (!binding.target) {
     for (const job of jobs) await store.completeJob(job);
     return;
   }
+  const embeddingModel = binding.target.canonicalModel;
 
   const resolved: Array<{ job: MemoryJobRecord; payload: EmbedJobPayload; text: string }> = [];
   for (const job of jobs) {
@@ -151,13 +161,13 @@ export async function processEmbedJobs(
   }
   if (!resolved.length) return;
 
-  const vectors = await embedTexts(runtime.embed, resolved.map((item) => item.text));
+  const vectors = await embedTexts(modelRuntime, resolved.map((item) => item.text));
   for (const [index, item] of resolved.entries()) {
     const vector = vectors[index];
     if (!vector) {
       throw new Error('empty_embedding_vector');
     }
-    await store.applyEmbedding(item.payload, runtime.embed.model, vector);
+    await store.applyEmbedding(item.payload, embeddingModel, vector);
     await store.completeJob(item.job);
   }
 }
@@ -178,6 +188,7 @@ export async function processMaintenanceJob(
 export async function runMemoryJobTick(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
+  modelRuntime: ModelRuntimeClient,
   status: MemoryStatusService,
 ): Promise<void> {
   const now = Date.now();
@@ -191,7 +202,7 @@ export async function runMemoryJobTick(
       const startedAt = Date.now();
       status.recordAttempt('embed', 'runtime', startedAt);
       try {
-        await processEmbedJobs(store, runtime, batch);
+        await processEmbedJobs(store, runtime, modelRuntime, batch);
         status.recordSuccess('embed', 'runtime', Math.max(0, Date.now() - startedAt), Date.now());
       } catch (error) {
         status.recordFailure('embed', 'runtime', error, Math.max(0, Date.now() - startedAt), Date.now());
@@ -210,7 +221,7 @@ export async function runMemoryJobTick(
     try {
       if (jobType === 'extract') {
         status.recordAttempt('extract', 'runtime', startedAt);
-        await processExtractJob(store, runtime, status, job);
+        await processExtractJob(store, runtime, modelRuntime, status, job);
         status.recordSuccess('extract', 'runtime', Math.max(0, Date.now() - startedAt), Date.now());
       } else if (jobType === 'privacy_review') {
         await processPrivacyReviewJob(store, job);

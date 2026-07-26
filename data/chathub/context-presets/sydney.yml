@@ -1,0 +1,44 @@
+schemaVersion: 1
+id: sydney
+displayName: Sydney
+aliases:
+  - chatgpt
+  - gpt
+blocks:
+  - id: role
+    type: role
+    rolePresetId: sydney
+  - id: chat-history
+    type: chatHistory
+    enabled: true
+    budgetPriority: 100
+    maxTokens: null
+  - id: long-memory
+    type: longMemory
+    enabled: true
+    budgetPriority: 200
+    maxTokens: null
+    prompt: null
+    extractPrompt: null
+    newQuestionPrompt: null
+  - id: request-documents
+    type: requestDocuments
+    enabled: true
+    budgetPriority: 50
+    maxTokens: null
+  - id: current-input
+    type: currentInput
+    inputFormat: |-
+      Current time: {date}
+      User: [{user_id}-{user}]
+      User Input: {prompt}
+  - id: agent-scratchpad
+    type: agentScratchpad
+    enabled: true
+    budgetPriority: 400
+    maxTokens: null
+    reActInstruction: null
+  - id: model-output
+    type: modelOutput
+    maxOutputTokens: 1024
+    postHandler: null

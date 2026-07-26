@@ -21,10 +21,6 @@ Environment:
   FAKE_GROUP_ID         Optional override for the probe group id (default: 829573670)
   FAKE_GROUP_NAME       Optional synthetic group name (default: codex-probe-group)
   FAKE_GROUP_CARD       Optional synthetic sender group card (default: codex-probe)
-  PROBE_TAB             Optional built-in main-chat tab to resolve for this probe
-                       (copilot, openai, siliconflow). Forces isolated room mode.
-  PROBE_ROOM_MODEL      Optional exact room model for this probe. Forces isolated
-                       room mode and overrides PROBE_TAB-derived model.
   PROBE_ISOLATED_ROOM   Set to 1 to create a temporary isolated room for this
                        probe and delete it afterwards.
   PROBE_TRIGGER_PREFIX  Trigger prefix injected when the input lacks an obvious
@@ -77,12 +73,15 @@ fi
 
 timeout_seconds="${BOT_TIMEOUT_SECONDS:-40}"
 keep_inspector="${KEEP_INSPECTOR:-0}"
-probe_tab="${PROBE_TAB:-}"
-probe_room_model="${PROBE_ROOM_MODEL:-}"
 probe_isolated_room="${PROBE_ISOLATED_ROOM:-0}"
 probe_trigger_prefix="${PROBE_TRIGGER_PREFIX:-saki }"
 probe_assert_failures="${PROBE_ASSERT_FAILURES:-1}"
 ensure_positive_int "BOT_TIMEOUT_SECONDS" "$timeout_seconds"
+
+if [[ -n "${PROBE_TAB:-}" || -n "${PROBE_ROOM_MODEL:-}" ]]; then
+  echo "[error] PROBE_TAB and PROBE_ROOM_MODEL are no longer supported. Configure the canonical main.chat or room model instead." >&2
+  exit 2
+fi
 
 if [[ "$probe_isolated_room" != "0" && "$probe_isolated_room" != "1" ]]; then
   echo "[error] PROBE_ISOLATED_ROOM must be 0 or 1." >&2
@@ -92,10 +91,6 @@ fi
 if [[ "$probe_assert_failures" != "0" && "$probe_assert_failures" != "1" ]]; then
   echo "[error] PROBE_ASSERT_FAILURES must be 0 or 1." >&2
   exit 2
-fi
-
-if [[ -n "$probe_tab" || -n "$probe_room_model" ]]; then
-  probe_isolated_room="1"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -207,8 +202,6 @@ probe_json="$(
   QQBOT_FAKE_GROUP_ID="$fake_group_id" \
   QQBOT_FAKE_GROUP_NAME="$fake_group_name" \
   QQBOT_FAKE_GROUP_CARD="$fake_group_card" \
-  QQBOT_PROBE_TAB="$probe_tab" \
-  QQBOT_PROBE_ROOM_MODEL="$probe_room_model" \
   QQBOT_PROBE_ISOLATED_ROOM="$probe_isolated_room" \
   QQBOT_TIMEOUT_SECONDS="$timeout_seconds" \
   QQBOT_KEEP_INSPECTOR="$keep_inspector" \
@@ -229,8 +222,6 @@ const fakeUserId = Number(process.env.QQBOT_FAKE_USER_ID || '0')
 const fakeGroupId = Number(process.env.QQBOT_FAKE_GROUP_ID || '0')
 const fakeGroupName = String(process.env.QQBOT_FAKE_GROUP_NAME || 'codex-probe-group')
 const fakeGroupCard = String(process.env.QQBOT_FAKE_GROUP_CARD || 'codex-probe')
-const probeTab = String(process.env.QQBOT_PROBE_TAB || '')
-const probeRoomModel = String(process.env.QQBOT_PROBE_ROOM_MODEL || '')
 const probeIsolatedRoom = process.env.QQBOT_PROBE_ISOLATED_ROOM === '1'
 const timeoutSeconds = Number(process.env.QQBOT_TIMEOUT_SECONDS || '40')
 const keepInspector = process.env.QQBOT_KEEP_INSPECTOR === '1'
@@ -346,7 +337,7 @@ async function main() {
 
     const call = await send('Runtime.callFunctionOn', {
       objectId: loader,
-      functionDeclaration: `async function(input, originalInput, fakeUserId, fakeGroupId, fakeGroupName, fakeGroupCard, probeTab, probeRoomModel, probeIsolatedRoom, timeoutSeconds) {
+      functionDeclaration: `async function(input, originalInput, fakeUserId, fakeGroupId, fakeGroupName, fakeGroupCard, probeIsolatedRoom, timeoutSeconds) {
         try {
           const normalizeVisibleContent = ${normalizeVisibleContentSource}
           const serializePayload = ${serializePayloadSource}
@@ -401,28 +392,7 @@ async function main() {
 
             return null
           }
-          const path = process.mainModule.require('path')
           const crypto = process.mainModule.require('crypto')
-          const { createRequire } = process.mainModule.require('module')
-          const runtimeRequire = createRequire(path.resolve(process.cwd(), 'package.json'))
-          const requireRuntimeModule = (targetPath) => {
-            try {
-              const resolved = runtimeRequire.resolve(targetPath)
-              if (runtimeRequire.cache && runtimeRequire.cache[resolved]) {
-                delete runtimeRequire.cache[resolved]
-              }
-              return runtimeRequire(targetPath)
-            } catch (primaryError) {
-              try {
-                return process.mainModule.require(targetPath)
-              } catch {
-                throw primaryError
-              }
-            }
-          }
-          const mainChatTabs = requireRuntimeModule(
-            path.resolve(process.cwd(), 'dist/plugins/shared/llm/main-chat-tabs.js')
-          )
           const waitForStableRuntime = async () => {
             const deadline = Date.now() + 15000
             const stableWindowMs = 2500
@@ -437,6 +407,7 @@ async function main() {
                 this.app.chatluna &&
                 this.app.chatluna.platform &&
                 this.app.chatluna.preset &&
+                this.app.modelConfig &&
                 onebotBot
               )
 
@@ -457,88 +428,32 @@ async function main() {
 
           await waitForStableRuntime()
 
-          const requestedProbeTab =
-            typeof probeTab === 'string' && probeTab.trim().length > 0
-              ? probeTab.trim()
-              : null
-          const requestedProbeRoomModel =
-            typeof probeRoomModel === 'string' && probeRoomModel.trim().length > 0
-              ? probeRoomModel.trim()
-              : null
-          const runtimeProfile = mainChatTabs.resolveMainChatRuntimeProfileFromEnv(process.env)
-          const shouldUseIsolatedRoom =
-            Boolean(probeIsolatedRoom) ||
-            requestedProbeTab != null ||
-            requestedProbeRoomModel != null
-
-          let resolvedProbeTab = requestedProbeTab
-          let resolvedProbeRoomModel = requestedProbeRoomModel
-          let resolvedProbeProfile = null
-          if (resolvedProbeRoomModel == null && requestedProbeTab != null) {
-            const normalizedTab = mainChatTabs.normalizeMainChatBuiltinTabId(requestedProbeTab)
-            const tabState = mainChatTabs.resolveMainChatTabStateFromEnv(normalizedTab, process.env)
-            const fallbackDescriptor = mainChatTabs.resolveMainChatModelDescriptor({
-              tabId: normalizedTab,
-              model: null,
-            })
-            resolvedProbeTab = normalizedTab
-            resolvedProbeRoomModel =
-              tabState && typeof tabState.canonicalModel === 'string' && tabState.canonicalModel.trim().length > 0
-                ? tabState.canonicalModel.trim()
-                : (tabState && typeof tabState.defaultModel === 'string' && tabState.defaultModel.trim().length > 0
-                    ? tabState.defaultModel.trim()
-                    : fallbackDescriptor.canonicalModel)
-            if (!resolvedProbeRoomModel) {
-              throw new Error('probe failed to resolve default model for tab: ' + normalizedTab)
-            }
+          const modelConfig = this.app && this.app.modelConfig
+          if (!modelConfig || typeof modelConfig.getRedactedRuntimeSnapshot !== 'function') {
+            throw new Error('canonical model-config service is unavailable')
           }
-          if (resolvedProbeRoomModel != null && resolvedProbeTab == null) {
-            const inferredTab = mainChatTabs.MAIN_CHAT_BUILTIN_TAB_IDS.find((tabId) =>
-              mainChatTabs.isSupportedMainChatModelForTab(tabId, resolvedProbeRoomModel)
+          const modelSnapshot = modelConfig.getRedactedRuntimeSnapshot()
+          const mainBinding = Array.isArray(modelSnapshot.resolvedBindings)
+            ? modelSnapshot.resolvedBindings.find((binding) => binding && binding.workload === 'main.chat')
+            : null
+          if (
+            !mainBinding ||
+            mainBinding.mode !== 'dedicated' ||
+            typeof mainBinding.canonicalModel !== 'string' ||
+            mainBinding.canonicalModel.trim().length === 0
+          ) {
+            throw new Error('canonical model-config main.chat binding is not dedicated')
+          }
+          const mainModel = mainBinding.canonicalModel.trim()
+          const canonicalModels = new Set(
+            (Array.isArray(modelSnapshot.models) ? modelSnapshot.models : []).map(
+              (model) => 'qqbot-' + model.connectionId + '/' + model.id
             )
-            resolvedProbeTab = inferredTab || null
+          )
+          if (!canonicalModels.has(mainModel)) {
+            throw new Error('canonical model-config main.chat model is missing: ' + mainModel)
           }
-          if (resolvedProbeTab != null) {
-            resolvedProbeProfile = mainChatTabs.resolveMainChatModelDescriptor({
-              tabId: resolvedProbeTab,
-              model: resolvedProbeRoomModel,
-            })
-            resolvedProbeRoomModel = resolvedProbeProfile.canonicalModel
-          } else {
-            resolvedProbeProfile = {
-              tabId: runtimeProfile.tabId,
-              provider: runtimeProfile.provider,
-              strategyId: runtimeProfile.strategyId,
-              requestMode: runtimeProfile.requestMode,
-              canonicalModel: runtimeProfile.canonicalModel || runtimeProfile.defaultModel,
-              transportModel: runtimeProfile.transportModel || runtimeProfile.defaultModel,
-            }
-            resolvedProbeTab = resolvedProbeProfile.tabId
-            resolvedProbeRoomModel = resolvedProbeProfile.canonicalModel
-          }
-          const envRestoreEntries = []
-          if (resolvedProbeTab != null) {
-            const runtimeTabs = mainChatTabs.MAIN_CHAT_BUILTIN_TAB_IDS.map((tabId) => {
-              const tabState = mainChatTabs.resolveMainChatTabStateFromEnv(tabId, process.env)
-              if (tabId !== resolvedProbeTab || resolvedProbeProfile == null) {
-                return tabState
-              }
-              return {
-                ...tabState,
-                defaultModel: resolvedProbeProfile.canonicalModel,
-                canonicalModel: resolvedProbeProfile.canonicalModel,
-                transportModel: resolvedProbeProfile.transportModel,
-              }
-            })
-            const runtimeEnvPatch = mainChatTabs.buildMainChatRuntimeEnvPatch(resolvedProbeTab, runtimeTabs)
-            for (const [key, value] of Object.entries(runtimeEnvPatch)) {
-              envRestoreEntries.push([
-                key,
-                Object.prototype.hasOwnProperty.call(process.env, key) ? process.env[key] : undefined,
-              ])
-              process.env[key] = String(value)
-            }
-          }
+          const shouldUseIsolatedRoom = Boolean(probeIsolatedRoom)
 
           const rawBots = this.app && this.app.bots
           const bots = Array.isArray(rawBots) ? rawBots : Object.values(rawBots || {})
@@ -575,17 +490,34 @@ async function main() {
             })
           }
 
+          const db = this.app.database
+          const bindingPrefix = 'shared:' + bot.platform + ':' + bot.selfId + ':' + fakeChannelId + ':preset:'
+          const bindings = await db.get('chatluna_binding', {})
+          const scopedBinding =
+            (Array.isArray(bindings) ? bindings : []).find((row) => typeof row.bindingKey === 'string' && row.bindingKey.startsWith(bindingPrefix)) ||
+            null
+          const activeConversation =
+            scopedBinding && typeof scopedBinding.activeConversationId === 'string'
+              ? ((await db.get('chatluna_conversation', { id: scopedBinding.activeConversationId }))[0] || null)
+              : null
+          const configuredRoomModel =
+            activeConversation && typeof activeConversation.model === 'string'
+              ? activeConversation.model.trim()
+              : ''
+          if (configuredRoomModel && !canonicalModels.has(configuredRoomModel)) {
+            throw new Error('probe room references a non-canonical model: ' + configuredRoomModel)
+          }
+          const resolvedProbeRoomModel = configuredRoomModel || mainModel
+          const resolvedModelSource = configuredRoomModel ? 'room' : 'main.chat'
+          const resolvedModelProfile =
+            (Array.isArray(modelSnapshot.models) ? modelSnapshot.models : []).find(
+              (model) => 'qqbot-' + model.connectionId + '/' + model.id === resolvedProbeRoomModel
+            ) || null
+          if (!resolvedModelProfile) {
+            throw new Error('probe model is missing from canonical model-config: ' + resolvedProbeRoomModel)
+          }
+
           if (shouldUseIsolatedRoom) {
-            const db = this.app.database
-            const bindingPrefix = 'shared:' + bot.platform + ':' + bot.selfId + ':' + fakeChannelId + ':preset:'
-            const bindings = await db.get('chatluna_binding', {})
-            const scopedBinding =
-              (Array.isArray(bindings) ? bindings : []).find((row) => typeof row.bindingKey === 'string' && row.bindingKey.startsWith(bindingPrefix)) ||
-              null
-            const activeConversation =
-              scopedBinding && typeof scopedBinding.activeConversationId === 'string'
-                ? ((await db.get('chatluna_conversation', { id: scopedBinding.activeConversationId }))[0] || null)
-                : null
             const presetLane =
               scopedBinding && typeof scopedBinding.bindingKey === 'string'
                 ? scopedBinding.bindingKey.slice(bindingPrefix.length).trim()
@@ -610,14 +542,14 @@ async function main() {
               updatedTime: new Date(),
               chatMode: 'plugin',
               preset,
-              model: resolvedProbeProfile.canonicalModel,
+              model: resolvedProbeRoomModel,
             }
             await db.create('chatluna_conversation', {
               id: conversationId,
               seq,
               bindingKey,
               title: isolatedRoom.roomName,
-              model: resolvedProbeProfile.canonicalModel,
+              model: resolvedProbeRoomModel,
               preset,
               chatMode: 'plugin',
               createdBy: String(fakeUserId),
@@ -784,7 +716,7 @@ async function main() {
             const effectiveProbeConversation =
               isolatedRoom
                 ? ((await this.app.database.get('chatluna_conversation', { id: isolatedRoom.conversationId }))[0] || null)
-                : null
+                : activeConversation
             const result = {
               ok: true,
               input,
@@ -804,11 +736,12 @@ async function main() {
               visibleMessages,
               payloadCaptures,
               probeRoom: {
-                requestedTab: requestedProbeTab,
-                resolvedTab: resolvedProbeTab,
-                requestedModel: requestedProbeRoomModel,
                 resolvedModel: resolvedProbeRoomModel,
-                resolvedProfile: resolvedProbeProfile,
+                modelSource: resolvedModelSource,
+                mainModel,
+                connectionId: resolvedModelProfile.connectionId,
+                modelId: resolvedModelProfile.id,
+                modelConfigRevision: modelSnapshot.revision,
                 isolated: shouldUseIsolatedRoom,
                 roomId: isolatedRoom ? isolatedRoom.roomId : null,
                 roomName: isolatedRoom ? isolatedRoom.roomName : null,
@@ -838,13 +771,6 @@ async function main() {
             }
             if (originalRequest) {
               bot.internal._request = originalRequest
-            }
-            for (const [key, value] of envRestoreEntries.reverse()) {
-              if (value == null) {
-                delete process.env[key]
-              } else {
-                process.env[key] = value
-              }
             }
             if (isolatedRoom) {
               try {
@@ -877,8 +803,6 @@ async function main() {
         { value: fakeGroupId },
         { value: fakeGroupName },
         { value: fakeGroupCard },
-        { value: probeTab },
-        { value: probeRoomModel },
         { value: probeIsolatedRoom },
         { value: timeoutSeconds },
       ],

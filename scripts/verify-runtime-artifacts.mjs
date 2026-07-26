@@ -1,6 +1,16 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import {
+  ContextPresetDefinitionV1Schema,
+  RolePresetDefinitionV1Schema,
+} from 'koishi-plugin-chatluna/preset-schema';
 import YAML from 'yaml';
 
 function parseArgs(argv) {
@@ -73,6 +83,27 @@ function artifactPathForSpec(distDir, spec) {
   return join(distDir, relativePath, 'index.js');
 }
 
+function validatePresetCatalog(dirPath, schema, label) {
+  const info = lstatSync(dirPath);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error(`${label} must be a real directory: ${dirPath}`);
+  }
+  const names = readdirSync(dirPath).sort();
+  if (names.length === 0) throw new Error(`${label} must not be empty: ${dirPath}`);
+  const ids = new Set();
+  for (const name of names) {
+    if (!/\.ya?ml$/i.test(name)) {
+      throw new Error(`${label} contains an unsupported entry: ${name}`);
+    }
+    const definition = schema.parse(YAML.parse(readFileSync(join(dirPath, name), 'utf8')));
+    if (name !== `${definition.id}.yml`) {
+      throw new Error(`${label} filename must match id ${definition.id}: ${name}`);
+    }
+    if (ids.has(definition.id)) throw new Error(`Duplicate ${label} id: ${definition.id}`);
+    ids.add(definition.id);
+  }
+}
+
 function main() {
   const rootDir = process.cwd();
   const options = parseArgs(process.argv.slice(2));
@@ -80,6 +111,16 @@ function main() {
   const distDir = resolveFromRoot(rootDir, options.dist);
   const config = YAML.parse(readFileSync(configPath, 'utf8'));
   const specs = [...collectLocalPluginSpecs(config)].sort();
+  validatePresetCatalog(
+    join(rootDir, 'data/chathub/role-presets'),
+    RolePresetDefinitionV1Schema,
+    'bundled role preset catalog',
+  );
+  validatePresetCatalog(
+    join(rootDir, 'data/chathub/context-presets'),
+    ContextPresetDefinitionV1Schema,
+    'bundled context preset catalog',
+  );
 
   if (specs.length === 0) {
     throw new Error(`no ./dist/plugins entries found in ${configPath}`);
@@ -108,8 +149,9 @@ function main() {
   }
 
   for (const toolPath of [
-    join(distDir, 'tools/preset-v2-cutover.mjs'),
-    join(distDir, 'tools/preset-v2-sqlite.py'),
+    join(distDir, 'tools/context-preset-cutover.mjs'),
+    join(distDir, 'tools/context-preset-sqlite.py'),
+    join(distDir, 'tools/model-config-cutover.mjs'),
   ]) {
     if (!fileExists(toolPath)) missing.push(toolPath);
   }

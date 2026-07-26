@@ -7,6 +7,18 @@ cd "$ROOT_DIR"
 ./scripts/ensure-chatluna-build.sh --check
 node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml
 
+mkdir -p "$ROOT_DIR/.runtime"
+SMOKE_RUNTIME_DIR="$(mktemp -d "$ROOT_DIR/.runtime/koishi-smoke-XXXXXX")"
+LOG_FILE="$SMOKE_RUNTIME_DIR/koishi.log"
+TMP_KOISHI_YML="$SMOKE_RUNTIME_DIR/koishi.yml"
+export QQBOT_MODEL_CONFIG_PATH="$SMOKE_RUNTIME_DIR/model-config.json"
+export QQBOT_MODEL_CONFIG_KEK_PATH="$SMOKE_RUNTIME_DIR/model-config.kek"
+
+cleanup() {
+  rm -rf -- "$SMOKE_RUNTIME_DIR"
+}
+trap cleanup EXIT
+
 # Provide deterministic minimal runtime env for local/CI smoke start.
 export ONEBOT_SELF_ID="${ONEBOT_SELF_ID:-100000001}"
 export ONEBOT_TOKEN="${ONEBOT_TOKEN:-}"
@@ -23,17 +35,10 @@ PY
 else
   export KOISHI_PORT
 fi
-export CHATLUNA_ACTIVE_TAB="${CHATLUNA_ACTIVE_TAB:-siliconflow}"
-export CHATLUNA_PLATFORM="${CHATLUNA_PLATFORM:-siliconflow}"
-export CHATLUNA_BASE_URL="${CHATLUNA_BASE_URL:-https://api.siliconflow.cn/v1}"
-export CHATLUNA_API_KEY="${CHATLUNA_API_KEY:-sk-ci-smoke}"
-export CHATLUNA_DEFAULT_MODEL="${CHATLUNA_DEFAULT_MODEL:-Pro/moonshotai/Kimi-K2.5}"
-export CHATLUNA_COPILOT_DEFAULT_MODEL="openai/auto"
 export TASK_AUTOMATION_INTENT_ENABLED="${TASK_AUTOMATION_INTENT_ENABLED:-false}"
 export CHATLUNA_SEARCH_SERVICE_ENABLED="${CHATLUNA_SEARCH_SERVICE_ENABLED:-true}"
 export CHATLUNA_SEARCH_SERVICE_TOPK="${CHATLUNA_SEARCH_SERVICE_TOPK:-5}"
 export CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE="${CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE:-speed}"
-export CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL="${CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL:-empty}"
 export CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY="${CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY:-tvly-ci-smoke}"
 export QQ_VOICE_INPUT_ENABLED="${QQ_VOICE_INPUT_ENABLED:-false}"
 export QQ_VOICE_OUTPUT_ENABLED="${QQ_VOICE_OUTPUT_ENABLED:-false}"
@@ -41,13 +46,73 @@ export QQBOT_ADMIN_ACCESS_TOKEN="${QQBOT_ADMIN_ACCESS_TOKEN:-smoke-admin-access-
 export QQBOT_ADMIN_SESSION_SECRET="${QQBOT_ADMIN_SESSION_SECRET:-smoke-admin-session-secret-at-least-32-characters}"
 export QQBOT_ADMIN_ORIGIN="${QQBOT_ADMIN_ORIGIN:-http://127.0.0.1:${KOISHI_PORT}}"
 
-LOG_FILE="$(mktemp)"
-TMP_KOISHI_YML="$(mktemp "$ROOT_DIR/koishi-smoke-XXXXXX.yml")"
-cleanup() {
-  rm -f "$LOG_FILE"
-  rm -f "$TMP_KOISHI_YML"
-}
-trap cleanup EXIT
+node --input-type=module <<'NODE'
+import { ModelConfigService } from './dist/plugins/model-config/index.js';
+
+const modelConfig = ModelConfigService.fromEnvironment();
+await modelConfig.createInitial({
+  draft: {
+    connections: [
+      {
+        id: 'smoke',
+        displayName: 'Smoke',
+        adapter: 'openaiCompatible',
+        baseUrl: 'https://models.example.test/v1',
+        auth: {
+          kind: 'apiKey',
+          secretRef: 'connection:smoke:api-key',
+        },
+        catalogDriver: 'static',
+      },
+    ],
+    models: [
+      {
+        id: 'chat',
+        connectionId: 'smoke',
+        displayName: 'Smoke Chat',
+        transportModel: 'smoke-chat',
+        modelType: 'chat',
+        contextSize: 131072,
+        requestMode: 'chat_completions',
+        structuredOutputProtocol: 'native_chat_json_schema',
+        capabilities: {
+          chat: true,
+          embedding: false,
+          vision: true,
+          tools: true,
+          structuredOutput: true,
+        },
+        timeoutMs: 30000,
+        requestDefaults: {},
+      },
+    ],
+    bindings: [
+      {
+        workload: 'main.chat',
+        mode: 'dedicated',
+        connectionId: 'smoke',
+        modelId: 'chat',
+      },
+      {
+        workload: 'memory.extract',
+        mode: 'dedicated',
+        connectionId: 'smoke',
+        modelId: 'chat',
+      },
+      { workload: 'memory.embedding', mode: 'disabled' },
+      { workload: 'affinity.analysis', mode: 'inheritMain' },
+      { workload: 'naturalTrigger.decision', mode: 'disabled' },
+      { workload: 'search.summary', mode: 'inheritInvocation' },
+      { workload: 'chatluna.defaultEmbedding', mode: 'disabled' },
+      { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
+      { workload: 'sticker.index', mode: 'disabled' },
+    ],
+  },
+  apiKeys: {
+    smoke: 'sk-ci-smoke',
+  },
+});
+NODE
 
 cp koishi.yml "$TMP_KOISHI_YML"
 
@@ -67,6 +132,7 @@ const keep = new Set([
   'server:0b8t2q',
   './dist/plugins/admin-api:admin-api',
   'database-sqlite:8jr5yp',
+  './dist/plugins/model-runtime:model-runtime',
   'cron:task',
   './dist/plugins/automation:automation',
   './dist/plugins/reply:voice',
@@ -107,6 +173,11 @@ fi
 
 if ! grep -F "loader apply plugin ./dist/plugins/automation" "$LOG_FILE" >/dev/null; then
   echo "Koishi smoke startup did not load task-automation plugin." >&2
+  exit 1
+fi
+
+if ! grep -F "loader apply plugin ./dist/plugins/model-runtime:model-runtime" "$LOG_FILE" >/dev/null; then
+  echo "Koishi smoke startup did not load model-runtime plugin." >&2
   exit 1
 fi
 

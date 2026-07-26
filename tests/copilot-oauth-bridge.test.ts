@@ -76,10 +76,11 @@ describe('copilot oauth bridge helpers', () => {
     expect(buildCopilotBridgeBaseUrl(process.env)).toBe('http://127.0.0.1:6150/api/internal/copilot/v1');
   });
 
-  it('seeds bridge secret from env and reports unauthenticated status by default', async () => {
+  it('generates and persists the bridge secret without reading legacy ChatLuna API keys', async () => {
     const dir = createTempDir();
     vi.stubEnv('KOISHI_PORT', '5140');
-    vi.stubEnv('CHATLUNA_COPILOT_API_KEY', 'copilot-bridge-test-secret');
+    vi.stubEnv('CHATLUNA_COPILOT_API_KEY', 'legacy-copilot-secret');
+    vi.stubEnv('CHATLUNA_API_KEY', 'legacy-generic-secret');
 
     const service = new CopilotOAuthBridgeService({
       rootDir: dir,
@@ -99,21 +100,15 @@ describe('copilot oauth bridge helpers', () => {
       attempt: null,
     });
 
-    expect(await service.getRuntimeConfig()).toEqual({
-      baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      apiKey: 'copilot-bridge-test-secret',
-    });
+    const config = await service.getRuntimeConfig();
+    expect(config.baseUrl).toBe('http://127.0.0.1:5140/api/internal/copilot/v1');
+    expect(config.apiKey).not.toBe('legacy-copilot-secret');
+    expect(config.apiKey).not.toBe('legacy-generic-secret');
+    expect(config.apiKey).toMatch(/^qqbot-copilot-[a-f0-9]{48}$/);
+    expect((await readFile(join(dir, '.runtime/github-copilot.bridge-secret'), 'utf8')).trim()).toBe(config.apiKey);
 
-    expect((await readFile(join(dir, '.runtime/github-copilot.bridge-secret'), 'utf8')).trim()).toBe(
-      'copilot-bridge-test-secret',
-    );
-  });
-
-  it('does not seed the Copilot bridge secret from the generic ChatLuna key', async () => {
-    const dir = createTempDir();
-    vi.stubEnv('CHATLUNA_API_KEY', 'generic-chatluna-secret');
-
-    const service = new CopilotOAuthBridgeService({
+    vi.stubEnv('CHATLUNA_COPILOT_API_KEY', 'different-legacy-secret');
+    const restarted = new CopilotOAuthBridgeService({
       rootDir: dir,
       envFiles: {
         mode: 'single',
@@ -122,11 +117,7 @@ describe('copilot oauth bridge helpers', () => {
         editTarget: join(dir, '.env.local'),
       },
     });
-
-    const config = await service.getRuntimeConfig();
-    expect(config.apiKey).not.toBe('generic-chatluna-secret');
-    expect(config.apiKey).toMatch(/^qqbot-copilot-[a-f0-9]{48}$/);
-    expect((await readFile(join(dir, '.runtime/github-copilot.bridge-secret'), 'utf8')).trim()).toBe(config.apiKey);
+    expect((await restarted.getRuntimeConfig()).apiKey).toBe(config.apiKey);
   });
 
   it('includes upstream device-code HTTP details in OAuth errors', async () => {

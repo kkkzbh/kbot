@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('koishi', () => {
   class MockLogger {
@@ -31,14 +31,13 @@ vi.mock('koishi', () => {
   };
 });
 
-import { mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
-import { resolveMainChatRuntimeProfileFromEnv } from '../src/plugins/shared/llm/main-chat-tabs.js';
 import {
   buildProactiveTaskMarkdown,
 } from '../src/plugins/affinity/proactive-task.js';
 import type { AffinityRandomGenerationInput } from '../src/plugins/affinity/proactive-types.js';
 import { generateAffinityProactiveViaChatLuna } from '../src/plugins/affinity/proactive-chatluna.js';
 import { createVoiceRuntimeConfig } from '../src/plugins/reply/voice/generation.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 const NOW = Date.UTC(2026, 5, 17, 6, 0, 0);
 
@@ -135,7 +134,7 @@ const conversation = {
   bindingKey: 'shared:onebot:bot-1:100',
   title: 'affinity-proactive-temp',
   preset: 'sakiko',
-  model: 'openai/gpt-5.4-medium-thinking',
+  model: 'qqbot-primary/main-chat',
   chatMode: 'plugin',
   createdBy: 'affinity-proactive',
   createdAt: new Date(NOW),
@@ -193,10 +192,6 @@ function expectNoLegacyPrompt(prompt: string): void {
 }
 
 describe('affinity proactive task prompt and provider adapter', () => {
-  afterEach(() => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
-  });
-
   it('builds local_thread Markdown task context without old custom protocol or raw timestamps', () => {
     const prompt = buildProactiveTaskMarkdown(input());
 
@@ -286,12 +281,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
   });
 
   it('uses the current native StructuredReply contract and returns a transport plan', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    }));
+    const { mainTarget } = createTestModelRuntime();
     const chatluna = createChatLuna(JSON.stringify({
       decision: 'reply',
       outbound_messages: [
@@ -309,6 +299,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
       input: input(),
       requestId: 'test-native',
       runtime: createTestVoiceRuntime(),
+      modelTarget: mainTarget,
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -346,12 +337,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
   });
 
   it('keeps image, meme, and voice provider actions in the proactive transport plan', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    }));
+    const { mainTarget } = createTestModelRuntime();
     const chatluna = createChatLuna(JSON.stringify({
       decision: 'reply',
       outbound_messages: [
@@ -385,6 +371,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
         naturalTriggerEnabled: false,
         naturalTriggerGroups: '',
       }),
+      modelTarget: mainTarget,
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -395,12 +382,9 @@ describe('affinity proactive task prompt and provider adapter', () => {
   });
 
   it('uses CHAT_REPLY_V1 when the current provider requires the text protocol', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'deepseek',
-      CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
-      CHATLUNA_DEEPSEEK_API_KEY: 'sk-deepseek',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek-v4-flash',
-    }));
+    const { mainTarget } = createTestModelRuntime({
+      mainProtocol: 'chat_reply_v1',
+    });
     const chatluna = createChatLuna([
       'CHAT_REPLY_V1 abc12345',
       'DECISION reply',
@@ -418,6 +402,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
       input: input(),
       requestId: 'test-chat-reply-v1',
       runtime: createTestVoiceRuntime(),
+      modelTarget: mainTarget,
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -442,12 +427,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
   });
 
   it('maps provider no_reply to a skipped proactive generation without fallback text', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    }));
+    const { mainTarget } = createTestModelRuntime();
     const chatluna = createChatLuna(JSON.stringify({
       decision: 'no_reply',
       outbound_messages: null,
@@ -460,6 +440,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
       input: input({ recentTurns: [] }),
       requestId: 'test-no-reply',
       runtime: createTestVoiceRuntime(),
+      modelTarget: mainTarget,
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -471,6 +452,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
   });
 
   it('rejects missing ChatLuna contextManager instead of generating without the proactive prompt envelope', async () => {
+    const { mainTarget } = createTestModelRuntime();
     const chatluna = {
       chat: vi.fn(async () => ({
         content: JSON.stringify({
@@ -488,6 +470,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
       input: input(),
       requestId: 'test-missing-context-manager',
       runtime: createTestVoiceRuntime(),
+      modelTarget: mainTarget,
     })).rejects.toThrow('affinity proactive generation requires chatluna.contextManager.');
     expect(chatluna.chat).not.toHaveBeenCalled();
   });

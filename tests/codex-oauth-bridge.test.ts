@@ -109,6 +109,24 @@ describe('codex oauth bridge helpers', () => {
     expect(buildCodexBridgeBaseUrl(process.env)).toBe('http://127.0.0.1:6151/api/internal/codex/v1');
   });
 
+  it('generates and persists the bridge secret without reading legacy ChatLuna API keys', async () => {
+    const dir = createTempDir();
+    vi.stubEnv('CHATLUNA_CODEX_API_KEY', 'legacy-codex-secret');
+    vi.stubEnv('CHATLUNA_API_KEY', 'legacy-generic-secret');
+
+    const service = createService(dir);
+    const config = await service.getRuntimeConfig();
+
+    expect(config.baseUrl).toBe('http://127.0.0.1:5140/api/internal/codex/v1');
+    expect(config.apiKey).not.toBe('legacy-codex-secret');
+    expect(config.apiKey).not.toBe('legacy-generic-secret');
+    expect(config.apiKey).toMatch(/^qqbot-codex-[a-f0-9]{48}$/);
+    expect(readFileSync(join(dir, '.runtime/codex-oauth.bridge-secret'), 'utf8').trim()).toBe(config.apiKey);
+
+    vi.stubEnv('CHATLUNA_CODEX_API_KEY', 'different-legacy-secret');
+    expect((await createService(dir).getRuntimeConfig()).apiKey).toBe(config.apiKey);
+  });
+
   it('synchronizes official release metadata with ETag revalidation and atomic state', async () => {
     const dir = createTempDir();
     let now = Date.parse('2026-07-25T00:00:00.000Z');

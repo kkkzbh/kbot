@@ -315,7 +315,7 @@ describe('memory extract attribution', () => {
       ],
       turns,
       messageIds: turns.map((turn) => turn.id),
-      providerRoute: 'plain_text_memory_v1',
+      providerRoute: 'native_chat_json_schema',
       rawTextHash: 'hash-binary',
     });
 
@@ -379,7 +379,7 @@ describe('memory extract attribution', () => {
         isTarget: true,
         attributionSource: 'speaker_tag',
       },
-    ], 'plain_text_memory_v1', { speakerId: '10001', speakerName: 'Alice' });
+    ], 'native_chat_json_schema', { speakerId: '10001', speakerName: 'Alice' });
     const transcript = prompt.split('对话记录：\n')[1] ?? '';
 
     expect(transcript.split('\n')).toHaveLength(1);
@@ -453,7 +453,7 @@ describe('memory extract attribution', () => {
       ],
       turns,
       messageIds: turns.map((turn) => turn.id),
-      providerRoute: 'plain_text_memory_v1',
+      providerRoute: 'native_chat_json_schema',
       rawTextHash: 'hash',
     });
 

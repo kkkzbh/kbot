@@ -1,8 +1,20 @@
 import { z } from 'zod';
 import {
-  PresetDefinitionV2Schema,
+  ContextPresetDefinitionV1Schema,
+  ContextPresetBlockSchema,
   PresetIdSchema,
+  RolePresetDefinitionV1Schema,
 } from 'koishi-plugin-chatluna/preset-schema';
+import {
+  connectionIdSchema,
+  modelConfigAggregateSchema,
+  modelConfigDraftSchema,
+  modelConfigPutSchema,
+  modelIdSchema,
+  type ModelConfigAggregate,
+  type ModelConfigDraft,
+  type ModelConfigPutInput,
+} from '../../plugins/model-config/types.js';
 
 export type AdminJsonValue =
   | null
@@ -28,6 +40,7 @@ export const adminErrorCodeSchema = z.enum([
   'invalid_host',
   'not_found',
   'conflict',
+  'upstream_error',
   'service_unavailable',
   'internal_error',
 ]);
@@ -97,7 +110,7 @@ export const operationalEventActionRequestSchema = z.object({
   action: z.enum(['acknowledge', 'retry', 'discard']),
 });
 
-export const settingsSectionSchema = z.enum(['basic', 'features', 'model']);
+export const settingsSectionSchema = z.enum(['basic', 'features']);
 
 export const settingsChangeSchema = z.object({
   key: z.string().min(1),
@@ -168,43 +181,6 @@ export const memoryMutationSchema = z.discriminatedUnion('action', [
   }),
 ]);
 
-export const oauthProviderSchema = z.enum(['copilot', 'codex']);
-export const oauthAttemptRequestSchema = z.object({ attemptId: z.string().min(1) });
-
-export const modelTabIdSchema = z.enum(['siliconflow', 'openai', 'codex', 'copilot', 'deepseek', 'mimo']);
-export const modelRequestModeSchema = z.enum(['chat_completions', 'responses']);
-export const modelStructuredOutputProtocolSchema = z.enum([
-  'native_chat_json_schema',
-  'native_responses_json_schema',
-  'chat_reply_v1',
-]);
-export const modelReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']);
-export const modelAuthStatusSchema = z.enum(['unauthenticated', 'pending', 'ready', 'expired', 'error']);
-
-export const modelListRequestSchema = z.object({
-  baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-}).strict();
-
-export const modelTabPatchSchema = z.object({
-  id: modelTabIdSchema,
-  baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-  clearApiKey: z.boolean().optional(),
-  defaultModel: z.string().trim().min(1),
-  reasoningEffort: modelReasoningEffortSchema.nullable().optional(),
-}).strict().superRefine((tab, context) => {
-  if (tab.clearApiKey && tab.apiKey !== undefined) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'clearApiKey 与 apiKey 不能同时提交。' });
-  }
-});
-
-export const modelTabsPatchRequestSchema = z.object({
-  activeTab: modelTabIdSchema,
-  tabs: z.array(modelTabPatchSchema).min(1),
-  dirtyTabIds: z.array(modelTabIdSchema).min(1),
-}).strict();
-
 export const oauthAttemptSchema = z.object({
   attemptId: z.string().min(1),
   userCode: z.string().min(1),
@@ -216,107 +192,88 @@ export const oauthAttemptSchema = z.object({
   error: z.string().nullable(),
 }).strict();
 
-export const codexCatalogStateSchema = z.object({
-  source: z.literal('dynamic'),
-  status: z.enum(['ready', 'degraded', 'unavailable']),
-  clientVersion: z.string().min(1).nullable(),
-  fetchedAt: z.string().datetime().nullable(),
-  error: z.string().nullable(),
-}).strict();
-
-export const modelTabSchema = z.object({
-  id: modelTabIdSchema,
-  title: z.string().min(1),
-  provider: z.enum(['siliconflow', 'openai', 'deepseek', 'mimo']),
-  strategyId: z.enum([
-    'siliconflow-kimi-main-chat',
-    'openai-gpt54-main-chat',
-    'codex-chatgpt-oauth-main-chat',
-    'copilot-github-oauth-main-chat',
-    'deepseek-official-main-chat',
-    'mimo-official-main-chat',
-  ]),
-  requestMode: modelRequestModeSchema,
-  structuredOutputProtocol: modelStructuredOutputProtocolSchema,
-  description: z.string(),
-  modelHint: z.string(),
-  authKind: z.enum(['manual', 'oauth_device', 'codex_oauth']),
-  authStatus: modelAuthStatusSchema,
-  accountLabel: z.string().nullable().optional(),
-  authError: z.string().nullable().optional(),
-  tokenExpiresAt: z.number().finite().nullable().optional(),
-  oauthAttempt: oauthAttemptSchema.nullable().optional(),
-  catalog: codexCatalogStateSchema.nullable().optional(),
-  baseUrl: z.string(),
-  apiKey: z.null(),
-  apiKeyConfigured: z.boolean(),
-  defaultModel: z.string(),
-  reasoningEffort: modelReasoningEffortSchema.nullable().optional(),
-  canonicalModel: z.string().min(1).optional(),
-  transportModel: z.string().min(1).optional(),
-}).strict().superRefine((tab, context) => {
-  if (tab.id !== 'codex' && tab.defaultModel.trim().length === 0) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['defaultModel'],
-      message: '只有尚未选择动态目录模型的 Codex Tab 可以返回空 defaultModel。',
-    });
-  }
-});
-
-export const modelTabsResponseSchema = z.object({
-  activeTab: modelTabIdSchema,
-  tabs: z.array(modelTabSchema),
-}).strict();
-
-export const modelOptionSchema = z.object({
-  canonicalModel: z.string().min(1),
-  transportModel: z.string().min(1),
-  label: z.string().min(1),
-  rateLabel: z.string().min(1).optional(),
-  requestMode: modelRequestModeSchema.optional(),
-  structuredOutputProtocol: modelStructuredOutputProtocolSchema.optional(),
-  metadataTags: z.array(z.string().min(1)).optional(),
-  deprecated: z.boolean().optional(),
-  deprecationDate: z.string().min(1).optional(),
-}).strict();
-
-export const modelListResponseSchema = z.object({
-  source: z.enum(['dynamic', 'static']),
-  models: z.array(modelOptionSchema),
-  error: z.string().nullable(),
-  catalog: codexCatalogStateSchema.optional(),
-}).strict();
-
-export const adminApplyStateSchema = z.object({
-  restartRequired: z.boolean(),
-  reasons: z.array(z.enum(['basic', 'features', 'model', 'preset', 'tts'])),
-}).strict();
-
-export const saveModelsResponseSchema = z.object({
-  modelTabs: modelTabsResponseSchema,
-  hotSwitched: z.boolean(),
-  restartRequired: z.boolean(),
-  restartReason: z.string().nullable(),
-  apply: adminApplyStateSchema,
-}).strict();
-
-export const oauthMutationResponseSchema = z.object({
-  authKind: z.enum(['oauth_device', 'codex_oauth']),
-  authStatus: modelAuthStatusSchema,
+export const modelConnectionAuthStateSchema = z.object({
+  connectionId: connectionIdSchema,
+  status: z.enum(['not_required', 'unauthenticated', 'pending', 'ready', 'expired', 'error']),
   accountLabel: z.string().nullable(),
-  authError: z.string().nullable(),
-  tokenExpiresAt: z.number().finite().nullable().optional(),
+  error: z.string().nullable(),
+  tokenExpiresAt: z.number().finite().nullable(),
   attempt: oauthAttemptSchema.nullable(),
 }).strict();
+
+export const modelAdminAggregateSchema = modelConfigAggregateSchema.extend({
+  connectionStates: z.array(modelConnectionAuthStateSchema),
+}).strict();
+
+export const modelConnectionProbeResponseSchema = z.object({
+  connectionId: connectionIdSchema,
+  status: z.literal('ready'),
+  checkedAt: z.string().datetime(),
+  latencyMs: z.number().int().nonnegative(),
+}).strict();
+
+export const modelCatalogEntrySchema = z.object({
+  transportModel: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+  requestMode: z.enum(['chat_completions', 'responses']).nullable(),
+  structuredOutputProtocol: z.enum([
+    'native_chat_json_schema',
+    'native_responses_json_schema',
+    'chat_reply_v1',
+    'json_mode',
+  ]).nullable(),
+  metadataTags: z.array(z.string().trim().min(1)),
+}).strict();
+
+export const modelCatalogResponseSchema = z.object({
+  connectionId: connectionIdSchema,
+  fetchedAt: z.string().datetime(),
+  models: z.array(modelCatalogEntrySchema),
+}).strict();
+
+export const modelOAuthPollRequestSchema = z.object({
+  attemptId: z.string().trim().min(1),
+}).strict();
+
+export const modelApplyRequestSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+}).strict();
+
+export const modelApplyResponseSchema = z.object({
+  accepted: z.literal(true),
+  savedRevision: z.number().int().positive(),
+  target: z.object({
+    unit: z.literal('qqbot-koishi.service'),
+    previousInvocationId: z.string().nullable(),
+  }).strict(),
+}).strict();
+
+export const stickerIndexMaintenanceResponseSchema = z.object({
+  generatedAt: z.string().datetime(),
+  model: z.string().trim().min(1),
+  indexed: z.number().int().nonnegative(),
+  reused: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+}).strict();
+
+export {
+  connectionIdSchema,
+  modelConfigAggregateSchema,
+  modelConfigDraftSchema,
+  modelConfigPutSchema,
+  modelIdSchema,
+};
 
 export const emptyRequestSchema = z.object({}).strict();
 export const emptyResponseSchema = z.void();
 
 export const presetIdSchema = PresetIdSchema;
-export const presetDefinitionV2Schema = PresetDefinitionV2Schema;
 export const presetSourceSchema = z.enum(['bundled', 'runtime']);
-export const presetSummarySchema = z.object({
+export const rolePresetDefinitionV1Schema = RolePresetDefinitionV1Schema;
+export const contextPresetDefinitionV1Schema = ContextPresetDefinitionV1Schema;
+export const contextPresetBlockSchema = ContextPresetBlockSchema;
+
+export const contextPresetSummarySchema = z.object({
   id: presetIdSchema,
   displayName: z.string().trim().min(1),
   aliases: z.array(z.string().trim().min(1)),
@@ -325,56 +282,106 @@ export const presetSummarySchema = z.object({
   revision: z.string().min(1),
   isGlobalDefault: z.boolean(),
 }).strict();
-export const presetCatalogResponseSchema = z.object({
-  presets: z.array(presetSummarySchema),
-  globalDefaultPresetId: presetIdSchema,
+export const contextPresetCatalogResponseSchema = z.object({
+  contextPresets: z.array(contextPresetSummarySchema),
+  globalDefaultContextPresetId: presetIdSchema,
 }).strict();
-export const presetDetailResponseSchema = z.object({
-  preset: PresetDefinitionV2Schema,
+export const contextPresetDetailResponseSchema = z.object({
+  contextPreset: ContextPresetDefinitionV1Schema,
   source: presetSourceSchema,
   hasOverride: z.boolean(),
   revision: z.string().min(1),
 }).strict();
-export const presetCreateRequestSchema = z.object({
-  preset: PresetDefinitionV2Schema,
+export const contextPresetCreateRequestSchema = z.object({
+  contextPreset: ContextPresetDefinitionV1Schema,
 }).strict();
-export const presetUpdateRequestSchema = z.object({
-  preset: PresetDefinitionV2Schema,
+export const contextPresetUpdateRequestSchema = z.object({
+  contextPreset: ContextPresetDefinitionV1Schema,
   expectedRevision: z.string().min(1),
 }).strict();
 export const presetRevisionRequestSchema = z.object({
   expectedRevision: z.string().min(1),
 }).strict();
-export const presetDefaultRequestSchema = z.object({
+export const contextPresetDefaultRequestSchema = z.object({
   id: presetIdSchema,
 }).strict();
-export const presetDefaultResponseSchema = z.object({
-  globalDefaultPresetId: presetIdSchema,
+export const contextPresetDefaultResponseSchema = z.object({
+  globalDefaultContextPresetId: presetIdSchema,
 }).strict();
 
-export const contextBlueprintSourceSchema = z.object({
+export const contextPresetDraftDefinitionV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  id: presetIdSchema,
+  displayName: z.string().trim().min(1),
+  aliases: z.array(z.string().trim().min(1)),
+  blocks: z.array(ContextPresetBlockSchema).min(3),
+}).strict();
+
+export const rolePresetSummarySchema = z.object({
+  id: presetIdSchema,
+  displayName: z.string().trim().min(1),
+  source: presetSourceSchema,
+  hasOverride: z.boolean(),
+  revision: z.string().min(1),
+  referenceCount: z.number().int().nonnegative(),
+}).strict();
+export const rolePresetCatalogResponseSchema = z.object({
+  rolePresets: z.array(rolePresetSummarySchema),
+}).strict();
+export const rolePresetDetailResponseSchema = z.object({
+  rolePreset: RolePresetDefinitionV1Schema,
+  source: presetSourceSchema,
+  hasOverride: z.boolean(),
+  revision: z.string().min(1),
+  referenceCount: z.number().int().nonnegative(),
+}).strict();
+export const rolePresetCreateRequestSchema = z.object({
+  rolePreset: RolePresetDefinitionV1Schema,
+}).strict();
+export const rolePresetUpdateRequestSchema = z.object({
+  rolePreset: RolePresetDefinitionV1Schema,
+  expectedRevision: z.string().min(1),
+}).strict();
+
+export const resolvedContextBlockSchema = z.object({
   id: z.string().min(1),
-  label: z.string().min(1),
-  path: z.string().min(1).optional(),
-  role: z.string().min(1).optional(),
-  purpose: z.string().min(1).optional(),
-  content: adminJsonValueSchema.optional(),
+  type: z.enum([
+    'role',
+    'chatHistory',
+    'longMemory',
+    'requestDocuments',
+    'lore',
+    'authorsNote',
+    'knowledge',
+    'currentInput',
+    'agentScratchpad',
+    'modelOutput',
+    'qqbotFragments',
+    'toolDefinitions',
+  ]),
+  source: z.enum(['stored', 'runtime']),
+  owner: z.enum(['context', 'role', 'runtime']),
+  locked: z.boolean(),
+  movable: z.boolean(),
+  enabled: z.boolean(),
+  staticTokens: z.number().int().nonnegative().nullable(),
+  budget: z.object({
+    priority: z.number().int().nonnegative(),
+    maxTokens: z.number().int().positive().nullable(),
+  }).strict().nullable(),
+  legalDropRange: z.object({
+    minIndex: z.number().int().nonnegative(),
+    maxIndex: z.number().int().nonnegative(),
+  }).strict().nullable(),
 }).strict();
-export const contextBlueprintSectionSchema = z.object({
-  id: z.string().min(1),
-  order: z.number().int().min(0),
-  label: z.string().min(1),
-  description: z.string().min(1),
-  dynamic: z.boolean(),
-  sources: z.array(contextBlueprintSourceSchema),
+export const contextPresetPreviewRequestSchema = z.object({
+  contextPreset: contextPresetDraftDefinitionV1Schema,
+  inputTokenLimit: z.number().int().positive().optional(),
 }).strict();
-export const contextBlueprintQuerySchema = z.object({
-  presetId: presetIdSchema,
-}).strict();
-export const contextBlueprintResponseSchema = z.object({
-  presetId: presetIdSchema,
-  presetRevision: z.string().min(1),
-  sections: z.array(contextBlueprintSectionSchema),
+export const contextPresetPreviewResponseSchema = z.object({
+  blocks: z.array(resolvedContextBlockSchema),
+  inputBudgetTokens: z.number().int().nonnegative().nullable(),
+  outputBudgetTokens: z.number().int().positive(),
 }).strict();
 
 export const presetResolutionSchema = z.object({
@@ -454,18 +461,6 @@ export const contextSnapshotResponseSchema = z.object({
   unavailableReason: z.string().min(1).nullable().optional(),
 }).strict();
 
-export const modelRuntimeStateSchema = z.object({
-  configuredModel: z.string().min(1).nullable(),
-  liveModel: z.string().min(1).nullable(),
-  transportModel: z.string().min(1).nullable(),
-  requestMode: z.enum(['chat_completions', 'responses']).nullable(),
-  modelContextSize: z.number().int().positive().nullable(),
-  contextLimit: z.number().int().positive().nullable(),
-  pending: z.boolean(),
-  pendingReason: z.string().min(1).nullable(),
-  updatedAt: z.string().datetime().nullable(),
-}).strict();
-
 export const ttsSampleRequestSchema = z.object({
   text: z.string().trim().min(1).max(500),
   style: z.enum(['white', 'black']),
@@ -474,14 +469,29 @@ export const ttsSampleRequestSchema = z.object({
 export const featureOverridesRequestSchema = z.object({ overrides: z.array(z.unknown()) });
 export const toolOverridesRequestSchema = z.object({ overrides: z.array(z.unknown()) });
 export const affinitySettingsRequestSchema = z.object({
-  settings: z.record(z.unknown()),
-  analysisModelApiKey: z.string().optional(),
-  clearAnalysisModelApiKey: z.boolean().optional(),
-}).superRefine((input, context) => {
-  if (input.analysisModelApiKey !== undefined && input.clearAnalysisModelApiKey) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'clearAnalysisModelApiKey 与 analysisModelApiKey 不能同时提交。' });
-  }
-});
+  settings: z.object({
+    enabled: z.boolean(),
+    proactiveEnabled: z.boolean(),
+    randomWindowStartHour: z.number().int().min(0).max(23),
+    randomWindowEndHour: z.number().int().min(0).max(23),
+    randomCountWeights: z.tuple([
+      z.number().nonnegative(),
+      z.number().nonnegative(),
+      z.number().nonnegative(),
+      z.number().nonnegative(),
+    ]),
+    enabledDirections: z.array(z.enum([
+      'local_thread',
+      'daily_greeting',
+      'music_rehearsal',
+      'contest_discussion',
+      'computer_knowledge',
+      'web_hot_topic',
+      'relationship_scene',
+    ])),
+    webSourceEnabled: z.boolean(),
+  }).strict(),
+}).strict();
 export const affinityWhitelistRequestSchema = z.object({ scopes: z.array(z.unknown()) });
 export const affinityAdjustRequestSchema = z.object({
   userKey: z.string().min(1),
@@ -508,32 +518,40 @@ export type MemoryKind = z.infer<typeof memoryKindSchema>;
 export type MemoryMutation = z.infer<typeof memoryMutationSchema>;
 export type OperationalEventListQuery = z.infer<typeof operationalEventListQuerySchema>;
 export type OperationalEventActionRequest = z.infer<typeof operationalEventActionRequestSchema>;
-export type ModelTabId = z.infer<typeof modelTabIdSchema>;
-export type ModelRequestMode = z.infer<typeof modelRequestModeSchema>;
-export type ModelReasoningEffort = z.infer<typeof modelReasoningEffortSchema>;
-export type ModelAuthStatus = z.infer<typeof modelAuthStatusSchema>;
 export type OAuthAttempt = z.infer<typeof oauthAttemptSchema>;
-export type CodexCatalogState = z.infer<typeof codexCatalogStateSchema>;
-export type ModelTab = z.infer<typeof modelTabSchema>;
-export type ModelTabsResponse = z.infer<typeof modelTabsResponseSchema>;
-export type ModelOption = z.infer<typeof modelOptionSchema>;
-export type ModelListResponse = z.infer<typeof modelListResponseSchema>;
-export type ModelTabPatch = z.infer<typeof modelTabPatchSchema>;
-export type SaveModelsResponse = z.infer<typeof saveModelsResponseSchema>;
-export type OAuthMutationResponse = z.infer<typeof oauthMutationResponseSchema>;
-export type PresetDefinitionV2 = z.infer<typeof PresetDefinitionV2Schema>;
+export type ModelConfigAdminAggregate = z.infer<typeof modelAdminAggregateSchema>;
+export type ModelConnectionAuthState = z.infer<typeof modelConnectionAuthStateSchema>;
+export type ModelConnectionProbeResponse = z.infer<typeof modelConnectionProbeResponseSchema>;
+export type ModelCatalogEntry = z.infer<typeof modelCatalogEntrySchema>;
+export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>;
+export type ModelApplyRequest = z.infer<typeof modelApplyRequestSchema>;
+export type ModelApplyResponse = z.infer<typeof modelApplyResponseSchema>;
+export type StickerIndexMaintenanceResponse = z.infer<typeof stickerIndexMaintenanceResponseSchema>;
+export type {
+  ModelConfigAggregate,
+  ModelConfigDraft,
+  ModelConfigPutInput,
+};
 export type PresetSource = z.infer<typeof presetSourceSchema>;
-export type PresetSummary = z.infer<typeof presetSummarySchema>;
-export type PresetCatalogResponse = z.infer<typeof presetCatalogResponseSchema>;
-export type PresetDetailResponse = z.infer<typeof presetDetailResponseSchema>;
-export type PresetCreateRequest = z.infer<typeof presetCreateRequestSchema>;
-export type PresetUpdateRequest = z.infer<typeof presetUpdateRequestSchema>;
+export type RolePresetDefinitionV1 = z.infer<typeof RolePresetDefinitionV1Schema>;
+export type ContextPresetDefinitionV1 = z.infer<typeof ContextPresetDefinitionV1Schema>;
+export type ContextPresetBlock = z.infer<typeof ContextPresetBlockSchema>;
+export type ContextPresetSummary = z.infer<typeof contextPresetSummarySchema>;
+export type ContextPresetCatalogResponse = z.infer<typeof contextPresetCatalogResponseSchema>;
+export type ContextPresetDetailResponse = z.infer<typeof contextPresetDetailResponseSchema>;
+export type ContextPresetCreateRequest = z.infer<typeof contextPresetCreateRequestSchema>;
+export type ContextPresetUpdateRequest = z.infer<typeof contextPresetUpdateRequestSchema>;
 export type PresetRevisionRequest = z.infer<typeof presetRevisionRequestSchema>;
-export type PresetDefaultRequest = z.infer<typeof presetDefaultRequestSchema>;
-export type PresetDefaultResponse = z.infer<typeof presetDefaultResponseSchema>;
-export type ContextBlueprintSource = z.infer<typeof contextBlueprintSourceSchema>;
-export type ContextBlueprintSection = z.infer<typeof contextBlueprintSectionSchema>;
-export type ContextBlueprintResponse = z.infer<typeof contextBlueprintResponseSchema>;
+export type ContextPresetDefaultRequest = z.infer<typeof contextPresetDefaultRequestSchema>;
+export type ContextPresetDefaultResponse = z.infer<typeof contextPresetDefaultResponseSchema>;
+export type RolePresetSummary = z.infer<typeof rolePresetSummarySchema>;
+export type RolePresetCatalogResponse = z.infer<typeof rolePresetCatalogResponseSchema>;
+export type RolePresetDetailResponse = z.infer<typeof rolePresetDetailResponseSchema>;
+export type RolePresetCreateRequest = z.infer<typeof rolePresetCreateRequestSchema>;
+export type RolePresetUpdateRequest = z.infer<typeof rolePresetUpdateRequestSchema>;
+export type ResolvedContextBlock = z.infer<typeof resolvedContextBlockSchema>;
+export type ContextPresetPreviewRequest = z.infer<typeof contextPresetPreviewRequestSchema>;
+export type ContextPresetPreviewResponse = z.infer<typeof contextPresetPreviewResponseSchema>;
 export type PresetResolution = z.infer<typeof presetResolutionSchema>;
 export type ContextTarget = z.infer<typeof contextTargetSchema>;
 export type ContextTargetsResponse = z.infer<typeof contextTargetsResponseSchema>;
@@ -541,8 +559,6 @@ export type ContextSnapshotMessage = z.infer<typeof contextSnapshotMessageSchema
 export type ContextSnapshotTool = z.infer<typeof contextSnapshotToolSchema>;
 export type ContextSnapshot = z.infer<typeof contextSnapshotSchema>;
 export type ContextSnapshotResponse = z.infer<typeof contextSnapshotResponseSchema>;
-export type ModelRuntimeState = z.infer<typeof modelRuntimeStateSchema>;
-
 export interface OperationalEventBulkAcknowledgeResult {
   acknowledgedCount: number;
 }

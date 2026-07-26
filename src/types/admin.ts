@@ -29,7 +29,7 @@ export type ServiceAction = 'start' | 'stop' | 'restart' | 'enable';
 
 export type BotServiceRuntimeState = 'healthy' | 'degraded' | 'stopped' | 'unknown';
 
-export type AdminApplyReason = 'basic' | 'features' | 'model' | 'preset' | 'tts';
+export type AdminApplyReason = 'basic' | 'features' | 'tts';
 
 export type BotServiceUnit =
   | 'qqbot.target'
@@ -122,10 +122,7 @@ export interface AdminEnvFilesState {
   editTarget: string;
 }
 
-export type AdminModelTabId = 'siliconflow' | 'openai' | 'codex' | 'copilot' | 'deepseek' | 'mimo';
-export type AdminAuthKind = 'manual' | 'oauth_device' | 'codex_oauth';
 export type AdminAuthStatus = 'unauthenticated' | 'pending' | 'ready' | 'expired' | 'error';
-export type AdminModelListSource = 'dynamic' | 'static';
 export type CodexCatalogSyncStatus = 'ready' | 'degraded' | 'unavailable';
 
 export interface CodexCatalogState {
@@ -155,81 +152,6 @@ export interface CodexAuthAttempt {
   intervalSec: number;
   nextPollAt: number;
   state: 'pending' | 'authorized' | 'expired' | 'failed' | 'cancelled';
-  error: string | null;
-}
-
-export interface AdminBuiltinModelTab {
-  id: AdminModelTabId;
-  title: string;
-  provider: 'siliconflow' | 'openai' | 'deepseek' | 'mimo';
-  strategyId: 'siliconflow-kimi-main-chat' | 'openai-gpt54-main-chat' | 'codex-chatgpt-oauth-main-chat' | 'copilot-github-oauth-main-chat' | 'deepseek-official-main-chat' | 'mimo-official-main-chat';
-  requestMode: 'chat_completions' | 'responses';
-  structuredOutputProtocol: 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1';
-  description: string;
-  modelHint: string;
-  authKind: AdminAuthKind;
-  authStatus: AdminAuthStatus;
-  accountLabel?: string | null;
-  authError?: string | null;
-  tokenExpiresAt?: number | null;
-  oauthAttempt?: CopilotAuthAttempt | CodexAuthAttempt | null;
-  catalog?: CodexCatalogState | null;
-  baseUrl: string;
-  apiKey: string;
-  defaultModel: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | null;
-  canonicalModel?: string;
-  transportModel?: string;
-}
-
-export interface AdminModelTabsState {
-  activeTab: AdminModelTabId;
-  tabs: AdminBuiltinModelTab[];
-}
-
-export interface AdminModelOption {
-  modelId: string;
-  label: string;
-  rateLabel?: string;
-  requestMode?: 'chat_completions' | 'responses';
-  structuredOutputProtocol?: 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1';
-  metadataTags?: string[];
-  deprecated?: boolean;
-  deprecationDate?: string;
-}
-
-export interface DeepSeekModelListRequest {
-  baseUrl?: string;
-  apiKey?: string;
-}
-
-export interface DeepSeekModelListResponse {
-  source: AdminModelListSource;
-  models: AdminModelOption[];
-  error: string | null;
-}
-
-export interface CopilotModelListResponse {
-  source: AdminModelListSource;
-  models: AdminModelOption[];
-  error: string | null;
-}
-
-export interface CodexModelListResponse {
-  source: AdminModelListSource;
-  models: AdminModelOption[];
-  error: string | null;
-  catalog: CodexCatalogState;
-}
-
-export interface MimoModelListRequest {
-  baseUrl?: string;
-  apiKey?: string;
-}
-
-export interface MimoModelListResponse {
-  source: AdminModelListSource;
-  models: AdminModelOption[];
   error: string | null;
 }
 
@@ -448,25 +370,6 @@ export interface AdjustAffinityUserRequest {
 export interface SaveAffinitySettingsResponse extends AffinityMutationResponse {}
 export interface SaveAffinityWhitelistResponse extends AffinityMutationResponse {}
 export interface AdjustAffinityUserResponse extends AffinityMutationResponse {}
-
-export interface SaveModelTabsRequest {
-  activeTab: AdminModelTabId;
-  tabs: AdminBuiltinModelTab[];
-  /**
-   * IDs of tabs whose fields the user actually edited in this save.
-   * The server validates only these (plus the active tab); untouched tabs are accepted as-is so a
-   * stale model value somewhere else doesn't block an unrelated change.
-   */
-  dirtyTabIds: AdminModelTabId[];
-}
-
-export interface SaveModelTabsResponse {
-  env: Record<string, string>;
-  modelTabs: AdminModelTabsState;
-  hotSwitched: boolean;
-  restartRequired: boolean;
-  restartReason: string | null;
-}
 
 export interface CopilotAuthState {
   authKind: 'oauth_device';

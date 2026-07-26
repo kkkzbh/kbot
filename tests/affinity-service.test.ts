@@ -10,6 +10,7 @@ import {
 import { decodeStoredMessageJson, decodeStoredMessageText } from '../src/plugins/shared/stored-message.js';
 import { createVoiceRuntimeConfig } from '../src/plugins/reply/index.js';
 import type { AffinityEventRecord, AffinityRandomPlanRecord, AffinityScopeConfigRecord } from '../src/types/affinity.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 vi.mock('koishi', () => {
   class MockLogger {
@@ -39,7 +40,7 @@ vi.mock('koishi', () => {
   };
 });
 
-vi.mock('koishi-plugin-chatluna/llm-core/memory/message', async () => {
+vi.mock('../src/plugins/shared/chatluna-history.js', async () => {
   const { gzipSync } = await import('node:zlib');
   let fallbackId = 0;
 
@@ -52,14 +53,19 @@ vi.mock('koishi-plugin-chatluna/llm-core/memory/message', async () => {
   }
 
   return {
-    KoishiChatMessageHistory: class {
-      constructor(
-        private readonly ctx: { database: MemoryDatabase },
-        private readonly conversationId: string,
-      ) {}
-
-      async addMessages(messages: any[]): Promise<void> {
-        const [conversation] = await this.ctx.database.get('chatluna_conversation', { id: this.conversationId });
+    createChatLunaHistoryWriter: async (args: {
+      database: MemoryDatabase;
+      conversationId: string;
+      chatluna: {
+        conversationRuntime?: {
+          clearConversationCache?: (conversationId: string) => Promise<unknown>;
+        };
+      };
+    }) => ({
+      addMessages: async (messages: any[]): Promise<void> => {
+        const [conversation] = await args.database.get('chatluna_conversation', {
+          id: args.conversationId,
+        });
         let parentId = conversation?.latestMessageId ?? null;
         const rows: Row[] = [];
         for (const message of messages) {
@@ -69,7 +75,7 @@ vi.mock('koishi-plugin-chatluna/llm-core/memory/message', async () => {
             : null;
           rows.push({
             id: recordId,
-            conversationId: this.conversationId,
+            conversationId: args.conversationId,
             parentId,
             role: typeof message.getType === 'function' ? message.getType() : 'ai',
             text: null,
@@ -90,14 +96,17 @@ vi.mock('koishi-plugin-chatluna/llm-core/memory/message', async () => {
           });
           parentId = recordId;
         }
-        await this.ctx.database.upsert('chatluna_message', rows);
-        await this.ctx.database.upsert('chatluna_conversation', [{
-          id: this.conversationId,
+        await args.database.upsert('chatluna_message', rows);
+        await args.database.upsert('chatluna_conversation', [{
+          id: args.conversationId,
           latestMessageId: parentId,
           updatedAt: new Date(),
         }]);
-      }
-    },
+        await args.chatluna.conversationRuntime?.clearConversationCache?.(
+          args.conversationId,
+        );
+      },
+    }),
   };
 });
 
@@ -241,7 +250,7 @@ function createConversation(conversationId = 'conv-affinity'): Row {
     bindingKey: `shared:onebot:bot-1:${conversationId}`,
     title: 'affinity-test-conversation',
     preset: 'sakiko',
-    model: 'openai/gpt-test',
+    model: 'qqbot-primary/main-chat',
     chatMode: 'plugin',
     createdBy: 'owner-1',
     createdAt: new Date(NOW),
@@ -337,14 +346,100 @@ function createHarness(options: {
       clearConversationCache: vi.fn(async () => true),
     },
   };
+  const modelServices = createTestModelRuntime({
+    executor: {
+      async execute(request) {
+        if (
+          request.operation === 'chat'
+          && request.payload.messages.some(
+            (message) => (
+              typeof message.content === 'string'
+              && !message.content.includes('开放线索: []')
+              && message.content.includes('开放线索:')
+            ),
+          )
+        ) {
+          const userPrompt = request.payload.messages
+            .map((message) => (
+              typeof message.content === 'string' ? message.content : ''
+            ))
+            .find((content) => content.includes('用户消息:')) ?? '';
+          const userText = userPrompt.split('用户消息:').at(-1)?.trim() ?? '';
+          return {
+            text: JSON.stringify({
+              route: 'random_event_reply',
+              eventType: 'answer_random_prompt',
+              effectTier: 'progress',
+              category: 'random_followup',
+              confidence: 0.96,
+              risk: 'none',
+              evidence: userText,
+              replyHint: '承接主动话题',
+              reasonCode: 'test_random_followup',
+            }),
+          };
+        }
+        return {
+          text: JSON.stringify({
+            route: 'ignore',
+            eventType: 'none',
+            effectTier: 'ignore',
+            category: 'none',
+            confidence: 0,
+            risk: 'none',
+            evidence: null,
+            replyHint: null,
+            reasonCode: 'test_ignore',
+          }),
+        };
+      },
+    },
+  });
+  const { modelConfig, modelRuntime } = modelServices;
+  let runtimeSnapshot = modelServices.snapshot;
+  vi.spyOn(modelConfig, 'getRuntimeSnapshot').mockImplementation(
+    () => runtimeSnapshot,
+  );
   const service = new AffinityService(
     db,
+    modelConfig,
+    modelRuntime,
     () => [bot],
     () => 0.5,
     () => chatluna as any,
     options.proactiveVoiceRuntime ?? createAffinityTestVoiceRuntime,
   );
-  return { db, service, bot, chatluna, chat, contextManager };
+  return {
+    db,
+    service,
+    bot,
+    chatluna,
+    chat,
+    contextManager,
+    switchMainBinding(
+      modelId: string,
+      protocol: 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1',
+    ) {
+      const next = structuredClone(runtimeSnapshot);
+      const binding = next.bindings.find(
+        (candidate) => candidate.workload === 'main.chat',
+      );
+      const model = next.models.find(
+        (candidate) => candidate.connectionId === 'primary' && candidate.id === modelId,
+      );
+      if (!binding || binding.mode !== 'dedicated' || !model) {
+        throw new Error(`test main binding target does not exist: ${modelId}`);
+      }
+      binding.connectionId = 'primary';
+      binding.modelId = modelId;
+      model.structuredOutputProtocol = protocol;
+      model.capabilities.structuredOutput = true;
+      runtimeSnapshot = {
+        ...next,
+        revision: next.revision + 1,
+      };
+    },
+  };
 }
 
 function parseAuditDetail(row: Row | undefined): Record<string, unknown> {
@@ -363,14 +458,6 @@ describe('affinity service settings', () => {
       randomCountWeights: [0.25, 0.6, 0.1, 0.05],
       enabledDirections: ['local_thread', 'daily_greeting', 'music_rehearsal', 'contest_discussion', 'computer_knowledge', 'relationship_scene'],
       webSourceEnabled: false,
-      analysisModel: expect.objectContaining({
-        baseUrl: '',
-        apiKey: '',
-        model: '',
-        requestMode: 'chat_completions',
-        structuredOutputProtocol: 'chat_reply_v1',
-        timeoutMs: 5000,
-      }),
     }));
   });
 
@@ -409,23 +496,6 @@ describe('affinity service settings', () => {
       key: 'enabledDirections',
       value: JSON.stringify(['local_thread', 'unknown_direction']),
       message: 'affinity_config.enabledDirections[1] is invalid.',
-    },
-    {
-      key: 'analysisModel',
-      value: JSON.stringify({ baseUrl: 1 }),
-      message: 'affinity_config.analysisModel.baseUrl must be a string.',
-    },
-    {
-      key: 'analysisModel',
-      value: JSON.stringify({
-        baseUrl: '',
-        apiKey: '',
-        model: '',
-        requestMode: 'legacy_chat',
-        structuredOutputProtocol: 'chat_reply_v1',
-        timeoutMs: 5000,
-      }),
-      message: 'affinity_config.analysisModel.requestMode must be chat_completions or responses.',
     },
   ])('rejects corrupted persisted affinity config row $key=$value', async ({ key, value, message }) => {
     const { service } = createHarness({
@@ -685,6 +755,50 @@ describe('affinity service random history sync', () => {
     clearPromptAssemblyTurn('conv-affinity');
   });
 
+  it('uses the live main binding for the first proactive call after a revision change', async () => {
+    const {
+      db,
+      service,
+      chat,
+      switchMainBinding,
+    } = createHarness({
+      conversations: [{
+        ...createConversation('conv-affinity'),
+        model: 'qqbot-primary/main-chat',
+      }],
+    });
+    switchMainBinding('alternate-chat', 'chat_reply_v1');
+    chat.mockResolvedValueOnce({
+      content: [
+        'CHAT_REPLY_V1 abc12345',
+        'DECISION reply',
+        'BEGIN message',
+        'CONTENT',
+        `|${RANDOM_MESSAGE}`,
+        'END',
+        'DONE abc12345',
+      ].join('\n'),
+      additional_kwargs: {},
+    });
+
+    await service.runDueRandomPlans(NOW);
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    const [, temporaryConversation, modelMessage] = chat.mock.calls[0]!;
+    expect(temporaryConversation).toEqual(expect.objectContaining({
+      model: 'qqbot-primary/alternate-chat',
+    }));
+    expect(modelMessage.additional_kwargs).toEqual(expect.objectContaining({
+      qqbot_final_response_contract: expect.objectContaining({
+        protocol: 'chat_reply_v1',
+      }),
+    }));
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'sent',
+      messageText: RANDOM_MESSAGE,
+    }));
+  });
+
   it('sends a manual random plan for a non-whitelisted group through a temporary ChatLuna conversation', async () => {
     const db = new MemoryDatabase({
       affinity_config: [{
@@ -725,8 +839,11 @@ describe('affinity service random history sync', () => {
         clearConversationCache: vi.fn(async () => true),
       },
     };
+    const models = createTestModelRuntime();
     const service = new AffinityService(
       db,
+      models.modelConfig,
+      models.modelRuntime,
       () => [bot],
       () => 0.5,
       () => chatluna as any,

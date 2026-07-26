@@ -1,0 +1,41 @@
+schemaVersion: 1
+id: sakiko-cold
+displayName: sakiko（冷漠）
+aliases:
+  - 冷漠小祥
+  - 冷漠祥子
+blocks:
+  - id: role
+    type: role
+    rolePresetId: sakiko-cold
+  - id: chat-history
+    type: chatHistory
+    enabled: true
+    budgetPriority: 100
+    maxTokens: null
+  - id: long-memory
+    type: longMemory
+    enabled: true
+    budgetPriority: 200
+    maxTokens: null
+    prompt: null
+    extractPrompt: null
+    newQuestionPrompt: null
+  - id: request-documents
+    type: requestDocuments
+    enabled: true
+    budgetPriority: 50
+    maxTokens: null
+  - id: current-input
+    type: currentInput
+    inputFormat: null
+  - id: agent-scratchpad
+    type: agentScratchpad
+    enabled: true
+    budgetPriority: 400
+    maxTokens: null
+    reActInstruction: null
+  - id: model-output
+    type: modelOutput
+    maxOutputTokens: 1024
+    postHandler: null

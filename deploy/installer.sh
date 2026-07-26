@@ -14,23 +14,196 @@ STAGING_DIR="${BASE_DIR}/.staging"
 WORK_DIR="${STAGING_DIR}/work"
 ENV_SERVER="${SHARED_DIR}/.env.server"
 ENV_RUNTIME="${SHARED_DIR}/.env.runtime"
+MODEL_CONFIG_MAPPING_FILE="${SHARED_DIR}/model-config-mapping.json"
+AGENT_DATA_ROOT="${DATA_DIR}/chatluna"
+PERSISTENT_AGENT_DIR="${AGENT_DATA_ROOT}/agents"
+LEGACY_APP_AGENT_DIR="${APP_DIR}/data/chatluna/agent"
 CLOUDFLARED_HBU_JW_TOKEN_FILE="${QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE:-/etc/cloudflared/qqbot-hbu-jw.token}"
 CLOUDFLARED_GENSHIN_TOKEN_FILE="${QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE:-/etc/cloudflared/qqbot-genshin.token}"
 HBU_WEBVPN_BROKER_CREDENTIAL="${QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL:-/etc/credstore.encrypted/hbu-webvpn-broker.cred}"
 SYSTEMD_DIR="/etc/systemd/system"
 QUADLET_DIR="/etc/containers/systemd"
 ACTIVATION_STARTED=0
+TRANSACTION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+TRANSACTION_BACKUP_DIR="${BASE_DIR}/backup/deploy-${TRANSACTION_ID}"
+TRANSACTION_PATHS_DIR="${TRANSACTION_BACKUP_DIR}/paths"
+PREVIOUS_APP_ROOT="${TRANSACTION_BACKUP_DIR}/previous-app"
+FAILED_NEW_APP_ROOT="${TRANSACTION_BACKUP_DIR}/failed-new-app"
+TRANSACTION_BACKUP_CREATED=0
+TRANSACTION_SNAPSHOT_COMPLETE=0
+APP_SWAPPED=0
+APP_PREVIOUS_EXISTED=0
 
-stop_target_after_failure() {
+remove_snapshot_target() {
+  local target="$1"
+  if [[ -d "${target}" && ! -L "${target}" ]]; then
+    rm -r -- "${target}"
+  elif [[ -e "${target}" || -L "${target}" ]]; then
+    rm -f -- "${target}"
+  fi
+}
+
+snapshot_path() {
+  local key="$1"
+  local target="$2"
+  if [[ ! "${key}" =~ ^[a-z0-9-]+$ ]]; then
+    echo "[installer] invalid transaction snapshot key: ${key}" >&2
+    return 1
+  fi
+  mkdir -p "${TRANSACTION_PATHS_DIR}/${key}"
+  if [[ -e "${target}" || -L "${target}" ]]; then
+    cp -a -- "${target}" "${TRANSACTION_PATHS_DIR}/${key}/value"
+    touch "${TRANSACTION_PATHS_DIR}/${key}/present"
+  else
+    touch "${TRANSACTION_PATHS_DIR}/${key}/absent"
+  fi
+}
+
+restore_snapshot_path() {
+  local key="$1"
+  local target="$2"
+  local snapshot="${TRANSACTION_PATHS_DIR}/${key}"
+  if [[ -f "${snapshot}/present" ]]; then
+    remove_snapshot_target "${target}"
+    mkdir -p "$(dirname "${target}")"
+    cp -a -- "${snapshot}/value" "${target}"
+    return
+  fi
+  if [[ -f "${snapshot}/absent" ]]; then
+    remove_snapshot_target "${target}"
+    return
+  fi
+  echo "[installer] transaction snapshot is missing: ${key}" >&2
+  return 1
+}
+
+snapshot_database() {
+  local target="${DATA_DIR}/koishi.db"
+  local snapshot="${TRANSACTION_PATHS_DIR}/database"
+  mkdir -p "${snapshot}"
+  if [[ -f "${target}" ]]; then
+    python3 - "${target}" "${snapshot}/koishi.db" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+finally:
+    destination.close()
+    source.close()
+PY
+    chmod 600 "${snapshot}/koishi.db"
+    touch "${snapshot}/present"
+  elif [[ -e "${target}" || -L "${target}" ]]; then
+    echo "[installer] SQLite path must be a regular file: ${target}" >&2
+    return 1
+  else
+    touch "${snapshot}/absent"
+  fi
+}
+
+restore_database_snapshot() {
+  local target="${DATA_DIR}/koishi.db"
+  local snapshot="${TRANSACTION_PATHS_DIR}/database"
+  remove_snapshot_target "${target}"
+  remove_snapshot_target "${target}-wal"
+  remove_snapshot_target "${target}-shm"
+  if [[ -f "${snapshot}/present" ]]; then
+    cp -a -- "${snapshot}/koishi.db" "${target}"
+  elif [[ ! -f "${snapshot}/absent" ]]; then
+    echo "[installer] transaction database snapshot is missing" >&2
+    return 1
+  fi
+}
+
+restore_early_environment() {
+  restore_snapshot_path "env-server" "${ENV_SERVER}"
+  restore_snapshot_path "env-runtime" "${ENV_RUNTIME}"
+  restore_snapshot_path "env-pmhq" "${SHARED_DIR}/.env.pmhq"
+}
+
+rollback_after_failure() {
   local status="$?"
   trap - EXIT
-  if [[ "${status}" -ne 0 && "${ACTIVATION_STARTED}" == "1" ]]; then
-    echo "[installer] deployment failed after activation began; stopping qqbot.target" >&2
-    systemctl stop qqbot.target >/dev/null 2>&1 || true
+  if [[ "${status}" -eq 0 ]]; then
+    exit 0
+  fi
+  set +e
+  local rollback_failed=0
+  if [[ "${ACTIVATION_STARTED}" == "1" ]]; then
+    echo "[installer] deployment failed after cutover began; restoring transaction ${TRANSACTION_BACKUP_DIR}" >&2
+    systemctl stop qqbot.target >/dev/null 2>&1
+
+    if [[ "${APP_SWAPPED}" == "1" ]]; then
+      if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
+        if [[ -e "${FAILED_NEW_APP_ROOT}" || -L "${FAILED_NEW_APP_ROOT}" ]]; then
+          rollback_failed=1
+          echo "[installer] failed-new-app destination already exists: ${FAILED_NEW_APP_ROOT}" >&2
+        else
+          mv "${APP_ROOT}" "${FAILED_NEW_APP_ROOT}" || rollback_failed=1
+        fi
+      fi
+    fi
+    if [[ "${APP_PREVIOUS_EXISTED}" == "1" ]]; then
+      if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
+        rollback_failed=1
+        echo "[installer] cannot restore previous app over existing path: ${APP_ROOT}" >&2
+      else
+        mv "${PREVIOUS_APP_ROOT}" "${APP_ROOT}" || rollback_failed=1
+      fi
+    fi
+
+    if [[ "${TRANSACTION_SNAPSHOT_COMPLETE}" == "1" ]]; then
+      restore_database_snapshot || rollback_failed=1
+      restore_snapshot_path "persistent-agents" "${PERSISTENT_AGENT_DIR}" || rollback_failed=1
+      restore_snapshot_path "persistent-skills" "${AGENT_DATA_ROOT}/skills" || rollback_failed=1
+      restore_snapshot_path "persistent-computer" "${AGENT_DATA_ROOT}/computer" || rollback_failed=1
+      restore_snapshot_path "legacy-app-agent" "${LEGACY_APP_AGENT_DIR}" || rollback_failed=1
+      restore_snapshot_path "archives" "${DATA_DIR}/chatluna/archive" || rollback_failed=1
+      restore_snapshot_path "legacy-presets" "${DATA_DIR}/chathub/presets" || rollback_failed=1
+      restore_snapshot_path "context-presets" "${DATA_DIR}/chathub/context-presets" || rollback_failed=1
+      restore_snapshot_path "role-presets" "${DATA_DIR}/chathub/role-presets" || rollback_failed=1
+      restore_snapshot_path "model-config" "${DATA_DIR}/model-config.json" || rollback_failed=1
+      restore_snapshot_path "model-kek" "${SHARED_DIR}/model-config.kek" || rollback_failed=1
+      restore_snapshot_path "model-map" "${MODEL_CONFIG_MAPPING_FILE}" || rollback_failed=1
+      restore_snapshot_path "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container" || rollback_failed=1
+      restore_snapshot_path "unit-llbot" "${SYSTEMD_DIR}/qqbot-llbot.service" || rollback_failed=1
+      restore_snapshot_path "unit-koishi" "${SYSTEMD_DIR}/qqbot-koishi.service" || rollback_failed=1
+      restore_snapshot_path "unit-hbu-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-hbu-jw.service" || rollback_failed=1
+      restore_snapshot_path "unit-genshin-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-genshin.service" || rollback_failed=1
+      restore_snapshot_path "unit-target" "${SYSTEMD_DIR}/qqbot.target" || rollback_failed=1
+      restore_snapshot_path "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service" || rollback_failed=1
+      restore_snapshot_path "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf" || rollback_failed=1
+    fi
+  fi
+
+  if [[ "${TRANSACTION_BACKUP_CREATED}" == "1" ]]; then
+    restore_early_environment || rollback_failed=1
+  fi
+
+  if [[ "${ACTIVATION_STARTED}" == "1" ]]; then
+    systemctl daemon-reload || rollback_failed=1
+    if [[ "${rollback_failed}" == "0" ]]; then
+      systemctl start qqbot.target || rollback_failed=1
+    fi
+    if [[ "${rollback_failed}" == "0" ]]; then
+      QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}" \
+        || rollback_failed=1
+    fi
+  fi
+
+  if [[ "${rollback_failed}" != "0" ]]; then
+    systemctl stop qqbot.target >/dev/null 2>&1
+    echo "[installer] rollback incomplete; qqbot.target remains stopped" >&2
+    echo "[installer] recovery material: ${TRANSACTION_BACKUP_DIR}" >&2
+  elif [[ "${ACTIVATION_STARTED}" == "1" ]]; then
+    echo "[installer] previous deployment restored and verified" >&2
   fi
   exit "${status}"
 }
-trap stop_target_after_failure EXIT
+trap rollback_after_failure EXIT
 
 case "${VERIFY_SCOPE}" in
   koishi|full) ;;
@@ -53,7 +226,7 @@ require_cmd() {
   fi
 }
 
-for cmd in bash tar node pnpm systemctl journalctl curl podman cloudflared; do
+for cmd in bash tar node pnpm python3 systemctl journalctl curl podman cloudflared; do
   require_cmd "${cmd}"
 done
 
@@ -88,7 +261,9 @@ mkdir -p \
   "${DATA_DIR}/llbot-runtime" \
   "${DATA_DIR}/chatluna-storage" \
   "${DATA_DIR}/chatluna/archive" \
-  "${DATA_DIR}/chathub/presets" \
+  "${PERSISTENT_AGENT_DIR}" \
+  "${DATA_DIR}/chathub/context-presets" \
+  "${DATA_DIR}/chathub/role-presets" \
   "${DATA_DIR}/chathub/stickers" \
   "${DATA_DIR}/cache/yarn" \
   "${DATA_DIR}/cache/pnpm-store" \
@@ -103,6 +278,14 @@ if [[ ! -f "${ENV_SERVER}" ]]; then
   exit 2
 fi
 chmod 600 "${ENV_SERVER}"
+
+mkdir -p "${BASE_DIR}/backup"
+mkdir "${TRANSACTION_BACKUP_DIR}"
+chmod 700 "${TRANSACTION_BACKUP_DIR}"
+snapshot_path "env-server" "${ENV_SERVER}"
+snapshot_path "env-runtime" "${ENV_RUNTIME}"
+snapshot_path "env-pmhq" "${SHARED_DIR}/.env.pmhq"
+TRANSACTION_BACKUP_CREATED=1
 
 ensure_server_env_key() {
   local key="$1"
@@ -143,6 +326,8 @@ ensure_server_env_defaults() {
     remove_env_key "${file}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
     remove_env_key "${file}" "CHATLUNA_DEFAULT_PRESET"
     remove_env_key "${file}" "CHATLUNA_PRESET_DIRS"
+    remove_env_key "${file}" "CHATLUNA_BUNDLED_PRESET_DIR"
+    remove_env_key "${file}" "CHATLUNA_RUNTIME_PRESET_DIR"
   done
   chmod 600 "${ENV_SERVER}"
 }
@@ -163,12 +348,29 @@ require_bundle_entry() {
   exit 2
 }
 
+require_bundle_catalog() {
+  local entry="$1"
+  local candidate
+  while IFS= read -r candidate; do
+    if [[ "${candidate}" == "${entry}/"*.yml ]]; then
+      return 0
+    fi
+  done < "${BUNDLE_ENTRIES}"
+  echo "[installer] bundled preset catalog has no YAML definitions: ${entry}" >&2
+  exit 2
+}
+
 require_bundle_entry "build-manifest.json"
 require_bundle_entry "qqbot/package.json"
 require_bundle_entry "qqbot/koishi.yml"
 require_bundle_entry "qqbot/dist"
-require_bundle_entry "qqbot/dist/tools/preset-v2-cutover.mjs"
-require_bundle_entry "qqbot/dist/tools/preset-v2-sqlite.py"
+require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
+require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
+require_bundle_entry "qqbot/data/chathub/context-presets"
+require_bundle_entry "qqbot/data/chathub/role-presets"
+require_bundle_catalog "qqbot/data/chathub/context-presets"
+require_bundle_catalog "qqbot/data/chathub/role-presets"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "chatluna/packages/core/package.json"
@@ -209,6 +411,9 @@ fi
 write_runtime_env() {
   local generated_keys=(
     SQLITE_PATH
+    QQBOT_MODEL_CONFIG_PATH
+    QQBOT_MODEL_CONFIG_KEK_PATH
+    CHATLUNA_AGENT_DATA_DIR
     PMHQ_QQ_CONFIG_DIR
     QQBOT_QQ_CONFIG_MOUNT_SOURCE
     PMHQ_BIND_HOST
@@ -220,8 +425,10 @@ write_runtime_env() {
     ONEBOT_WS_ENDPOINT
     CHATLUNA_STORAGE_PATH
     CHATLUNA_STORAGE_SERVER_PATH
-    CHATLUNA_BUNDLED_PRESET_DIR
-    CHATLUNA_RUNTIME_PRESET_DIR
+    CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR
+    CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR
+    CHATLUNA_BUNDLED_ROLE_PRESET_DIR
+    CHATLUNA_RUNTIME_ROLE_PRESET_DIR
     CHATLUNA_ARCHIVE_DIR
     CHATLUNA_STICKER_DIR
     PUPPETEER_EXECUTABLE_PATH
@@ -253,6 +460,9 @@ write_runtime_env() {
   fi
 
   printf '%s\n' "SQLITE_PATH=${DATA_DIR}/koishi.db" >> "${tmp}"
+  printf '%s\n' "QQBOT_MODEL_CONFIG_PATH=${DATA_DIR}/model-config.json" >> "${tmp}"
+  printf '%s\n' "QQBOT_MODEL_CONFIG_KEK_PATH=${SHARED_DIR}/model-config.kek" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_AGENT_DATA_DIR=${AGENT_DATA_ROOT}" >> "${tmp}"
   printf '%s\n' "PMHQ_QQ_CONFIG_DIR=${DATA_DIR}/pmhq/QQ" >> "${tmp}"
   printf '%s\n' "QQBOT_QQ_CONFIG_MOUNT_SOURCE=${DATA_DIR}/pmhq/QQ" >> "${tmp}"
   printf '%s\n' "PMHQ_BIND_HOST=127.0.0.1" >> "${tmp}"
@@ -264,8 +474,10 @@ write_runtime_env() {
   printf '%s\n' "ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STORAGE_PATH=${DATA_DIR}/chatluna-storage" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STORAGE_SERVER_PATH=http://127.0.0.1:5140" >> "${tmp}"
-  printf '%s\n' "CHATLUNA_BUNDLED_PRESET_DIR=${APP_DIR}/data/chathub/presets" >> "${tmp}"
-  printf '%s\n' "CHATLUNA_RUNTIME_PRESET_DIR=${DATA_DIR}/chathub/presets" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${APP_DIR}/data/chathub/context-presets" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR=${DATA_DIR}/chathub/context-presets" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_BUNDLED_ROLE_PRESET_DIR=${APP_DIR}/data/chathub/role-presets" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_RUNTIME_ROLE_PRESET_DIR=${DATA_DIR}/chathub/role-presets" >> "${tmp}"
   printf '%s\n' "CHATLUNA_ARCHIVE_DIR=${DATA_DIR}/chatluna/archive" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STICKER_DIR=${DATA_DIR}/chathub/stickers" >> "${tmp}"
   printf '%s\n' "PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell" >> "${tmp}"
@@ -325,6 +537,89 @@ CHATLUNA_ROOT_DIR="${STAGE_CHATLUNA}" bash "${STAGE_QQBOT}/scripts/ensure-chatlu
   node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml
 )
 
+CONTEXT_PRESET_CUTOVER_REQUIRED=0
+CONTEXT_PRESET_BACKUP_DIR=""
+if [[ -d "${APP_DIR}/data/chathub/presets" ]]; then
+  if [[ ! -d "${DATA_DIR}/chathub/presets" ]]; then
+    echo "[installer] legacy bundled presets exist without the legacy runtime directory" >&2
+    exit 2
+  fi
+  CONTEXT_PRESET_CUTOVER_REQUIRED=1
+  CONTEXT_PRESET_BACKUP_DIR="${BASE_DIR}/backup/context-presets-$(date -u +%Y%m%dT%H%M%SZ)"
+  node "${STAGE_QQBOT}/dist/tools/context-preset-cutover.mjs" preflight \
+    --database "${DATA_DIR}/koishi.db" \
+    --legacy-bundled-dir "${APP_DIR}/data/chathub/presets" \
+    --legacy-runtime-dir "${DATA_DIR}/chathub/presets" \
+    --bundled-role-dir "${STAGE_QQBOT}/data/chathub/role-presets" \
+    --bundled-context-dir "${STAGE_QQBOT}/data/chathub/context-presets" \
+    --runtime-role-dir "${DATA_DIR}/chathub/role-presets" \
+    --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
+    --report "${STAGING_DIR}/context-preset-preflight.json"
+fi
+
+MODEL_CONFIG_CUTOVER_REQUIRED=0
+MODEL_CONFIG_BACKUP_DIR=""
+MODEL_CONFIG_MAPPING_ARGS=()
+if [[ -e "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
+  if [[ -L "${MODEL_CONFIG_MAPPING_FILE}" || ! -f "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
+    echo "[installer] model config mapping must be a regular file: ${MODEL_CONFIG_MAPPING_FILE}" >&2
+    exit 2
+  fi
+  chmod 600 "${MODEL_CONFIG_MAPPING_FILE}"
+  MODEL_CONFIG_MAPPING_ARGS=(--model-map-file "${MODEL_CONFIG_MAPPING_FILE}")
+fi
+if [[ -f "${DATA_DIR}/model-config.json" && -f "${SHARED_DIR}/model-config.kek" ]]; then
+  :
+elif [[ -e "${DATA_DIR}/model-config.json" || -e "${SHARED_DIR}/model-config.kek" ]]; then
+  echo "[installer] canonical model config and KEK must either both exist or both be absent" >&2
+  exit 2
+else
+  if [[ ! -f "${DATA_DIR}/koishi.db" ]]; then
+    echo "[installer] canonical model config is absent and the legacy SQLite database is missing" >&2
+    echo "[installer] initialize or import an explicit canonical model config before a clean install" >&2
+    exit 2
+  fi
+  MODEL_CONFIG_CUTOVER_REQUIRED=1
+  MODEL_CONFIG_BACKUP_DIR="${BASE_DIR}/backup/model-config-$(date -u +%Y%m%dT%H%M%SZ)"
+  node "${STAGE_QQBOT}/dist/tools/model-config-cutover.mjs" preflight \
+    --database "${DATA_DIR}/koishi.db" \
+    --env-file "${ENV_SERVER}" \
+    --env-file "${ENV_RUNTIME}" \
+    --agent-data-root "${AGENT_DATA_ROOT}" \
+    --legacy-agent-root "${LEGACY_APP_AGENT_DIR}" \
+    --archive-root "${DATA_DIR}/chatluna/archive" \
+    --config-out "${DATA_DIR}/model-config.json" \
+    --kek-out "${SHARED_DIR}/model-config.kek" \
+    "${MODEL_CONFIG_MAPPING_ARGS[@]}"
+fi
+
+ACTIVATION_STARTED=1
+if systemctl cat qqbot.target >/dev/null 2>&1; then
+  systemctl stop qqbot.target
+fi
+
+snapshot_database
+snapshot_path "persistent-agents" "${PERSISTENT_AGENT_DIR}"
+snapshot_path "persistent-skills" "${AGENT_DATA_ROOT}/skills"
+snapshot_path "persistent-computer" "${AGENT_DATA_ROOT}/computer"
+snapshot_path "legacy-app-agent" "${LEGACY_APP_AGENT_DIR}"
+snapshot_path "archives" "${DATA_DIR}/chatluna/archive"
+snapshot_path "legacy-presets" "${DATA_DIR}/chathub/presets"
+snapshot_path "context-presets" "${DATA_DIR}/chathub/context-presets"
+snapshot_path "role-presets" "${DATA_DIR}/chathub/role-presets"
+snapshot_path "model-config" "${DATA_DIR}/model-config.json"
+snapshot_path "model-kek" "${SHARED_DIR}/model-config.kek"
+snapshot_path "model-map" "${MODEL_CONFIG_MAPPING_FILE}"
+snapshot_path "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container"
+snapshot_path "unit-llbot" "${SYSTEMD_DIR}/qqbot-llbot.service"
+snapshot_path "unit-koishi" "${SYSTEMD_DIR}/qqbot-koishi.service"
+snapshot_path "unit-hbu-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-hbu-jw.service"
+snapshot_path "unit-genshin-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-genshin.service"
+snapshot_path "unit-target" "${SYSTEMD_DIR}/qqbot.target"
+snapshot_path "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service"
+snapshot_path "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf"
+TRANSACTION_SNAPSHOT_COMPLETE=1
+
 (
   set -a
   # shellcheck disable=SC1090
@@ -346,13 +641,40 @@ CHATLUNA_ROOT_DIR="${STAGE_CHATLUNA}" bash "${STAGE_QQBOT}/scripts/ensure-chatlu
 systemctl daemon-reload
 systemctl cat qqbot-pmhq.service >/dev/null
 
-ACTIVATION_STARTED=1
-if systemctl cat qqbot.target >/dev/null 2>&1; then
-  systemctl stop qqbot.target
+if [[ "${CONTEXT_PRESET_CUTOVER_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/context-preset-cutover.mjs" apply \
+    --database "${DATA_DIR}/koishi.db" \
+    --legacy-bundled-dir "${APP_DIR}/data/chathub/presets" \
+    --legacy-runtime-dir "${DATA_DIR}/chathub/presets" \
+    --bundled-role-dir "${STAGE_QQBOT}/data/chathub/role-presets" \
+    --bundled-context-dir "${STAGE_QQBOT}/data/chathub/context-presets" \
+    --runtime-role-dir "${DATA_DIR}/chathub/role-presets" \
+    --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
+    --backup-dir "${CONTEXT_PRESET_BACKUP_DIR}" \
+    --report "${CONTEXT_PRESET_BACKUP_DIR}/applied.json" \
+    --confirm-service-stopped
 fi
-clear_managed_dir "${APP_ROOT}"
-rmdir "${APP_ROOT}"
+if [[ "${MODEL_CONFIG_CUTOVER_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/model-config-cutover.mjs" apply \
+    --database "${DATA_DIR}/koishi.db" \
+    --env-file "${ENV_SERVER}" \
+    --env-file "${ENV_RUNTIME}" \
+    --agent-data-root "${AGENT_DATA_ROOT}" \
+    --legacy-agent-root "${LEGACY_APP_AGENT_DIR}" \
+    --archive-root "${DATA_DIR}/chatluna/archive" \
+    --config-out "${DATA_DIR}/model-config.json" \
+    --kek-out "${SHARED_DIR}/model-config.kek" \
+    "${MODEL_CONFIG_MAPPING_ARGS[@]}" \
+    --backup-dir "${MODEL_CONFIG_BACKUP_DIR}" \
+    --report "${MODEL_CONFIG_BACKUP_DIR}/applied.json" \
+    --confirm-service-stopped
+fi
+if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
+  mv "${APP_ROOT}" "${PREVIOUS_APP_ROOT}"
+  APP_PREVIOUS_EXISTED=1
+fi
 mv "${WORK_DIR}" "${APP_ROOT}"
+APP_SWAPPED=1
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
 systemctl enable qqbot.target >/dev/null
 if [[ "${ACTIVATION_MODE}" == "start" ]]; then
@@ -362,6 +684,9 @@ else
   echo "[installer] application installed with qqbot.target kept stopped"
 fi
 
+if [[ "${CONTEXT_PRESET_CUTOVER_REQUIRED}" == "1" && "${ACTIVATION_MODE}" == "start" ]]; then
+  rm -r -- "${DATA_DIR}/chathub/presets"
+fi
 clear_managed_dir "${INCOMING_DIR}"
 clear_managed_dir "${STAGING_DIR}"
 ACTIVATION_STARTED=0

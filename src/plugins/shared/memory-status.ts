@@ -11,7 +11,6 @@ export function createUnavailableMemoryStatusSnapshot(
     extractConfigured: false,
     embedConfigured: false,
     extractModel: '',
-    embedBaseUrl: '',
     embedModel: '',
     jobs: {
       extractPending: 0,

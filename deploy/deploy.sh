@@ -106,14 +106,31 @@ require_bundle_entry() {
   exit 2
 }
 
+require_bundle_catalog() {
+  local entry="$1"
+  local candidate
+  while IFS= read -r candidate; do
+    if [[ "${candidate}" == "${entry}/"*.yml ]]; then
+      return 0
+    fi
+  done < "${BUNDLE_ENTRIES}"
+  echo "[deploy] bundled preset catalog has no YAML definitions: ${entry}" >&2
+  exit 2
+}
+
 verify_bundle() {
   tar -tzf "${BUNDLE_PATH}" > "${BUNDLE_ENTRIES}"
   require_bundle_entry "build-manifest.json"
   require_bundle_entry "qqbot/package.json"
   require_bundle_entry "qqbot/koishi.yml"
   require_bundle_entry "qqbot/dist"
-  require_bundle_entry "qqbot/dist/tools/preset-v2-cutover.mjs"
-  require_bundle_entry "qqbot/dist/tools/preset-v2-sqlite.py"
+  require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
+  require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
+  require_bundle_entry "qqbot/data/chathub/context-presets"
+  require_bundle_entry "qqbot/data/chathub/role-presets"
+  require_bundle_catalog "qqbot/data/chathub/context-presets"
+  require_bundle_catalog "qqbot/data/chathub/role-presets"
   require_bundle_entry "qqbot/deploy/installer.sh"
   require_bundle_entry "qqbot/deploy/render-systemd.mjs"
   require_bundle_entry "chatluna/packages/core/package.json"

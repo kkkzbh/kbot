@@ -12,6 +12,9 @@ plugins:
       port: ${{ +env.KOISHI_PORT || 5140 }}
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
+    ./dist/plugins/model-runtime:model-runtime:
+      configPath: ${{ env.QQBOT_MODEL_CONFIG_PATH || './.runtime/model-config.json' }}
+      kekPath: ${{ env.QQBOT_MODEL_CONFIG_KEK_PATH || './.runtime/model-config.kek' }}
     ./dist/plugins/genshin:genshin:
       bindPagePath: ${{ env.GENSHIN_BIND_PAGE_PATH || '/genshin/bind' }}
       publicBaseUrl: >-
@@ -148,13 +151,6 @@ plugins:
       spamWindowMs: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_WINDOW_MS || 10000 }}
       spamThreshold: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_THRESHOLD || 10 }}
       spamMuteMs: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_MUTE_MS || 180000 }}
-      decisionEnabled: ${{ env.CHAT_NATURAL_TRIGGER_DECISION_ENABLED !== 'false' }}
-      decisionBaseUrl: >-
-        ${{ env.CHAT_NATURAL_TRIGGER_DECISION_BASE_URL ||
-        'https://api.deepseek.com/v1' }}
-      decisionApiKey: ${{ env.CHAT_NATURAL_TRIGGER_DECISION_API_KEY || '' }}
-      decisionModel: ${{ env.CHAT_NATURAL_TRIGGER_DECISION_MODEL || '' }}
-      decisionTimeoutMs: ${{ +env.CHAT_NATURAL_TRIGGER_DECISION_TIMEOUT_MS || 4000 }}
       decisionMinConfidence: ${{ +env.CHAT_NATURAL_TRIGGER_DECISION_MIN_CONFIDENCE || 0.62 }}
     chatluna:0qm1bk:
       botNames:
@@ -168,13 +164,10 @@ plugins:
         - 小祥
       isNickNameWithContent: true
       sendThinkingMessage: false
-      defaultModel: >-
-        ${{ env.CHATLUNA_DEFAULT_MODEL || (env.CHATLUNA_PLATFORM === 'openai' ?
-        'openai/gpt-5.4-medium-thinking' : env.CHATLUNA_PLATFORM === 'deepseek'
-        ? 'deepseek/deepseek-v4-flash' : env.CHATLUNA_PLATFORM === 'mimo' ?
-        'mimo/mimo-v2.5-pro' : 'siliconflow/Pro/moonshotai/Kimi-K2.5') }}
-      bundledPresetDir: ${{ env.CHATLUNA_BUNDLED_PRESET_DIR }}
-      runtimePresetDir: ${{ env.CHATLUNA_RUNTIME_PRESET_DIR }}
+      bundledContextPresetDir: ${{ env.CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR }}
+      runtimeContextPresetDir: ${{ env.CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR }}
+      bundledRolePresetDir: ${{ env.CHATLUNA_BUNDLED_ROLE_PRESET_DIR }}
+      runtimeRolePresetDir: ${{ env.CHATLUNA_RUNTIME_ROLE_PRESET_DIR }}
       archiveDir: ${{ env.CHATLUNA_ARCHIVE_DIR }}
       isLog: true
     chatluna-storage-service:attachment-storage:
@@ -185,34 +178,6 @@ plugins:
       tempCacheTime: ${{ +env.CHATLUNA_STORAGE_TEMP_CACHE_HOURS || 720 }}
       maxStorageSize: ${{ +env.CHATLUNA_STORAGE_MAX_MB || 2048 }}
       maxStorageCount: ${{ +env.CHATLUNA_STORAGE_MAX_FILES || 2000 }}
-    chatluna-openai-like-adapter:0o3zho:
-      platform: ${{ env.CHATLUNA_PLATFORM || 'siliconflow' }}
-      nonStreaming: true
-      responseApi: ${{ env.CHATLUNA_ACTIVE_TAB === 'copilot' || env.CHATLUNA_ACTIVE_TAB === 'codex' }}
-      pullModels: ${{ env.CHATLUNA_PULL_MODELS === 'true' }}
-      maxContextRatio: ${{ +env.CHATLUNA_MAX_CONTEXT_RATIO || 0.35 }}
-      apiKeys:
-        - - ${{ env.CHATLUNA_API_KEY || '' }}
-          - ${{ env.CHATLUNA_BASE_URL || 'https://api.siliconflow.cn/v1' }}
-          - true
-      additionalModels: >-
-        ${{ [ ...(env.CHATLUNA_PLATFORM === 'siliconflow' ? [
-        'Pro/moonshotai/Kimi-K2.5' ] : []), ...(env.CHATLUNA_PLATFORM ===
-        'openai' && env.CHATLUNA_ACTIVE_TAB === 'openai' ? [ 'gpt-5.4', 'gpt-5.4-non-thinking',
-        'gpt-5.4-minimal-thinking', 'gpt-5.4-low-thinking',
-        'gpt-5.4-medium-thinking', 'gpt-5.4-high-thinking',
-        'gpt-5.4-xhigh-thinking', 'gpt-5.4-thinking', 'gpt-5.5', 'gpt-5.4-mini',
-        'gpt-5.3-codex', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o' ] : []),
-        ...(env.CHATLUNA_PLATFORM === 'deepseek' ? [ 'deepseek-v4-flash',
-        'deepseek-v4-pro', 'deepseek-chat' ] : []), ...(env.CHATLUNA_PLATFORM
-        === 'mimo' ? [ 'mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-pro',
-        'mimo-v2-omni' ] : []), String( env.CHATLUNA_DEFAULT_MODEL || ''
-        ).replace(/^openai\//, '').replace( /^deepseek\//, ''
-        ).replace(/^mimo\//, '' ).replace(/^github-copilot\//, '' )
-        ].map((model) => model.trim()).filter((model, index, models) => model &&
-        model !== '无' && models.indexOf(model) === index).map((model) => ({
-        model, modelType: 'LLM 大语言模型', modelCapabilities: ['tool_call'],
-        contextSize: 128000 })) }}
     puppeteer:0vx5c7:
       executablePath: ${{ env.PUPPETEER_EXECUTABLE_PATH || '' }}
     chatluna-search-service:search:
@@ -221,7 +186,6 @@ plugins:
         - tavily
       topK: ${{ +env.CHATLUNA_SEARCH_SERVICE_TOPK || 5 }}
       summaryType: ${{ env.CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE || 'balanced' }}
-      summaryModel: ${{ env.CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL || 'empty' }}
       tavilyApiKey: ${{ env.CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY || '' }}
     ./dist/plugins/sticker:sticker:
       stickerDir: ${{ env.CHATLUNA_STICKER_DIR || './data/chathub/stickers' }}
@@ -363,17 +327,6 @@ plugins:
       enabled: ${{ env.MEMORY_ENABLED !== 'false' }}
       readEnabled: ${{ env.MEMORY_READ_ENABLED !== 'false' }}
       writeEnabled: ${{ env.MEMORY_WRITE_ENABLED !== 'false' }}
-      extractBaseUrl: ${{ env.MEMORY_EXTRACT_BASE_URL || '' }}
-      extractApiKey: ${{ env.MEMORY_EXTRACT_API_KEY || '' }}
-      extractModel: ${{ env.MEMORY_EXTRACT_MODEL || '' }}
-      extractTimeoutMs: ${{ +env.MEMORY_EXTRACT_TIMEOUT_MS || 180000 }}
-      extractRequestMode: ${{ env.MEMORY_EXTRACT_REQUEST_MODE || 'chat_completions' }}
-      extractStructuredOutputProtocol: ${{ env.MEMORY_EXTRACT_STRUCTURED_OUTPUT_PROTOCOL || 'chat_reply_v1' }}
-      extractSupportsJsonMode: ${{ env.MEMORY_EXTRACT_SUPPORTS_JSON_MODE === 'true' }}
-      embedBaseUrl: ${{ env.MEMORY_EMBED_BASE_URL || 'https://api.siliconflow.cn/v1' }}
-      embedApiKey: ${{ env.MEMORY_EMBED_API_KEY || '' }}
-      embedModel: ${{ env.MEMORY_EMBED_MODEL || 'Qwen/Qwen3-Embedding-8B' }}
-      embedTimeoutMs: ${{ +env.MEMORY_EMBED_TIMEOUT_MS || 12000 }}
       queryTopK: ${{ +env.MEMORY_QUERY_TOPK || 8 }}
       promptBudgetTokens: ${{ +env.MEMORY_PROMPT_BUDGET_TOKENS || 1200 }}
       embedBatchSize: ${{ +env.MEMORY_EMBED_BATCH_SIZE || 16 }}

@@ -1,5 +1,6 @@
 import type { Session } from 'koishi';
 import type { ReplyOutputProtocol } from '../shared/llm/reply-output-contract.js';
+import type { ResolvedModelTarget } from '../model-config/index.js';
 import {
   buildOutboundMessagePlanFromReplyPlan,
   renderOutboundMessageSegmentsHistoryText,
@@ -147,6 +148,7 @@ export async function generateAffinityProactiveViaChatLuna(args: {
   input: AffinityRandomGenerationInput;
   requestId: string;
   runtime: ReplyVoiceRuntimeConfig;
+  modelTarget: ResolvedModelTarget;
 }): Promise<AffinityProactiveGenerationResult> {
   const chat = args.chatluna?.chat?.bind(args.chatluna);
   const contextManager = args.chatluna?.contextManager;
@@ -169,7 +171,8 @@ export async function generateAffinityProactiveViaChatLuna(args: {
   const message: ChatLunaMessageLike = {
     content: buildProactiveTriggerText(args.input),
   };
-  const outputContract = applyReplyOutputContract({ conversationId }, message, {
+  const outputContract = applyReplyOutputContract(message, {
+    modelTarget: args.modelTarget,
     capabilitySnapshot,
   });
   const turnInput = buildReplyTurnInput(args.session, { conversationId }, message);

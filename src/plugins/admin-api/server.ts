@@ -18,52 +18,17 @@ import type {
   AdminApplyReason,
   AdminApplyRestartTarget,
   AdminEnvFilesState,
-  AdminBuiltinModelTab,
-  AdminAuthStatus,
-  CodexAuthAttempt,
-  CodexCatalogState,
-  CopilotAuthAttempt,
-  AdminModelOption,
-  AdminModelTabId,
-  AdminModelTabsState,
   AdminTtsHealthSnapshot,
   AdminTtsState,
   AdminTtsStyleId,
   BotServiceStatus,
   BotServiceUnit,
-  CopilotModelListResponse,
-  CodexModelListResponse,
-  DeepSeekModelListRequest,
-  DeepSeekModelListResponse,
   EnvPatch,
-  MimoModelListRequest,
-  MimoModelListResponse,
-  SaveModelTabsRequest,
   SaveTtsSettingsRequest,
   SaveTtsSettingsResponse,
   SynthesizeTtsSampleRequest,
   ServiceAction,
 } from '../../types/admin.js';
-import {
-  buildMainChatRuntimeEnvPatch,
-  CODEX_DEFAULT_REASONING_EFFORT,
-  DEEPSEEK_DEFAULT_BASE_URL,
-  DEEPSEEK_OFFICIAL_MODEL_OPTIONS,
-  getBuiltinMainChatTabDefinition,
-  getMainChatProviderStrategy,
-  MAIN_CHAT_BUILTIN_TAB_IDS,
-  MIMO_CHAT_MODEL_OPTIONS,
-  MIMO_DEFAULT_BASE_URL,
-  normalizeCodexModelId,
-  normalizeCodexReasoningEffort,
-  normalizeCopilotModelId,
-  normalizeDeepSeekModelId,
-  normalizeMainChatBuiltinTabId,
-  normalizeMimoModelId,
-  resolveMainChatActiveTabFromEnv,
-  resolveMainChatTabStateFromEnv,
-  validateMainChatTabModel,
-} from '../shared/llm/index.js';
 import {
   applyTtsLocalEnvPatchToContent,
   buildTtsLocalGatewayState,
@@ -83,13 +48,77 @@ export type ManagedEnvField = {
   key: string;
   label: string;
   type: 'toggle' | 'text' | 'secret' | 'number';
-  section: 'features' | 'model' | 'basic';
+  section: 'features' | 'basic';
 };
 
 type ExecResult = {
   stdout: string;
   stderr: string;
 };
+
+export type ScheduledRestartJobPhase =
+  | 'scheduled'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown';
+
+export type ScheduledRestartHandle = {
+  targetUnit: BotServiceUnit;
+  transientUnit: string;
+  serviceUnit: string;
+  timerUnit: string;
+  scheduledAt: number;
+};
+
+export type ScheduledRestartJobStatus = ScheduledRestartHandle & {
+  phase: ScheduledRestartJobPhase;
+  result: string;
+  execMainStatus: number | null;
+  checkedAt: number;
+};
+
+export type ScheduledRestartSupervisionOutcome =
+  | {
+      state: 'restart_observed';
+      job: ScheduledRestartJobStatus | null;
+    }
+  | {
+      state: 'safe_to_release';
+      reason: 'job_succeeded_without_restart' | 'job_failed' | 'job_cancelled' | 'monitor_timeout' | 'inspection_failed';
+      job: ScheduledRestartJobStatus | null;
+    };
+
+export type AdminRestartJobErrorStage = 'schedule' | 'inspect' | 'cancel' | 'verify';
+
+export class AdminRestartJobError extends Error {
+  readonly code = 'restart_job_failed';
+  readonly operation = 'restart_service';
+  readonly stage: AdminRestartJobErrorStage;
+  readonly targetUnit: BotServiceUnit;
+  readonly transientUnit: string;
+  readonly jobPhase: ScheduledRestartJobPhase | null;
+  readonly systemdResult: string | null;
+
+  constructor(options: {
+    message: string;
+    stage: AdminRestartJobErrorStage;
+    targetUnit: BotServiceUnit;
+    transientUnit: string;
+    jobPhase?: ScheduledRestartJobPhase | null;
+    systemdResult?: string | null;
+    cause?: unknown;
+  }) {
+    super(options.message, { cause: options.cause });
+    this.name = 'AdminRestartJobError';
+    this.stage = options.stage;
+    this.targetUnit = options.targetUnit;
+    this.transientUnit = options.transientUnit;
+    this.jobPhase = options.jobPhase ?? null;
+    this.systemdResult = normalizeSystemdResult(options.systemdResult);
+  }
+}
 
 export type TtsAudioSample = {
   data: Uint8Array;
@@ -121,55 +150,29 @@ export type AdminRuntimeManagerOptions = {
   fs?: FsLike;
   execFile?: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
   fetchFn?: typeof fetch;
-  copilotBridge?: CopilotBridgeStateProvider;
-  codexBridge?: CodexBridgeStateProvider;
 };
 
 type SystemdScope = 'system' | 'user';
 
+type RestartUnitControllerState = {
+  loadState: string;
+  activeState: string;
+  subState: string;
+  result: string;
+  execMainStatus: number | null;
+  execMainStarted: boolean;
+};
+
+type RestartTargetControllerState = {
+  activeState: string;
+  subState: string;
+  invocationId: string | null;
+  job: string | null;
+};
+
 type EnvLine =
   | { type: 'kv'; key: string; rawValue: string }
   | { type: 'other'; value: string };
-
-type CopilotBridgeRuntimeConfig = {
-  baseUrl: string;
-  apiKey: string;
-};
-
-type CopilotBridgeAdminState = {
-  authKind: 'oauth_device';
-  authStatus: AdminAuthStatus;
-  accountLabel: string | null;
-  authError: string | null;
-  attempt: CopilotAuthAttempt | null;
-};
-
-type CopilotBridgeStateProvider = {
-  getRuntimeConfig: () => Promise<CopilotBridgeRuntimeConfig>;
-  getAdminStatus: (options?: { probe?: boolean }) => Promise<CopilotBridgeAdminState>;
-  proxyModels?: () => Promise<{ status: number; headers: Record<string, string>; body: string }>;
-};
-
-type CodexBridgeRuntimeConfig = {
-  baseUrl: string;
-  apiKey: string;
-};
-
-type CodexBridgeAdminState = {
-  authKind: 'codex_oauth';
-  authStatus: AdminAuthStatus;
-  accountLabel: string | null;
-  authError: string | null;
-  tokenExpiresAt: number | null;
-  attempt: CodexAuthAttempt | null;
-};
-
-type CodexBridgeStateProvider = {
-  getRuntimeConfig: () => Promise<CodexBridgeRuntimeConfig>;
-  getAdminStatus: (options?: { probe?: boolean }) => Promise<CodexBridgeAdminState>;
-  getCatalogStatus: () => Promise<CodexCatalogState>;
-  proxyModels?: (options?: { forceRefresh?: boolean }) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
-};
 
 type ResolvedEnvFiles = {
   mode: 'single' | 'layered';
@@ -184,8 +187,6 @@ const SERVER_ENV_FILE_BASENAME = '.env.server';
 const RUNTIME_ENV_FILE_BASENAME = '.env.runtime';
 const LOCAL_RUNTIME_ENV_RELATIVE = join('.runtime', RUNTIME_ENV_FILE_BASENAME);
 const CHATLUNA_AGENT_CONFIG_RELATIVE = join('data', 'chatluna', 'agent', 'config.json');
-const DEEPSEEK_MODEL_LIST_TIMEOUT_MS = 5000;
-const MIMO_MODEL_LIST_TIMEOUT_MS = 5000;
 
 export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'QQBOT_REALTIME_MESSAGE_ENABLED', label: '实时消息', type: 'toggle', section: 'features' },
@@ -258,53 +259,17 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'QQBOT_REPLY_INTERRUPT_ENABLED', label: '回复期中断', type: 'toggle', section: 'features' },
   { key: 'CHATLUNA_COMMON_FS', label: '文件系统工具总开关', type: 'toggle', section: 'features' },
   { key: 'CHATLUNA_COMMON_FS_SCOPE_PATH', label: '文件系统作用域目录', type: 'text', section: 'features' },
-  { key: 'CHATLUNA_ACTIVE_TAB', label: '当前对话模型 Tab', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_PLATFORM', label: '当前对话模型平台', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_BASE_URL', label: '对话模型接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_API_KEY', label: '对话模型接口密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_DEFAULT_MODEL', label: '对话默认模型', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_MAX_CONTEXT_RATIO', label: '上下文窗口使用比例', type: 'number', section: 'model' },
-  { key: 'CHATLUNA_SILICONFLOW_BASE_URL', label: '硅基流动接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_SILICONFLOW_API_KEY', label: '硅基流动接口密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_SILICONFLOW_DEFAULT_MODEL', label: '硅基流动默认模型', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_OPENAI_BASE_URL', label: 'OpenAI 接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_OPENAI_API_KEY', label: 'OpenAI 接口密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_OPENAI_DEFAULT_MODEL', label: 'OpenAI 默认模型', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_CODEX_BASE_URL', label: 'Codex 接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_CODEX_API_KEY', label: 'Codex Bridge 密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_CODEX_DEFAULT_MODEL', label: 'Codex 默认模型', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_CODEX_REASONING_EFFORT', label: 'Codex 思考程度', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_COPILOT_BASE_URL', label: 'GitHub Copilot 接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_COPILOT_API_KEY', label: 'GitHub Copilot Bridge 密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_COPILOT_DEFAULT_MODEL', label: 'GitHub Copilot 默认模型', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_DEEPSEEK_BASE_URL', label: 'DeepSeek 接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_DEEPSEEK_API_KEY', label: 'DeepSeek 接口密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_DEEPSEEK_DEFAULT_MODEL', label: 'DeepSeek 默认模型', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_MIMO_BASE_URL', label: 'MIMO 接口地址', type: 'text', section: 'model' },
-  { key: 'CHATLUNA_MIMO_API_KEY', label: 'MIMO 接口密钥', type: 'secret', section: 'model' },
-  { key: 'CHATLUNA_MIMO_DEFAULT_MODEL', label: 'MIMO 默认模型', type: 'text', section: 'model' },
   { key: 'MEMORY_ENABLED', label: '长期记忆', type: 'toggle', section: 'features' },
   { key: 'MEMORY_READ_ENABLED', label: '长期记忆召回', type: 'toggle', section: 'features' },
   { key: 'MEMORY_WRITE_ENABLED', label: '长期记忆写入', type: 'toggle', section: 'features' },
-  { key: 'MEMORY_EXTRACT_BASE_URL', label: '记忆提炼接口地址', type: 'text', section: 'model' },
-  { key: 'MEMORY_EXTRACT_API_KEY', label: '记忆提炼接口密钥', type: 'secret', section: 'model' },
-  { key: 'MEMORY_EXTRACT_MODEL', label: '记忆提炼模型', type: 'text', section: 'model' },
-  { key: 'MEMORY_EXTRACT_TIMEOUT_MS', label: '记忆提炼超时', type: 'number', section: 'model' },
-  { key: 'MEMORY_EXTRACT_REQUEST_MODE', label: '记忆提炼请求模式', type: 'text', section: 'model' },
-  { key: 'MEMORY_EXTRACT_STRUCTURED_OUTPUT_PROTOCOL', label: '记忆提炼输出协议', type: 'text', section: 'model' },
-  { key: 'MEMORY_EXTRACT_SUPPORTS_JSON_MODE', label: '记忆提炼 JSON mode', type: 'toggle', section: 'model' },
-  { key: 'MEMORY_EMBED_BASE_URL', label: '记忆向量接口地址', type: 'text', section: 'model' },
-  { key: 'MEMORY_EMBED_API_KEY', label: '记忆向量接口密钥', type: 'secret', section: 'model' },
-  { key: 'MEMORY_EMBED_MODEL', label: '记忆向量模型', type: 'text', section: 'model' },
-  { key: 'MEMORY_EMBED_TIMEOUT_MS', label: '记忆向量超时', type: 'number', section: 'model' },
-  { key: 'MEMORY_QUERY_TOPK', label: '记忆召回 TopK', type: 'number', section: 'model' },
-  { key: 'MEMORY_PROMPT_BUDGET_TOKENS', label: '记忆 prompt 预算', type: 'number', section: 'model' },
-  { key: 'MEMORY_EMBED_BATCH_SIZE', label: '记忆向量批量', type: 'number', section: 'model' },
-  { key: 'MEMORY_EXTRACT_IDLE_MS', label: '记忆提炼静默窗口', type: 'number', section: 'model' },
-  { key: 'MEMORY_EXTRACT_MESSAGE_BATCH', label: '记忆提炼消息数', type: 'number', section: 'model' },
-  { key: 'MEMORY_ARCHIVE_DAYS', label: '记忆归档天数', type: 'number', section: 'model' },
-  { key: 'MEMORY_MAX_JOB_RETRIES', label: '记忆任务重试', type: 'number', section: 'model' },
-  { key: 'MEMORY_JOB_LOCK_TIMEOUT_MS', label: '记忆任务锁超时', type: 'number', section: 'model' },
+  { key: 'MEMORY_QUERY_TOPK', label: '记忆召回 TopK', type: 'number', section: 'features' },
+  { key: 'MEMORY_PROMPT_BUDGET_TOKENS', label: '记忆 prompt 预算', type: 'number', section: 'features' },
+  { key: 'MEMORY_EMBED_BATCH_SIZE', label: '记忆向量批量', type: 'number', section: 'features' },
+  { key: 'MEMORY_EXTRACT_IDLE_MS', label: '记忆提炼静默窗口', type: 'number', section: 'features' },
+  { key: 'MEMORY_EXTRACT_MESSAGE_BATCH', label: '记忆提炼消息数', type: 'number', section: 'features' },
+  { key: 'MEMORY_ARCHIVE_DAYS', label: '记忆归档天数', type: 'number', section: 'features' },
+  { key: 'MEMORY_MAX_JOB_RETRIES', label: '记忆任务重试', type: 'number', section: 'features' },
+  { key: 'MEMORY_JOB_LOCK_TIMEOUT_MS', label: '记忆任务锁超时', type: 'number', section: 'features' },
   { key: 'CHAT_NATURAL_TRIGGER_ALIASES', label: '触发别名', type: 'text', section: 'basic' },
 ];
 
@@ -333,6 +298,8 @@ const ASYNC_RESTART_UNITS = new Set<BotServiceUnit>([
   'qqbot.target',
   'qqbot-koishi.service',
 ]);
+const RESTART_MONITOR_TIMEOUT_MS = 15_000;
+const RESTART_MONITOR_POLL_INTERVAL_MS = 250;
 
 function defaultFs(): FsLike {
   return {
@@ -480,578 +447,6 @@ export function syncManagedChatLunaAgentConfig(rootDir: string, env: Record<stri
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, nextContent, 'utf8');
   return configPath;
-}
-
-function toAdminBuiltinModelTab(
-  state: ReturnType<typeof resolveMainChatTabStateFromEnv>,
-): AdminBuiltinModelTab {
-  return {
-    id: state.id,
-    title: state.title,
-    provider: state.provider,
-    strategyId: state.strategyId,
-    requestMode: state.requestMode,
-    structuredOutputProtocol: state.structuredOutputProtocol,
-    description: state.description,
-    modelHint: state.modelHint,
-    authKind: state.authKind,
-    authStatus: state.authStatus,
-    accountLabel: state.accountLabel,
-    authError: state.authError,
-    baseUrl: state.baseUrl,
-    apiKey: state.apiKey,
-    defaultModel: state.defaultModel,
-    reasoningEffort: state.reasoningEffort,
-    ...(state.canonicalModel ? { canonicalModel: state.canonicalModel } : {}),
-    ...(state.transportModel ? { transportModel: state.transportModel } : {}),
-  };
-}
-
-function resolveAdminBuiltinModelTabFromEnv(
-  id: AdminModelTabId,
-  env: Record<string, string>,
-): AdminBuiltinModelTab {
-  return toAdminBuiltinModelTab(resolveMainChatTabStateFromEnv(id, env));
-}
-
-export function buildModelTabsStateFromEnv(env: Record<string, string>): AdminModelTabsState {
-  const activeTab = resolveMainChatActiveTabFromEnv(env) as AdminModelTabId;
-  const tabs = MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => resolveAdminBuiltinModelTabFromEnv(id, env));
-
-  return {
-    activeTab,
-    tabs,
-  };
-}
-
-function cloneStaticDeepSeekModelOptions(): AdminModelOption[] {
-  return DEEPSEEK_OFFICIAL_MODEL_OPTIONS.map((option) => ({ ...option }));
-}
-
-function cloneStaticMimoModelOptions(): AdminModelOption[] {
-  return MIMO_CHAT_MODEL_OPTIONS.map((option) => ({ ...option }));
-}
-
-function normalizeProviderBaseUrl(value: unknown, fallback: string): string {
-  const normalized = String(value ?? '').trim().replace(/\/+$/u, '');
-  return normalized || fallback;
-}
-
-function normalizeDeepSeekBaseUrl(value: unknown): string {
-  return normalizeProviderBaseUrl(value, DEEPSEEK_DEFAULT_BASE_URL);
-}
-
-function normalizeMimoBaseUrl(value: unknown): string {
-  return normalizeProviderBaseUrl(value, MIMO_DEFAULT_BASE_URL);
-}
-
-function assertStoredCredentialEndpointOwnership(
-  providedById: ReadonlyMap<AdminModelTabId, Partial<AdminBuiltinModelTab>>,
-  existingById: Readonly<Record<AdminModelTabId, AdminBuiltinModelTab>>,
-): void {
-  for (const [id, provided] of providedById) {
-    const existing = existingById[id];
-    if (existing.authKind !== 'manual' || !existing.apiKey || provided.apiKey !== undefined) {
-      continue;
-    }
-    const definition = getBuiltinMainChatTabDefinition(id);
-    const normalizeBaseUrl = id === 'deepseek'
-      ? normalizeDeepSeekBaseUrl
-      : id === 'mimo'
-        ? normalizeMimoBaseUrl
-        : (value: unknown) => String(value ?? '').trim().replace(/\/+$/u, '');
-    const existingBaseUrl = normalizeBaseUrl(existing.baseUrl);
-    const nextBaseUrl = normalizeBaseUrl(provided.baseUrl ?? existing.baseUrl);
-    if (nextBaseUrl !== existingBaseUrl) {
-      throw new Error(
-        `${definition.title} API base URL 已改变；已存 API key 只绑定原接口。请提交新 API key 或显式清空现有密钥。`,
-      );
-    }
-  }
-}
-
-function normalizeDeepSeekModelList(models: readonly AdminModelOption[]): AdminModelOption[] {
-  const result: AdminModelOption[] = [];
-  const seen = new Set<string>();
-  for (const item of models) {
-    const modelId = normalizeDeepSeekModelId(item.modelId);
-    if (!modelId || seen.has(modelId)) continue;
-    const staticOption = DEEPSEEK_OFFICIAL_MODEL_OPTIONS.find((option) => option.modelId === modelId) as AdminModelOption | undefined;
-    result.push({
-      modelId,
-      label: item.label?.trim() || staticOption?.label || modelId,
-      deprecated: item.deprecated ?? staticOption?.deprecated,
-      deprecationDate: item.deprecationDate ?? staticOption?.deprecationDate,
-    });
-    seen.add(modelId);
-  }
-  return result;
-}
-
-function normalizeMimoModelList(models: readonly AdminModelOption[]): AdminModelOption[] {
-  const result: AdminModelOption[] = [];
-  const seen = new Set<string>();
-  for (const item of models) {
-    const modelId = normalizeMimoModelId(item.modelId);
-    if (!modelId || seen.has(modelId)) continue;
-    const staticOption = MIMO_CHAT_MODEL_OPTIONS.find((option) => option.modelId === modelId) as AdminModelOption | undefined;
-    if (!staticOption) continue;
-    result.push({
-      modelId,
-      label: item.label?.trim() || staticOption.label || modelId,
-      deprecated: item.deprecated,
-      deprecationDate: item.deprecationDate,
-    });
-    seen.add(modelId);
-  }
-  return result;
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function normalizeCopilotModelList(models: readonly AdminModelOption[]): AdminModelOption[] {
-  const result: AdminModelOption[] = [];
-  const seen = new Set<string>();
-  for (const item of models) {
-    const modelId = normalizeCopilotModelId(item.modelId);
-    if (!modelId || seen.has(modelId)) continue;
-    const metadataTags = item.metadataTags
-      ?.map((tag) => tag.trim())
-      .filter(Boolean);
-    result.push({
-      modelId,
-      label: item.label?.trim() || modelId,
-      rateLabel: item.rateLabel?.trim() || undefined,
-      requestMode: item.requestMode,
-      structuredOutputProtocol: item.structuredOutputProtocol,
-      metadataTags: metadataTags && metadataTags.length > 0 ? [...new Set(metadataTags)] : undefined,
-      deprecated: item.deprecated,
-      deprecationDate: item.deprecationDate,
-    });
-    seen.add(modelId);
-  }
-  return result;
-}
-
-function normalizeCodexModelList(models: readonly AdminModelOption[]): AdminModelOption[] {
-  const result: AdminModelOption[] = [];
-  const seen = new Set<string>();
-  for (const item of models) {
-    const modelId = normalizeCodexModelId(item.modelId);
-    if (!modelId || seen.has(modelId)) continue;
-    result.push({
-      modelId,
-      label: item.label?.trim() || modelId,
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      deprecated: item.deprecated,
-      deprecationDate: item.deprecationDate,
-    });
-    seen.add(modelId);
-  }
-  return result;
-}
-
-function parseCodexModelListPayload(payload: unknown): AdminModelOption[] {
-  if (!isObjectRecord(payload)) return [];
-  const data = payload.data;
-  if (!Array.isArray(data)) return [];
-  return normalizeCodexModelList(
-    data.flatMap((item): AdminModelOption[] => {
-      if (!isObjectRecord(item)) return [];
-      const id = readStringField(item, 'id');
-      if (!id) return [];
-      return [{
-        modelId: id,
-        label: readStringField(item, 'name') ?? id,
-        requestMode: 'responses',
-        structuredOutputProtocol: 'native_responses_json_schema',
-      }];
-    }),
-  );
-}
-
-function parseCopilotModelListPayload(payload: unknown): AdminModelOption[] {
-  if (!isObjectRecord(payload)) return [];
-  const data = payload.data;
-  if (!Array.isArray(data)) return [];
-  return normalizeCopilotModelList(
-    data.flatMap((item): AdminModelOption[] => {
-      if (!isObjectRecord(item)) return [];
-      const id = readStringField(item, 'id');
-      if (!id) return [];
-      const qqbot = isObjectRecord(item.qqbot) ? item.qqbot : {};
-      const requestMode = readStringField(qqbot, 'requestMode');
-      const structuredOutputProtocol = readStringField(qqbot, 'structuredOutputProtocol');
-      return [{
-        modelId: id,
-        label: readStringField(item, 'name') ?? id,
-        rateLabel: readStringField(qqbot, 'rateLabel') ?? undefined,
-        requestMode: requestMode === 'responses' ? 'responses' : 'chat_completions',
-        structuredOutputProtocol: structuredOutputProtocol === 'native_responses_json_schema'
-          ? 'native_responses_json_schema'
-          : structuredOutputProtocol === 'chat_reply_v1'
-            ? 'chat_reply_v1'
-            : 'native_chat_json_schema',
-      }];
-    }),
-  );
-}
-
-function staticDeepSeekModelList(error: string | null): DeepSeekModelListResponse {
-  return {
-    source: 'static',
-    models: cloneStaticDeepSeekModelOptions(),
-    error,
-  };
-}
-
-function staticMimoModelList(error: string | null): MimoModelListResponse {
-  return {
-    source: 'static',
-    models: cloneStaticMimoModelOptions(),
-    error,
-  };
-}
-
-function parseDeepSeekModelListPayload(payload: unknown): AdminModelOption[] {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
-  const data = (payload as { data?: unknown }).data;
-  if (!Array.isArray(data)) return [];
-  return normalizeDeepSeekModelList(
-    data.flatMap((item): AdminModelOption[] => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-      const id = (item as { id?: unknown }).id;
-      if (typeof id !== 'string' || !id.trim()) return [];
-      return [{ modelId: id.trim(), label: id.trim() }];
-    }),
-  );
-}
-
-function parseMimoModelListPayload(payload: unknown): AdminModelOption[] {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
-  const data = (payload as { data?: unknown }).data;
-  if (!Array.isArray(data)) return [];
-  return normalizeMimoModelList(
-    data.flatMap((item): AdminModelOption[] => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-      const id = (item as { id?: unknown }).id;
-      if (typeof id !== 'string' || !id.trim()) return [];
-      return [{ modelId: id.trim(), label: id.trim() }];
-    }),
-  );
-}
-
-function unavailableCopilotModelList(error: string | null): CopilotModelListResponse {
-  return {
-    source: 'dynamic',
-    models: [],
-    error,
-  };
-}
-
-function unavailableCodexCatalog(error: string): CodexCatalogState {
-  return {
-    source: 'dynamic',
-    status: 'unavailable',
-    clientVersion: null,
-    fetchedAt: null,
-    error,
-  };
-}
-
-function unavailableCodexModelList(error: string | null, catalog: CodexCatalogState): CodexModelListResponse {
-  return {
-    source: 'dynamic',
-    models: [],
-    error,
-    catalog,
-  };
-}
-
-function parseCodexCatalogState(payload: unknown): CodexCatalogState | null {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-  const qqbot = (payload as { qqbot?: unknown }).qqbot;
-  if (!qqbot || typeof qqbot !== 'object' || Array.isArray(qqbot)) return null;
-  const catalog = (qqbot as { catalog?: unknown }).catalog;
-  if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) return null;
-  const value = catalog as Partial<CodexCatalogState>;
-  if (value.source !== 'dynamic') return null;
-  if (!['ready', 'degraded', 'unavailable'].includes(String(value.status))) return null;
-  return {
-    source: 'dynamic',
-    status: value.status as CodexCatalogState['status'],
-    clientVersion: typeof value.clientVersion === 'string' ? value.clientVersion : null,
-    fetchedAt: typeof value.fetchedAt === 'string' ? value.fetchedAt : null,
-    error: typeof value.error === 'string' ? value.error : null,
-  };
-}
-
-function parseBridgeErrorMessage(body: string): string | null {
-  try {
-    const payload = JSON.parse(body) as { error?: { message?: unknown } };
-    return typeof payload.error?.message === 'string' && payload.error.message.trim()
-      ? payload.error.message.trim()
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function listCopilotModelsFromOAuthBridge(
-  bridge: CopilotBridgeStateProvider | undefined,
-): Promise<CopilotModelListResponse> {
-  if (!bridge?.proxyModels) {
-    return unavailableCopilotModelList('GitHub Copilot OAuth bridge is unavailable.');
-  }
-
-  try {
-    const status = await bridge.getAdminStatus({ probe: true });
-    if (status.authStatus !== 'ready') {
-      throw new Error(status.authError ?? `GitHub Copilot OAuth status is ${status.authStatus}.`);
-    }
-    const response = await bridge.proxyModels();
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(`GitHub Copilot /models returned HTTP ${response.status}: ${response.body.slice(0, 240)}`);
-    }
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(response.body) as unknown;
-    } catch (error) {
-      throw new Error(`GitHub Copilot /models returned non-JSON response: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const models = parseCopilotModelListPayload(payload);
-    if (models.length === 0) {
-      throw new Error('GitHub Copilot /models returned no Auto entry.');
-    }
-    return {
-      source: 'dynamic',
-      models,
-      error: null,
-    };
-  } catch (error) {
-    return unavailableCopilotModelList(error instanceof Error ? error.message : String(error));
-  }
-}
-
-export async function listCodexModelsFromOAuthBridge(
-  bridge: CodexBridgeStateProvider | undefined,
-): Promise<CodexModelListResponse> {
-  const bridgeUnavailable = 'Codex OAuth bridge is unavailable.';
-  if (!bridge?.proxyModels) {
-    return unavailableCodexModelList(bridgeUnavailable, unavailableCodexCatalog(bridgeUnavailable));
-  }
-
-  let catalog = await bridge.getCatalogStatus().catch((error) => unavailableCodexCatalog(
-    error instanceof Error ? error.message : String(error),
-  ));
-  try {
-    const response = await bridge.proxyModels({ forceRefresh: true });
-    catalog = await bridge.getCatalogStatus().catch(() => catalog);
-    if (response.status < 200 || response.status >= 300) {
-      const detail = parseBridgeErrorMessage(response.body) ?? response.body.slice(0, 240);
-      throw new Error(`Codex /models returned HTTP ${response.status}: ${detail}`);
-    }
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(response.body) as unknown;
-    } catch (error) {
-      throw new Error(`Codex /models returned non-JSON response: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const models = parseCodexModelListPayload(payload);
-    catalog = parseCodexCatalogState(payload) ?? catalog;
-    if (models.length === 0) {
-      throw new Error('Codex /models returned no visible API-supported models.');
-    }
-    return {
-      source: 'dynamic',
-      models,
-      error: null,
-      catalog,
-    };
-  } catch (error) {
-    return unavailableCodexModelList(error instanceof Error ? error.message : String(error), catalog);
-  }
-}
-
-export async function listDeepSeekModelsFromOfficialSource(
-  request: DeepSeekModelListRequest,
-): Promise<DeepSeekModelListResponse> {
-  const baseUrl = normalizeDeepSeekBaseUrl(request.baseUrl);
-  const apiKey = String(request.apiKey ?? '').trim();
-  if (!apiKey) {
-    return staticDeepSeekModelList('DeepSeek API key is missing; using official static fallback.');
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEEPSEEK_MODEL_LIST_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${baseUrl}/models`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`DeepSeek /models returned HTTP ${response.status}: ${text.slice(0, 240)}`);
-    }
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw new Error(`DeepSeek /models returned non-JSON response: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const models = parseDeepSeekModelListPayload(payload);
-    if (models.length === 0) {
-      throw new Error('DeepSeek /models returned no model ids.');
-    }
-
-    return {
-      source: 'dynamic',
-      models,
-      error: null,
-    };
-  } catch (error) {
-    return staticDeepSeekModelList(error instanceof Error ? error.message : String(error));
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export async function listMimoModelsFromOfficialSource(
-  request: MimoModelListRequest,
-): Promise<MimoModelListResponse> {
-  const baseUrl = normalizeMimoBaseUrl(request.baseUrl);
-  const apiKey = String(request.apiKey ?? '').trim();
-  if (!apiKey) {
-    return staticMimoModelList('MIMO API key is missing; using static fallback.');
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MIMO_MODEL_LIST_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${baseUrl}/models`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`MIMO /models returned HTTP ${response.status}: ${text.slice(0, 240)}`);
-    }
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw new Error(`MIMO /models returned non-JSON response: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const models = parseMimoModelListPayload(payload);
-    if (models.length === 0) {
-      throw new Error('MIMO /models returned no allowed chat model ids.');
-    }
-
-    return {
-      source: 'dynamic',
-      models,
-      error: null,
-    };
-  } catch (error) {
-    return staticMimoModelList(error instanceof Error ? error.message : String(error));
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-type NormalizeModelTabInputOptions = {
-  codexModelIds?: readonly string[];
-  copilotModelIds?: readonly string[];
-  deepseekModelIds?: readonly string[];
-  mimoModelIds?: readonly string[];
-  /** When false, validation errors are skipped (used for tabs the user did not touch in this save). */
-  validate?: boolean;
-  /** Existing env-derived state for this tab; used to fill blanks instead of zero defaults. */
-  existing?: AdminBuiltinModelTab;
-};
-
-function normalizeModelTabInput(
-  input: Partial<AdminBuiltinModelTab> | null | undefined,
-  options: NormalizeModelTabInputOptions = {},
-): AdminBuiltinModelTab {
-  const id = normalizeMainChatBuiltinTabId(input?.id) as AdminModelTabId;
-  const fallbackTab = options.existing ?? resolveAdminBuiltinModelTabFromEnv(id, readManagedEnvFromContent(''));
-  const definition = getBuiltinMainChatTabDefinition(id);
-  const strategy = getMainChatProviderStrategy(definition.strategyId);
-  const rawModel = String(input?.defaultModel ?? fallbackTab.defaultModel ?? '').trim();
-  const normalizedModel = strategy.normalizeModel(rawModel) ?? '';
-  const reasoningEffort = id === 'codex'
-    ? normalizeCodexReasoningEffort(input?.reasoningEffort ?? fallbackTab.reasoningEffort) ?? CODEX_DEFAULT_REASONING_EFFORT
-    : null;
-  if (options.validate !== false) {
-    const validation = validateMainChatTabModel(id, normalizedModel || rawModel, {
-      codexDynamicModelIds: options.codexModelIds,
-      copilotModelIds: options.copilotModelIds,
-      deepseekDynamicModelIds: options.deepseekModelIds,
-      mimoDynamicModelIds: options.mimoModelIds,
-    });
-    if (!validation.ok) {
-      throw new Error(validation.message ?? `${definition.title} Tab 的默认模型不合法：${normalizedModel || rawModel || '空值'}`);
-    }
-  }
-  const requestMode = strategy.resolveRequestMode(normalizedModel);
-  const structuredOutputProtocol = strategy.resolveStructuredOutputProtocol(normalizedModel);
-  const adminDescription = strategy.describeForAdmin(normalizedModel, { reasoningEffort });
-  const normalized: AdminBuiltinModelTab = {
-    id,
-    title: definition.title,
-    provider: definition.provider,
-    strategyId: fallbackTab.strategyId,
-    requestMode,
-    structuredOutputProtocol,
-    description: adminDescription.description,
-    modelHint: adminDescription.modelHint,
-    authKind: fallbackTab.authKind,
-    authStatus: fallbackTab.authStatus,
-    accountLabel: fallbackTab.accountLabel,
-    authError: fallbackTab.authError,
-    tokenExpiresAt: fallbackTab.tokenExpiresAt,
-    baseUrl: id === 'siliconflow'
-      ? definition.defaultBaseUrl
-      : id === 'deepseek'
-        ? normalizeDeepSeekBaseUrl(input?.baseUrl ?? fallbackTab.baseUrl)
-        : id === 'mimo'
-          ? normalizeMimoBaseUrl(input?.baseUrl ?? fallbackTab.baseUrl)
-          : id === 'codex'
-            ? String(input?.baseUrl ?? fallbackTab.baseUrl ?? definition.defaultBaseUrl).trim()
-          : String(input?.baseUrl ?? fallbackTab.baseUrl ?? '').trim(),
-    apiKey: String(input?.apiKey !== undefined ? input.apiKey : fallbackTab.apiKey || '').trim(),
-    defaultModel: normalizedModel,
-    reasoningEffort,
-    canonicalModel: normalizedModel,
-    transportModel: strategy.transportModel(normalizedModel) ?? normalizedModel,
-  };
-
-  return normalized;
 }
 
 export function parseEnvLines(content: string): EnvLine[] {
@@ -1270,8 +665,8 @@ export async function writeFileAtomicWithBackup(
   return { backupPath, tempPath };
 }
 
-export function parseSystemdShowOutput(text: string, unit: BotServiceUnit): BotServiceStatus {
-  const values = Object.fromEntries(
+function parseSystemdProperties(text: string): Record<string, string> {
+  return Object.fromEntries(
     text
       .split(/\r?\n/)
       .filter(Boolean)
@@ -1281,6 +676,22 @@ export function parseSystemdShowOutput(text: string, unit: BotServiceUnit): BotS
         return [line.slice(0, index), line.slice(index + 1)];
       }),
   );
+}
+
+function parseOptionalInteger(value: string | undefined): number | null {
+  if (!value?.trim()) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function normalizeSystemdResult(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  if (!normalized) return null;
+  return /^[A-Za-z0-9_.:-]{1,120}$/.test(normalized) ? normalized : null;
+}
+
+export function parseSystemdShowOutput(text: string, unit: BotServiceUnit): BotServiceStatus {
+  const values = parseSystemdProperties(text);
 
   const activeState = values.ActiveState || 'unknown';
   const unitFileState = values.UnitFileState || 'unknown';
@@ -1361,6 +772,51 @@ function withSystemdScope(scope: SystemdScope, args: string[]): string[] {
   return scope === 'user' ? ['--user', ...args] : args;
 }
 
+function resolveScheduledRestartJobPhase(
+  timer: RestartUnitControllerState,
+  service: RestartUnitControllerState,
+): ScheduledRestartJobPhase {
+  if (['active', 'activating', 'deactivating', 'reloading'].includes(service.activeState)) {
+    return 'running';
+  }
+  if (timer.activeState === 'active') return 'scheduled';
+
+  const result = normalizeSystemdResult(service.result);
+  const timerResult = normalizeSystemdResult(timer.result);
+  if (
+    timer.activeState === 'failed'
+    || (timerResult !== null && timerResult !== 'success' && timerResult !== 'unknown')
+    || service.activeState === 'failed'
+    || (service.execMainStarted && result !== null && result !== 'success')
+    || (service.execMainStarted && service.execMainStatus !== null && service.execMainStatus !== 0)
+  ) {
+    return 'failed';
+  }
+  if (service.execMainStarted && result === 'success' && service.execMainStatus === 0) {
+    return 'succeeded';
+  }
+  if (
+    (timer.loadState === 'not-found' && service.loadState === 'not-found')
+    || (
+      timer.activeState === 'inactive'
+      && service.activeState === 'inactive'
+      && !service.execMainStarted
+    )
+  ) {
+    return 'cancelled';
+  }
+  return 'unknown';
+}
+
+function restartWasObserved(
+  previousInvocationId: string | null,
+  target: RestartTargetControllerState,
+): boolean {
+  return target.activeState !== 'active'
+    || target.invocationId !== previousInvocationId
+    || target.job !== null;
+}
+
 export class AdminRuntimeManager {
   readonly rootDir: string;
   readonly envFiles: ResolvedEnvFiles;
@@ -1368,8 +824,6 @@ export class AdminRuntimeManager {
   readonly fs: FsLike;
   readonly execFile: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
   readonly fetchFn: typeof fetch;
-  readonly copilotBridge?: CopilotBridgeStateProvider;
-  readonly codexBridge?: CodexBridgeStateProvider;
   private ttsHealth: AdminTtsHealthSnapshot | null = null;
 
   constructor(options: AdminRuntimeManagerOptions = {}) {
@@ -1400,8 +854,6 @@ export class AdminRuntimeManager {
     this.fs = options.fs ?? defaultFs();
     this.execFile = options.execFile ?? defaultExec;
     this.fetchFn = options.fetchFn ?? fetch;
-    this.copilotBridge = options.copilotBridge;
-    this.codexBridge = options.codexBridge;
   }
 
   get managedServiceUnits(): readonly BotServiceUnit[] {
@@ -1466,11 +918,6 @@ export class AdminRuntimeManager {
       overrideFile: this.envFiles.overrideFilePath,
       editTarget: this.envFiles.editTarget,
     };
-  }
-
-  async getModelTabsState(): Promise<AdminModelTabsState> {
-    const env = await this.readCurrentBotEnv();
-    return this.decorateModelTabsState(buildModelTabsStateFromEnv(env));
   }
 
   async getTtsState(): Promise<AdminTtsState> {
@@ -1684,74 +1131,141 @@ export class AdminRuntimeManager {
     }
   }
 
-  async saveModelTabs(input: SaveModelTabsRequest): Promise<{ env: Record<string, string>; modelTabs: AdminModelTabsState }> {
-    const env = await this.saveEnv(await this.buildModelTabsPatch(input));
-    return {
-      env,
-      modelTabs: await this.decorateModelTabsState(buildModelTabsStateFromEnv(env)),
-    };
-  }
-
-  private async resolveConfiguredModelListRequest(
-    tabId: Extract<AdminModelTabId, 'deepseek' | 'mimo'>,
-    input: DeepSeekModelListRequest | MimoModelListRequest,
-  ): Promise<DeepSeekModelListRequest | MimoModelListRequest> {
-    if (input.apiKey !== undefined) return input;
-    const state = buildModelTabsStateFromEnv(await this.readCurrentBotEnv());
-    const configured = state.tabs.find((tab) => tab.id === tabId);
-    if (!configured) {
-      throw new Error(`缺少内置模型 Tab：${tabId}`);
+  async scheduleRestart(unit: BotServiceUnit): Promise<ScheduledRestartHandle> {
+    validateServiceAction(unit, 'restart');
+    if (!this.managedServiceUnits.includes(unit)) {
+      throw new Error(`当前运行角色不支持这个服务：${unit}`);
     }
-    const normalizeBaseUrl = tabId === 'deepseek' ? normalizeDeepSeekBaseUrl : normalizeMimoBaseUrl;
-    const configuredBaseUrl = normalizeBaseUrl(configured.baseUrl);
-    const requestedBaseUrl = input.baseUrl?.trim()
-      ? normalizeBaseUrl(input.baseUrl)
-      : configuredBaseUrl;
-    return {
-      baseUrl: requestedBaseUrl,
-      ...(requestedBaseUrl === configuredBaseUrl && configured.apiKey
-        ? { apiKey: configured.apiKey }
-        : {}),
-    };
-  }
-
-  async listDeepSeekModels(input: DeepSeekModelListRequest): Promise<DeepSeekModelListResponse> {
-    return listDeepSeekModelsFromOfficialSource(
-      await this.resolveConfiguredModelListRequest('deepseek', input),
-    );
-  }
-
-  async listCopilotModels(): Promise<CopilotModelListResponse> {
-    return listCopilotModelsFromOAuthBridge(this.copilotBridge);
-  }
-
-  async listCodexModels(): Promise<CodexModelListResponse> {
-    return listCodexModelsFromOAuthBridge(this.codexBridge);
-  }
-
-  async listMimoModels(input: MimoModelListRequest): Promise<MimoModelListResponse> {
-    return listMimoModelsFromOfficialSource(
-      await this.resolveConfiguredModelListRequest('mimo', input),
-    );
-  }
-
-  async scheduleRestart(unit: BotServiceUnit): Promise<void> {
     const transientUnit = `${unit.replaceAll(/[^A-Za-z0-9]+/g, '-')}-restart-${Date.now()}`;
     const scope = this.systemdScope;
-    await this.execFile(
-      'systemd-run',
-      [
-        ...withSystemdScope(scope, []),
-        '--quiet',
-        '--on-active=1s',
-        `--unit=${transientUnit}`,
-        'systemctl',
-        ...withSystemdScope(scope, []),
-        'restart',
-        unit,
-      ],
-      { cwd: this.rootDir, timeout: 15_000 },
-    );
+    try {
+      await this.execFile(
+        'systemd-run',
+        [
+          ...withSystemdScope(scope, []),
+          '--quiet',
+          '--on-active=1s',
+          `--unit=${transientUnit}`,
+          'systemctl',
+          ...withSystemdScope(scope, []),
+          'restart',
+          unit,
+        ],
+        { cwd: this.rootDir, timeout: 15_000 },
+      );
+    } catch (error) {
+      throw new AdminRestartJobError({
+        message: `无法调度 ${unit} 重启任务`,
+        stage: 'schedule',
+        targetUnit: unit,
+        transientUnit,
+        cause: error,
+      });
+    }
+    return {
+      targetUnit: unit,
+      transientUnit,
+      serviceUnit: `${transientUnit}.service`,
+      timerUnit: `${transientUnit}.timer`,
+      scheduledAt: Date.now(),
+    };
+  }
+
+  async inspectScheduledRestart(handle: ScheduledRestartHandle): Promise<ScheduledRestartJobStatus> {
+    this.validateScheduledRestartHandle(handle);
+    let timer: RestartUnitControllerState;
+    let service: RestartUnitControllerState;
+    try {
+      [timer, service] = await Promise.all([
+        this.readRestartUnitControllerState(handle.timerUnit),
+        this.readRestartUnitControllerState(handle.serviceUnit),
+      ]);
+    } catch (error) {
+      throw new AdminRestartJobError({
+        message: `无法读取 ${handle.targetUnit} 重启任务状态`,
+        stage: 'inspect',
+        targetUnit: handle.targetUnit,
+        transientUnit: handle.transientUnit,
+        cause: error,
+      });
+    }
+
+    const phase = resolveScheduledRestartJobPhase(timer, service);
+    return {
+      ...handle,
+      phase,
+      result: normalizeSystemdResult(service.result) ?? 'unknown',
+      execMainStatus: service.execMainStatus,
+      checkedAt: Date.now(),
+    };
+  }
+
+  async superviseScheduledRestart(
+    handle: ScheduledRestartHandle,
+    previousInvocationId: string | null,
+    options: {
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+    } = {},
+  ): Promise<ScheduledRestartSupervisionOutcome> {
+    this.validateScheduledRestartHandle(handle);
+    const timeoutMs = options.timeoutMs ?? RESTART_MONITOR_TIMEOUT_MS;
+    const pollIntervalMs = options.pollIntervalMs ?? RESTART_MONITOR_POLL_INTERVAL_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      throw new TypeError('restart monitor timeout must be a non-negative finite number');
+    }
+    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
+      throw new TypeError('restart monitor poll interval must be a non-negative finite number');
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let lastJob: ScheduledRestartJobStatus | null = null;
+    while (true) {
+      try {
+        const target = await this.readRestartTargetControllerState(handle.targetUnit);
+        if (restartWasObserved(previousInvocationId, target)) {
+          return { state: 'restart_observed', job: lastJob };
+        }
+
+        lastJob = await this.inspectScheduledRestart(handle);
+        if (
+          lastJob.phase === 'succeeded'
+          || lastJob.phase === 'failed'
+          || lastJob.phase === 'cancelled'
+        ) {
+          return this.cancelRestartAndResolveLease(
+            handle,
+            previousInvocationId,
+            lastJob.phase === 'succeeded'
+              ? 'job_succeeded_without_restart'
+              : lastJob.phase === 'failed'
+                ? 'job_failed'
+                : 'job_cancelled',
+            lastJob,
+          );
+        }
+      } catch {
+        return this.cancelRestartAndResolveLease(
+          handle,
+          previousInvocationId,
+          'inspection_failed',
+          lastJob,
+        );
+      }
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        return this.cancelRestartAndResolveLease(
+          handle,
+          previousInvocationId,
+          'monitor_timeout',
+          lastJob,
+        );
+      }
+      await new Promise<void>((resolveWait) => {
+        setTimeout(resolveWait, Math.min(pollIntervalMs, remainingMs));
+      });
+    }
   }
 
   async runServiceAction(unit: BotServiceUnit, action: ServiceAction): Promise<BotServiceStatus> {
@@ -1783,6 +1297,128 @@ export class AdminRuntimeManager {
       await this.runServiceAction(unit, 'restart');
     }
     return targets;
+  }
+
+  private validateScheduledRestartHandle(handle: ScheduledRestartHandle): void {
+    if (!this.managedServiceUnits.includes(handle.targetUnit)) {
+      throw new AdminRestartJobError({
+        message: '重启任务引用了当前运行角色不管理的服务',
+        stage: 'inspect',
+        targetUnit: handle.targetUnit,
+        transientUnit: handle.transientUnit,
+      });
+    }
+    const expectedServiceUnit = `${handle.transientUnit}.service`;
+    const expectedTimerUnit = `${handle.transientUnit}.timer`;
+    if (
+      !/^[A-Za-z0-9_.:-]{1,200}$/.test(handle.transientUnit)
+      || handle.serviceUnit !== expectedServiceUnit
+      || handle.timerUnit !== expectedTimerUnit
+    ) {
+      throw new AdminRestartJobError({
+        message: '重启任务 handle 无效',
+        stage: 'inspect',
+        targetUnit: handle.targetUnit,
+        transientUnit: 'invalid',
+      });
+    }
+  }
+
+  private async readRestartUnitControllerState(unit: string): Promise<RestartUnitControllerState> {
+    const { stdout } = await this.execFile(
+      'systemctl',
+      withSystemdScope(this.systemdScope, [
+        'show',
+        unit,
+        '--property',
+        'LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestampMonotonic',
+      ]),
+      { cwd: this.rootDir, timeout: 5_000 },
+    );
+    const values = parseSystemdProperties(stdout);
+    return {
+      loadState: values.LoadState || 'unknown',
+      activeState: values.ActiveState || 'unknown',
+      subState: values.SubState || 'unknown',
+      result: values.Result || 'unknown',
+      execMainStatus: parseOptionalInteger(values.ExecMainStatus),
+      execMainStarted: Boolean(
+        values.ExecMainStartTimestampMonotonic
+        && values.ExecMainStartTimestampMonotonic !== '0',
+      ),
+    };
+  }
+
+  private async readRestartTargetControllerState(
+    unit: BotServiceUnit,
+  ): Promise<RestartTargetControllerState> {
+    let stdout: string;
+    try {
+      ({ stdout } = await this.execFile(
+        'systemctl',
+        withSystemdScope(this.systemdScope, [
+          'show',
+          unit,
+          '--property',
+          'ActiveState,SubState,InvocationID,Job',
+        ]),
+        { cwd: this.rootDir, timeout: 5_000 },
+      ));
+    } catch (error) {
+      throw new AdminRestartJobError({
+        message: `无法核对 ${unit} 重启状态`,
+        stage: 'verify',
+        targetUnit: unit,
+        transientUnit: 'target-state',
+        cause: error,
+      });
+    }
+    const values = parseSystemdProperties(stdout);
+    return {
+      activeState: values.ActiveState || 'unknown',
+      subState: values.SubState || 'unknown',
+      invocationId: values.InvocationID || null,
+      job: values.Job && values.Job !== '0' ? values.Job : null,
+    };
+  }
+
+  private async cancelRestartAndResolveLease(
+    handle: ScheduledRestartHandle,
+    previousInvocationId: string | null,
+    reason: Extract<ScheduledRestartSupervisionOutcome, { state: 'safe_to_release' }>['reason'],
+    job: ScheduledRestartJobStatus | null,
+  ): Promise<ScheduledRestartSupervisionOutcome> {
+    try {
+      await this.execFile(
+        'systemctl',
+        withSystemdScope(this.systemdScope, [
+          'stop',
+          handle.timerUnit,
+          handle.serviceUnit,
+        ]),
+        { cwd: this.rootDir, timeout: 5_000 },
+      );
+    } catch (error) {
+      throw new AdminRestartJobError({
+        message: `无法取消 ${handle.targetUnit} 重启任务，配置应用 reservation 保持锁定`,
+        stage: 'cancel',
+        targetUnit: handle.targetUnit,
+        transientUnit: handle.transientUnit,
+        jobPhase: job?.phase,
+        systemdResult: job?.result,
+        cause: error,
+      });
+    }
+
+    const target = await this.readRestartTargetControllerState(handle.targetUnit);
+    if (restartWasObserved(previousInvocationId, target)) {
+      return { state: 'restart_observed', job };
+    }
+    return {
+      state: 'safe_to_release',
+      reason,
+      job,
+    };
   }
 
   async getServiceStatuses(): Promise<BotServiceStatus[]> {
@@ -1911,195 +1547,5 @@ export class AdminRuntimeManager {
     return stdout.split(/\r?\n/).filter(Boolean);
   }
 
-  private async buildModelTabsPatch(input: SaveModelTabsRequest): Promise<EnvPatch> {
-    const activeTab = normalizeMainChatBuiltinTabId(input?.activeTab) as AdminModelTabId;
-    const providedTabs = Array.isArray(input?.tabs) ? input.tabs : [];
-    const dirtyIds = new Set<AdminModelTabId>();
-    if (!Array.isArray(input?.dirtyTabIds) || input.dirtyTabIds.length === 0) {
-      throw new Error('保存模型 Tab 必须携带已修改的 Tab 列表。');
-    }
-    for (const value of input.dirtyTabIds) {
-      try {
-        dirtyIds.add(normalizeMainChatBuiltinTabId(value) as AdminModelTabId);
-      } catch {
-        throw new Error(`未知模型 Tab：${String(value ?? '')}`);
-      }
-    }
-    if (dirtyIds.size === 0) {
-      throw new Error('保存模型 Tab 必须携带已修改的 Tab 列表。');
-    }
-    dirtyIds.add(activeTab);
 
-    const currentEnvFromDisk = await this.readEffectiveEnv();
-    const existingByTab = Object.fromEntries(
-      MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => [
-        id,
-        resolveAdminBuiltinModelTabFromEnv(id, currentEnvFromDisk),
-      ]),
-    ) as Record<AdminModelTabId, AdminBuiltinModelTab>;
-
-    const providedById = new Map<AdminModelTabId, Partial<AdminBuiltinModelTab>>();
-    for (const item of providedTabs) {
-      const rawId = String(item?.id ?? '').trim();
-      let id: AdminModelTabId;
-      try {
-        id = normalizeMainChatBuiltinTabId(rawId) as AdminModelTabId;
-      } catch {
-        throw new Error(`未知模型 Tab：${rawId}`);
-      }
-      if (providedById.has(id)) {
-        throw new Error(`重复模型 Tab：${id}`);
-      }
-      providedById.set(id, item);
-    }
-    assertStoredCredentialEndpointOwnership(providedById, existingByTab);
-
-    let codexModelIds: string[] | undefined;
-    if (dirtyIds.has('codex')) {
-      const codexModels = await this.listCodexModels();
-      if (codexModels.error || codexModels.models.length === 0) {
-        throw new Error(`Codex OAuth 模型列表不可用：${codexModels.error ?? '未返回可用模型'}`);
-      }
-      codexModelIds = codexModels.models.map((model) => model.modelId);
-    }
-
-    let copilotModelIds: string[] | undefined;
-    if (dirtyIds.has('copilot')) {
-      const copilotModels = await this.listCopilotModels();
-      if (copilotModels.error || copilotModels.models.length === 0) {
-        throw new Error(`GitHub Copilot OAuth 模型列表不可用：${copilotModels.error ?? '未返回可用模型'}`);
-      }
-      copilotModelIds = copilotModels.models.map((model) => model.modelId);
-    }
-
-    const deepseekInput = providedById.get('deepseek');
-    const deepseekModels = await this.listDeepSeekModels({
-      baseUrl: deepseekInput?.baseUrl ?? existingByTab.deepseek.baseUrl,
-      ...(deepseekInput?.apiKey !== undefined ? { apiKey: deepseekInput.apiKey } : {}),
-    });
-    const deepseekModelIds = deepseekModels.models.map((model) => model.modelId);
-    const mimoInput = providedById.get('mimo');
-    const mimoModels = await this.listMimoModels({
-      baseUrl: mimoInput?.baseUrl ?? existingByTab.mimo.baseUrl,
-      ...(mimoInput?.apiKey !== undefined ? { apiKey: mimoInput.apiKey } : {}),
-    });
-    const mimoModelIds = mimoModels.models.map((model) => model.modelId);
-
-    const tabs: AdminBuiltinModelTab[] = MAIN_CHAT_BUILTIN_TAB_IDS.map((id) => {
-      const provided = providedById.get(id);
-      const existing = existingByTab[id];
-      return normalizeModelTabInput(provided ?? existing, {
-        codexModelIds,
-        copilotModelIds,
-        deepseekModelIds,
-        mimoModelIds,
-        existing,
-        validate: dirtyIds.has(id),
-      });
-    });
-
-    if (this.copilotBridge) {
-      const runtime = await this.copilotBridge.getRuntimeConfig().catch(() => null);
-      if (runtime) {
-        const copilotTab = tabs.find((tab) => tab.id === 'copilot');
-        if (copilotTab) {
-          if (typeof runtime.baseUrl === 'string' && runtime.baseUrl.trim()) {
-            copilotTab.baseUrl = runtime.baseUrl.trim();
-          }
-          if (typeof runtime.apiKey === 'string' && runtime.apiKey.trim()) {
-            copilotTab.apiKey = runtime.apiKey.trim();
-          }
-        }
-      }
-    }
-
-    if (this.codexBridge) {
-      const runtime = await this.codexBridge.getRuntimeConfig().catch(() => null);
-      if (runtime) {
-        const codexTab = tabs.find((tab) => tab.id === 'codex');
-        if (codexTab) {
-          if (typeof runtime.baseUrl === 'string' && runtime.baseUrl.trim()) {
-            codexTab.baseUrl = runtime.baseUrl.trim();
-          }
-          if (typeof runtime.apiKey === 'string' && runtime.apiKey.trim()) {
-            codexTab.apiKey = runtime.apiKey.trim();
-          }
-        }
-      }
-    }
-
-    return buildMainChatRuntimeEnvPatch(activeTab, tabs);
-  }
-
-  private async readEffectiveEnv(): Promise<Record<string, string>> {
-    const [baseContent, targetContent] = await Promise.all([
-      readFileIfExists(this.fs, this.envFiles.baseFilePath),
-      readFileIfExists(this.fs, this.envFiles.editTarget),
-    ]);
-    return mergeManagedEnvRecords(
-      readManagedEnvPatchFromContent(baseContent),
-      readManagedEnvPatchFromContent(targetContent),
-    );
-  }
-
-  private async decorateModelTabsState(state: AdminModelTabsState): Promise<AdminModelTabsState> {
-    if (!this.copilotBridge && !this.codexBridge) {
-      return state;
-    }
-
-    const [copilotRuntime, copilotState, codexRuntime, codexState, codexCatalog] = await Promise.all([
-      this.copilotBridge?.getRuntimeConfig().catch(() => null) ?? Promise.resolve(null),
-      this.copilotBridge?.getAdminStatus({ probe: false }).catch((error) => ({
-        authKind: 'oauth_device' as const,
-        authStatus: 'error' as const,
-        accountLabel: null,
-        authError: error instanceof Error ? error.message : String(error),
-        attempt: null,
-      })) ?? Promise.resolve(null),
-      this.codexBridge?.getRuntimeConfig().catch(() => null) ?? Promise.resolve(null),
-      this.codexBridge?.getAdminStatus({ probe: false }).catch((error) => ({
-        authKind: 'codex_oauth' as const,
-        authStatus: 'error' as const,
-        accountLabel: null,
-        authError: error instanceof Error ? error.message : String(error),
-        tokenExpiresAt: null,
-        attempt: null,
-      })) ?? Promise.resolve(null),
-      this.codexBridge?.getCatalogStatus().catch((error) => unavailableCodexCatalog(
-        error instanceof Error ? error.message : String(error),
-      )) ?? Promise.resolve(null),
-    ]);
-    return {
-      activeTab: state.activeTab,
-      tabs: state.tabs.map((tab) => {
-        if (tab.id === 'copilot' && copilotRuntime && copilotState) {
-          return {
-            ...tab,
-            authKind: copilotState.authKind,
-            authStatus: copilotState.authStatus,
-            accountLabel: copilotState.accountLabel,
-            authError: copilotState.authError,
-            oauthAttempt: copilotState.attempt,
-            baseUrl: copilotRuntime.baseUrl,
-            apiKey: copilotRuntime.apiKey,
-          };
-        }
-        if (tab.id === 'codex' && codexRuntime && codexState) {
-          return {
-            ...tab,
-            authKind: codexState.authKind,
-            authStatus: codexState.authStatus,
-            accountLabel: codexState.accountLabel,
-            authError: codexState.authError,
-            tokenExpiresAt: codexState.tokenExpiresAt,
-            oauthAttempt: codexState.attempt,
-            catalog: codexCatalog,
-            baseUrl: codexRuntime.baseUrl,
-            apiKey: codexRuntime.apiKey,
-          };
-        }
-        return tab;
-      }),
-    };
-  }
 }

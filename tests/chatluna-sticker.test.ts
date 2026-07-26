@@ -92,7 +92,13 @@ function createHarness(options: { chatChainAvailableInitially?: boolean } = {}) 
 
   const ctx = {
     chatluna,
-    get: vi.fn((name: string) => (name === 'chatluna' ? chatluna : undefined)),
+    modelRuntime: {},
+    provide: vi.fn(),
+    set: vi.fn(),
+    get: vi.fn((name: string) => {
+      if (name === 'chatluna') return chatluna;
+      return undefined;
+    }),
     on: vi.fn((name: string, handler: EventHandler) => {
       const existing = events.get(name) ?? [];
       existing.push(handler);
@@ -144,8 +150,10 @@ describe('chatluna sticker plugin', () => {
     vi.unstubAllGlobals();
   });
 
-  it('declares the chatluna service dependency', () => {
-    expect(inject).toEqual(['chatluna']);
+  it('declares the chatluna and unified model runtime dependencies', () => {
+    expect(inject).toEqual({
+      required: ['chatluna', 'modelRuntime'],
+    });
   });
 
   it('registers sticker policy middleware on ready', async () => {

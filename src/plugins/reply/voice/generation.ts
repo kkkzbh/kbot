@@ -61,13 +61,16 @@ import {
 import { ReplyOrchestratorService } from '../pipeline/orchestrator.js';
 import { buildReplyTurnInput, normalizeReplyRouteHint } from '../pipeline/context-builder.js';
 import {
-  buildReplyOutputContract,
   buildReplyOutputContractAdditionalKwargs,
-  isSupportedMainChatModelForTab,
+  buildModelReplyOutputContract,
   type MainChatReplyOutputContract,
 } from '../../shared/llm/index.js';
 import { normalizeGroupId, parseGroupSet } from '../../shared/group-id.js';
-import { mainChatRuntimeState } from '../../shared/llm/main-chat-runtime.js';
+import {
+  CanonicalModelBindingResolver,
+  type ModelConfigService,
+  type ResolvedModelTarget,
+} from '../../model-config/index.js';
 import {
   type ReplyRoute,
   type ResolvedAction,
@@ -105,7 +108,9 @@ const VOICE_WORD_SEGMENTER =
     ? new Intl.Segmenter('zh', { granularity: 'word' })
     : null;
 export const name = 'qq-voice';
-export const inject = { required: ['chatluna', 'database', 'featurePolicy'] } as const;
+export const inject = {
+  required: ['chatluna', 'database', 'featurePolicy', 'modelConfig'],
+} as const;
 const sharedReplyTransportSendStrand = createKeyedStrandRunner();
 const sharedReplyTransportCanSendRecordCache = new Map<string, boolean>();
 const sharedReplyTransportTtsCapabilityStates = new Map<string, TtsCapabilityState>();
@@ -234,6 +239,7 @@ export type ReplyInputMessageLike = {
 };
 
 export type ReplyOutputContractApplyOptions = {
+  modelTarget: ResolvedModelTarget;
   replyMode?: 'agent' | 'automation';
   capabilitySnapshot?: Pick<NonNullable<TurnContext['capabilitySnapshot']>, 'canMention' | 'canVoice' | 'canSticker' | 'voiceOutputLanguage'> | null;
   replyOutputContract?: MainChatReplyOutputContract;
@@ -334,6 +340,7 @@ type ChatLunaChainBuilderLike = ReturnType<ChatLunaChainLike['middleware']>;
 type ReplyVoiceServicesLike = {
   chatluna?: ChatLunaLike;
   featurePolicy?: FeaturePolicyServiceLike;
+  modelConfig?: ModelConfigService;
   database: StructuredReplyHistoryDatabaseLike;
 };
 type RuntimeRole = 'local' | 'server' | 'unknown';
@@ -1077,36 +1084,40 @@ function ensureReplyPluginRoom(room: ReplyRuntimeRoomLike | undefined): void {
   throw new Error(`qqbot reply requires room.chatMode=plugin, got ${chatMode || 'unknown'}.`);
 }
 
-export function ensureSupportedStructuredReplyModel(room: ReplyRuntimeRoomLike | undefined): void {
-  void room;
-  const profile = mainChatRuntimeState.getProfile();
-  const strategyModel = profile.canonicalModel;
-  if (isSupportedMainChatModelForTab(profile.tabId, strategyModel)) return;
-
-  throw new Error(`qqbot reply output contract requires a supported main chat model, got ${strategyModel || 'unknown'}.`);
+export function ensureSupportedStructuredReplyModel(
+  target: ResolvedModelTarget,
+): void {
+  if (
+    target.model.capabilities.chat
+    && target.model.capabilities.structuredOutput
+    && target.model.structuredOutputProtocol !== null
+    && target.model.structuredOutputProtocol !== 'json_mode'
+  ) {
+    return;
+  }
+  throw new Error(
+    `qqbot reply output contract requires a typed structured-output model, got ${target.canonicalModel}.`,
+  );
 }
 
 export function applyReplyOutputContract(
-  room: ReplyRuntimeRoomLike | undefined,
   inputMessage: ReplyInputMessageLike,
-  options?: ReplyOutputContractApplyOptions,
+  options: ReplyOutputContractApplyOptions,
 ): MainChatReplyOutputContract;
 export function applyReplyOutputContract(
-  room: ReplyRuntimeRoomLike | undefined,
   inputMessage: ReplyInputMessageLike | undefined,
-  options?: ReplyOutputContractApplyOptions,
+  options: ReplyOutputContractApplyOptions,
 ): MainChatReplyOutputContract | null;
 export function applyReplyOutputContract(
-  room: ReplyRuntimeRoomLike | undefined,
   inputMessage: ReplyInputMessageLike | undefined,
-  options: ReplyOutputContractApplyOptions = {},
+  options: ReplyOutputContractApplyOptions,
 ): MainChatReplyOutputContract | null {
   if (!inputMessage) return null;
 
-  const profile = mainChatRuntimeState.getProfile();
-  const replyOutputContract = options.replyOutputContract ?? buildReplyOutputContract({
-    profile,
-    model: profile.canonicalModel,
+  ensureSupportedStructuredReplyModel(options.modelTarget);
+  const replyOutputContract = options.replyOutputContract ?? buildModelReplyOutputContract({
+    canonicalModel: options.modelTarget.canonicalModel,
+    model: options.modelTarget.model,
     canMention: options.capabilitySnapshot?.canMention !== false,
     canVoice: options.capabilitySnapshot?.canVoice !== false,
     canMeme: options.capabilitySnapshot?.canSticker === true,
@@ -1844,6 +1855,19 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (!featurePolicy) {
     throw new Error('qq-voice requires featurePolicy service.');
   }
+  const modelConfig = services.modelConfig;
+  if (!modelConfig) {
+    throw new Error('qq-voice requires modelConfig service.');
+  }
+  const resolveMainModelTarget = (): ResolvedModelTarget => {
+    const resolved = new CanonicalModelBindingResolver(
+      modelConfig.getRuntimeSnapshot(),
+    ).resolve('main.chat');
+    if (!resolved.target) {
+      throw new Error('main.chat binding must resolve to a model target.');
+    }
+    return resolved.target;
+  };
   const replyOrchestrator = new ReplyOrchestratorService();
   const replyCapabilitySnapshots = new Map<string, ReplyCapabilitySnapshot>();
   let initialTtsProbeTimer: NodeJS.Timeout | null = null;
@@ -1984,7 +2008,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
         ensureReplyPluginRoom(room);
-        ensureSupportedStructuredReplyModel(room);
+        ensureSupportedStructuredReplyModel(resolveMainModelTarget());
         const turnInput = buildReplyTurnInput(session, room, context.options?.inputMessage);
         applyReplyTurnInputMetadata(context.options?.inputMessage, turnInput);
         const routeHint = normalizeReplyRouteHint(normalizeReplyChatMode((room as { chatMode?: unknown }).chatMode));
@@ -2085,7 +2109,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
         ensureReplyPluginRoom(room);
-        ensureSupportedStructuredReplyModel(room);
+        const mainModelTarget = resolveMainModelTarget();
+        ensureSupportedStructuredReplyModel(mainModelTarget);
 
         const capability = getAuthorizedReplyCapabilitySnapshot(session, replyCapabilitySnapshots);
         const turnInput = buildReplyTurnInput(session, room, context.options?.inputMessage);
@@ -2097,9 +2122,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           voiceOutputLanguage: runtime.voiceOutputLanguage,
           canSticker: turnCapabilitySnapshot?.canSticker ?? false,
         };
-        const replyOutputContract = buildReplyOutputContract({
-          profile: mainChatRuntimeState.getProfile(),
-          model: mainChatRuntimeState.getProfile().canonicalModel,
+        const replyOutputContract = buildModelReplyOutputContract({
+          canonicalModel: mainModelTarget.canonicalModel,
+          model: mainModelTarget.model,
           canMention: schemaCapabilitySnapshot.canMention,
           canVoice: schemaCapabilitySnapshot.canVoice,
           canMeme: schemaCapabilitySnapshot.canSticker,
@@ -2119,7 +2144,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           },
           outputProtocol: replyOutputContract.protocol,
         });
-        applyReplyOutputContract(room, context.options?.inputMessage, {
+        applyReplyOutputContract(context.options?.inputMessage, {
+          modelTarget: mainModelTarget,
           capabilitySnapshot: schemaCapabilitySnapshot,
           replyOutputContract,
         });
@@ -2146,7 +2172,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         const room = resolveChatLunaRoomLike(context.options) as ReplyRuntimeRoomLike | undefined;
         const conversationId = room?.conversationId?.trim();
         ensureReplyPluginRoom(room);
-        ensureSupportedStructuredReplyModel(room);
+        ensureSupportedStructuredReplyModel(resolveMainModelTarget());
         const runMode = await resolveReplyRunMode(session);
         let runId = getReplyRunId(session);
         if (!runId) {

@@ -8,8 +8,6 @@ import { rawApi, rawJsonBody } from '@/api/client';
 const state = ref<any | null>(null);
 const settings = reactive<any>({});
 const scopes = ref<any[]>([]);
-const apiKey = ref('');
-const clearApiKey = ref(false);
 const saving = ref(false);
 const adjustOpen = ref(false);
 const adjustment = reactive<any>({ userKey: '', reason: '', trust: undefined, familiarity: undefined, comfort: undefined, tension: undefined });
@@ -19,10 +17,7 @@ const directions = ['local_thread','daily_greeting','music_rehearsal','contest_d
 function hydrate(result: any) {
   state.value = result;
   Object.assign(settings, JSON.parse(JSON.stringify(result.settings)));
-  settings.analysisModel.apiKey = '';
   scopes.value = result.scopes.map((scope: any) => ({ ...scope, enabled: Boolean(scope.enabled), proactiveEnabled: Boolean(scope.proactiveEnabled) }));
-  apiKey.value = '';
-  clearApiKey.value = false;
 }
 
 async function load() { hydrate(await rawApi('/affinity')); }
@@ -31,11 +26,9 @@ async function save() {
   saving.value = true;
   try {
     const clean = JSON.parse(JSON.stringify(settings));
-    delete clean.analysisModel.apiKey;
-    delete clean.analysisModel.apiKeyConfigured;
     const result = await rawApi<any>('/affinity/settings', {
       method: 'PATCH',
-      body: rawJsonBody({ settings: clean, ...(apiKey.value ? { analysisModelApiKey: apiKey.value } : {}), ...(clearApiKey.value ? { clearAnalysisModelApiKey: true } : {}) }),
+      body: rawJsonBody({ settings: clean }),
     });
     hydrate(result);
     ElMessage.success('关系事件设置已应用');
@@ -83,14 +76,13 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       </el-form>
     </section>
     <section class="form-section">
-      <h2 class="section-title">分析模型</h2>
-      <el-form label-position="top" class="settings-grid">
-        <el-form-item label="Base URL"><el-input v-model="settings.analysisModel.baseUrl" /></el-form-item>
-        <el-form-item label="Model"><el-input v-model="settings.analysisModel.model" /></el-form-item>
-        <el-form-item label="Request mode"><el-select v-model="settings.analysisModel.requestMode" style="width:100%"><el-option value="chat_completions" /><el-option value="responses" /></el-select></el-form-item>
-        <el-form-item label="Timeout (ms)"><el-input-number v-model="settings.analysisModel.timeoutMs" :controls="false" style="width:100%" /></el-form-item>
-        <el-form-item label="API Key"><el-input v-model="apiKey" type="password" show-password :disabled="clearApiKey" :placeholder="settings.analysisModel.apiKeyConfigured ? '已配置，留空保持原值' : '输入新的 Secret'" /><el-checkbox v-if="settings.analysisModel.apiKeyConfigured" v-model="clearApiKey">显式清空</el-checkbox></el-form-item>
-      </el-form>
+      <div class="model-owner">
+        <div>
+          <h2 class="section-title">分析模型</h2>
+          <p>关系分析统一使用“模型接口”中的 <code>affinity.analysis</code> 用途绑定；主动事件沿用触发会话的模型。</p>
+        </div>
+        <el-button tag="a" href="/intelligence/models">前往模型接口</el-button>
+      </div>
     </section>
     <article class="panel data-panel">
       <div class="panel-head"><div><h2>范围白名单</h2><p>群聊/私聊范围与主动事件权限</p></div><el-button size="small" type="primary" @click="saveScopes">保存范围</el-button></div>
@@ -105,4 +97,4 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
   <el-drawer v-model="adjustOpen" title="调整关系状态" size="min(440px, 90vw)"><el-form label-position="top"><el-form-item label="User key"><el-input v-model="adjustment.userKey" disabled /></el-form-item><el-form-item label="审计原因"><el-input v-model="adjustment.reason" /></el-form-item><el-form-item v-for="axis in ['trust','familiarity','comfort','tension']" :key="axis" :label="`${axis}（留空保持）`"><el-input-number v-model="adjustment[axis]" :controls="false" style="width:100%" /></el-form-item><el-button type="primary" :disabled="!adjustment.reason" @click="adjust">应用调整</el-button></el-form></el-drawer>
 </template>
 
-<style scoped>.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.span-2{grid-column:1/-1}.data-panel{max-width:1100px;margin-top:18px;overflow:hidden}.data-panel strong{font-size:11px}@media(max-width:760px){.settings-grid{grid-template-columns:1fr}.span-2{grid-column:auto}}</style>
+<style scoped>.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.span-2{grid-column:1/-1}.model-owner{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.model-owner .section-title{margin-bottom:4px}.model-owner p{margin:0;color:var(--muted);font-size:11px}.model-owner code{font-family:"SFMono-Regular",Consolas,monospace}.data-panel{max-width:1100px;margin-top:18px;overflow:hidden}.data-panel strong{font-size:11px}@media(max-width:760px){.settings-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.model-owner{align-items:flex-start;flex-direction:column}}</style>

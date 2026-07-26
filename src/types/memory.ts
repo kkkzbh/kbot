@@ -55,8 +55,6 @@ export type MemoryStatusState = 'never' | 'success' | 'failed';
 export type MemoryOutputProtocolId =
   | 'native_responses_json_schema'
   | 'native_chat_json_schema'
-  | 'json_mode_with_repair'
-  | 'plain_text_memory_v1'
   | 'unsupported_protocol';
 
 export interface MemoryAddress {
@@ -379,7 +377,6 @@ export interface MemoryStatusSnapshot {
   extractConfigured: boolean;
   embedConfigured: boolean;
   extractModel: string;
-  embedBaseUrl: string;
   embedModel: string;
   jobs: MemoryQueueSummary;
   providerRoutes: MemoryProviderRouteStats[];
@@ -389,7 +386,7 @@ export interface MemoryStatusSnapshot {
 }
 
 export interface MemoryProbeResult {
-  target: 'embedding' | 'extraction' | 'provider';
+  target: 'embedding' | 'extraction';
   ok: boolean;
   checkedAt: number;
   latencyMs: number | null;
@@ -400,8 +397,7 @@ export interface MemoryProbeResult {
 export interface MemoryStatusServiceLike {
   getSnapshot(): Promise<MemoryStatusSnapshot>;
   probeEmbedding(): Promise<MemoryProbeResult>;
-  probeExtraction?(): Promise<MemoryProbeResult>;
-  probeProvider?(): Promise<MemoryProbeResult>;
+  probeExtraction(): Promise<MemoryProbeResult>;
 }
 
 declare module 'koishi' {

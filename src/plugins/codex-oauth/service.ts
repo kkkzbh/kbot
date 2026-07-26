@@ -11,7 +11,6 @@ import {
   createProxyFetchRequest,
   formatProxyFetchFailure,
 } from '../shared/proxy-fetch.js';
-import { registerCodexDynamicModelOptions } from '../shared/llm/index.js';
 import {
   CodexReleaseMetadataError,
   CodexReleaseMetadataProvider,
@@ -873,7 +872,6 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
       this.modelCatalogCache.clear();
       this.activeCatalogClientVersion = state.clientVersion;
       this.modelCatalogSyncedAt = null;
-      registerCodexDynamicModelOptions([]);
     }
     return state;
   }
@@ -1092,11 +1090,9 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     const persisted = trimOptionalText(await readTextIfExists(this.secretFilePath));
     if (persisted) return persisted;
 
-    const fallback =
-      trimOptionalText(process.env.CHATLUNA_CODEX_API_KEY) ??
-      `qqbot-codex-${randomBytes(24).toString('hex')}`;
-    await writeFileAtomic(this.secretFilePath, `${fallback}\n`);
-    return fallback;
+    const generated = `qqbot-codex-${randomBytes(24).toString('hex')}`;
+    await writeFileAtomic(this.secretFilePath, `${generated}\n`);
+    return generated;
   }
 
   private async readAuthRecord(): Promise<CodexAuthRecord | null> {
@@ -1348,7 +1344,6 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
       models: models.map((model) => ({ ...model })),
     });
     this.modelCatalogSyncedAt = new Date().toISOString();
-    registerCodexDynamicModelOptions(models);
     return models;
   }
 
@@ -1357,7 +1352,6 @@ export class CodexOAuthBridgeService implements CodexBridgeStateProvider {
     this.modelCatalogCache.clear();
     this.activeCatalogClientVersion = release.version;
     this.modelCatalogSyncedAt = null;
-    registerCodexDynamicModelOptions([]);
   }
 
   private async proxyUpstreamResponses(

@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { AIMessage } from '@langchain/core/messages';
 import { Logger, type Context, type Session } from 'koishi';
-import { mainChatRuntimeState } from '../shared/llm/main-chat-runtime.js';
+import {
+  CanonicalModelBindingResolver,
+  serializeModelConfigDiagnostic,
+  type ModelConfigService,
+  type ModelRuntimeClient,
+  type ResolvedModelTarget,
+} from '../model-config/index.js';
 import { registerPromptFragment } from '../shared/prompt-context/index.js';
 import {
   createChatLunaHistoryWriter,
@@ -20,9 +26,6 @@ import {
 } from '../reply/index.js';
 import { resolveStickerCapabilityArtifacts } from '../sticker/index.js';
 import type {
-  AffinityAnalysisRequestMode,
-  AffinityAnalysisModelConfig,
-  AffinityAnalysisStructuredOutputProtocol,
   AffinityAuditRecord,
   AffinityConfigRecord,
   AffinityEffectTier,
@@ -46,8 +49,6 @@ import type {
 } from '../../types/affinity.js';
 import {
   analyzeAffinityEvent,
-  resolveAnalysisModelConfig,
-  type PartialAnalysisModelConfig,
 } from './analysis.js';
 import {
   CHARACTER_ID,
@@ -227,7 +228,6 @@ export interface RuntimeConfig {
   randomCountWeights: [number, number, number, number];
   enabledDirections: AffinityRandomDirection[];
   webSourceEnabled: boolean;
-  analysisModel: PartialAnalysisModelConfig;
 }
 
 export interface AffinitySessionResult {
@@ -243,14 +243,6 @@ const DEFAULT_SETTINGS: AffinitySettings = {
   randomCountWeights: [...DEFAULT_RANDOM_COUNT_WEIGHTS],
   enabledDirections: [...DEFAULT_RANDOM_DIRECTIONS],
   webSourceEnabled: false,
-  analysisModel: {
-    baseUrl: '',
-    apiKey: '',
-    model: '',
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'chat_reply_v1',
-    timeoutMs: 5000,
-  },
 };
 
 const SESSION_RESULT_KEY = Symbol('qqbot-affinity-result');
@@ -279,14 +271,6 @@ const VALID_EVENT_TYPE_HINTS = new Set<AffinityEventType | 'none'>([
   'pressure_or_spam',
   'promise_broken',
 ]);
-const VALID_ANALYSIS_REQUEST_MODES = new Set<AffinityAnalysisRequestMode>(['chat_completions', 'responses']);
-const VALID_ANALYSIS_OUTPUT_PROTOCOLS = new Set<AffinityAnalysisStructuredOutputProtocol>([
-  'native_chat_json_schema',
-  'native_responses_json_schema',
-  'chat_reply_v1',
-  'json_mode',
-]);
-
 function normalizeText(value: unknown): string {
   return String(value ?? '').trim();
 }
@@ -450,62 +434,6 @@ function parseStoredJsonSetting(
   }
 }
 
-function requirePlainObject(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${label} must be an object.`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function readRequiredString(record: Record<string, unknown>, key: string, label: string): string {
-  const value = record[key];
-  if (typeof value !== 'string') {
-    throw new Error(`${label}.${key} must be a string.`);
-  }
-  return value;
-}
-
-function readRequiredPositiveNumber(record: Record<string, unknown>, key: string, label: string): number {
-  const value = record[key];
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new Error(`${label}.${key} must be a positive number.`);
-  }
-  return value;
-}
-
-function parseStoredAnalysisRequestMode(
-  value: unknown,
-  label: string,
-): AffinityAnalysisRequestMode {
-  if (VALID_ANALYSIS_REQUEST_MODES.has(value as AffinityAnalysisRequestMode)) {
-    return value as AffinityAnalysisRequestMode;
-  }
-  throw new Error(`${label}.requestMode must be chat_completions or responses.`);
-}
-
-function parseStoredAnalysisOutputProtocol(
-  value: unknown,
-  label: string,
-): AffinityAnalysisStructuredOutputProtocol {
-  if (VALID_ANALYSIS_OUTPUT_PROTOCOLS.has(value as AffinityAnalysisStructuredOutputProtocol)) {
-    return value as AffinityAnalysisStructuredOutputProtocol;
-  }
-  throw new Error(`${label}.structuredOutputProtocol is invalid.`);
-}
-
-function parseStoredAnalysisModelConfig(value: unknown): Partial<AffinityAnalysisModelConfig> {
-  const label = 'affinity_config.analysisModel';
-  const record = requirePlainObject(value, label);
-  return {
-    baseUrl: readRequiredString(record, 'baseUrl', label),
-    apiKey: readRequiredString(record, 'apiKey', label),
-    model: readRequiredString(record, 'model', label),
-    requestMode: parseStoredAnalysisRequestMode(record.requestMode, label),
-    structuredOutputProtocol: parseStoredAnalysisOutputProtocol(record.structuredOutputProtocol, label),
-    timeoutMs: readRequiredPositiveNumber(record, 'timeoutMs', label),
-  };
-}
-
 function parseStoredWeightValue(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(`${label} must be a finite number.`);
@@ -550,9 +478,6 @@ function normalizeDate(value: unknown): Date {
 
 function parseSettings(rows: AffinityConfigRecord[]): AffinitySettings {
   const byKey = new Map(rows.map((row) => [row.key, row.value]));
-  const analysisModel = parseStoredAnalysisModelConfig(
-    parseStoredJsonSetting(byKey, 'analysisModel', DEFAULT_SETTINGS.analysisModel),
-  );
   const randomCountWeights = parseStoredRandomCountWeights(
     parseStoredJsonSetting(byKey, 'randomCountWeights', [...DEFAULT_SETTINGS.randomCountWeights]),
   );
@@ -567,7 +492,6 @@ function parseSettings(rows: AffinityConfigRecord[]): AffinitySettings {
     randomCountWeights,
     enabledDirections,
     webSourceEnabled: parseStoredBooleanSetting(byKey, 'webSourceEnabled', DEFAULT_SETTINGS.webSourceEnabled),
-    analysisModel,
   };
 }
 
@@ -587,7 +511,6 @@ function mergeSettings(current: AffinitySettings, patch: Partial<AffinitySetting
       : current.randomCountWeights,
     enabledDirections: Array.isArray(patch.enabledDirections) ? patch.enabledDirections : current.enabledDirections,
     webSourceEnabled: patch.webSourceEnabled ?? current.webSourceEnabled,
-    analysisModel: patch.analysisModel ? { ...current.analysisModel, ...patch.analysisModel } : current.analysisModel,
   };
 }
 
@@ -810,6 +733,8 @@ export class AffinityService implements AffinityServiceLike {
 
   constructor(
     private readonly database: AffinityDatabaseLike,
+    private readonly modelConfig: ModelConfigService,
+    private readonly modelRuntime: ModelRuntimeClient,
     private readonly getBots: () => AffinityBotLike[],
     private readonly random: () => number = Math.random,
     private readonly getChatLuna: () => ChatLunaHistoryLike | undefined = () => undefined,
@@ -935,9 +860,9 @@ export class AffinityService implements AffinityServiceLike {
     sourceConversation: ChatLunaConversationRecord;
     session: Session;
     plan: AffinityRandomPlanRecord;
+    modelTarget: ResolvedModelTarget;
   }): Promise<AffinityProactiveChatLunaConversation> {
     const id = `affinity-proactive-${randomUUID()}`;
-    const profile = mainChatRuntimeState.getProfile();
     const now = new Date();
     const conversation: AffinityProactiveChatLunaConversation = {
       id,
@@ -945,7 +870,7 @@ export class AffinityService implements AffinityServiceLike {
         normalizeText(args.sourceConversation.bindingKey) ||
         `affinity-proactive:${args.plan.scopeKind}:${args.plan.scopeId}`,
       title: `affinity-random-${args.plan.id}`,
-      model: normalizeText(profile.canonicalModel) || normalizeText(args.sourceConversation.model),
+      model: args.modelTarget.canonicalModel,
       preset: normalizeText(args.sourceConversation.preset),
       chatMode: 'plugin',
       createdBy: normalizeText(args.session.userId) || 'affinity-proactive',
@@ -1049,7 +974,6 @@ export class AffinityService implements AffinityServiceLike {
   async saveSettings(settingsPatch: Partial<AffinitySettings>): Promise<AffinityStateSummary> {
     const current = await this.loadStoredSettings();
     const next = mergeSettings(current, settingsPatch);
-    resolveAnalysisModelConfig(next.analysisModel, mainChatRuntimeState.getProfile());
     const now = Date.now();
     const rows = [
       ['enabled', String(next.enabled)],
@@ -1059,7 +983,6 @@ export class AffinityService implements AffinityServiceLike {
       ['randomCountWeights', stringifyJson(next.randomCountWeights)],
       ['enabledDirections', stringifyJson(next.enabledDirections)],
       ['webSourceEnabled', String(next.webSourceEnabled)],
-      ['analysisModel', stringifyJson(next.analysisModel)],
     ] as const;
     for (const [key, value] of rows) {
       const [existing] = await this.database.get('affinity_config', { key }) as AffinityConfigRecord[];
@@ -1356,14 +1279,20 @@ export class AffinityService implements AffinityServiceLike {
     await this.validateOpenRandomMemoryPromptState(openThreads);
     const stateRow = await this.getOrCreateUserState(session, userKey, now);
     const state = stateFromRecord(stateRow, now);
-    const analysisConfig = this.resolveAnalysisConfig(settings);
     const openThreadSummaries = openThreads.map((thread) => `${thread.title ?? 'open'}: ${thread.summary ?? ''}`.trim());
     const analysis = await analyzeAffinityEvent({
       text,
       openThreads: openThreadSummaries,
       relationSummary: formatStateForPrompt(state),
       randomPending: openThreadSummaries.some((thread) => thread.includes('random')),
-    }, analysisConfig);
+    }, this.modelRuntime, {
+      onModelError: (diagnostic) => {
+        logger.warn(
+          'affinity analysis model failed: diagnostic=%s',
+          JSON.stringify(diagnostic),
+        );
+      },
+    });
     const resolution = resolveAffinityEvent(state, analysis, now);
     await this.persistResolution({
       session,
@@ -1520,16 +1449,6 @@ export class AffinityService implements AffinityServiceLike {
       .filter((item) => this.isManualRandomPlan(item) || settings.proactiveEnabled)
       .sort((a, b) => a.scheduledAt - b.scheduledAt)[0];
     return next ? Number(next.scheduledAt) : null;
-  }
-
-  private resolveAnalysisConfig(settings: AffinitySettings): AffinityAnalysisModelConfig | null {
-    try {
-      const resolved = resolveAnalysisModelConfig(settings.analysisModel, mainChatRuntimeState.getProfile());
-      if (!resolved.baseUrl || !resolved.apiKey || !resolved.model) return null;
-      return resolved;
-    } catch {
-      return null;
-    }
   }
 
   private async getOrCreateUserState(session: Session, userKey: string, now: number): Promise<AffinityUserStateRecord> {
@@ -2001,13 +1920,16 @@ export class AffinityService implements AffinityServiceLike {
       channelId: args.channelId,
       sourceConversation: source.sourceConversation,
     });
-
     let tempConversation: AffinityProactiveChatLunaConversation | null = null;
     try {
+      const modelTarget = new CanonicalModelBindingResolver(
+        this.modelConfig.getRuntimeSnapshot(),
+      ).resolve('main.chat').target!;
       tempConversation = await this.createTemporaryProactiveConversation({
         sourceConversation: source.sourceConversation,
         session,
         plan: args.plan,
+        modelTarget,
       });
       return await generateAffinityProactiveViaChatLuna({
         chatluna: chatluna as any,
@@ -2016,13 +1938,14 @@ export class AffinityService implements AffinityServiceLike {
         input: args.input,
         requestId: `affinity-random-plan:${args.plan.id}:${args.plan.direction}`,
         runtime,
+        modelTarget,
       });
     } catch (error) {
       logger.warn(
-        'affinity proactive generation skipped: planId=%s direction=%s error=%s',
+        'affinity proactive generation skipped: planId=%s direction=%s diagnostic=%s',
         String(args.plan.id),
         args.plan.direction,
-        error instanceof Error ? error.message : String(error),
+        JSON.stringify(serializeModelConfigDiagnostic(error)),
       );
       return this.createProactiveSkipGeneration('chatluna_generation_error');
     } finally {

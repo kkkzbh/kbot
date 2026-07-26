@@ -5,12 +5,8 @@ import { homedir, tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyEnvPatchToContent,
-  buildModelTabsStateFromEnv,
+  AdminRestartJobError,
   AdminRuntimeManager,
-  listCodexModelsFromOAuthBridge,
-  listCopilotModelsFromOAuthBridge,
-  listDeepSeekModelsFromOfficialSource,
-  listMimoModelsFromOfficialSource,
   mergeManagedEnvRecords,
   parseSystemdShowOutput,
   resolveBackupDirectory,
@@ -20,8 +16,8 @@ import {
   resolveManagedServiceUnits,
   readManagedEnvPatchFromContent,
   writeFileAtomicWithBackup,
+  type ScheduledRestartHandle,
 } from '../src/plugins/admin-api/server.js';
-import { resolveDefaultLlmCredentials } from '../src/plugins/shared/llm/index.js';
 
 const tempDirs: string[] = [];
 
@@ -51,14 +47,14 @@ describe('resolveBackupDirectory', () => {
 describe('resolveApplyRestartUnits', () => {
   it('maps configuration reasons to the minimal ordered service plan', () => {
     expect(resolveApplyRestartUnits(
-      ['tts', 'model', 'features'],
+      ['tts', 'features'],
       resolveManagedServiceUnits('/tmp/qqbot/.env.local'),
     )).toEqual([
       'qqbot-voice-tts.service',
       'qqbot-koishi.service',
     ]);
     expect(resolveApplyRestartUnits(
-      ['basic', 'model'],
+      ['basic'],
       resolveManagedServiceUnits('/tmp/qqbot/.env.server'),
     )).toEqual(['qqbot-koishi.service']);
   });
@@ -75,7 +71,7 @@ describe('AdminRuntimeManager.restartForApplyReasons', () => {
   it('captures current invocations and restarts TTS before Koishi', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     const getServiceStatus = vi.spyOn(manager, 'getServiceStatus').mockImplementation(async (unit) => ({
       unit,
@@ -104,7 +100,7 @@ describe('AdminRuntimeManager.restartForApplyReasons', () => {
       },
     }));
 
-    await expect(manager.restartForApplyReasons(['model', 'tts'])).resolves.toEqual([
+    await expect(manager.restartForApplyReasons(['features', 'tts'])).resolves.toEqual([
       {
         unit: 'qqbot-voice-tts.service',
         previousInvocationId: 'before-qqbot-voice-tts.service',
@@ -121,57 +117,6 @@ describe('AdminRuntimeManager.restartForApplyReasons', () => {
   });
 });
 
-function createCopilotBridgeWithModels(models: unknown[]) {
-  return {
-    getRuntimeConfig: async () => ({
-      baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      apiKey: 'bridge-secret',
-    }),
-    getAdminStatus: async () => ({
-      authKind: 'oauth_device' as const,
-      authStatus: 'ready' as const,
-      accountLabel: 'tester',
-      authError: null,
-      attempt: null,
-    }),
-    proxyModels: async () => ({
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: models }),
-    }),
-  };
-}
-
-function createCodexBridgeWithModels(models: unknown[]) {
-  const catalog = {
-    source: 'dynamic' as const,
-    status: 'ready' as const,
-    clientVersion: '0.145.0',
-    fetchedAt: '2026-07-25T00:00:00.000Z',
-    error: null,
-  };
-  return {
-    getRuntimeConfig: async () => ({
-      baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-      apiKey: 'codex-bridge-secret',
-    }),
-    getAdminStatus: async () => ({
-      authKind: 'codex_oauth' as const,
-      authStatus: 'ready' as const,
-      accountLabel: 'codex-user',
-      authError: null,
-      tokenExpiresAt: Date.now() + 60_000,
-      attempt: null,
-    }),
-    getCatalogStatus: async () => catalog,
-    proxyModels: async () => ({
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: models, qqbot: { source: 'dynamic', catalog } }),
-    }),
-  };
-}
-
 function createSystemdShowExec(activeState = 'inactive') {
   return async (_file: string, args: string[]) => ({
     stdout: [
@@ -184,54 +129,6 @@ function createSystemdShowExec(activeState = 'inactive') {
     stderr: '',
   });
 }
-
-it('keeps pending OAuth device details in the model tabs state', async () => {
-  const dir = createTempDir();
-  const envFilePath = join(dir, '.env.local');
-  writeFileSync(envFilePath, 'CHATLUNA_ACTIVE_TAB=codex\n', 'utf8');
-  const attempt = {
-    attemptId: 'attempt-123',
-    userCode: 'ABCD-EFGH',
-    verificationUri: 'https://auth.openai.com/codex/device',
-    expiresAt: Date.now() + 900_000,
-    intervalSec: 5,
-    nextPollAt: Date.now(),
-    state: 'pending' as const,
-    error: null,
-  };
-  const manager = new AdminRuntimeManager({
-    rootDir: dir,
-    envFilePath,
-    codexBridge: {
-      getRuntimeConfig: async () => ({
-        baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-        apiKey: 'codex-bridge-secret',
-      }),
-      getAdminStatus: async () => ({
-        authKind: 'codex_oauth' as const,
-        authStatus: 'pending' as const,
-        accountLabel: null,
-        authError: null,
-        tokenExpiresAt: null,
-        attempt,
-      }),
-      getCatalogStatus: async () => ({
-        source: 'dynamic' as const,
-        status: 'unavailable' as const,
-        clientVersion: null,
-        fetchedAt: null,
-        error: 'Codex release metadata 尚未同步。',
-      }),
-    },
-  });
-
-  const state = await manager.getModelTabsState();
-
-  expect(state.tabs.find((tab) => tab.id === 'codex')).toMatchObject({
-    authStatus: 'pending',
-    oauthAttempt: attempt,
-  });
-});
 
 function createMinimalWav(): Uint8Array {
   const sampleRate = 32000;
@@ -257,60 +154,72 @@ function createMinimalWav(): Uint8Array {
   return new Uint8Array(buffer);
 }
 
-const COPILOT_ENABLED_MODEL_PAYLOAD = [
-  {
-    id: 'auto',
-    name: 'Auto',
-    capabilities: { type: 'chat', supports: { structured_outputs: true } },
-    supported_endpoints: ['/v1/responses'],
-    qqbot: {
-      rateLabel: '0.1x',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      availableModels: ['gpt-5-mini', 'gpt-5.4-mini', 'gpt-5.3-codex'],
-    },
-  },
-];
+function createRestartHandle(): ScheduledRestartHandle {
+  const transientUnit = 'qqbot-koishi-service-restart-123';
+  return {
+    targetUnit: 'qqbot-koishi.service',
+    transientUnit,
+    serviceUnit: `${transientUnit}.service`,
+    timerUnit: `${transientUnit}.timer`,
+    scheduledAt: 123,
+  };
+}
 
-const CODEX_ENABLED_MODEL_PAYLOAD = [
-  {
-    id: 'gpt-5.5',
-    name: 'GPT-5.5',
-  },
-  {
-    id: 'gpt-5.4-mini',
-    name: 'GPT-5.4-Mini',
-  },
-];
+function restartTargetOutput(invocationId: string, job = ''): string {
+  return [
+    'ActiveState=active',
+    'SubState=running',
+    `InvocationID=${invocationId}`,
+    `Job=${job}`,
+  ].join('\n');
+}
+
+function restartJobUnitOutput(input: {
+  loadState?: string;
+  activeState: string;
+  subState: string;
+  result?: string;
+  execMainStatus?: number;
+  startedAt?: number;
+}): string {
+  return [
+    `LoadState=${input.loadState ?? 'loaded'}`,
+    `ActiveState=${input.activeState}`,
+    `SubState=${input.subState}`,
+    `Result=${input.result ?? 'success'}`,
+    `ExecMainStatus=${input.execMainStatus ?? 0}`,
+    `ExecMainStartTimestampMonotonic=${input.startedAt ?? 0}`,
+  ].join('\n');
+}
+
 
 describe('admin env helpers', () => {
   it('preserves comments and unknown lines while patching managed keys', () => {
     const content = [
       '# comment',
-      'CHATLUNA_BASE_URL=https://api.siliconflow.cn/v1',
+      'UNMANAGED_PROVIDER_FLAG=keep',
       'UNMANAGED_FLAG=keep-me',
       'QQ_VOICE_INPUT_ENABLED=true',
       '',
     ].join('\n');
 
     const next = applyEnvPatchToContent(content, {
-      CHATLUNA_BASE_URL: 'https://example.com/v1',
       QQ_VOICE_INPUT_ENABLED: 'false',
     });
 
     expect(next).toContain('# comment');
     expect(next).toContain('UNMANAGED_FLAG=keep-me');
-    expect(next).toContain('CHATLUNA_BASE_URL=https://example.com/v1');
+    expect(next).toContain('UNMANAGED_PROVIDER_FLAG=keep');
     expect(next).toContain('QQ_VOICE_INPUT_ENABLED=false');
   });
 
   it('keeps the original file when atomic write fails', async () => {
     const dir = createTempDir();
     const filePath = join(dir, '.env.local');
-    writeFileSync(filePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(filePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     await expect(
-      writeFileAtomicWithBackup(filePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5-preview\n', {
+      writeFileAtomicWithBackup(filePath, 'UNMANAGED_FLAG=next\n', {
         backupDir: join(dir, 'backup'),
         fs: {
           access: async () => undefined,
@@ -329,21 +238,21 @@ describe('admin env helpers', () => {
       }),
     ).rejects.toThrow('disk full');
 
-    expect(readFileSync(filePath, 'utf8')).toBe('CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n');
+    expect(readFileSync(filePath, 'utf8')).toBe('UNMANAGED_FLAG=keep\n');
   });
 
   it('falls back to .env.server when .env.local is absent', () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.server');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=deepseek-chat\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=server\n', 'utf8');
 
     expect(resolveBotEnvFilePath(dir)).toBe(envFilePath);
   });
 
   it('prefers QQBOT_ENV_FILE when explicitly set', () => {
     const dir = createTempDir();
-    writeFileSync(join(dir, '.env.local'), 'CHATLUNA_DEFAULT_MODEL=local-model\n', 'utf8');
-    writeFileSync(join(dir, '.env.server'), 'CHATLUNA_DEFAULT_MODEL=server-model\n', 'utf8');
+    writeFileSync(join(dir, '.env.local'), 'UNMANAGED_FLAG=local\n', 'utf8');
+    writeFileSync(join(dir, '.env.server'), 'UNMANAGED_FLAG=server\n', 'utf8');
     vi.stubEnv('QQBOT_ENV_FILE', '.env.server');
 
     expect(resolveBotEnvFilePath(dir)).toBe(join(dir, '.env.server'));
@@ -364,7 +273,7 @@ describe('admin env helpers', () => {
 
   it('defaults local env files to layered mode with a runtime override file', () => {
     const dir = createTempDir();
-    writeFileSync(join(dir, '.env.local'), 'CHATLUNA_DEFAULT_MODEL=local-model\n', 'utf8');
+    writeFileSync(join(dir, '.env.local'), 'UNMANAGED_FLAG=local\n', 'utf8');
 
     expect(resolveBotEnvFiles(dir)).toEqual({
       mode: 'layered',
@@ -377,411 +286,23 @@ describe('admin env helpers', () => {
   it('merges managed env values with runtime override precedence', () => {
     const merged = mergeManagedEnvRecords(
       readManagedEnvPatchFromContent([
-        'CHATLUNA_DEFAULT_MODEL=base-model',
+        'QQBOT_REPLY_INTERRUPT_ENABLED=true',
         'HBU_JW_CREDENTIAL_KEK_PATH=/opt/qqbot/data/hbu-jw/credential-kek.key',
       ].join('\n')),
       readManagedEnvPatchFromContent([
-        'CHATLUNA_DEFAULT_MODEL=runtime-model',
+        'QQBOT_REPLY_INTERRUPT_ENABLED=false',
         'QQ_VOICE_OUTPUT_ENABLED=false',
         'HBU_JW_CREDENTIAL_KEK_PATH=',
       ].join('\n')),
     );
 
     expect(merged).toMatchObject({
-      CHATLUNA_DEFAULT_MODEL: 'runtime-model',
+      QQBOT_REPLY_INTERRUPT_ENABLED: 'false',
       HBU_JW_CREDENTIAL_KEK_PATH: '/opt/qqbot/data/hbu-jw/credential-kek.key',
       QQ_VOICE_OUTPUT_ENABLED: 'false',
     });
   });
 
-  it('builds fixed built-in model tabs from active env state', () => {
-    const state = buildModelTabsStateFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_API_KEY: 'sk-active',
-      CHATLUNA_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-      CHATLUNA_OPENAI_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-openai',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-      CHATLUNA_CODEX_BASE_URL: 'http://127.0.0.1:5140/api/internal/codex/v1',
-      CHATLUNA_CODEX_API_KEY: 'codex-bridge-secret',
-      CHATLUNA_CODEX_DEFAULT_MODEL: 'openai/gpt-5.5',
-      CHATLUNA_CODEX_REASONING_EFFORT: 'xhigh',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'github_pat_123',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-      CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
-      CHATLUNA_DEEPSEEK_API_KEY: 'sk-deepseek',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek-v4-pro',
-      CHATLUNA_MIMO_BASE_URL: 'https://token-plan-cn.xiaomimimo.com/v1',
-      CHATLUNA_MIMO_API_KEY: 'sk-mimo',
-      CHATLUNA_MIMO_DEFAULT_MODEL: 'mimo-v2.5-pro',
-      CHATLUNA_SILICONFLOW_BASE_URL: 'https://custom.invalid/v1',
-      CHATLUNA_SILICONFLOW_API_KEY: 'sk-kimi',
-      CHATLUNA_SILICONFLOW_DEFAULT_MODEL: 'siliconflow/Pro/moonshotai/Kimi-K2.5',
-    } as Record<string, string>);
-
-    expect(state.activeTab).toBe('openai');
-    expect(state.tabs.every((tab) => !Object.hasOwn(tab, 'tabId'))).toBe(true);
-    expect(state.tabs).toEqual([
-      expect.objectContaining({
-        id: 'siliconflow',
-        strategyId: 'siliconflow-kimi-main-chat',
-        baseUrl: 'https://api.siliconflow.cn/v1',
-        defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-        canonicalModel: 'Pro/moonshotai/Kimi-K2.5',
-        transportModel: 'Pro/moonshotai/Kimi-K2.5',
-      }),
-      expect.objectContaining({
-        id: 'openai',
-        requestMode: 'chat_completions',
-        structuredOutputProtocol: 'native_chat_json_schema',
-        baseUrl: 'https://shell.wyzai.top/v1',
-        defaultModel: 'openai/gpt-5.4-medium-thinking',
-      }),
-      expect.objectContaining({
-        id: 'codex',
-        strategyId: 'codex-chatgpt-oauth-main-chat',
-        requestMode: 'responses',
-        structuredOutputProtocol: 'native_responses_json_schema',
-        defaultModel: 'openai/gpt-5.5',
-        reasoningEffort: 'xhigh',
-        canonicalModel: 'openai/gpt-5.5',
-        transportModel: 'gpt-5.5',
-      }),
-      expect.objectContaining({
-        id: 'copilot',
-        strategyId: 'copilot-github-oauth-main-chat',
-        requestMode: 'responses',
-        structuredOutputProtocol: 'native_responses_json_schema',
-        defaultModel: 'openai/auto',
-        canonicalModel: 'openai/auto',
-        transportModel: 'auto',
-      }),
-      expect.objectContaining({
-        id: 'deepseek',
-        strategyId: 'deepseek-official-main-chat',
-        requestMode: 'chat_completions',
-        structuredOutputProtocol: 'chat_reply_v1',
-        baseUrl: 'https://api.deepseek.com',
-        defaultModel: 'deepseek/deepseek-v4-pro',
-        canonicalModel: 'deepseek/deepseek-v4-pro',
-        transportModel: 'deepseek-v4-pro',
-      }),
-      expect.objectContaining({
-        id: 'mimo',
-        strategyId: 'mimo-official-main-chat',
-        requestMode: 'chat_completions',
-        structuredOutputProtocol: 'native_chat_json_schema',
-        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-        apiKey: 'sk-mimo',
-        defaultModel: 'mimo/mimo-v2.5-pro',
-        canonicalModel: 'mimo/mimo-v2.5-pro',
-        transportModel: 'mimo-v2.5-pro',
-      }),
-    ]);
-  });
-
-  it('loads DeepSeek model ids from the official models endpoint', async () => {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe('https://api.deepseek.com/models');
-      expect(init?.headers).toMatchObject({
-        Authorization: 'Bearer sk-deepseek',
-        Accept: 'application/json',
-      });
-      return new Response(
-        JSON.stringify({
-          object: 'list',
-          data: [
-            { id: 'deepseek-v4-pro', object: 'model' },
-            { id: 'deepseek-v4-flash', object: 'model' },
-            { id: 'deepseek-v4-pro', object: 'model' },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(
-      listDeepSeekModelsFromOfficialSource({
-        baseUrl: 'https://api.deepseek.com/',
-        apiKey: 'sk-deepseek',
-      }),
-    ).resolves.toMatchObject({
-      source: 'dynamic',
-      error: null,
-      models: [
-        { modelId: 'deepseek-v4-pro', label: 'deepseek-v4-pro' },
-        { modelId: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ],
-    });
-  });
-
-  it('falls back to the official static DeepSeek model list without an api key', async () => {
-    await expect(
-      listDeepSeekModelsFromOfficialSource({
-        baseUrl: 'https://api.deepseek.com',
-        apiKey: '',
-      }),
-    ).resolves.toMatchObject({
-      source: 'static',
-      models: [
-        { modelId: 'deepseek-v4-flash' },
-        { modelId: 'deepseek-v4-pro' },
-        { modelId: 'deepseek-chat', deprecated: true, deprecationDate: '2026-07-24' },
-        { modelId: 'deepseek-reasoner', deprecated: true, deprecationDate: '2026-07-24' },
-      ],
-    });
-  });
-
-  it('loads and filters MIMO chat model ids from the official models endpoint', async () => {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe('https://token-plan-cn.xiaomimimo.com/v1/models');
-      expect(init?.headers).toMatchObject({
-        Authorization: 'Bearer sk-mimo',
-        Accept: 'application/json',
-      });
-      return new Response(
-        JSON.stringify({
-          object: 'list',
-          data: [
-            { id: 'mimo-v2.5-pro', object: 'model' },
-            { id: 'mimo-v2.5-tts', object: 'model' },
-            { id: 'mimo-v2-omni', object: 'model' },
-            { id: 'mimo-v2.5-tts-voiceclone', object: 'model' },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(
-      listMimoModelsFromOfficialSource({
-        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1/',
-        apiKey: 'sk-mimo',
-      }),
-    ).resolves.toMatchObject({
-      source: 'dynamic',
-      error: null,
-      models: [
-        { modelId: 'mimo-v2.5-pro', label: 'mimo-v2.5-pro' },
-        { modelId: 'mimo-v2-omni', label: 'mimo-v2-omni' },
-      ],
-    });
-  });
-
-  it('falls back to the static MIMO chat model list without an api key', async () => {
-    await expect(
-      listMimoModelsFromOfficialSource({
-        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-        apiKey: '',
-      }),
-    ).resolves.toMatchObject({
-      source: 'static',
-      models: [
-        { modelId: 'mimo-v2.5-pro' },
-        { modelId: 'mimo-v2.5' },
-        { modelId: 'mimo-v2-pro' },
-        { modelId: 'mimo-v2-omni' },
-      ],
-    });
-  });
-
-  it('uses stored provider credentials only for their configured model endpoints', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, [
-      'CHATLUNA_DEEPSEEK_BASE_URL=https://api.deepseek.com',
-      'CHATLUNA_DEEPSEEK_API_KEY=stored-deepseek-key',
-      'CHATLUNA_MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1',
-      'CHATLUNA_MIMO_API_KEY=stored-mimo-key',
-      '',
-    ].join('\n'), 'utf8');
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === 'https://api.deepseek.com/models') {
-        expect(init?.headers).toMatchObject({ Authorization: 'Bearer stored-deepseek-key' });
-        return new Response(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }] }), { status: 200 });
-      }
-      if (url === 'https://token-plan-cn.xiaomimimo.com/v1/models') {
-        expect(init?.headers).toMatchObject({ Authorization: 'Bearer stored-mimo-key' });
-        return new Response(JSON.stringify({ data: [{ id: 'mimo-v2.5-pro' }] }), { status: 200 });
-      }
-      throw new Error(`unexpected model endpoint: ${url}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-
-    await expect(manager.listDeepSeekModels({
-      baseUrl: 'https://api.deepseek.com/',
-    })).resolves.toMatchObject({ source: 'dynamic', error: null });
-    await expect(manager.listMimoModels({
-      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1/',
-    })).resolves.toMatchObject({ source: 'dynamic', error: null });
-    const customEndpoint = await manager.listDeepSeekModels({
-      baseUrl: 'https://untrusted.example.com/v1',
-    });
-
-    expect(customEndpoint).toMatchObject({ source: 'static' });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(customEndpoint)).not.toContain('stored-deepseek-key');
-  });
-
-  it.each([
-    {
-      id: 'openai',
-      title: 'OpenAI',
-      envPrefix: 'CHATLUNA_OPENAI',
-      baseUrl: 'https://api.openai.example.com/v1',
-      defaultModel: 'openai/gpt-5.4-medium-thinking',
-    },
-    {
-      id: 'deepseek',
-      title: 'DeepSeek',
-      envPrefix: 'CHATLUNA_DEEPSEEK',
-      baseUrl: 'https://api.deepseek.com',
-      defaultModel: 'deepseek/deepseek-v4-flash',
-    },
-    {
-      id: 'mimo',
-      title: 'MIMO',
-      envPrefix: 'CHATLUNA_MIMO',
-      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-      defaultModel: 'mimo/mimo-v2.5-pro',
-    },
-  ] as const)('rejects rebinding a stored $title credential to a changed endpoint during save', async ({
-    id,
-    title,
-    envPrefix,
-    baseUrl,
-    defaultModel,
-  }) => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, [
-      `CHATLUNA_ACTIVE_TAB=${id}`,
-      `${envPrefix}_BASE_URL=${baseUrl}`,
-      `${envPrefix}_API_KEY=stored-provider-key`,
-      `${envPrefix}_DEFAULT_MODEL=${defaultModel}`,
-      '',
-    ].join('\n'), 'utf8');
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      data: [{ id: 'deepseek-v4-flash' }],
-    }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-
-    await expect(manager.saveModelTabs({
-      activeTab: id,
-      dirtyTabIds: [id],
-      tabs: [{
-        id,
-        baseUrl: 'https://untrusted.example.com/v1',
-        defaultModel,
-      }] as any,
-    })).rejects.toThrow(new RegExp(`${title}.*API key`));
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(readFileSync(envFilePath, 'utf8')).not.toContain('untrusted.example.com');
-  });
-
-  it('returns the Copilot Auto entry from the OAuth bridge', async () => {
-    const result = await listCopilotModelsFromOAuthBridge(createCopilotBridgeWithModels(COPILOT_ENABLED_MODEL_PAYLOAD));
-
-    expect(result).toMatchObject({
-      source: 'dynamic',
-      error: null,
-      models: [
-        {
-          modelId: 'auto',
-          label: 'Auto',
-          rateLabel: '0.1x',
-          requestMode: 'responses',
-          structuredOutputProtocol: 'native_responses_json_schema',
-        },
-      ],
-    });
-  });
-
-  it('reports Copilot unavailable when the OAuth bridge status is not ready', async () => {
-    const result = await listCopilotModelsFromOAuthBridge({
-      getRuntimeConfig: async () => ({
-        baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-        apiKey: 'bridge-secret',
-      }),
-      getAdminStatus: async () => ({
-        authKind: 'oauth_device' as const,
-        authStatus: 'expired' as const,
-        accountLabel: 'tester',
-        authError: 'Copilot session token 换取失败：HTTP 401',
-        attempt: null,
-      }),
-      proxyModels: async () => {
-        throw new Error('proxyModels should not be called when auth is expired');
-      },
-    });
-
-    expect(result).toMatchObject({
-      source: 'dynamic',
-      models: [],
-      error: 'Copilot session token 换取失败：HTTP 401',
-    });
-  });
-
-  it('does not expose a Copilot model list when the bridge is unavailable', async () => {
-    await expect(listCopilotModelsFromOAuthBridge(undefined)).resolves.toMatchObject({
-      source: 'dynamic',
-      models: [],
-      error: expect.stringContaining('bridge is unavailable'),
-    });
-  });
-
-  it('forces Codex release and catalog refresh for a user-requested model list', async () => {
-    const proxyModels = vi.fn(async () => ({
-      status: 503,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        error: {
-          message: 'Codex GitHub release metadata 请求失败：HTTP 403 / rate limit exceeded',
-          type: 'upstream_error',
-          code: 'codex_release_metadata_unavailable',
-        },
-      }),
-    }));
-    const catalog = {
-      source: 'dynamic' as const,
-      status: 'degraded' as const,
-      clientVersion: '0.145.0',
-      fetchedAt: '2026-07-25T00:00:00.000Z',
-      error: 'Codex GitHub release metadata 请求失败：HTTP 403 / rate limit exceeded',
-    };
-
-    const result = await listCodexModelsFromOAuthBridge({
-      getRuntimeConfig: async () => ({
-        baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-        apiKey: 'codex-bridge-secret',
-      }),
-      getAdminStatus: async () => ({
-        authKind: 'codex_oauth' as const,
-        authStatus: 'ready' as const,
-        accountLabel: 'codex-user',
-        authError: null,
-        tokenExpiresAt: Date.now() + 60_000,
-        attempt: null,
-      }),
-      getCatalogStatus: async () => catalog,
-      proxyModels,
-    });
-
-    expect(proxyModels).toHaveBeenCalledWith({ forceRefresh: true });
-    expect(result).toEqual({
-      source: 'dynamic',
-      models: [],
-      error: 'Codex /models returned HTTP 503: Codex GitHub release metadata 请求失败：HTTP 403 / rate limit exceeded',
-      catalog,
-    });
-  });
 });
 
 describe('admin systemd helpers', () => {
@@ -848,54 +369,16 @@ describe('admin manager', () => {
   it('rejects unsupported env keys when saving env', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(manager.saveEnv({ HACKED: '1' } as any)).rejects.toThrow('不支持这个配置项');
   });
 
-  it('does not treat legacy OPENAI env keys as managed runtime configuration', async () => {
-    expect(readManagedEnvPatchFromContent([
-      'OPENAI_BASE_URL=https://legacy.example/v1',
-      'OPENAI_API_KEY=sk-legacy',
-      'OPENAI_MODEL=legacy-model',
-      'CHATLUNA_ACTIVE_TAB=openai',
-      'CHATLUNA_OPENAI_BASE_URL=https://current.example/v1',
-      'CHATLUNA_OPENAI_API_KEY=sk-current',
-      'CHATLUNA_OPENAI_DEFAULT_MODEL=openai/gpt-5.4-medium-thinking',
-    ].join('\n'))).toEqual({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://current.example/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-current',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    });
-
-    expect(resolveDefaultLlmCredentials({
-      OPENAI_BASE_URL: 'https://legacy.example/v1',
-      OPENAI_API_KEY: 'sk-legacy',
-      OPENAI_MODEL: 'legacy-model',
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_OPENAI_BASE_URL: 'https://current.example/v1',
-      CHATLUNA_OPENAI_API_KEY: 'sk-current',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-    })).toEqual({
-      baseUrl: 'https://current.example/v1',
-      apiKey: 'sk-current',
-      model: 'openai/gpt-5.4-medium-thinking',
-    });
-
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await expect(manager.saveEnv({ OPENAI_MODEL: 'legacy-model' } as any)).rejects.toThrow('不支持这个配置项：OPENAI_MODEL');
-  });
-
   it('accepts QQBOT_REPLY_INTERRUPT_ENABLED through managed env saves', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(manager.saveEnv({ QQBOT_REPLY_INTERRUPT_ENABLED: 'false' })).resolves.toMatchObject({
@@ -906,7 +389,7 @@ describe('admin manager', () => {
   it('accepts realtime-message env settings through managed env saves', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(
@@ -923,7 +406,7 @@ describe('admin manager', () => {
   it('accepts file system env controls through managed env saves', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(
@@ -942,7 +425,7 @@ describe('admin manager', () => {
   it('normalizes managed group allowlists before saving env', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(
@@ -968,7 +451,7 @@ describe('admin manager', () => {
   it('expands ~/ for file system scope paths when saving env', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(
@@ -983,7 +466,7 @@ describe('admin manager', () => {
   it('syncs chatluna-agent local computer config from managed env saves', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await manager.saveEnv({
@@ -1017,7 +500,7 @@ describe('admin manager', () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
     const agentConfigPath = join(dir, 'data/chatluna/agent/config.json');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     mkdirSync(join(dir, 'data/chatluna/agent'), { recursive: true });
     writeFileSync(agentConfigPath, JSON.stringify({
       version: 4,
@@ -1039,12 +522,12 @@ describe('admin manager', () => {
 
   it('reads state from .env.server when that is the active runtime env file', async () => {
     const dir = createTempDir();
-    writeFileSync(join(dir, '.env.server'), 'CHATLUNA_DEFAULT_MODEL=server-model\n', 'utf8');
+    writeFileSync(join(dir, '.env.server'), 'QQBOT_REPLY_INTERRUPT_ENABLED=true\n', 'utf8');
     vi.stubEnv('QQBOT_ENV_FILE', '.env.server');
 
     const manager = new AdminRuntimeManager({ rootDir: dir });
     await expect(manager.getManagedEnv()).resolves.toMatchObject({
-      CHATLUNA_DEFAULT_MODEL: 'server-model',
+      QQBOT_REPLY_INTERRUPT_ENABLED: 'true',
     });
     expect(manager.getEnvFilesState()).toMatchObject({
       mode: 'single',
@@ -1056,7 +539,7 @@ describe('admin manager', () => {
     const dir = createTempDir();
     const baseEnvFilePath = join(dir, '.env.server');
     const overrideEnvFilePath = join(dir, '.env.runtime');
-    writeFileSync(baseEnvFilePath, 'CHATLUNA_DEFAULT_MODEL=base-model\n', 'utf8');
+    writeFileSync(baseEnvFilePath, 'QQBOT_REPLY_INTERRUPT_ENABLED=true\n', 'utf8');
 
     const manager = new AdminRuntimeManager({
       rootDir: dir,
@@ -1064,26 +547,26 @@ describe('admin manager', () => {
       envOverrideFilePath: overrideEnvFilePath,
     });
 
-    await expect(manager.saveEnv({ CHATLUNA_DEFAULT_MODEL: 'runtime-model' })).resolves.toMatchObject({
-      CHATLUNA_DEFAULT_MODEL: 'runtime-model',
+    await expect(manager.saveEnv({ QQBOT_REPLY_INTERRUPT_ENABLED: 'false' })).resolves.toMatchObject({
+      QQBOT_REPLY_INTERRUPT_ENABLED: 'false',
     });
-    expect(readFileSync(baseEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=base-model');
-    expect(readFileSync(overrideEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=runtime-model');
+    expect(readFileSync(baseEnvFilePath, 'utf8')).toContain('QQBOT_REPLY_INTERRUPT_ENABLED=true');
+    expect(readFileSync(overrideEnvFilePath, 'utf8')).toContain('QQBOT_REPLY_INTERRUPT_ENABLED=false');
   });
 
   it('writes local default env updates into .runtime/.env.runtime instead of .env.local', async () => {
     const dir = createTempDir();
     const baseEnvFilePath = join(dir, '.env.local');
     const overrideEnvFilePath = join(dir, '.runtime/.env.runtime');
-    writeFileSync(baseEnvFilePath, 'CHATLUNA_DEFAULT_MODEL=base-model\n', 'utf8');
+    writeFileSync(baseEnvFilePath, 'QQBOT_REPLY_INTERRUPT_ENABLED=true\n', 'utf8');
 
     const manager = new AdminRuntimeManager({ rootDir: dir });
 
-    await expect(manager.saveEnv({ CHATLUNA_DEFAULT_MODEL: 'runtime-model' })).resolves.toMatchObject({
-      CHATLUNA_DEFAULT_MODEL: 'runtime-model',
+    await expect(manager.saveEnv({ QQBOT_REPLY_INTERRUPT_ENABLED: 'false' })).resolves.toMatchObject({
+      QQBOT_REPLY_INTERRUPT_ENABLED: 'false',
     });
-    expect(readFileSync(baseEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=base-model');
-    expect(readFileSync(overrideEnvFilePath, 'utf8')).toContain('CHATLUNA_DEFAULT_MODEL=runtime-model');
+    expect(readFileSync(baseEnvFilePath, 'utf8')).toContain('QQBOT_REPLY_INTERRUPT_ENABLED=true');
+    expect(readFileSync(overrideEnvFilePath, 'utf8')).toContain('QQBOT_REPLY_INTERRUPT_ENABLED=false');
   });
 
   it('loads TTS state from bot env and the local GPT-SoVITS env file', async () => {
@@ -1271,723 +754,10 @@ describe('admin manager', () => {
     });
   });
 
-  it('mirrors the active built-in tab into runtime chatluna env keys', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(
-      envFilePath,
-      [
-        'CHATLUNA_BASE_URL=https://api.siliconflow.cn/v1',
-        'CHATLUNA_API_KEY=sk-old',
-        'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    const result = await manager.saveModelTabs({
-      activeTab: 'openai',
-      dirtyTabIds: ['openai'],
-      tabs: [
-        {
-          id: 'siliconflow',
-          title: '硅基流动',
-          provider: 'siliconflow',
-          strategyId: 'siliconflow-kimi-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'siliconflow',
-          modelHint: 'kimi',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://custom.invalid/v1',
-          apiKey: 'sk-kimi',
-          defaultModel: 'siliconflow/Pro/moonshotai/Kimi-K2.5',
-        },
-        {
-          id: 'openai',
-          title: 'OpenAI',
-          provider: 'openai',
-          strategyId: 'openai-gpt54-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'openai',
-          modelHint: 'gpt-5.4',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://shell.wyzai.top/v1',
-          apiKey: 'sk-openai',
-          defaultModel: 'openai/gpt-5.4-medium-thinking',
-        },
-        {
-          id: 'copilot',
-          title: 'GitHub Copilot',
-          provider: 'openai',
-          strategyId: 'copilot-github-oauth-main-chat',
-          requestMode: 'responses',
-          structuredOutputProtocol: 'native_responses_json_schema',
-          description: 'copilot',
-          modelHint: 'openai/auto',
-          authKind: 'oauth_device',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-          apiKey: 'github_pat_123',
-          defaultModel: 'openai/auto',
-        },
-        {
-          id: 'deepseek',
-          title: 'DeepSeek',
-          provider: 'deepseek',
-          strategyId: 'deepseek-official-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'chat_reply_v1',
-          description: 'deepseek',
-          modelHint: 'deepseek-v4-flash',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://api.deepseek.com',
-          apiKey: '',
-          defaultModel: 'deepseek-v4-flash',
-        },
-      ],
-    });
-
-    expect(result.modelTabs.activeTab).toBe('openai');
-    expect(result.modelTabs.tabs).toContainEqual(expect.objectContaining({
-      id: 'siliconflow',
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-      canonicalModel: 'Pro/moonshotai/Kimi-K2.5',
-      transportModel: 'Pro/moonshotai/Kimi-K2.5',
-    }));
-    expect(result.env).toMatchObject({
-      CHATLUNA_ACTIVE_TAB: 'openai',
-      CHATLUNA_PLATFORM: 'openai',
-      CHATLUNA_BASE_URL: 'https://shell.wyzai.top/v1',
-      CHATLUNA_API_KEY: 'sk-openai',
-      CHATLUNA_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-      CHATLUNA_SILICONFLOW_BASE_URL: 'https://api.siliconflow.cn/v1',
-      CHATLUNA_SILICONFLOW_DEFAULT_MODEL: 'Pro/moonshotai/Kimi-K2.5',
-      CHATLUNA_OPENAI_DEFAULT_MODEL: 'openai/gpt-5.4-medium-thinking',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'github_pat_123',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-      CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek/deepseek-v4-flash',
-    });
-  });
-
-  it('mirrors the DeepSeek tab into runtime chatluna env keys', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    const result = await manager.saveModelTabs({
-      activeTab: 'deepseek',
-      dirtyTabIds: ['deepseek'],
-      tabs: [
-        {
-          id: 'siliconflow',
-          provider: 'siliconflow',
-          baseUrl: 'https://api.siliconflow.cn/v1',
-          apiKey: 'sk-kimi',
-          defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-        },
-        {
-          id: 'openai',
-          provider: 'openai',
-          baseUrl: 'https://shell.wyzai.top/v1',
-          apiKey: 'sk-openai',
-          defaultModel: 'openai/gpt-5.4-medium-thinking',
-        },
-        {
-          id: 'copilot',
-          provider: 'openai',
-          baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-          apiKey: 'github_pat_123',
-          defaultModel: 'openai/auto',
-        },
-        {
-          id: 'deepseek',
-          provider: 'deepseek',
-          baseUrl: 'https://api.deepseek.com/',
-          apiKey: '',
-          defaultModel: 'deepseek-v4-pro',
-        },
-      ] as any,
-    });
-
-    expect(result.modelTabs.activeTab).toBe('deepseek');
-    expect(result.modelTabs.tabs).toContainEqual(expect.objectContaining({
-      id: 'deepseek',
-      baseUrl: 'https://api.deepseek.com',
-      structuredOutputProtocol: 'chat_reply_v1',
-      defaultModel: 'deepseek/deepseek-v4-pro',
-      canonicalModel: 'deepseek/deepseek-v4-pro',
-      transportModel: 'deepseek-v4-pro',
-    }));
-    expect(result.env).toMatchObject({
-      CHATLUNA_ACTIVE_TAB: 'deepseek',
-      CHATLUNA_PLATFORM: 'deepseek',
-      CHATLUNA_BASE_URL: 'https://api.deepseek.com',
-      CHATLUNA_DEFAULT_MODEL: 'deepseek/deepseek-v4-pro',
-      CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek/deepseek-v4-pro',
-    });
-  });
-
-  it('mirrors the Codex tab into runtime chatluna env keys with Responses metadata', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({
-      rootDir: dir,
-      envFilePath,
-      codexBridge: createCodexBridgeWithModels(CODEX_ENABLED_MODEL_PAYLOAD),
-    });
-    const result = await manager.saveModelTabs({
-      activeTab: 'codex',
-      dirtyTabIds: ['codex'],
-      tabs: [
-        {
-          id: 'codex',
-          provider: 'openai',
-          baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-          apiKey: '',
-          defaultModel: 'openai/gpt-5.5',
-          reasoningEffort: 'high',
-        },
-      ] as any,
-    });
-
-    expect(result.modelTabs.activeTab).toBe('codex');
-    expect(result.modelTabs.tabs).toContainEqual(expect.objectContaining({
-      id: 'codex',
-      strategyId: 'codex-chatgpt-oauth-main-chat',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-      apiKey: 'codex-bridge-secret',
-      defaultModel: 'openai/gpt-5.5',
-      reasoningEffort: 'high',
-      canonicalModel: 'openai/gpt-5.5',
-      transportModel: 'gpt-5.5',
-    }));
-    expect(result.env).toMatchObject({
-      CHATLUNA_ACTIVE_TAB: 'codex',
-      CHATLUNA_PLATFORM: 'openai',
-      CHATLUNA_BASE_URL: 'http://127.0.0.1:5140/api/internal/codex/v1',
-      CHATLUNA_API_KEY: 'codex-bridge-secret',
-      CHATLUNA_DEFAULT_MODEL: 'openai/gpt-5.5',
-      CHATLUNA_CODEX_BASE_URL: 'http://127.0.0.1:5140/api/internal/codex/v1',
-      CHATLUNA_CODEX_API_KEY: 'codex-bridge-secret',
-      CHATLUNA_CODEX_DEFAULT_MODEL: 'openai/gpt-5.5',
-      CHATLUNA_CODEX_REASONING_EFFORT: 'high',
-    });
-  });
-
-  it('mirrors the MIMO tab into runtime chatluna env keys and inherited credentials', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(
-      envFilePath,
-      [
-        'CHATLUNA_MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1',
-        'CHATLUNA_MIMO_API_KEY=sk-mimo',
-        'CHATLUNA_MIMO_DEFAULT_MODEL=mimo-v2.5-pro',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    const result = await manager.saveModelTabs({
-      activeTab: 'mimo',
-      dirtyTabIds: ['mimo'],
-      tabs: [
-        {
-          id: 'mimo',
-          provider: 'mimo',
-          baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1/',
-          defaultModel: 'mimo-v2-omni',
-        },
-      ] as any,
-    });
-
-    expect(result.modelTabs.activeTab).toBe('mimo');
-    expect(result.modelTabs.tabs).toContainEqual(expect.objectContaining({
-      id: 'mimo',
-      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-      apiKey: 'sk-mimo',
-      defaultModel: 'mimo/mimo-v2-omni',
-      canonicalModel: 'mimo/mimo-v2-omni',
-      transportModel: 'mimo-v2-omni',
-    }));
-    expect(result.env).toMatchObject({
-      CHATLUNA_ACTIVE_TAB: 'mimo',
-      CHATLUNA_PLATFORM: 'mimo',
-      CHATLUNA_BASE_URL: 'https://token-plan-cn.xiaomimimo.com/v1',
-      CHATLUNA_API_KEY: 'sk-mimo',
-      CHATLUNA_DEFAULT_MODEL: 'mimo/mimo-v2-omni',
-      CHATLUNA_MIMO_BASE_URL: 'https://token-plan-cn.xiaomimimo.com/v1',
-      CHATLUNA_MIMO_API_KEY: 'sk-mimo',
-      CHATLUNA_MIMO_DEFAULT_MODEL: 'mimo/mimo-v2-omni',
-    });
-    expect(resolveDefaultLlmCredentials(result.env)).toMatchObject({
-      baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-      apiKey: 'sk-mimo',
-      model: 'mimo/mimo-v2-omni',
-    });
-  });
-
-  it('rejects unsupported MIMO TTS models', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_MIMO_API_KEY=sk-mimo\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'mimo',
-        dirtyTabIds: ['mimo'],
-        tabs: [
-          {
-            id: 'mimo',
-            provider: 'mimo',
-            baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-            apiKey: '',
-            defaultModel: 'mimo-v2.5-tts',
-          },
-        ] as any,
-      }),
-    ).rejects.toThrow(/MIMO Tab：.*不在允许的聊天模型列表中/);
-  });
-
-  it('rejects unsupported OpenAI tab models', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'openai',
-        dirtyTabIds: ['openai'],
-        tabs: [
-          {
-            id: 'siliconflow',
-            title: '硅基流动',
-            provider: 'siliconflow',
-          strategyId: 'siliconflow-kimi-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'siliconflow',
-          modelHint: 'kimi',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://api.siliconflow.cn/v1',
-          apiKey: 'sk-kimi',
-          defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-        },
-          {
-            id: 'openai',
-            title: 'OpenAI',
-            provider: 'openai',
-          strategyId: 'openai-gpt54-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'openai',
-          modelHint: 'gpt-5.4',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://shell.wyzai.top/v1',
-          apiKey: 'sk-openai',
-          defaultModel: 'openai/gpt-5.2',
-        },
-          {
-          id: 'copilot',
-          title: 'GitHub Copilot',
-          provider: 'openai',
-          strategyId: 'copilot-github-oauth-main-chat',
-          requestMode: 'responses',
-          structuredOutputProtocol: 'native_responses_json_schema',
-          description: 'copilot',
-          modelHint: 'openai/auto',
-          authKind: 'oauth_device',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-          apiKey: 'github_pat_123',
-          defaultModel: 'openai/auto',
-        },
-      ],
-    }),
-    ).rejects.toThrow(/OpenAI Tab：.*不在允许的模型族内/);
-  });
-
-  it('derives Copilot Responses metadata from the Auto entry', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({
-      rootDir: dir,
-      envFilePath,
-      copilotBridge: createCopilotBridgeWithModels(COPILOT_ENABLED_MODEL_PAYLOAD),
-    });
-    const result = await manager.saveModelTabs({
-      activeTab: 'copilot',
-      dirtyTabIds: ['copilot'],
-      tabs: [
-        {
-          id: 'siliconflow',
-          title: '硅基流动',
-          provider: 'siliconflow',
-          strategyId: 'siliconflow-kimi-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'siliconflow',
-          modelHint: 'kimi',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://api.siliconflow.cn/v1',
-          apiKey: 'sk-kimi',
-          defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-        },
-        {
-          id: 'openai',
-          title: 'OpenAI',
-          provider: 'openai',
-          strategyId: 'openai-gpt54-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'openai',
-          modelHint: 'gpt-5.4',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://shell.wyzai.top/v1',
-          apiKey: 'sk-openai',
-          defaultModel: 'openai/gpt-5.4-medium-thinking',
-        },
-        {
-          id: 'copilot',
-          title: 'GitHub Copilot',
-          provider: 'openai',
-          strategyId: 'copilot-github-oauth-main-chat',
-          requestMode: 'responses',
-          structuredOutputProtocol: 'native_responses_json_schema',
-          description: 'copilot',
-          modelHint: 'openai/auto',
-          authKind: 'oauth_device',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-          apiKey: 'github_pat_123',
-          defaultModel: 'openai/auto',
-        },
-        {
-          id: 'deepseek',
-          title: 'DeepSeek',
-          provider: 'deepseek',
-          strategyId: 'deepseek-official-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'chat_reply_v1',
-          description: 'deepseek',
-          modelHint: 'deepseek-v4-flash',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://api.deepseek.com',
-          apiKey: '',
-          defaultModel: 'deepseek-v4-flash',
-        },
-      ],
-    });
-
-    expect(result.modelTabs.activeTab).toBe('copilot');
-    expect(result.modelTabs.tabs).toContainEqual(expect.objectContaining({
-      id: 'copilot',
-      requestMode: 'responses',
-      structuredOutputProtocol: 'native_responses_json_schema',
-      defaultModel: 'openai/auto',
-      canonicalModel: 'openai/auto',
-      transportModel: 'auto',
-    }));
-    expect(result.env).toMatchObject({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_DEFAULT_MODEL: 'openai/auto',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-    });
-  });
-
-  it('rejects unsupported Copilot tab models', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({
-      rootDir: dir,
-      envFilePath,
-      copilotBridge: createCopilotBridgeWithModels(COPILOT_ENABLED_MODEL_PAYLOAD.slice(0, 1)),
-    });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'copilot',
-        dirtyTabIds: ['copilot'],
-        tabs: [
-          {
-            id: 'siliconflow',
-            title: '硅基流动',
-            provider: 'siliconflow',
-          strategyId: 'siliconflow-kimi-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'siliconflow',
-          modelHint: 'kimi',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://api.siliconflow.cn/v1',
-          apiKey: 'sk-kimi',
-          defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-        },
-          {
-            id: 'openai',
-            title: 'OpenAI',
-            provider: 'openai',
-          strategyId: 'openai-gpt54-main-chat',
-          requestMode: 'chat_completions',
-          structuredOutputProtocol: 'native_chat_json_schema',
-          description: 'openai',
-          modelHint: 'gpt-5.4',
-          authKind: 'manual',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'https://shell.wyzai.top/v1',
-          apiKey: 'sk-openai',
-          defaultModel: 'openai/gpt-5.4-medium-thinking',
-        },
-          {
-          id: 'copilot',
-          title: 'GitHub Copilot',
-          provider: 'openai',
-          strategyId: 'copilot-github-oauth-main-chat',
-          requestMode: 'responses',
-          structuredOutputProtocol: 'native_responses_json_schema',
-          description: 'copilot',
-          modelHint: 'openai/auto',
-          authKind: 'oauth_device',
-          authStatus: 'ready',
-          accountLabel: null,
-          authError: null,
-          baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-          apiKey: 'github_pat_123',
-          defaultModel: 'bad model',
-        },
-      ],
-    }),
-    ).rejects.toThrow(/GitHub Copilot Tab：.*不在 Copilot Auto 入口列表内/);
-  });
-
-  it('rejects unsupported Codex tab models outside the current visible API catalog', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({
-      rootDir: dir,
-      envFilePath,
-      codexBridge: createCodexBridgeWithModels(CODEX_ENABLED_MODEL_PAYLOAD.slice(0, 1)),
-    });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'codex',
-        dirtyTabIds: ['codex'],
-        tabs: [
-          {
-            id: 'codex',
-            provider: 'openai',
-            baseUrl: 'http://127.0.0.1:5140/api/internal/codex/v1',
-            apiKey: '',
-            defaultModel: 'openai/auto',
-          },
-        ] as any,
-      }),
-    ).rejects.toThrow(/Codex Tab：.*不在当前 Codex 可见 API 模型列表内/);
-  });
-
-  it('rejects unsupported DeepSeek tab models when using the official fallback list', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'deepseek',
-        dirtyTabIds: ['deepseek'],
-        tabs: [
-          {
-            id: 'siliconflow',
-            provider: 'siliconflow',
-            baseUrl: 'https://api.siliconflow.cn/v1',
-            apiKey: 'sk-kimi',
-            defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-          },
-          {
-            id: 'openai',
-            provider: 'openai',
-            baseUrl: 'https://shell.wyzai.top/v1',
-            apiKey: 'sk-openai',
-            defaultModel: 'openai/gpt-5.4-medium-thinking',
-          },
-          {
-            id: 'copilot',
-            provider: 'openai',
-            baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-            apiKey: 'github_pat_123',
-            defaultModel: 'openai/auto',
-          },
-          {
-            id: 'deepseek',
-            provider: 'deepseek',
-            baseUrl: 'https://api.deepseek.com',
-            apiKey: '',
-            defaultModel: 'not-official',
-          },
-        ] as any,
-      }),
-    ).rejects.toThrow(/DeepSeek Tab：.*不在允许的模型列表中/);
-  });
-
-  it('skips strict validation for tabs that the client did not mark as dirty', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(
-      envFilePath,
-      [
-        'CHATLUNA_ACTIVE_TAB=siliconflow',
-        'CHATLUNA_OPENAI_BASE_URL=https://shell.wyzai.top/v1',
-        'CHATLUNA_OPENAI_API_KEY=sk-stale',
-        // legacy/invalid value left in env from a prior bad save
-        'CHATLUNA_OPENAI_DEFAULT_MODEL=openai/gpt-5.2',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-
-    // Client only marks the deepseek tab as dirty. The stale OPENAI tab value should not
-    // block the unrelated save anymore.
-    const result = await manager.saveModelTabs({
-      activeTab: 'deepseek',
-      dirtyTabIds: ['deepseek'],
-      tabs: [
-        {
-          id: 'siliconflow',
-          provider: 'siliconflow',
-          baseUrl: 'https://api.siliconflow.cn/v1',
-          apiKey: 'sk-kimi',
-          defaultModel: 'Pro/moonshotai/Kimi-K2.5',
-        },
-        {
-          id: 'openai',
-          provider: 'openai',
-          baseUrl: 'https://shell.wyzai.top/v1',
-          apiKey: 'sk-stale',
-          // unchanged, still illegal — but client did not mark this tab dirty
-          defaultModel: 'openai/gpt-5.2',
-        },
-        {
-          id: 'copilot',
-          provider: 'openai',
-          baseUrl: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-          apiKey: 'github_pat_123',
-          defaultModel: 'openai/auto',
-        },
-        {
-          id: 'deepseek',
-          provider: 'deepseek',
-          baseUrl: 'https://api.deepseek.com',
-          apiKey: '',
-          defaultModel: 'deepseek-v4-flash',
-        },
-      ] as any,
-    });
-
-    expect(result.modelTabs.activeTab).toBe('deepseek');
-    expect(result.env).toMatchObject({
-      CHATLUNA_ACTIVE_TAB: 'deepseek',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek/deepseek-v4-flash',
-    });
-  });
-
-  it('rejects model tab saves without a dirty tab list', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'openai',
-        tabs: [],
-      } as any),
-    ).rejects.toThrow('保存模型 Tab 必须携带已修改的 Tab 列表');
-  });
-
-  it('rejects unknown model tabs in save payloads', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await expect(
-      manager.saveModelTabs({
-        activeTab: 'openai',
-        dirtyTabIds: ['openai'],
-        tabs: [
-          {
-            id: 'openai',
-            baseUrl: 'https://shell.wyzai.top/v1',
-            apiKey: 'sk-openai',
-            defaultModel: 'openai/gpt-5.4-medium-thinking',
-          },
-          { id: 'ghost' },
-        ] as any,
-      }),
-    ).rejects.toThrow('未知模型 Tab：ghost');
-  });
-
   it('schedules qqbot.target restart through a transient user unit', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     const execFile = vi
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
@@ -2028,7 +798,7 @@ describe('admin manager', () => {
   it('schedules qqbot-koishi.service restart through a transient user unit', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     const execFile = vi
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
@@ -2064,7 +834,7 @@ describe('admin manager', () => {
   it('uses system-level systemctl for server-mode service actions', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.server');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     const execFile = vi
       .fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' })
@@ -2097,10 +867,214 @@ describe('admin manager', () => {
     expect(status.controllerState.activeState).toBe('active');
   });
 
+  it('returns a trackable handle when a delayed restart is scheduled', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+
+    const handle = await manager.scheduleRestart('qqbot-koishi.service');
+
+    expect(handle).toMatchObject({
+      targetUnit: 'qqbot-koishi.service',
+      transientUnit: expect.stringMatching(/^qqbot-koishi-service-restart-\d+$/),
+      serviceUnit: expect.stringMatching(/^qqbot-koishi-service-restart-\d+\.service$/),
+      timerUnit: expect.stringMatching(/^qqbot-koishi-service-restart-\d+\.timer$/),
+      scheduledAt: expect.any(Number),
+    });
+    expect(execFile).toHaveBeenCalledWith(
+      'systemd-run',
+      [
+        '--quiet',
+        '--on-active=1s',
+        `--unit=${handle.transientUnit}`,
+        'systemctl',
+        'restart',
+        'qqbot-koishi.service',
+      ],
+      expect.objectContaining({ cwd: dir, timeout: 15_000 }),
+    );
+  });
+
+  it('keeps the apply lease when the target restart is observed', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const handle = createRestartHandle();
+    const execFile = vi.fn(async (_file: string, args: string[]) => {
+      if (args.includes(handle.targetUnit) && args.includes('ActiveState,SubState,InvocationID,Job')) {
+        return { stdout: restartTargetOutput('new-invocation'), stderr: '' };
+      }
+      throw new Error(`unexpected systemd call: ${args.join(' ')}`);
+    });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+
+    await expect(
+      manager.superviseScheduledRestart(handle, 'old-invocation', {
+        timeoutMs: 0,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toEqual({
+      state: 'restart_observed',
+      job: null,
+    });
+    expect(execFile.mock.calls.some(([, args]) => args.includes('stop'))).toBe(false);
+  });
+
+  it('cancels a failed restart job before allowing the apply lease to release', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const handle = createRestartHandle();
+    const execFile = vi.fn(async (_file: string, args: string[]) => {
+      if (args.includes('stop')) return { stdout: '', stderr: '' };
+      if (args.includes(handle.targetUnit) && args.includes('ActiveState,SubState,InvocationID,Job')) {
+        return { stdout: restartTargetOutput('old-invocation'), stderr: '' };
+      }
+      if (args.includes(handle.timerUnit)) {
+        return {
+          stdout: restartJobUnitOutput({
+            activeState: 'inactive',
+            subState: 'dead',
+          }),
+          stderr: '',
+        };
+      }
+      if (args.includes(handle.serviceUnit)) {
+        return {
+          stdout: restartJobUnitOutput({
+            activeState: 'failed',
+            subState: 'failed',
+            result: 'exit-code',
+            execMainStatus: 1,
+            startedAt: 123,
+          }),
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected systemd call: ${args.join(' ')}`);
+    });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+
+    await expect(
+      manager.superviseScheduledRestart(handle, 'old-invocation', {
+        timeoutMs: 0,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toMatchObject({
+      state: 'safe_to_release',
+      reason: 'job_failed',
+      job: {
+        phase: 'failed',
+        result: 'exit-code',
+        execMainStatus: 1,
+      },
+    });
+
+    const stopCall = execFile.mock.calls.find(([, args]) => args.includes('stop'));
+    expect(stopCall).toEqual([
+      'systemctl',
+      ['stop', handle.timerUnit, handle.serviceUnit],
+      expect.objectContaining({ cwd: dir, timeout: 5_000 }),
+    ]);
+    const targetChecks = execFile.mock.calls.filter(
+      ([, args]) => args.includes(handle.targetUnit)
+        && args.includes('ActiveState,SubState,InvocationID,Job'),
+    );
+    expect(targetChecks).toHaveLength(2);
+  });
+
+  it('cancels an externally cancelled restart job before releasing the apply lease', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const handle = createRestartHandle();
+    const execFile = vi.fn(async (_file: string, args: string[]) => {
+      if (args.includes('stop')) return { stdout: '', stderr: '' };
+      if (args.includes(handle.targetUnit) && args.includes('ActiveState,SubState,InvocationID,Job')) {
+        return { stdout: restartTargetOutput('old-invocation'), stderr: '' };
+      }
+      if (args.includes(handle.timerUnit) || args.includes(handle.serviceUnit)) {
+        return {
+          stdout: restartJobUnitOutput({
+            activeState: 'inactive',
+            subState: 'dead',
+          }),
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected systemd call: ${args.join(' ')}`);
+    });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+
+    await expect(
+      manager.superviseScheduledRestart(handle, 'old-invocation', {
+        timeoutMs: 0,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toMatchObject({
+      state: 'safe_to_release',
+      reason: 'job_cancelled',
+      job: { phase: 'cancelled' },
+    });
+    expect(execFile.mock.calls.some(([, args]) => args.includes('stop'))).toBe(true);
+  });
+
+  it('retains the apply lease when cancelling a delayed restart cannot be confirmed', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const handle = createRestartHandle();
+    const execFile = vi.fn(async (_file: string, args: string[]) => {
+      if (args.includes('stop')) throw new Error('systemd unavailable token=must-not-surface');
+      if (args.includes(handle.targetUnit) && args.includes('ActiveState,SubState,InvocationID,Job')) {
+        return { stdout: restartTargetOutput('old-invocation'), stderr: '' };
+      }
+      if (args.includes(handle.timerUnit)) {
+        return {
+          stdout: restartJobUnitOutput({
+            activeState: 'active',
+            subState: 'waiting',
+          }),
+          stderr: '',
+        };
+      }
+      if (args.includes(handle.serviceUnit)) {
+        return {
+          stdout: restartJobUnitOutput({
+            activeState: 'inactive',
+            subState: 'dead',
+          }),
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected systemd call: ${args.join(' ')}`);
+    });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+
+    const error = await manager.superviseScheduledRestart(
+      handle,
+      'old-invocation',
+      { timeoutMs: 0, pollIntervalMs: 0 },
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AdminRestartJobError);
+    expect(error).toMatchObject({
+      code: 'restart_job_failed',
+      operation: 'restart_service',
+      stage: 'cancel',
+      targetUnit: 'qqbot-koishi.service',
+      transientUnit: handle.transientUnit,
+      jobPhase: 'scheduled',
+    });
+    expect((error as Error).message).not.toContain('must-not-surface');
+  });
+
   it('filters local-only TTS units from server-mode service status queries', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.server');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     const execFile = vi.fn().mockResolvedValue({
       stdout: [
         'Description=QQBot Service',
@@ -2134,7 +1108,7 @@ describe('admin manager', () => {
   it('rejects local-only TTS service actions in server mode', async () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.server');
-    writeFileSync(envFilePath, 'CHATLUNA_DEFAULT_MODEL=Pro/moonshotai/Kimi-K2.5\n', 'utf8');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
     const execFile = vi.fn();
 
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });

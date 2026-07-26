@@ -33,12 +33,9 @@ vi.mock('koishi', () => {
 });
 
 const memoryMocks = vi.hoisted(() => ({
-  buildMemoryExtractProviderProfile: vi.fn((_profile: unknown, config: unknown) => config),
   embedTexts: vi.fn(async () => [[0.1, 0.2]]),
   ensureMemoryTables: vi.fn(),
   extractMemoryCandidates: vi.fn(async () => ({ ok: true, route: 'probe' })),
-  isEmbedRuntimeConfigured: vi.fn(() => false),
-  isMemoryProviderConfigured: vi.fn(() => true),
   processMaintenanceJob: vi.fn(async () => undefined),
   registerMemoryCommands: vi.fn(),
   runLegacyMemoryMigration: vi.fn(async () => ({
@@ -65,12 +62,6 @@ const storeMocks = vi.hoisted(() => ({
   }>,
 }));
 
-vi.mock('../src/plugins/shared/llm/main-chat-runtime.js', () => ({
-  mainChatRuntimeState: {
-    getProfile: vi.fn(() => ({ routeId: 'main-chat' })),
-  },
-}));
-
 vi.mock('../src/plugins/memory/commands.js', () => ({
   registerMemoryCommands: memoryMocks.registerMemoryCommands,
 }));
@@ -86,13 +77,10 @@ vi.mock('../src/plugins/memory/pipeline.js', () => ({
 
 vi.mock('../src/plugins/memory/providers/embedding-client.js', () => ({
   embedTexts: memoryMocks.embedTexts,
-  isEmbedRuntimeConfigured: memoryMocks.isEmbedRuntimeConfigured,
 }));
 
 vi.mock('../src/plugins/memory/providers/router.js', () => ({
-  buildMemoryExtractProviderProfile: memoryMocks.buildMemoryExtractProviderProfile,
   extractMemoryCandidates: memoryMocks.extractMemoryCandidates,
-  isMemoryProviderConfigured: memoryMocks.isMemoryProviderConfigured,
 }));
 
 vi.mock('../src/plugins/memory/schema.js', () => ({
@@ -130,17 +118,6 @@ function config() {
     enabled: true,
     readEnabled: true,
     writeEnabled: true,
-    extractBaseUrl: '',
-    extractApiKey: '',
-    extractModel: '',
-    extractTimeoutMs: 60_000,
-    extractRequestMode: 'chat_completions',
-    extractStructuredOutputProtocol: 'chat_reply_v1',
-    extractSupportsJsonMode: false,
-    embedBaseUrl: '',
-    embedApiKey: '',
-    embedModel: '',
-    embedTimeoutMs: 60_000,
     queryTopK: 4,
     promptBudgetTokens: 800,
     embedBatchSize: 8,
@@ -188,6 +165,7 @@ function createHarness(options: { chatChainInitially?: boolean; contextManager?:
 
   const ctx = {
     database: {},
+    modelRuntime: {},
     chatluna,
     get: vi.fn((name: string) => (name === 'chatluna' ? chatluna : undefined)),
     on: vi.fn((name: string, handler: EventHandler) => {

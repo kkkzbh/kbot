@@ -15,12 +15,15 @@ import {
   type NaturalTriggerReason,
   type NaturalTriggerState,
 } from './state.js';
+import type { ModelRuntimeClient } from '../../model-config/index.js';
 
 const logger = new Logger('group-natural-trigger');
 const allowReplyResolverName = 'group-natural-trigger';
 
 export const name = 'group-natural-trigger';
-export const inject = { required: ['chatluna', 'featurePolicy'] } as const;
+export const inject = {
+  required: ['chatluna', 'featurePolicy', 'modelRuntime'],
+} as const;
 export {
   getNaturalTriggerState,
   setNaturalTriggerState,
@@ -38,11 +41,6 @@ export interface Config {
   spamWindowMs?: number;
   spamThreshold?: number;
   spamMuteMs?: number;
-  decisionEnabled?: boolean;
-  decisionBaseUrl?: string;
-  decisionApiKey?: string;
-  decisionModel?: string;
-  decisionTimeoutMs?: number;
   decisionMinConfidence?: number;
 }
 
@@ -65,13 +63,6 @@ export const Config: Schema<Config> = Schema.object({
   spamWindowMs: Schema.natural().role('time').description('刷屏判定窗口（毫秒）。'),
   spamThreshold: Schema.natural().description('刷屏判定阈值（窗口内消息数）。'),
   spamMuteMs: Schema.natural().role('time').description('刷屏后忽略时长（毫秒）。'),
-  decisionEnabled: Schema.boolean().description('是否启用模型触发判定。'),
-  decisionBaseUrl: Schema.string()
-    .role('link')
-    .description('触发判定模型 API Base URL。'),
-  decisionApiKey: Schema.string().role('secret').description('触发判定模型 API Key。'),
-  decisionModel: Schema.string().description('触发判定模型名。'),
-  decisionTimeoutMs: Schema.natural().role('time').description('触发判定模型超时（毫秒）。'),
   decisionMinConfidence: Schema.number().min(0).max(1).description('触发判定模型最小置信度。'),
 });
 
@@ -85,11 +76,6 @@ interface RuntimeConfig {
   spamWindowMs: number;
   spamThreshold: number;
   spamMuteMs: number;
-  decisionEnabled: boolean;
-  decisionBaseUrl: string;
-  decisionApiKey: string;
-  decisionModel: string;
-  decisionTimeoutMs: number;
   decisionMinConfidence: number;
 }
 
@@ -106,6 +92,7 @@ interface TriggerDecisionResult {
 
 type ContextWithFeaturePolicy = Context & {
   featurePolicy?: FeaturePolicyServiceLike;
+  modelRuntime?: ModelRuntimeClient;
   chatluna?: {
     registerAllowReplyResolver?: (
       name: string,
@@ -157,16 +144,10 @@ function requireNumberConfig(config: Config, key: keyof Config, options: { min?:
   return value;
 }
 
-function requireStringConfig(config: Config, key: keyof Config): string {
-  return String(requireConfigValue<unknown>(config, key));
-}
-
 function toRuntimeConfig(config: Config): RuntimeConfig {
   const configuredAliases = parseAliasList(requireConfigValue<string[] | string>(config, 'aliases'));
   const configuredGroups = parseGroupSet(requireConfigValue<string[] | string>(config, 'enabledGroups'));
   const directTriggerProbability = requireNumberConfig(config, 'directTriggerProbability', { min: 0, max: 1 });
-  const decisionBaseUrl = requireStringConfig(config, 'decisionBaseUrl').replace(/\/+$/, '');
-
   return {
     enabled: requireBooleanConfig(config, 'enabled'),
     enabledGroups: configuredGroups,
@@ -177,11 +158,6 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     spamWindowMs: requireNumberConfig(config, 'spamWindowMs', { min: 0 }),
     spamThreshold: requireNumberConfig(config, 'spamThreshold', { min: 1 }),
     spamMuteMs: requireNumberConfig(config, 'spamMuteMs', { min: 0 }),
-    decisionEnabled: requireBooleanConfig(config, 'decisionEnabled'),
-    decisionBaseUrl,
-    decisionApiKey: requireStringConfig(config, 'decisionApiKey'),
-    decisionModel: requireStringConfig(config, 'decisionModel'),
-    decisionTimeoutMs: requireNumberConfig(config, 'decisionTimeoutMs', { min: 0 }),
     decisionMinConfidence: requireNumberConfig(config, 'decisionMinConfidence', { min: 0, max: 1 }),
   };
 }
@@ -212,8 +188,23 @@ function isQuotedToBot(session: Session): boolean {
   return Boolean(quote?.user?.id && quote.user.id === session.bot?.selfId);
 }
 
-async function shouldTriggerByModel(content: string, runtime: RuntimeConfig): Promise<TriggerDecisionResult> {
-  if (!runtime.decisionEnabled || !runtime.decisionBaseUrl || !runtime.decisionApiKey || !runtime.decisionModel) {
+const NATURAL_TRIGGER_DECISION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['trigger', 'confidence'],
+  properties: {
+    trigger: { type: 'boolean' },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+  },
+} as const;
+
+async function shouldTriggerByModel(
+  content: string,
+  runtime: RuntimeConfig,
+  modelRuntime: ModelRuntimeClient,
+): Promise<TriggerDecisionResult> {
+  const binding = modelRuntime.resolve('naturalTrigger.decision');
+  if (!binding.target) {
     return { trigger: false, confidence: null, rawContent: null };
   }
 
@@ -221,46 +212,23 @@ async function shouldTriggerByModel(content: string, runtime: RuntimeConfig): Pr
     '你是群聊机器人触发判定器。仅输出 JSON：{"trigger":true|false,"confidence":0~1}。' +
     '当用户在和机器人说话、向机器人提问、或明确希望机器人响应时 trigger=true；否则 false。';
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), runtime.decisionTimeoutMs);
-
   try {
-    const response = await fetch(`${runtime.decisionBaseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${runtime.decisionApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: runtime.decisionModel,
-        max_tokens: 120,
+    const response = await modelRuntime.executeChat({
+      workload: 'naturalTrigger.decision',
+      request: {
+        maxOutputTokens: 120,
+        structuredOutput: {
+          name: 'natural_trigger_decision',
+          schema: NATURAL_TRIGGER_DECISION_SCHEMA,
+          strict: true,
+        },
         messages: [
           { role: 'system', content: systemPrompt },
-          {
-            role: 'user',
-            content: `消息: ${content}`,
-          },
+          { role: 'user', content: `消息: ${content}` },
         ],
-      }),
-      signal: controller.signal,
+      },
     });
-
-    if (!response.ok) return { trigger: false, confidence: null, rawContent: null };
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
-    };
-
-    const rawContent = payload.choices?.[0]?.message?.content;
-    const contentText = Array.isArray(rawContent)
-      ? rawContent
-          .map((item) => (typeof item?.text === 'string' ? item.text : ''))
-          .join('')
-          .trim()
-      : typeof rawContent === 'string'
-        ? rawContent.trim()
-        : '';
-
+    const contentText = response.text.trim();
     if (!contentText) return { trigger: false, confidence: null, rawContent: null };
 
     const jsonText = extractJsonObject(contentText);
@@ -277,10 +245,12 @@ async function shouldTriggerByModel(content: string, runtime: RuntimeConfig): Pr
       confidence,
       rawContent: contentText,
     };
-  } catch {
+  } catch (error) {
+    logger.warn(
+      'natural trigger model decision failed: %s',
+      error instanceof Error ? error.message : String(error),
+    );
     return { trigger: false, confidence: null, rawContent: null };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -310,6 +280,10 @@ export function apply(ctx: Context, config: Config): void {
   const featurePolicy = serviceCtx.featurePolicy;
   if (!featurePolicy) {
     throw new Error('group-natural-trigger requires featurePolicy service.');
+  }
+  const modelRuntime = serviceCtx.modelRuntime;
+  if (!modelRuntime) {
+    throw new Error('group-natural-trigger requires modelRuntime service.');
   }
   const chatluna = serviceCtx.chatluna;
   const registerAllowReplyResolver = chatluna?.registerAllowReplyResolver;
@@ -396,7 +370,7 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (!shouldTrigger && !inFocus && content) {
-      modelDecision = await shouldTriggerByModel(content, runtime);
+      modelDecision = await shouldTriggerByModel(content, runtime, modelRuntime);
       shouldTrigger = modelDecision.trigger;
       if (shouldTrigger) {
         triggerReason = 'model';

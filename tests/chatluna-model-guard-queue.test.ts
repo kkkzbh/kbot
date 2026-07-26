@@ -54,11 +54,9 @@ vi.mock('../src/plugins/shared/prompt-context/index.js', () => ({
 }));
 
 import { apply } from '../src/plugins/model-guard/index.js';
-import { resolveMainChatRuntimeProfileFromEnv } from '../src/plugins/shared/llm/index.js';
-import { mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 afterEach(() => {
-  mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({}));
   promptAssemblyMocks.beginPromptAssemblyTurn.mockReset();
   promptAssemblyMocks.registerPromptFragment.mockReset();
 });
@@ -111,9 +109,14 @@ function createHarness(options: { chatChainAvailableInitially?: boolean } = {}) 
     awaitLoadPlatform: vi.fn(async () => undefined),
     chatChain: options.chatChainAvailableInitially === false ? undefined : chatChain,
   };
+  const { modelConfig } = createTestModelRuntime({
+    mainRequestMode: 'responses',
+    mainProtocol: 'native_responses_json_schema',
+  });
 
   const ctx = {
     chatluna,
+    modelConfig,
     database: {
       set: vi.fn(async () => undefined),
     },
@@ -222,12 +225,6 @@ describe('chatluna model guard runtime shape', () => {
   });
 
   it('updates the live ChatLuna 1.4 conversation model before resolve_model reads it', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-    }));
     const harness = createHarness();
     harness.ready?.();
 
@@ -249,21 +246,19 @@ describe('chatluna model guard runtime shape', () => {
     };
 
     await expect(guard?.({ stripped: { content: 'hi' } }, context)).resolves.not.toBe(1);
-    expect(conversation.model).toBe('openai/auto');
+    expect(conversation.model).toBe('qqbot-primary/main-chat');
     expect(harness.database.set).toHaveBeenCalledWith(
       'chatluna_conversation',
       { id: 'conv-1' },
-      { model: 'openai/auto' },
+      { model: 'qqbot-primary/main-chat' },
+    );
+    expect(harness.chatluna.awaitLoadPlatform).toHaveBeenCalledWith(
+      'qqbot-primary',
+      15000,
     );
   });
 
   it('stops instead of continuing with a partially synced room model when persistence fails', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-    }));
     const harness = createHarness();
     harness.database.set.mockRejectedValueOnce(new Error('database write failed'));
     harness.ready?.();
@@ -271,7 +266,7 @@ describe('chatluna model guard runtime shape', () => {
     const guard = harness.chainMiddlewares.get('chatluna_model_guard');
     const conversation = {
       id: 'conv-1',
-      model: 'openai/gpt-4.1',
+      model: 'qqbot-obsolete/old-model',
       preset: 'sakiko',
       chatMode: 'plugin',
     };
@@ -286,17 +281,11 @@ describe('chatluna model guard runtime shape', () => {
     };
 
     await expect(guard?.({ stripped: { content: 'hi' } }, context)).resolves.toBe(1);
-    expect(conversation.model).toBe('openai/gpt-4.1');
+    expect(conversation.model).toBe('qqbot-obsolete/old-model');
     expect(context.send).toHaveBeenCalledWith('主聊天模型同步失败，请稍后重试。');
   });
 
   it('creates an active QQ reply conversation before resolve_model when resolve_conversation only returned context', async () => {
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'bridge-secret',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'openai/auto',
-    }));
     const harness = createHarness();
     harness.ready?.();
 
@@ -341,11 +330,13 @@ describe('chatluna model guard runtime shape', () => {
     expect(harness.chatluna.conversation.createConversation).toHaveBeenCalledWith(session, {
       bindingKey: 'shared:onebot:guild:829573670',
       title: 'New Conversation',
-      model: 'openai/auto',
+      model: 'qqbot-primary/main-chat',
       preset: 'saki',
       chatMode: 'plugin',
     });
-    expect(context.options.conversation.conversation?.model).toBe('openai/auto');
+    expect(context.options.conversation.conversation?.model).toBe(
+      'qqbot-primary/main-chat',
+    );
     expect(harness.database.set).not.toHaveBeenCalled();
   });
 });

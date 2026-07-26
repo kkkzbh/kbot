@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { isNavigationFailure, useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import {
@@ -31,6 +31,7 @@ import type { BotServiceStatus, BotServiceUnit } from '@contracts';
 import { useSessionStore } from '@/stores/session';
 import { useRuntimeStore, type ApplyState } from '@/stores/runtime';
 import { rawApi, rawJsonBody } from '@/api/client';
+import { runLogoutFlow } from '@/logout-flow';
 
 type NavItem = {
   key: string;
@@ -58,7 +59,7 @@ const groups: NavGroup[] = [
   ] },
   { label: '对话智能', items: [
     { key: 'models', label: '模型接口', path: '/intelligence/models', icon: Cpu },
-    { key: 'presets', label: '角色预设', path: '/intelligence/presets', icon: UserRoundCog },
+    { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
     { key: 'affinity', label: '关系事件', path: '/intelligence/affinity', icon: HeartHandshake },
   ] },
@@ -106,7 +107,7 @@ const restartReasonLabels: Record<string, string> = {
   basic: '基础设置',
   features: '功能设置',
   model: '模型接口',
-  preset: '角色预设',
+  preset: '上下文预设',
   tts: '语音服务',
 };
 const restartTitle = computed(() => runtime.restartReasons.length
@@ -154,9 +155,18 @@ async function navigate(path: string) {
 }
 
 async function logout() {
-  await session.logout();
-  ElMessage.success('管理会话已退出');
-  await router.push('/login');
+  const result = await runLogoutFlow({
+    prepareLeave: async () => {
+      if (route.name === 'overview') return true;
+      const failure = await router.push({ name: 'overview' });
+      return !isNavigationFailure(failure);
+    },
+    logout: () => session.logout(),
+    navigateToLogin: async () => {
+      await router.replace('/login');
+    },
+  });
+  if (result === 'logged_out') ElMessage.success('管理会话已退出');
 }
 
 function delay(ms: number): Promise<void> {

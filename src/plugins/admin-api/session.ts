@@ -24,6 +24,7 @@ export class AdminHttpError extends Error {
       | 'invalid_host'
       | 'not_found'
       | 'conflict'
+      | 'upstream_error'
       | 'service_unavailable'
       | 'internal_error',
     message: string,

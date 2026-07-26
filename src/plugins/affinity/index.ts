@@ -8,6 +8,10 @@ import {
   resolveChatLunaRoomLike,
   type QqbotChatLunaContextOptionsLike,
 } from '../shared/chatluna-conversation.js';
+import type {
+  ModelConfigService,
+  ModelRuntimeClient,
+} from '../model-config/index.js';
 export {
   AffinityService,
   affinityMutationResponse,
@@ -18,7 +22,6 @@ export {
 export {
   createRandomScheduleTimes,
   resolveAffinityEvent,
-  resolveAnalysisModelConfig,
   selectRandomCount,
 } from './public.js';
 export { isAffinityPanelCommandSession } from './command.js';
@@ -28,7 +31,9 @@ const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
 };
 
 export const name = 'affinity';
-export const inject = { required: ['database', 'puppeteer', 'chatluna'] } as const;
+export const inject = {
+  required: ['database', 'puppeteer', 'chatluna', 'modelConfig', 'modelRuntime'],
+} as const;
 
 const logger = new Logger(name);
 const allowReplyResolverName = 'qqbot-affinity';
@@ -68,7 +73,7 @@ type MiddlewareContextLike = {
   options?: QqbotChatLunaContextOptionsLike;
 };
 
-type ContextWithAffinity = Context & {
+type AffinityServices = {
   database: any;
   chatluna: ChatLunaLike;
   bots?: Array<{
@@ -77,6 +82,8 @@ type ContextWithAffinity = Context & {
     sendMessage: (...args: any[]) => Promise<unknown>;
   }>;
   affinity?: AffinityServiceLike;
+  modelConfig: ModelConfigService;
+  modelRuntime: ModelRuntimeClient;
   puppeteer: AffinityPanelPuppeteerLike;
 };
 
@@ -109,7 +116,7 @@ export function registerAffinityPanelCommand(
   });
 }
 
-function resolveChatLunaService(ctx: ContextWithAffinity): ChatLunaLike {
+function resolveChatLunaService(ctx: AffinityServices): ChatLunaLike {
   const carrier = ctx as unknown as { get?: (name: string) => unknown; chatluna?: ChatLunaLike };
   const fromGetter = typeof carrier.get === 'function'
     ? carrier.get.call(ctx, 'chatluna') as ChatLunaLike | undefined
@@ -348,11 +355,13 @@ export function apply(ctx: Context, config: Config): void {
   void runtime.randomWindowStartHour;
   void runtime.randomWindowEndHour;
 
-  const serviceCtx = ctx as ContextWithAffinity;
+  const serviceCtx = ctx as unknown as AffinityServices;
   ensureAffinityTables(ctx);
   const database = (ctx as unknown as { database: AffinityDatabaseLike }).database;
   const service = new AffinityService(
     database,
+    serviceCtx.modelConfig,
+    serviceCtx.modelRuntime,
     () => (((ctx as unknown as { bots?: unknown[] }).bots ?? []) as any[]),
     Math.random,
     () => resolveChatLunaService(serviceCtx) as any,

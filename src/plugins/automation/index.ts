@@ -33,6 +33,11 @@ import { compilePromptEnvelopeFromFragments, type PromptFragment } from '../shar
 import { decodeStoredMessageText } from '../shared/stored-message.js';
 import { resolveStickerCapabilityArtifacts } from '../sticker/index.js';
 import {
+  CanonicalModelBindingResolver,
+  type ModelConfigService,
+  type ResolvedModelTarget,
+} from '../model-config/index.js';
+import {
   formatNaturalRunAtText,
   formatAutomationTimestamp,
   isValidCronExpr,
@@ -49,7 +54,9 @@ const AUTOMATION_RECENT_CONTEXT_LIMIT = 8;
 const automationReplyOrchestrator = new ReplyOrchestratorService();
 
 export const name = 'task-automation';
-export const inject = { required: ['database', 'chatluna', 'toolPolicy'] } as const;
+export const inject = {
+  required: ['database', 'chatluna', 'toolPolicy', 'modelConfig'],
+} as const;
 export { normalizeGroupId, parseGroupSet } from './scheduler.js';
 
 export interface Config {
@@ -137,6 +144,7 @@ type AutomationServicesLike = {
   database: DatabaseLike;
   chatluna: ChatLunaServiceLike;
   toolPolicy: ToolPolicyServiceLike;
+  modelConfig: ModelConfigService;
   bots: ChatLunaBot[];
 };
 
@@ -160,6 +168,14 @@ function automationToolPolicy(ctx: ContextWithAutomation): ToolPolicyServiceLike
 
 function automationBots(ctx: ContextWithAutomation): ChatLunaBot[] {
   return automationServices(ctx).bots ?? [];
+}
+
+function resolveAutomationModelTarget(
+  ctx: ContextWithAutomation,
+): ResolvedModelTarget {
+  return new CanonicalModelBindingResolver(
+    automationServices(ctx).modelConfig.getRuntimeSnapshot(),
+  ).resolve('main.chat').target!;
 }
 
 type SourceRoomContext = {
@@ -843,6 +859,7 @@ async function createTemporaryExecutionRoom(
   sourceRoom: AutomationRoomRow,
   session: ReplySessionLike,
   job: AutomationJob,
+  modelTarget: ResolvedModelTarget,
 ): Promise<AutomationRoomRow> {
   const tempRoom: AutomationRoomRow = {
     ...sourceRoom,
@@ -851,6 +868,7 @@ async function createTemporaryExecutionRoom(
     roomMasterId: job.creatorId,
     conversationId: randomUUID(),
     chatMode: 'plugin',
+    model: modelTarget.canonicalModel,
     updatedTime: new Date(),
     autoUpdate: false,
   };
@@ -1030,15 +1048,23 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
 
   try {
     const source = await resolveSourceRoomContext(ctx, job);
-    tempRoom = await createTemporaryExecutionRoom(ctx, source.room, source.session, job);
+    const modelTarget = resolveAutomationModelTarget(ctx);
+    tempRoom = await createTemporaryExecutionRoom(
+      ctx,
+      source.room,
+      source.session,
+      job,
+      modelTarget,
+    );
     const replyRoom = toReplyAutomationRoom(tempRoom);
-    ensureSupportedStructuredReplyModel(replyRoom);
+    ensureSupportedStructuredReplyModel(modelTarget);
     const capabilitySnapshot = await prepareAutomationExecutionContext(ctx, source.room, tempRoom, source.session);
     const toolMask = await resolveAutomationToolMask(ctx, source.session, source.room);
     const message: ChatLunaMessage = {
       content: createAutomationPrompt(job, run.triggeredAt),
     };
-    const replyOutputContract = applyReplyOutputContract(replyRoom, message, {
+    const replyOutputContract = applyReplyOutputContract(message, {
+      modelTarget,
       replyMode: 'automation',
       capabilitySnapshot,
     });

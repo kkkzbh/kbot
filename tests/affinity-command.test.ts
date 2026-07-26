@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { AffinityService, apply, inject as affinityInject, isAffinityPanelCommandSession, registerAffinityPanelCommand } from '../src/plugins/affinity/index.js';
 import type { AffinityPanelView, AffinityServiceLike } from '../src/types/affinity.js';
+import { createTestModelRuntime } from './model-runtime-fixture.js';
 
 vi.mock('koishi', () => {
   class MockLogger {
@@ -33,6 +34,10 @@ vi.mock('koishi', () => {
 
 vi.mock('koishi-plugin-chatluna/chains', () => ({
   ChainMiddlewareRunStatus: { CONTINUE: 0 },
+}));
+
+vi.mock('../src/plugins/shared/chatluna-history.js', () => ({
+  createChatLunaHistoryWriter: vi.fn(),
 }));
 
 function createPanelView(overrides: Partial<AffinityPanelView> = {}): AffinityPanelView {
@@ -96,6 +101,10 @@ function createPuppeteerHarness() {
 describe('affinity panel command', () => {
   it('requires ChatLuna because affinity prompt and allow-reply hooks are runtime-critical', () => {
     expect(affinityInject.required).toContain('chatluna');
+    expect(affinityInject.required).toEqual(expect.arrayContaining([
+      'modelConfig',
+      'modelRuntime',
+    ]));
     expect('optional' in affinityInject ? affinityInject.optional : []).not.toContain('chatluna');
   });
 
@@ -133,6 +142,7 @@ describe('affinity panel command', () => {
     const command = vi.fn(() => ({
       action: vi.fn(),
     }));
+    const { modelConfig, modelRuntime } = createTestModelRuntime();
     const ctx = {
       model: {
         extend: vi.fn(),
@@ -143,6 +153,8 @@ describe('affinity panel command', () => {
       },
       puppeteer: {},
       chatluna,
+      modelConfig,
+      modelRuntime,
       command,
       middleware: vi.fn(),
       on: vi.fn((name: string, listener: () => unknown) => {

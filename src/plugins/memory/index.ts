@@ -1,18 +1,23 @@
-import { Context, Logger, Schema, type Session } from 'koishi';
-import { mainChatRuntimeState } from '../shared/llm/main-chat-runtime.js';
+import { Context, Logger, type Session } from 'koishi';
+import type { ModelRuntimeClient } from '../model-config/index.js';
 import { resolveChatLunaRoomLike } from '../shared/chatluna-conversation.js';
 import { consumePromptEnvelope, registerPromptFragment } from '../shared/prompt-context/index.js';
 import { resolveSessionAvatarUrl, resolveSessionDisplayName, resolveSessionQqNick } from '../shared/session/index.js';
 import { buildMemoryAddress, type MemoryMiddlewareContextLike } from './address.js';
-import type { MemoryRuntimeConfig } from './config.js';
+import {
+  Config as ConfigSchema,
+  toRuntimeConfig,
+  type Config as MemoryPluginConfig,
+  type MemoryRuntimeConfig,
+} from './config.js';
 import { registerMemoryCommands } from './commands.js';
 import { retrieveMemoryForContext } from './recall.js';
 import { ensureMemoryTables } from './schema.js';
 import { runLegacyMemoryMigration } from './migration.js';
 import { MemoryStatusService } from './status.js';
 export { MemoryStatusService, createUnavailableMemoryStatusSnapshot } from './status.js';
-import { embedTexts, isEmbedRuntimeConfigured } from './providers/embedding-client.js';
-import { buildMemoryExtractProviderProfile, extractMemoryCandidates, isMemoryProviderConfigured } from './providers/router.js';
+import { embedTexts } from './providers/embedding-client.js';
+import { extractMemoryCandidates } from './providers/router.js';
 import { runMemoryJobTick, processMaintenanceJob } from './pipeline.js';
 import { extractPlainText, MemoryStore } from './store.js';
 export { MemoryStore } from './store.js';
@@ -25,63 +30,15 @@ const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
 };
 
 export const name = 'memory';
-export const inject = ['chatluna', 'database'];
+export const inject = {
+  required: ['chatluna', 'database', 'modelRuntime'],
+} as const;
 
 const logger = new Logger(name);
 
-export interface Config {
-  enabled?: boolean;
-  readEnabled?: boolean;
-  writeEnabled?: boolean;
-  extractBaseUrl?: string;
-  extractApiKey?: string;
-  extractModel?: string;
-  extractTimeoutMs?: number;
-  extractRequestMode?: string;
-  extractStructuredOutputProtocol?: string;
-  extractSupportsJsonMode?: boolean;
-  embedBaseUrl?: string;
-  embedApiKey?: string;
-  embedModel?: string;
-  embedTimeoutMs?: number;
-  queryTopK?: number;
-  promptBudgetTokens?: number;
-  embedBatchSize?: number;
-  extractIdleMs?: number;
-  extractMessageBatch?: number;
-  archiveDays?: number;
-  maxJobRetries?: number;
-  jobLockTimeoutMs?: number;
-  maxFacts?: number;
-  maxEpisodes?: number;
-}
-
-export const Config: Schema<Config> = Schema.object({
-  enabled: Schema.boolean().description('是否启用本地长期记忆。'),
-  readEnabled: Schema.boolean().description('是否启用长期记忆召回。'),
-  writeEnabled: Schema.boolean().description('是否启用长期记忆提炼写入。'),
-  extractBaseUrl: Schema.string().description('长期记忆提炼用 OpenAI 兼容 Base URL；必须和 API Key、模型一起显式配置。'),
-  extractApiKey: Schema.string().role('secret').description('长期记忆提炼用 API Key；缺失时不会写入长期记忆。'),
-  extractModel: Schema.string().description('长期记忆提炼模型；缺失时不会写入长期记忆。'),
-  extractTimeoutMs: Schema.natural().role('time').description('长期记忆提炼请求超时（毫秒）。'),
-  extractRequestMode: Schema.string().description('提炼请求模式：chat_completions / responses。'),
-  extractStructuredOutputProtocol: Schema.string().description('提炼输出协议。'),
-  extractSupportsJsonMode: Schema.boolean().description('提炼 provider 是否支持 JSON mode + repair。'),
-  embedBaseUrl: Schema.string().role('link').description('embedding 服务 Base URL。'),
-  embedApiKey: Schema.string().role('secret').description('embedding 服务 API Key。'),
-  embedModel: Schema.string().description('embedding 模型。'),
-  embedTimeoutMs: Schema.natural().role('time').description('embedding 请求超时（毫秒）。'),
-  queryTopK: Schema.natural().description('长期记忆召回条数上限。'),
-  promptBudgetTokens: Schema.natural().description('长期记忆注入 prompt 预算。'),
-  embedBatchSize: Schema.natural().description('单批 embedding 条数。'),
-  extractIdleMs: Schema.natural().role('time').description('会话静默多久后触发记忆提炼。'),
-  extractMessageBatch: Schema.natural().description('提炼时读取的最近消息条数。'),
-  archiveDays: Schema.natural().description('低风险 episode 归档天数。'),
-  maxJobRetries: Schema.natural().description('job 最大重试次数。'),
-  jobLockTimeoutMs: Schema.natural().role('time').description('processing job 锁超时。'),
-  maxFacts: Schema.natural().description('单批最多写入 fact 候选数。'),
-  maxEpisodes: Schema.natural().description('单批最多写入 episode 候选数。'),
-});
+export const Config = ConfigSchema;
+export type Config = MemoryPluginConfig;
+export { toRuntimeConfig };
 
 type ChainHookBuilder = {
   after: (name: string) => ChainHookBuilder;
@@ -106,6 +63,7 @@ type ChatLunaLike = {
 type ContextServiceView = {
   get?: (name: string) => unknown;
   chatluna?: ChatLunaLike;
+  modelRuntime?: ModelRuntimeClient;
   database?: {
     get: (table: string, query: Record<string, unknown>) => Promise<any[]>;
     set: (table: string, query: Record<string, unknown>, data: Record<string, unknown>) => Promise<unknown>;
@@ -114,51 +72,6 @@ type ContextServiceView = {
     remove: (table: string, query: Record<string, unknown>) => Promise<unknown>;
   };
 };
-
-function requireNaturalConfig(config: Config, key: keyof Config, min = 1): number {
-  const parsed = Number(config[key]);
-  if (!Number.isFinite(parsed) || parsed < min) {
-    throw new Error(`长期记忆配置缺失或非法：${String(key)}。默认值必须由 koishi.yml 显式传入。`);
-  }
-  return Math.max(min, Math.floor(parsed));
-}
-
-function requireBooleanConfig(config: Config, key: keyof Config): boolean {
-  const value = config[key];
-  if (typeof value !== 'boolean') {
-    throw new Error(`长期记忆配置缺失或非法：${String(key)}。默认值必须由 koishi.yml 显式传入。`);
-  }
-  return value;
-}
-
-function requireStringConfig(config: Config, key: keyof Config): string {
-  const value = config[key];
-  if (value == null) {
-    throw new Error(`长期记忆配置缺失：${String(key)}。默认值必须由 koishi.yml 显式传入。`);
-  }
-  return String(value).trim();
-}
-
-function requireExtractRequestMode(config: Config): 'chat_completions' | 'responses' {
-  const value = requireStringConfig(config, 'extractRequestMode');
-  if (value !== 'chat_completions' && value !== 'responses') {
-    throw new Error('长期记忆配置 extractRequestMode 必须是 chat_completions 或 responses。');
-  }
-  return value;
-}
-
-function requireExtractProtocol(config: Config): 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1' | 'json_mode' {
-  const value = requireStringConfig(config, 'extractStructuredOutputProtocol');
-  if (
-    value !== 'native_chat_json_schema' &&
-    value !== 'native_responses_json_schema' &&
-    value !== 'chat_reply_v1' &&
-    value !== 'json_mode'
-  ) {
-    throw new Error('长期记忆配置 extractStructuredOutputProtocol 不受支持。');
-  }
-  return value;
-}
 
 function resolveChatLunaService(ctx: ContextServiceView): ChatLunaLike | undefined {
   const getter = ctx.get;
@@ -169,41 +82,6 @@ function resolveChatLunaService(ctx: ContextServiceView): ChatLunaLike | undefin
   return ctx.chatluna;
 }
 
-export function toRuntimeConfig(config: Config): MemoryRuntimeConfig {
-  const mainProfile = mainChatRuntimeState.getProfile();
-  return {
-    enabled: requireBooleanConfig(config, 'enabled'),
-    readEnabled: requireBooleanConfig(config, 'readEnabled'),
-    writeEnabled: requireBooleanConfig(config, 'writeEnabled'),
-    extract: buildMemoryExtractProviderProfile(mainProfile, {
-      routeId: 'memory-extract',
-      baseUrl: requireStringConfig(config, 'extractBaseUrl'),
-      apiKey: requireStringConfig(config, 'extractApiKey'),
-      model: requireStringConfig(config, 'extractModel'),
-      timeoutMs: requireNaturalConfig(config, 'extractTimeoutMs', 3000),
-      requestMode: requireExtractRequestMode(config),
-      structuredOutputProtocol: requireExtractProtocol(config),
-      supportsJsonMode: requireBooleanConfig(config, 'extractSupportsJsonMode'),
-    }),
-    embed: {
-      baseUrl: requireStringConfig(config, 'embedBaseUrl'),
-      apiKey: requireStringConfig(config, 'embedApiKey'),
-      model: requireStringConfig(config, 'embedModel'),
-      timeoutMs: requireNaturalConfig(config, 'embedTimeoutMs', 3000),
-    },
-    queryTopK: requireNaturalConfig(config, 'queryTopK', 1),
-    promptBudgetTokens: requireNaturalConfig(config, 'promptBudgetTokens', 200),
-    embedBatchSize: requireNaturalConfig(config, 'embedBatchSize', 1),
-    extractIdleMs: requireNaturalConfig(config, 'extractIdleMs', 10_000),
-    extractMessageBatch: requireNaturalConfig(config, 'extractMessageBatch', 4),
-    archiveDays: requireNaturalConfig(config, 'archiveDays', 7),
-    maxJobRetries: requireNaturalConfig(config, 'maxJobRetries', 0),
-    jobLockTimeoutMs: requireNaturalConfig(config, 'jobLockTimeoutMs', 30_000),
-    maxFacts: requireNaturalConfig(config, 'maxFacts', 1),
-    maxEpisodes: requireNaturalConfig(config, 'maxEpisodes', 1),
-  };
-}
-
 function resolveInputText(session: Session, context: MemoryMiddlewareContextLike): string {
   return extractPlainText(session.stripped?.content ?? session.content ?? context.options?.inputMessage?.content);
 }
@@ -211,12 +89,13 @@ function resolveInputText(session: Session, context: MemoryMiddlewareContextLike
 async function injectMemoryContext(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
+  modelRuntime: ModelRuntimeClient,
   address: ReturnType<typeof buildMemoryAddress> extends infer T ? NonNullable<T> : never,
   query: string,
 ): Promise<void> {
   let queryEmbedding: number[] | null = null;
-  if (query.trim() && isEmbedRuntimeConfigured(runtime.embed)) {
-    const [vector] = await embedTexts(runtime.embed, [query]);
+  if (query.trim()) {
+    const [vector] = await embedTexts(modelRuntime, [query]);
     queryEmbedding = vector;
   }
   const result = await retrieveMemoryForContext(store, address, query, {
@@ -241,21 +120,25 @@ async function injectMemoryContext(
 export function apply(ctx: Context, config: Config): void {
   const services = ctx as unknown as ContextServiceView;
   const database = services.database;
+  const modelRuntime = services.modelRuntime;
   const runtime = toRuntimeConfig(config);
   if (!runtime.enabled || !database) return;
+  if (!modelRuntime) {
+    throw new Error('memory requires modelRuntime service.');
+  }
 
   ensureMemoryTables(ctx);
   const store = new MemoryStore(database);
   const adminService = new MemoryAdminService(database, store);
   const statusService = new MemoryStatusService(
     runtime,
+    modelRuntime,
     store,
     async () => {
-      const [vector] = await embedTexts(runtime.embed, ['healthcheck']);
+      const [vector] = await embedTexts(modelRuntime, ['healthcheck']);
       if (!vector) throw new Error('empty_embedding_vector');
     },
     async () => {
-      if (!isMemoryProviderConfigured(runtime.extract)) throw new Error('memory_provider_unconfigured');
       const output = await extractMemoryCandidates({
         address: {
           userKey: 'probe:memory',
@@ -283,7 +166,7 @@ export function apply(ctx: Context, config: Config): void {
             attributionSource: 'direct_session',
           },
         ],
-        providerProfile: runtime.extract,
+        modelRuntime,
         maxFacts: 1,
         maxEpisodes: 1,
       });
@@ -303,7 +186,7 @@ export function apply(ctx: Context, config: Config): void {
     if (processing) return;
     processing = true;
     try {
-      await runMemoryJobTick(store, runtime, statusService);
+      await runMemoryJobTick(store, runtime, modelRuntime, statusService);
       const now = Date.now();
       if (!lastMaintenanceAt || now - lastMaintenanceAt >= 6 * 60 * 60 * 1000) {
         await processMaintenanceJob(store, runtime, statusService);
@@ -392,7 +275,13 @@ export function apply(ctx: Context, config: Config): void {
 
         if (runtime.readEnabled && flags.readEnabled) {
           try {
-            await injectMemoryContext(store, runtime, address, inputText);
+            await injectMemoryContext(
+              store,
+              runtime,
+              modelRuntime,
+              address,
+              inputText,
+            );
           } catch (error) {
             logger.warn('memory recall skipped: %s', error instanceof Error ? error.message : String(error));
           }

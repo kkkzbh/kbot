@@ -1,86 +1,57 @@
-import { describe, expect, it } from 'vitest';
-import { buildMemoryExtractProviderProfile, isMemoryProviderConfigured } from '../src/plugins/memory/providers/router.js';
-import { resolveMainChatRuntimeProfileFromEnv } from '../src/plugins/shared/llm/main-chat-tabs.js';
+import { describe, expect, it, vi } from 'vitest';
 
-const configuredExtractDefaults = {
-  baseUrl: '',
-  apiKey: '',
-  model: '',
-  timeoutMs: 60_000,
-  requestMode: 'chat_completions',
-  structuredOutputProtocol: 'chat_reply_v1',
-  supportsJsonMode: false,
-} as const;
+vi.mock('koishi', () => {
+  type SchemaNode = {
+    description: () => SchemaNode;
+    role: () => SchemaNode;
+  };
+  const node = (): SchemaNode => ({
+    description: node,
+    role: node,
+  });
+  return {
+    Schema: {
+      object: node,
+      boolean: node,
+      natural: node,
+    },
+  };
+});
+
+import {
+  toRuntimeConfig,
+  type Config,
+} from '../src/plugins/memory/config.js';
+
+function featureConfig(): Config {
+  return {
+    enabled: true,
+    readEnabled: true,
+    writeEnabled: true,
+    queryTopK: 4,
+    promptBudgetTokens: 800,
+    embedBatchSize: 8,
+    extractIdleMs: 10_000,
+    extractMessageBatch: 8,
+    archiveDays: 30,
+    maxJobRetries: 3,
+    jobLockTimeoutMs: 300_000,
+    maxFacts: 5,
+    maxEpisodes: 5,
+  };
+}
 
 describe('memory runtime config', () => {
-  it('keeps extraction unconfigured when extract provider fields are all empty', () => {
-    const mainProfile = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'copilot-key',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
-    });
-
-    const profile = buildMemoryExtractProviderProfile(mainProfile, configuredExtractDefaults);
-
-    expect(profile).toMatchObject({
-      baseUrl: '',
-      apiKey: '',
-      model: '',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-    });
-    expect(isMemoryProviderConfigured(profile)).toBe(false);
+  it('keeps only memory policy and queue settings in the feature domain', () => {
+    expect(toRuntimeConfig(featureConfig())).toEqual(featureConfig());
   });
 
-  it('does not mix partial extract provider fields with the main chat provider', () => {
-    const mainProfile = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'copilot',
-      CHATLUNA_COPILOT_BASE_URL: 'http://127.0.0.1:5140/api/internal/copilot/v1',
-      CHATLUNA_COPILOT_API_KEY: 'copilot-key',
-      CHATLUNA_COPILOT_DEFAULT_MODEL: 'auto',
-    });
+  it('fails directly when a required feature setting is absent', () => {
+    const config = featureConfig();
+    delete config.embedBatchSize;
 
-    const profile = buildMemoryExtractProviderProfile(mainProfile, {
-      ...configuredExtractDefaults,
-      apiKey: 'extract-key',
-    });
-
-    expect(profile).toMatchObject({
-      baseUrl: '',
-      apiKey: 'extract-key',
-      model: '',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-    });
-    expect(isMemoryProviderConfigured(profile)).toBe(false);
-  });
-
-  it('uses only a complete dedicated extract provider', () => {
-    const mainProfile = resolveMainChatRuntimeProfileFromEnv({
-      CHATLUNA_ACTIVE_TAB: 'deepseek',
-      CHATLUNA_DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
-      CHATLUNA_DEEPSEEK_API_KEY: 'deepseek-key',
-      CHATLUNA_DEEPSEEK_DEFAULT_MODEL: 'deepseek/deepseek-v4-flash',
-    });
-
-    const profile = buildMemoryExtractProviderProfile(mainProfile, {
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      apiKey: 'extract-key',
-      model: 'Pro/moonshotai/Kimi-K2.5',
-      timeoutMs: 60_000,
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-      supportsJsonMode: false,
-    });
-
-    expect(profile).toMatchObject({
-      baseUrl: 'https://api.siliconflow.cn/v1',
-      apiKey: 'extract-key',
-      model: 'Pro/moonshotai/Kimi-K2.5',
-      requestMode: 'chat_completions',
-      structuredOutputProtocol: 'chat_reply_v1',
-    });
-    expect(isMemoryProviderConfigured(profile)).toBe(true);
+    expect(() => toRuntimeConfig(config)).toThrow(
+      '长期记忆配置缺失或非法：embedBatchSize。',
+    );
   });
 });

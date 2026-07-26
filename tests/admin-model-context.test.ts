@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelUsagePayload } from 'koishi-plugin-chatluna/llm-core/platform/usage';
 import {
-  buildContextBlueprint,
   buildContextTargets,
   MODEL_CONTEXT_MAX_SESSIONS,
   MODEL_CONTEXT_PENDING_TTL_MS,
@@ -400,52 +399,7 @@ describe('model context snapshot store', () => {
   });
 });
 
-describe('context blueprint and targets', () => {
-  it('uses the canonical ChatLuna descriptor and V2 field paths', () => {
-    const definition = {
-      schemaVersion: 2 as const,
-      id: 'sakiko',
-      displayName: 'Sakiko',
-      aliases: ['小祥'],
-      messages: [{ role: 'system' as const, purpose: 'personality' as const, content: 'reserved' }],
-      inputFormat: null,
-      lore: { defaults: {}, entries: [] },
-      authorsNote: null,
-      knowledge: null,
-      promptConfig: {},
-    };
-    const blueprint = buildContextBlueprint({
-      id: 'sakiko',
-      displayName: 'Sakiko',
-      aliases: ['小祥'],
-      definition,
-      messages: [],
-      inputFormat: null,
-      lore: definition.lore,
-      authorsNote: null,
-      knowledge: null,
-      promptConfig: {},
-      source: 'runtime',
-      revision: 'revision-1',
-    });
-
-    expect(blueprint.sections.map((section) => section.id)).toEqual([
-      'system_prompts',
-      'chat_history',
-      'long_history',
-      'injections',
-      'input',
-      'scratchpad',
-      'after_scratchpad',
-      'tools',
-    ]);
-    expect(blueprint.sections[0].sources).toContainEqual(expect.objectContaining({
-      path: 'messages[0]',
-      role: 'system',
-      purpose: 'personality',
-    }));
-  });
-
+describe('context targets', () => {
   it('lists selector metadata without guessing request-scoped resolution', async () => {
     const tables: Record<string, unknown[]> = {
       chatluna_conversation: [{

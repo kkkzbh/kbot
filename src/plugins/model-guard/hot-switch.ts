@@ -1,5 +1,4 @@
-import { resolveMainChatModelDescriptor } from '../shared/llm/index.js';
-import { mainChatRuntimeState } from '../shared/llm/main-chat-runtime.js';
+import type { ResolvedModelTarget } from '../model-config/index.js';
 
 export type MainChatRoomModelLike = {
   model?: string;
@@ -10,10 +9,12 @@ export type MainChatRoomModelLike = {
 export type MainChatRoomModelSyncResult = {
   changed: boolean;
   originalModel: string | null;
-  generation: number;
+  revision: number;
   canonicalModel: string;
   transportModel: string;
-  strategyId: string;
+  connectionId: string;
+  modelId: string;
+  adapter: string;
   requestMode: string;
   outputProtocol: string;
 };
@@ -24,41 +25,56 @@ function trimOptionalText(value: unknown): string | null {
   return normalized || null;
 }
 
-export async function syncRoomModelToMainChatRuntime(args: {
+export async function syncRoomModelToMainBinding(args: {
   room: MainChatRoomModelLike;
+  target: ResolvedModelTarget;
+  revision: number;
   clearCache?: (room: MainChatRoomModelLike) => Promise<unknown>;
-  updateConversationModel?: (conversationId: string, model: string) => Promise<unknown>;
+  updateConversationModel?: (
+    conversationId: string,
+    model: string,
+  ) => Promise<unknown>;
 }): Promise<MainChatRoomModelSyncResult> {
-  const profile = mainChatRuntimeState.getProfile();
-  const descriptor = resolveMainChatModelDescriptor({
-    tabId: profile.tabId,
-    model: profile.canonicalModel,
-  });
   const originalModel = trimOptionalText(args.room.model);
-  const changed = descriptor.canonicalModel !== originalModel;
+  const changed = args.target.canonicalModel !== originalModel;
 
   if (changed) {
     const conversationId = trimOptionalText(args.room.conversationId);
     if (!conversationId) {
-      throw new Error('conversationId is required before syncing the active chat model.');
+      throw new Error(
+        'conversationId is required before syncing the active chat model.',
+      );
     }
     if (args.clearCache) {
       await args.clearCache(args.room);
     }
     if (args.updateConversationModel) {
-      await args.updateConversationModel(conversationId, descriptor.canonicalModel);
+      await args.updateConversationModel(
+        conversationId,
+        args.target.canonicalModel,
+      );
     }
-    args.room.model = descriptor.canonicalModel;
+    args.room.model = args.target.canonicalModel;
+  }
+
+  const requestMode = args.target.model.requestMode;
+  const outputProtocol = args.target.model.structuredOutputProtocol;
+  if (!requestMode || !outputProtocol) {
+    throw new Error(
+      `main.chat model ${args.target.model.id} has no request/output contract.`,
+    );
   }
 
   return {
     changed,
     originalModel,
-    generation: mainChatRuntimeState.getGeneration(),
-    canonicalModel: descriptor.canonicalModel,
-    transportModel: descriptor.transportModel,
-    strategyId: descriptor.strategyId,
-    requestMode: descriptor.requestMode,
-    outputProtocol: profile.structuredOutputProtocol,
+    revision: args.revision,
+    canonicalModel: args.target.canonicalModel,
+    transportModel: args.target.model.transportModel,
+    connectionId: args.target.connection.id,
+    modelId: args.target.model.id,
+    adapter: args.target.connection.adapter,
+    requestMode,
+    outputProtocol,
   };
 }

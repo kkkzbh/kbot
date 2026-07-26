@@ -77,9 +77,11 @@ vi.mock('koishi', () => {
 
 import { apply, inject as automationInject } from '../src/plugins/automation/index.js';
 import { apply as applySticker } from '../src/plugins/sticker/index.js';
-import { mainChatRuntimeState } from '../src/plugins/shared/llm/main-chat-runtime.js';
-import { resolveMainChatRuntimeProfileFromEnv } from '../src/plugins/shared/llm/main-chat-tabs.js';
 import { TOOL_CATALOG } from '../src/plugins/tool-policy/catalog.js';
+import {
+  createTestModelRuntime,
+  type TestModelRuntimeOptions,
+} from './model-runtime-fixture.js';
 
 type ListenerMap = Record<string, Array<() => Promise<void> | void>>;
 type ToolRegistry = Record<string, any>;
@@ -140,7 +142,10 @@ function createDatabase(seed: Record<string, Record<string, any>[]> = {}) {
   };
 }
 
-function createHarness(seed: Record<string, Record<string, any>[]> = {}) {
+function createHarness(
+  seed: Record<string, Record<string, any>[]> = {},
+  modelOptions: TestModelRuntimeOptions = {},
+) {
   const listeners: ListenerMap = {};
   const tools: ToolRegistry = {};
   const database = createDatabase(seed);
@@ -166,11 +171,23 @@ function createHarness(seed: Record<string, Record<string, any>[]> = {}) {
       };
     },
   };
+  const modelServices = createTestModelRuntime(modelOptions);
+  const { modelConfig, modelRuntime } = modelServices;
+  let runtimeSnapshot = modelServices.snapshot;
+  vi.spyOn(modelConfig, 'getRuntimeSnapshot').mockImplementation(
+    () => runtimeSnapshot,
+  );
 
-  const ctx = {
+  const ctx: Record<string, any> = {
     bots: [bot],
     database,
+    modelConfig,
+    modelRuntime,
     model: { extend: vi.fn() },
+    provide: vi.fn(),
+    set: vi.fn((name: string, value: unknown) => {
+      ctx[name] = value;
+    }),
     middleware: vi.fn(),
     command: vi.fn(),
     chatluna: {
@@ -224,6 +241,29 @@ function createHarness(seed: Record<string, Record<string, any>[]> = {}) {
     bot,
     database,
     tools,
+    switchMainBinding(
+      modelId: string,
+      protocol: 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1',
+    ) {
+      const next = structuredClone(runtimeSnapshot);
+      const binding = next.bindings.find(
+        (candidate) => candidate.workload === 'main.chat',
+      );
+      const model = next.models.find(
+        (candidate) => candidate.connectionId === 'primary' && candidate.id === modelId,
+      );
+      if (!binding || binding.mode !== 'dedicated' || !model) {
+        throw new Error(`test main binding target does not exist: ${modelId}`);
+      }
+      binding.connectionId = 'primary';
+      binding.modelId = modelId;
+      model.structuredOutputProtocol = protocol;
+      model.capabilities.structuredOutput = true;
+      runtimeSnapshot = {
+        ...next,
+        revision: next.revision + 1,
+      };
+    },
     async runReady() {
       for (const listener of listeners.ready ?? []) {
         await listener();
@@ -244,7 +284,7 @@ function createRoom(overrides: Record<string, any> = {}) {
     roomMasterId: 'u1',
     conversationId: 'conv-1',
     preset: 'sakiko',
-    model: 'openai/gpt-5.4-medium-thinking',
+    model: 'qqbot-primary/main-chat',
     chatMode: 'plugin',
     visibility: 'template_clone',
     updatedTime: new Date(),
@@ -298,10 +338,9 @@ function createJob(overrides: Record<string, any> = {}) {
 }
 
 describe('task automation tools and execution', () => {
-  const originalActiveTab = process.env.CHATLUNA_ACTIVE_TAB;
-
   it('requires tool policy instead of running automation with unrestricted tools', () => {
     expect(automationInject.required).toContain('toolPolicy');
+    expect(automationInject.required).toContain('modelConfig');
     expect('optional' in automationInject ? automationInject.optional : []).not.toContain('toolPolicy');
   });
 
@@ -325,15 +364,12 @@ describe('task automation tools and execution', () => {
     vi.stubEnv('QQBOT_REPLY_INTERRUPT_ENABLED', 'false');
     vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'true');
     vi.stubEnv('CHAT_NATURAL_TRIGGER_GROUPS', 'group-100');
-    process.env.CHATLUNA_ACTIVE_TAB = 'openai';
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv(process.env));
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
-    process.env.CHATLUNA_ACTIVE_TAB = originalActiveTab;
   });
 
   it('creates a once automation job from same-day natural schedule text', async () => {
@@ -547,79 +583,51 @@ describe('task automation tools and execution', () => {
   });
 
   it('keeps the CHAT_REPLY_V1 contract in automation metadata for tool continuations', async () => {
-    const originalActiveTab = process.env.CHATLUNA_ACTIVE_TAB;
-    const originalDeepSeekBaseUrl = process.env.CHATLUNA_DEEPSEEK_BASE_URL;
-    const originalDeepSeekApiKey = process.env.CHATLUNA_DEEPSEEK_API_KEY;
-    const originalDeepSeekModel = process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL;
-    process.env.CHATLUNA_ACTIVE_TAB = 'deepseek';
-    process.env.CHATLUNA_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
-    process.env.CHATLUNA_DEEPSEEK_API_KEY = 'sk-deepseek';
-    process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
-    mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv(process.env));
-
-    try {
-      const harness = createHarness({
-        chathub_room: [createRoom({ roomName: '当前群房间' })],
-        automation_job: [createJob({ runAt: Date.now() - 1 })],
-      });
-      harness.ctx.chatluna.chat.mockResolvedValueOnce({
-        content: [
-	          'CHAT_REPLY_V1 abc12345',
-	          'DECISION reply',
-	          'BEGIN message',
-	          'CONTENT',
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+    }, {
+      mainProtocol: 'chat_reply_v1',
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: [
+        'CHAT_REPLY_V1 abc12345',
+        'DECISION reply',
+        'BEGIN message',
+        'CONTENT',
           '|自动化执行结果',
-          'END',
-          'DONE abc12345',
-        ].join('\n'),
-        additional_kwargs: {},
-      });
-      await harness.runReady();
+        'END',
+        'DONE abc12345',
+      ].join('\n'),
+      additional_kwargs: {},
+    });
+    await harness.runReady();
 
-      await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(5000);
 
-      const modelMessage = harness.ctx.chatluna.chat.mock.calls[0]?.[2] as {
-        content?: unknown;
-        additional_kwargs?: Record<string, unknown>;
-      } | undefined;
-      expect(modelMessage?.additional_kwargs).toEqual(
-        expect.objectContaining({
-          qqbot_reply_mode: 'automation',
-          qqbot_final_response_contract: expect.objectContaining({
-            protocol: 'chat_reply_v1',
-            schema: null,
-            instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
-          }),
+    const modelMessage = harness.ctx.chatluna.chat.mock.calls[0]?.[2] as {
+      content?: unknown;
+      additional_kwargs?: Record<string, unknown>;
+    } | undefined;
+    expect(modelMessage?.additional_kwargs).toEqual(
+      expect.objectContaining({
+        qqbot_reply_mode: 'automation',
+        qqbot_final_response_contract: expect.objectContaining({
+          protocol: 'chat_reply_v1',
+          schema: null,
+          instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
         }),
-      );
-      expect(String(modelMessage?.additional_kwargs?.qqbot_after_user_message ?? '')).not.toContain('CHAT_REPLY_V1 <nonce>');
-      expect(String(modelMessage?.content ?? '')).not.toContain('CHAT_REPLY_V1 <nonce>');
-      expect(String(modelMessage?.content ?? '')).not.toContain('payload 内容行必须以 `|` 开头');
-      expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
-        expect.objectContaining({
-          status: 'succeeded',
-          outputText: '自动化执行结果',
-        }),
-      ]);
-    } finally {
-      process.env.CHATLUNA_ACTIVE_TAB = originalActiveTab;
-      if (originalDeepSeekBaseUrl === undefined) {
-        delete process.env.CHATLUNA_DEEPSEEK_BASE_URL;
-      } else {
-        process.env.CHATLUNA_DEEPSEEK_BASE_URL = originalDeepSeekBaseUrl;
-      }
-      if (originalDeepSeekApiKey === undefined) {
-        delete process.env.CHATLUNA_DEEPSEEK_API_KEY;
-      } else {
-        process.env.CHATLUNA_DEEPSEEK_API_KEY = originalDeepSeekApiKey;
-      }
-      if (originalDeepSeekModel === undefined) {
-        delete process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL;
-      } else {
-        process.env.CHATLUNA_DEEPSEEK_DEFAULT_MODEL = originalDeepSeekModel;
-      }
-      mainChatRuntimeState.initialize(resolveMainChatRuntimeProfileFromEnv(process.env));
-    }
+      }),
+    );
+    expect(String(modelMessage?.additional_kwargs?.qqbot_after_user_message ?? '')).not.toContain('CHAT_REPLY_V1 <nonce>');
+    expect(String(modelMessage?.content ?? '')).not.toContain('CHAT_REPLY_V1 <nonce>');
+    expect(String(modelMessage?.content ?? '')).not.toContain('payload 内容行必须以 `|` 开头');
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'succeeded',
+        outputText: '自动化执行结果',
+      }),
+    ]);
   });
 
   it('executes due once jobs in private chat without mention wrapper', async () => {
@@ -928,7 +936,7 @@ describe('task automation tools and execution', () => {
     );
   });
 
-  it('follows the latest source room model at execution time', async () => {
+  it('uses the live main binding for the first scheduled call after a revision change', async () => {
     const harness = createHarness({
       chathub_room: [createRoom({ roomName: '当前群房间' })],
       automation_job: [
@@ -957,16 +965,37 @@ describe('task automation tools and execution', () => {
     });
     await harness.runReady();
 
-    await harness.database.set('chathub_room', { roomId: 7 }, { model: 'openai/gpt-5.4', preset: 'new-preset' });
+    await harness.database.set('chathub_room', { roomId: 7 }, {
+      model: 'qqbot-primary/main-chat',
+      preset: 'new-preset',
+    });
+    harness.switchMainBinding('alternate-chat', 'chat_reply_v1');
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: [
+        'CHAT_REPLY_V1 abc12345',
+        'DECISION reply',
+        'BEGIN message',
+        'CONTENT',
+        '|自动化执行结果',
+        'END',
+        'DONE abc12345',
+      ].join('\n'),
+      additional_kwargs: {},
+    });
     await vi.advanceTimersByTimeAsync(5000);
 
-    const [, tempRoom] = harness.ctx.chatluna.chat.mock.calls[0]!;
+    const [, tempRoom, modelMessage] = harness.ctx.chatluna.chat.mock.calls[0]!;
     expect(tempRoom).toEqual(
       expect.objectContaining({
-        model: 'openai/gpt-5.4',
+        model: 'qqbot-primary/alternate-chat',
         preset: 'new-preset',
       }),
     );
+    expect(modelMessage.additional_kwargs).toEqual(expect.objectContaining({
+      qqbot_final_response_contract: expect.objectContaining({
+        protocol: 'chat_reply_v1',
+      }),
+    }));
   });
 
   it('manages scoped jobs via list pause resume and delete tools', async () => {

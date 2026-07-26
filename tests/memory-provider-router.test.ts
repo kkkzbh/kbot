@@ -1,66 +1,139 @@
-import { describe, expect, it } from 'vitest';
-import { requestChatMemoryPlainText } from '../src/plugins/memory/providers/chat-client.js';
-import { isNonRetryableMemoryProviderError } from '../src/plugins/memory/providers/http-error.js';
-import { requestJsonModeMemoryWithRepair } from '../src/plugins/memory/providers/json-mode-repair.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { ModelConnectionExecutor } from '../src/plugins/model-config/index.js';
+import {
+  extractMemoryCandidates,
+  isMemoryExtractWorkloadEnabled,
+  resolveMemoryOutputProtocol,
+} from '../src/plugins/memory/providers/router.js';
+import { embedTexts } from '../src/plugins/memory/providers/embedding-client.js';
 import { parseMemoryExtractionJson } from '../src/plugins/memory/providers/schemas.js';
-import { resolveMemoryOutputProtocol, type MemoryProviderProfile } from '../src/plugins/memory/providers/router.js';
+import { createMemoryModelRuntime } from './memory-model-runtime.js';
 
-function profile(overrides: Partial<MemoryProviderProfile>): MemoryProviderProfile {
-  return {
-    routeId: 'test',
-    baseUrl: 'https://example.invalid/v1',
-    apiKey: 'sk-test',
-    model: 'model',
-    timeoutMs: 1000,
-    requestMode: 'chat_completions',
-    structuredOutputProtocol: 'native_chat_json_schema',
-    ...overrides,
-  };
+const address = {
+  userKey: 'onebot:user:10001',
+  contextKey: 'onebot:bot:20001:dm:10001',
+  channelType: 'direct' as const,
+  platform: 'onebot',
+  botSelfId: '20001',
+  userId: '10001',
+  conversationId: 'conv-1',
+  observedAt: 1,
+};
+
+const turn = {
+  id: 'm-1',
+  role: 'human' as const,
+  text: '我喜欢简洁回答',
+  speakerId: '10001',
+  speakerName: 'Alice',
+  ownerUserKey: address.userKey,
+  isTarget: true,
+  attributionSource: 'direct_session' as const,
+};
+
+function validExtraction(): string {
+  return JSON.stringify({
+    facts: [{
+      subject: 'target_user',
+      ownerSpeakerId: '10001',
+      kind: 'preference',
+      topicKey: 'answer-style',
+      content: '用户喜欢简洁回答',
+      keywords: ['简洁'],
+      importance: 0.7,
+      confidence: 0.9,
+      sensitivity: 'low',
+      suggestedVisibility: 'global',
+      applicability: null,
+      evidence: null,
+      evidenceMessageIds: ['m-1'],
+      evidenceSpeakerIds: ['10001'],
+      conflictHint: null,
+      validFrom: null,
+      validUntil: null,
+      expiresAt: null,
+    }],
+    episodes: [],
+    drops: [],
+  });
 }
 
-describe('memory provider router', () => {
-  it('maps main structured output protocol to memory-specific routes', () => {
-    expect(resolveMemoryOutputProtocol(profile({ structuredOutputProtocol: 'native_responses_json_schema' }))).toBe('native_responses_json_schema');
-    expect(resolveMemoryOutputProtocol(profile({ structuredOutputProtocol: 'native_chat_json_schema' }))).toBe('native_chat_json_schema');
-    expect(resolveMemoryOutputProtocol(profile({ structuredOutputProtocol: 'chat_reply_v1' }))).toBe('plain_text_memory_v1');
-    expect(resolveMemoryOutputProtocol(profile({ structuredOutputProtocol: 'json_mode', supportsJsonMode: true }))).toBe('json_mode_with_repair');
-    expect(resolveMemoryOutputProtocol(profile({ structuredOutputProtocol: 'json_mode', supportsJsonMode: false }))).toBe('unsupported_protocol');
+describe('memory extract runtime routing', () => {
+  it('uses the dedicated managed client with native structured output', async () => {
+    const execute = vi.fn<ModelConnectionExecutor['execute']>(async () => ({
+      text: validExtraction(),
+    }));
+    const { client } = createMemoryModelRuntime({
+      extractProtocol: 'native_responses_json_schema',
+      executor: { execute },
+    });
+
+    const result = await extractMemoryCandidates({
+      address,
+      target: { speakerId: '10001', speakerName: 'Alice' },
+      turns: [turn],
+      modelRuntime: client,
+      maxFacts: 4,
+      maxEpisodes: 2,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      route: 'native_responses_json_schema',
+      candidates: [
+        expect.objectContaining({
+          candidateType: 'fact',
+          kind: 'preference',
+          topicKey: 'answer-style',
+        }),
+      ],
+      error: null,
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      operation: 'chat',
+      target: {
+        canonicalModel: 'qqbot-memory/memory-extract',
+        model: {
+          transportModel: 'provider-memory-extract',
+          structuredOutputProtocol: 'native_responses_json_schema',
+        },
+      },
+      payload: {
+        structuredOutput: {
+          name: 'memory_extraction',
+          strict: true,
+        },
+      },
+    });
   });
 
-  it('preserves provider error details for non-retryable extract HTTP failures', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response(
-      JSON.stringify({ code: 30001, message: 'Sorry, your account balance is insufficient', data: null }),
-      { status: 403, statusText: 'Forbidden' },
-    );
-    try {
-      let caught: unknown = null;
-      await requestChatMemoryPlainText(
-        profile({ structuredOutputProtocol: 'chat_reply_v1' }),
-        [{
-          id: 'm1',
-          role: 'human',
-          text: 'hello',
-          speakerId: '10001',
-          speakerName: 'Alice',
-          ownerUserKey: 'onebot:10001',
-          isTarget: true,
-          attributionSource: 'direct_session',
-        }],
-        { speakerId: '10001', speakerName: 'Alice' },
-      ).catch((error: unknown) => {
-        caught = error;
-      });
+  it('reports an explicitly disabled extract binding without transport access', async () => {
+    const execute = vi.fn<ModelConnectionExecutor['execute']>();
+    const { client } = createMemoryModelRuntime({
+      extractMode: 'disabled',
+      executor: { execute },
+    });
 
-      expect(caught).toBeInstanceOf(Error);
-      expect((caught as Error).message).toBe('extract_http_403: Sorry, your account balance is insufficient (code 30001)');
-      expect(isNonRetryableMemoryProviderError(caught)).toBe(true);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    expect(isMemoryExtractWorkloadEnabled(client)).toBe(false);
+    expect(resolveMemoryOutputProtocol(client)).toBe('unsupported_protocol');
+    await expect(extractMemoryCandidates({
+      address,
+      target: { speakerId: '10001', speakerName: 'Alice' },
+      turns: [turn],
+      modelRuntime: client,
+      maxFacts: 4,
+      maxEpisodes: 2,
+    })).resolves.toMatchObject({
+      ok: false,
+      route: 'unsupported_protocol',
+      candidates: [],
+      error: 'memory_extract_disabled',
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it('normalizes JSON fact kind aliases from provider output', () => {
+  it('normalizes supported fact kind aliases at the typed response boundary', () => {
     const [candidate] = parseMemoryExtractionJson(JSON.stringify({
       facts: [{
         subject: 'target_user',
@@ -73,14 +146,8 @@ describe('memory provider router', () => {
         confidence: 0.82,
         sensitivity: 'low',
         suggestedVisibility: 'global',
-        applicability: null,
-        evidence: null,
         evidenceMessageIds: ['m-1'],
         evidenceSpeakerIds: ['10001'],
-        conflictHint: null,
-        validFrom: null,
-        validUntil: null,
-        expiresAt: null,
       }],
       episodes: [],
       drops: [],
@@ -92,54 +159,49 @@ describe('memory provider router', () => {
       topicKey: 'music',
     });
   });
+});
 
-  it('repairs malformed JSON mode output without adding synthetic target turns', async () => {
-    const originalFetch = globalThis.fetch;
-    const requests: unknown[] = [];
-    globalThis.fetch = async (_url, init) => {
-      requests.push(JSON.parse(String(init?.body ?? '{}')));
-      if (requests.length === 1) {
-        return new Response(JSON.stringify({
-          choices: [{ message: { content: 'not-json-memory-output' } }],
-        }));
+describe('memory embedding runtime routing', () => {
+  it('uses the dedicated managed embedding client and preserves vector order', async () => {
+    const execute = vi.fn<ModelConnectionExecutor['execute']>(async (request) => {
+      if (request.operation === 'chat') {
+        return { text: JSON.stringify({ facts: [], episodes: [], drops: [] }) };
       }
-      return new Response(JSON.stringify({
-        choices: [{
-          message: {
-            content: [
-              '<memory_extraction>',
-              'FACT|subject=target_user|owner=10001|evidenceMessages=m-1|evidenceSpeakers=10001|kind=preference|topic=answer-style|visibility=source_context_only|sensitivity=low|confidence=0.82|importance=0.70|用户喜欢简洁回答',
-              '</memory_extraction>',
-            ].join('\n'),
-          },
-        }],
-      }));
-    };
+      return {
+        vectors: request.payload.inputs.map((_, index) => [index, index + 0.5]),
+      };
+    });
+    const { client } = createMemoryModelRuntime({ executor: { execute } });
 
-    try {
-      const result = await requestJsonModeMemoryWithRepair(
-        profile({ structuredOutputProtocol: 'json_mode', supportsJsonMode: true }),
-        [{
-          id: 'm-1',
-          role: 'human',
-          text: '我喜欢简洁回答',
-          speakerId: '10001',
-          speakerName: 'Alice',
-          ownerUserKey: 'onebot:10001',
-          isTarget: true,
-          attributionSource: 'additional_kwargs',
-        }],
-        { speakerId: '10001', speakerName: 'Alice' },
-      );
+    await expect(embedTexts(client, ['first', 'second'])).resolves.toEqual([
+      [0, 0.5],
+      [1, 1.5],
+    ]);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'embedding',
+      target: expect.objectContaining({
+        canonicalModel: 'qqbot-memory/memory-embedding',
+        model: expect.objectContaining({
+          transportModel: 'provider-memory-embedding',
+        }),
+      }),
+      payload: {
+        inputs: ['first', 'second'],
+      },
+    }));
+  });
 
-      expect(result.candidates).toHaveLength(1);
-      expect(requests).toHaveLength(2);
-      const repairPrompt = String((requests[1] as { messages?: Array<{ content?: unknown }> }).messages?.[1]?.content ?? '');
-      expect(repairPrompt).toContain('not-json-memory-output');
-      expect(repairPrompt).not.toContain('message_id=repair');
-      expect(repairPrompt).not.toContain('[target speaker_id=10001 speaker_name="Alice" message_id=repair');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+  it('returns unavailable vectors for an explicitly disabled embedding binding', async () => {
+    const execute = vi.fn<ModelConnectionExecutor['execute']>();
+    const { client } = createMemoryModelRuntime({
+      embeddingMode: 'disabled',
+      executor: { execute },
+    });
+
+    await expect(embedTexts(client, ['first', 'second'])).resolves.toEqual([
+      null,
+      null,
+    ]);
+    expect(execute).not.toHaveBeenCalled();
   });
 });

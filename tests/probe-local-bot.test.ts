@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -44,9 +44,11 @@ describe('probe-local-bot.sh', () => {
     expect(output).toContain('$qqbot-group-probe');
     expect(output).toContain('PROBE_TRIGGER_PREFIX');
     expect(output).toContain('PROBE_ASSERT_FAILURES');
+    expect(output).not.toContain('PROBE_TAB');
+    expect(output).not.toContain('PROBE_ROOM_MODEL');
   });
 
-  it('removes private and trace-preview probe paths from the script', () => {
+  it('resolves room and main models from the canonical model-config service', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/probe-local-bot.sh'), 'utf8');
 
     expect(content).not.toContain('send_private_msg');
@@ -57,16 +59,39 @@ describe('probe-local-bot.sh', () => {
     expect(content).toContain('Another group probe is already running');
     expect(content).toContain('originalInput');
     expect(content).toContain('dispatchedInput');
-    expect(content).toContain('resolvedProfile');
+    expect(content).toContain('this.app.modelConfig');
+    expect(content).toContain('getRedactedRuntimeSnapshot');
+    expect(content).toContain("binding.workload === 'main.chat'");
+    expect(content).toContain("'qqbot-' + model.connectionId + '/' + model.id");
+    expect(content).toContain('modelSource: resolvedModelSource');
     expect(content).toContain('firstErrorSignature');
-    expect(content).not.toContain("runtimeProfile.requestMode === 'responses'");
-    expect(content).not.toContain('getConversationRoomCount');
-    expect(content).not.toContain('createConversationRoom');
-    expect(content).not.toContain('deleteConversationRoom');
     expect(content).toContain("db.create('chatluna_conversation'");
     expect(content).toContain("db.upsert('chatluna_binding'");
     expect(content).toContain("PROBE_ASSERT_FAILURES");
     expect(content).toContain('(saki|祥)');
+    expect(content).not.toContain('main-chat-tabs');
+    expect(content).not.toContain('buildMainChatRuntimeEnvPatch');
+    expect(content).not.toContain('envRestoreEntries');
+  });
+
+  it.each(['PROBE_TAB', 'PROBE_ROOM_MODEL'])('rejects the removed %s override before probing', (key) => {
+    const result = spawnSync(
+      'bash',
+      [resolve(process.cwd(), 'scripts/probe-local-bot.sh'), 'saki test'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          [key]: 'legacy-override',
+        },
+      },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      'PROBE_TAB and PROBE_ROOM_MODEL are no longer supported',
+    );
   });
 });
 

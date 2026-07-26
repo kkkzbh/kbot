@@ -29,6 +29,7 @@ const tabs = [
   { id: 'jobs', label: '任务队列' },
   { id: 'audit', label: '审计记录' },
 ] as const;
+const probeTargets = ['embedding', 'extraction'] as const;
 const currentUser = computed(() => users.value.find((item) => item.userKey === selectedUser.value));
 
 async function loadState() {
@@ -88,7 +89,7 @@ async function review(row: any, decision: string) {
   await mutate({ action: 'review', candidateId: row.id, decision }, decision === 'reject' ? '候选已拒绝' : '候选已通过');
 }
 
-async function probe(target: string) {
+async function probe(target: 'embedding' | 'extraction') {
   probing.value = target;
   try { await rawApi(`/memory/probe/${target}`, { method: 'POST', body: '{}' }); ElMessage.success(`${target} 探测完成`); await loadState(); }
   catch (error) { ElMessage.error(error instanceof Error ? error.message : '探测失败'); }
@@ -114,8 +115,15 @@ onMounted(async () => { await Promise.all([loadState(), loadUsers()]); await loa
 
 <template>
   <PageHeader hide-save>
-    <template #actions><el-button :disabled="!selectedUser" @click="exportUser">导出当前用户</el-button><el-dropdown><el-button>运行探测</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="target in ['embedding','extraction','provider']" :key="target" :disabled="Boolean(probing)" @click="probe(target)">{{ target }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></template>
+    <template #actions><el-button :disabled="!selectedUser" @click="exportUser">导出当前用户</el-button><el-dropdown><el-button>运行探测</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="target in probeTargets" :key="target" :disabled="Boolean(probing)" @click="probe(target)">{{ target }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></template>
   </PageHeader>
+  <section class="model-owner">
+    <div>
+      <strong>记忆模型由模型接口统一管理</strong>
+      <p><code>memory.extract</code> 控制提炼模型，<code>memory.embedding</code> 控制向量模型；本页只管理记忆数据、队列和探测。</p>
+    </div>
+    <el-button tag="a" href="/intelligence/models">查看用途绑定</el-button>
+  </section>
   <section v-if="state" class="metric-grid">
     <article class="metric-card"><span class="label">记忆用户</span><strong>{{ state.summary.userCount }}</strong><small>具有 canonical memory profile</small></article>
     <article class="metric-card"><span class="label">事实 / 事件</span><strong>{{ state.summary.factCount }} / {{ state.summary.episodeCount }}</strong><small>{{ state.summary.provenanceCount }} 条来源记录</small></article>
@@ -149,6 +157,6 @@ onMounted(async () => { await Promise.all([loadState(), loadUsers()]); await loa
 </template>
 
 <style scoped>
-.memory-layout{display:grid;grid-template-columns:280px minmax(0,1fr);gap:18px}.user-panel{overflow:hidden;align-self:start}.user-search{padding:12px}.user-panel>button{width:100%;display:flex;align-items:center;gap:10px;padding:10px 13px;border:0;border-top:1px solid #f1f3f6;background:#fff;text-align:left}.user-panel>button:hover,.user-panel>button.active{background:#f5f8ff}.user-panel>button.active{box-shadow:inset 3px 0 #3c67e3}.user-panel strong,.user-panel small{display:block}.user-panel strong{color:#414b5d;font-size:11px}.user-panel small{margin-top:3px;color:#9099a8;font-size:9px}.user-panel .el-pagination{justify-content:center;padding:12px}.records-panel{min-width:0;overflow:hidden}.record-tabs{padding:0 16px}.record-tabs :deep(.el-tabs__header){margin:0}.records-panel p{max-height:70px;overflow:hidden;margin:4px 0 0;color:#707b8e;font-size:10px;line-height:1.5}.records-panel strong{font-size:11px}.record-pagination{display:flex;justify-content:flex-end;padding:14px 18px;border-top:1px solid var(--line)}
-@media(max-width:900px){.memory-layout{grid-template-columns:1fr}.user-panel{max-height:340px;overflow:auto}}
+.model-owner{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:16px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.model-owner strong{color:#344056;font-size:12px}.model-owner p{margin:4px 0 0;color:var(--muted);font-size:10px}.model-owner code{font-family:"SFMono-Regular",Consolas,monospace}.memory-layout{display:grid;grid-template-columns:280px minmax(0,1fr);gap:18px}.user-panel{overflow:hidden;align-self:start}.user-search{padding:12px}.user-panel>button{width:100%;display:flex;align-items:center;gap:10px;padding:10px 13px;border:0;border-top:1px solid #f1f3f6;background:#fff;text-align:left}.user-panel>button:hover,.user-panel>button.active{background:#f5f8ff}.user-panel>button.active{box-shadow:inset 3px 0 #3c67e3}.user-panel strong,.user-panel small{display:block}.user-panel strong{color:#414b5d;font-size:11px}.user-panel small{margin-top:3px;color:#9099a8;font-size:9px}.user-panel .el-pagination{justify-content:center;padding:12px}.records-panel{min-width:0;overflow:hidden}.record-tabs{padding:0 16px}.record-tabs :deep(.el-tabs__header){margin:0}.records-panel p{max-height:70px;overflow:hidden;margin:4px 0 0;color:#707b8e;font-size:10px;line-height:1.5}.records-panel strong{font-size:11px}.record-pagination{display:flex;justify-content:flex-end;padding:14px 18px;border-top:1px solid var(--line)}
+@media(max-width:900px){.memory-layout{grid-template-columns:1fr}.user-panel{max-height:340px;overflow:auto}}@media(max-width:760px){.model-owner{align-items:flex-start;flex-direction:column}}
 </style>
