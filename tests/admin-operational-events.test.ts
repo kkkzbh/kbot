@@ -82,6 +82,7 @@ describe('operational event service', () => {
           cursor: 'cursor-1',
         })
         .mockResolvedValueOnce({ entries: [], cursor: 'cursor-1' }),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
       getServiceStatuses: vi.fn()
         .mockResolvedValueOnce([serviceStatus('degraded')])
         .mockResolvedValueOnce([serviceStatus('healthy')]),
@@ -92,7 +93,11 @@ describe('operational event service', () => {
     await service.sync();
     const pending = await service.list({ view: 'pending', page: 1, pageSize: 20 });
     expect(pending.items).toHaveLength(1);
-    expect(pending.items[0]).toMatchObject({ type: 'service_start_failed', status: 'open' });
+    expect(pending.items[0]).toMatchObject({
+      type: 'service_start_failed',
+      status: 'open',
+      targetPath: '/?service=qqbot-pmhq.service',
+    });
 
     await service.sync();
     const history = await service.list({ view: 'history', page: 1, pageSize: 20 });
@@ -104,6 +109,7 @@ describe('operational event service', () => {
     const database = createDatabase();
     const manager = {
       readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
       getServiceStatuses: vi.fn(async () => []),
     };
     const memoryAdmin = {
@@ -134,6 +140,7 @@ describe('operational event service', () => {
     const database = createDatabase();
     const manager = {
       readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
       getServiceStatuses: vi.fn(async () => [serviceStatus('degraded')]),
       readServiceInvocationJournal: vi.fn(async () => []),
     };
@@ -155,6 +162,7 @@ describe('operational event service', () => {
     const database = createDatabase();
     const manager = {
       readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
       getServiceStatuses: vi.fn(async () => []),
     };
     const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
@@ -184,5 +192,231 @@ describe('operational event service', () => {
     expect((await service.list({ view: 'pending', page: 1, pageSize: 20 })).items).toHaveLength(0);
     expect((await service.list({ view: 'history', page: 1, pageSize: 20 })).total).toBe(25);
     await expect(service.acknowledgeAll()).resolves.toEqual({ acknowledgedCount: 0 });
+  });
+
+  it('persists and aggregates live runtime errors with their redacted cause', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+    service.captureRuntimeLog({
+      id: 101,
+      timestamp: 1_800_000_000_000,
+      level: 'error',
+      namespace: 'chatluna',
+      content: 'Call Embedding Error: code=30001 Authorization: Bearer secret-token',
+    });
+    service.captureRuntimeLog({
+      id: 102,
+      timestamp: 1_800_000_001_000,
+      level: 'error',
+      namespace: 'chatluna',
+      content: 'Call Embedding Error: code=30001 Authorization: Bearer secret-token',
+    });
+
+    await service.sync();
+    const [event] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
+
+    expect(event).toMatchObject({
+      source: 'runtime',
+      type: 'runtime_exception',
+      component: 'chatluna',
+      occurrenceCount: 2,
+      occurredAt: 1_800_000_000_000,
+      lastOccurredAt: 1_800_000_001_000,
+    });
+    expect(event.details).toContain('code=30001');
+    expect(event.details).not.toContain('secret-token');
+  });
+
+  it('opens a new pending incident when an acknowledged runtime error recurs', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+    service.captureRuntimeLog({
+      id: 201,
+      timestamp: 1_800_000_000_000,
+      level: 'warn',
+      namespace: 'automation',
+      content: 'automation job #7 failed: upstream timeout',
+    });
+    await service.sync();
+    const [first] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
+    await service.runAction(first.id, 'acknowledge');
+
+    service.captureRuntimeLog({
+      id: 202,
+      timestamp: 1_800_000_005_000,
+      level: 'warn',
+      namespace: 'automation',
+      content: 'automation job #7 failed: upstream timeout',
+    });
+    await service.sync();
+
+    expect((await service.list({ view: 'pending', page: 1, pageSize: 20 })).items).toMatchObject([
+      { source: 'runtime', status: 'open', occurrenceCount: 1 },
+    ]);
+    expect((await service.list({ view: 'history', page: 1, pageSize: 20 })).items).toMatchObject([
+      { id: first.id, status: 'acknowledged' },
+    ]);
+  });
+
+  it('backfills third-party runtime errors from the service journal', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({
+        entries: [{
+          cursor: 'runtime-entry-1',
+          unit: 'qqbot-koishi.service',
+          invocationId: 'a030b1fd7f4c49d2b54c3e7c339eb284',
+          priority: 6,
+          syslogIdentifier: 'env',
+          messageId: null,
+          message: '2026-07-26 20:26:09 [E] chatluna Error: Call Embedding Error: {"code":30001,"message":"account balance is insufficient"}',
+          occurredAt: 1_700_000_000_000,
+        }],
+        cursor: 'runtime-entry-1',
+      })),
+      getServiceStatuses: vi.fn(async () => []),
+      readServiceInvocationJournal: vi.fn(async () => ['stack line']),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+
+    await service.sync();
+    const [event] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
+    const detail = await service.detail(event.id);
+
+    expect(event).toMatchObject({
+      source: 'runtime',
+      type: 'runtime_exception',
+      component: 'chatluna',
+      summary: expect.stringContaining('account balance is insufficient'),
+      unit: 'qqbot-koishi.service',
+    });
+    expect(detail.journal).toEqual(['stack line']);
+  });
+
+  it('merges the live logger record with its journal copy without losing the stack', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({
+        entries: [{
+          cursor: 'runtime-entry-2',
+          unit: 'qqbot-koishi.service',
+          invocationId: 'a030b1fd7f4c49d2b54c3e7c339eb284',
+          priority: 6,
+          syslogIdentifier: 'env',
+          messageId: null,
+          message: '2026-07-27 11:29:49 [E] chatluna Error: Call Embedding Error',
+          occurredAt: 1_800_000_000_100,
+        }],
+        cursor: 'runtime-entry-2',
+      })),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+    service.captureRuntimeLog({
+      id: 301,
+      timestamp: 1_800_000_000_000,
+      level: 'error',
+      namespace: 'chatluna',
+      content: 'Error: Call Embedding Error\n    at createEmbeddings (adapter.js:10:2)',
+    });
+
+    await service.sync();
+    const [event] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
+
+    expect(event).toMatchObject({
+      occurrenceCount: 1,
+      unit: 'qqbot-koishi.service',
+      invocationId: 'a030b1fd7f4c49d2b54c3e7c339eb284',
+    });
+    expect(event.details).toContain('at createEmbeddings');
+  });
+
+  it('collects structured errors emitted by other managed services', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({
+        entries: [{
+          cursor: 'runtime-entry-3',
+          unit: 'qqbot-llbot.service',
+          invocationId: 'a030b1fd7f4c49d2b54c3e7c339eb284',
+          priority: 6,
+          syslogIdentifier: 'env',
+          messageId: null,
+          message: '{"level":"error","component":"onebot11-adapter","message":"websocket disconnected","token":"must-not-surface"}',
+          occurredAt: 1_700_000_000_000,
+        }],
+        cursor: 'runtime-entry-3',
+      })),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+
+    await service.sync();
+    const [event] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
+
+    expect(event).toMatchObject({
+      source: 'runtime',
+      component: 'onebot11-adapter',
+      unit: 'qqbot-llbot.service',
+    });
+    expect(event.details).toContain('websocket disconnected');
+    expect(event.details).not.toContain('must-not-surface');
+  });
+
+  it('keeps other collectors running when one source fails', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => {
+        throw new Error('journal access denied');
+      }),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const memoryAdmin = {
+      getOperationalAttentionItems: vi.fn(async () => [{
+        sourceKey: 'memory-job:8:dead-letter:1800000000000',
+        type: 'memory_job_dead_letter',
+        severity: 'error',
+        title: 'extract 记忆任务进入 dead letter',
+        summary: 'provider failed',
+        memoryJobId: 8,
+        memoryCandidateId: null,
+        occurredAt: 1_800_000_000_000,
+      }]),
+    };
+    const service = new OperationalEventService(
+      database as any,
+      manager as any,
+      () => memoryAdmin as any,
+      createLogger(),
+    );
+
+    await service.sync();
+    const pending = await service.list({ view: 'pending', page: 1, pageSize: 20 });
+
+    expect(pending.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'runtime',
+        component: 'operational-events',
+        summary: expect.stringContaining('runtime journal collection failed'),
+      }),
+      expect.objectContaining({
+        source: 'memory',
+        type: 'memory_job_dead_letter',
+      }),
+    ]));
   });
 });

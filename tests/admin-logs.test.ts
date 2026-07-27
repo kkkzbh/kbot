@@ -47,13 +47,39 @@ describe('admin runtime logs', () => {
 
   it('redacts configured secrets and credential-shaped log values', () => {
     const secret = 'server-secret-value';
-    const content = `secret=${secret} Authorization: Bearer abc.def.ghi api_key=query-key https://a.test/?access_token=url-token`;
+    const content = `secret=${secret} Authorization: Bearer abc.def.ghi api_key=query-key https://a.test/?access_token=url-token {"token":"json-token"}`;
     const redacted = redactAdminLogContent(content, [secret]);
 
     expect(redacted).not.toContain(secret);
     expect(redacted).not.toContain('abc.def.ghi');
     expect(redacted).not.toContain('query-key');
     expect(redacted).not.toContain('url-token');
-    expect(redacted.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(redacted).not.toContain('json-token');
+    expect(redacted.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('publishes redacted log entries to runtime event subscribers', () => {
+    const service = new AdminLogService(2, {});
+    services.push(service);
+    const listener = vi.fn();
+    service.subscribe(listener);
+
+    Logger.targets.at(-1)?.record?.({
+      id: 20,
+      timestamp: 4000,
+      level: 1,
+      type: 'error',
+      name: 'chatluna',
+      content: 'Authorization: Bearer abc.def.ghi',
+      meta: {},
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      id: 20,
+      timestamp: 4000,
+      level: 'error',
+      namespace: 'chatluna',
+      content: 'Authorization: Bearer [REDACTED]',
+    });
   });
 });

@@ -14,9 +14,7 @@ export const router = createRouter({
     return { top: 0 };
   },
   routes: [
-    { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '总览', description: '服务、模型与运行风险一览' } },
-    { path: '/runtime/services', name: 'services', component: () => import('@/pages/ServicesPage.vue'), meta: { title: '服务管理', description: 'systemd 服务状态与生命周期操作' } },
-    { path: '/runtime/events', name: 'events', component: () => import('@/pages/EventsPage.vue'), meta: { title: '事件中心', description: '待处理运行事件与历史记录' } },
+    { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '运行总览', description: '服务管理、异常处置、模型与运行状态' } },
     { path: '/runtime/logs', name: 'logs', component: () => import('@/pages/LogsPage.vue'), meta: { title: '运行日志', description: 'Koishi 进程实时日志' } },
     { path: '/intelligence/models', name: 'models', component: () => import('@/pages/ModelsPage.vue'), meta: { title: '模型接口', description: '统一管理连接、模型档案与全部大模型用途绑定' } },
     { path: '/intelligence/context-presets', name: 'context-presets', component: () => import('@/pages/PresetsPage.vue'), meta: { title: '上下文预设', description: '编排角色、记忆、知识与模型输入输出结构' } },

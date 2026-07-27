@@ -4,6 +4,7 @@ import type { AdminLogEntry } from '../../admin/contracts/index.js';
 const DEFAULT_CAPACITY = 1_000;
 const SECRET_ENV_KEY_PATTERN = /(?:API_?KEY|TOKEN|SECRET|PASSWORD|COOKIE|CREDENTIAL)/i;
 const MIN_SECRET_LENGTH = 8;
+type AdminLogListener = (entry: AdminLogEntry) => void;
 
 function configuredSecretValues(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
@@ -18,6 +19,7 @@ export function redactAdminLogContent(content: string, secretValues = configured
   return redacted
     .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1[REDACTED]')
     .replace(/([?&](?:access_token|refresh_token|api_key|token|key)=)[^&#\s]+/gi, '$1[REDACTED]')
+    .replace(/("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|cookie|session[_-]?secret|password)"\s*:\s*)"[^"]*"/gi, '$1"[REDACTED]"')
     .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?secret|password)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]');
 }
 
@@ -25,6 +27,7 @@ export class AdminLogService {
   private readonly entries: AdminLogEntry[] = [];
   private readonly target: Logger.Target;
   private readonly secretValues: string[];
+  private readonly listeners = new Set<AdminLogListener>();
   private disposed = false;
 
   constructor(private readonly capacity = DEFAULT_CAPACITY, env: NodeJS.ProcessEnv = process.env) {
@@ -38,14 +41,28 @@ export class AdminLogService {
   }
 
   private capture(record: Logger.Record): void {
-    this.entries.push({
+    const entry: AdminLogEntry = {
       id: record.id,
       timestamp: record.timestamp,
       level: record.type,
       namespace: record.name,
       content: redactAdminLogContent(record.content, this.secretValues),
-    });
+    };
+    this.entries.push(entry);
     if (this.entries.length > this.capacity) this.entries.splice(0, this.entries.length - this.capacity);
+    for (const listener of this.listeners) {
+      try {
+        listener({ ...entry });
+      } catch {
+        // Logger targets must remain synchronous and must never fail the original log call.
+      }
+    }
+  }
+
+  subscribe(listener: AdminLogListener): () => void {
+    if (this.disposed) throw new Error('Admin log service 已关闭。');
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   read(after: number, limit: number): { entries: AdminLogEntry[]; nextCursor: number; truncated: boolean } {
@@ -68,6 +85,7 @@ export class AdminLogService {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.listeners.clear();
     const index = Logger.targets.indexOf(this.target);
     if (index >= 0) Logger.targets.splice(index, 1);
   }

@@ -76,7 +76,6 @@ export function apply(ctx: Context, config: Config): void {
     (message) => logger.warn('%s', message),
   );
   ensureOperationalEventTables(ctx);
-  ctx.on('dispose', () => logs.dispose());
   ctx.on('chatluna/model-context', async (payload: ModelContextPayload) => {
     contextSnapshots.ingestContext(payload);
   });
@@ -99,6 +98,11 @@ export function apply(ctx: Context, config: Config): void {
     () => runtimeCtx.memoryAdmin,
     logger,
   );
+  const stopRuntimeEventCapture = logs.subscribe((entry) => events.captureRuntimeLog(entry));
+  ctx.on('dispose', () => {
+    stopRuntimeEventCapture();
+    logs.dispose();
+  });
 
   manager.syncManagedChatLunaAgentConfig();
 

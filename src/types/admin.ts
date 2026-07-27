@@ -66,12 +66,14 @@ export interface AdminApplyRestartTarget {
   previousInvocationId: string | null;
 }
 
-export type OperationalEventSource = 'systemd' | 'memory';
+export type OperationalEventSource = 'systemd' | 'memory' | 'runtime';
 export type OperationalEventType =
   | 'service_start_failed'
   | 'service_controller_mismatch'
   | 'memory_job_dead_letter'
-  | 'memory_review_required';
+  | 'memory_review_required'
+  | 'runtime_exception'
+  | 'runtime_warning';
 export type OperationalEventSeverity = 'warning' | 'error';
 export type OperationalEventStatus = 'open' | 'acknowledged' | 'resolved';
 export type OperationalEventResolution = 'recovered' | 'retried' | 'discarded' | 'completed' | null;
@@ -87,11 +89,16 @@ export interface OperationalEventItem {
   resolution: OperationalEventResolution;
   title: string;
   summary: string;
+  component: string | null;
+  fingerprint: string | null;
+  details: string;
+  occurrenceCount: number;
   unit: BotServiceUnit | null;
   invocationId: string | null;
   memoryJobId: number | null;
   memoryCandidateId: number | null;
   occurredAt: number;
+  lastOccurredAt: number;
   acknowledgedAt: number | null;
   resolvedAt: number | null;
   updatedAt: number;

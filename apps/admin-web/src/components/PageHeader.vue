@@ -14,9 +14,7 @@ const route = useRoute();
 <template>
   <header class="page-header">
     <div>
-      <p class="eyebrow">QQBOT ADMIN</p>
       <h1>{{ route.meta.title }}</h1>
-      <p>{{ route.meta.description }}</p>
     </div>
     <div class="page-actions">
       <slot name="actions" />

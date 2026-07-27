@@ -5,7 +5,6 @@ import { ElMessage } from 'element-plus';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import {
   Award,
-  BellRing,
   Blocks,
   BookOpenCheck,
   ChevronDown,
@@ -21,7 +20,6 @@ import {
   RotateCw,
   School,
   ScrollText,
-  Server,
   ShieldCheck,
   SlidersHorizontal,
   UserRoundCog,
@@ -51,8 +49,6 @@ type ApplyRestartResponse = {
 const groups: NavGroup[] = [
   { label: '总览', items: [{ key: 'overview', label: '运行总览', path: '/', icon: LayoutDashboard }] },
   { label: '运行与监控', items: [
-    { key: 'services', label: '服务管理', path: '/runtime/services', icon: Server },
-    { key: 'events', label: '事件中心', path: '/runtime/events', icon: BellRing },
     { key: 'logs', label: '运行日志', path: '/runtime/logs', icon: ScrollText },
   ] },
   { label: '对话智能', items: [
@@ -243,7 +239,7 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
             >
               <component :is="item.icon" :size="18" :stroke-width="1.8" class="nav-icon" />
               <span>{{ item.label }}</span>
-              <span v-if="item.key === 'events' && runtime.openEventCount" class="nav-badge">{{ runtime.openEventCount > 99 ? '99+' : runtime.openEventCount }}</span>
+              <span v-if="item.key === 'overview' && runtime.openEventCount" class="nav-badge">{{ runtime.openEventCount > 99 ? '99+' : runtime.openEventCount }}</span>
               <ChevronDown v-if="item.children" :size="15" class="nav-chevron" :class="{ expanded: expandedBranches[item.key] }" />
             </button>
             <div v-if="item.children" v-show="expandedBranches[item.key]" class="nav-submenu">

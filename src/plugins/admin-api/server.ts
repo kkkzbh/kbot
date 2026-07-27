@@ -1531,6 +1531,64 @@ export class AdminRuntimeManager {
     };
   }
 
+  async readRuntimeIssueJournal(afterCursor: string | null): Promise<{
+    entries: Array<{
+      cursor: string;
+      unit: BotServiceUnit;
+      invocationId: string | null;
+      priority: number | null;
+      syslogIdentifier: string | null;
+      messageId: string | null;
+      message: string;
+      occurredAt: number;
+    }>;
+    cursor: string | null;
+  }> {
+    const args = [
+      ...(this.systemdScope === 'user' ? ['--user'] : []),
+      '--no-pager',
+      '--output=json',
+      '--show-cursor',
+      ...(afterCursor ? [`--after-cursor=${afterCursor}`] : ['--boot', '--lines=5000']),
+      ...this.managedServiceUnits.flatMap((unit) => ['--unit', unit]),
+    ];
+    const { stdout } = await this.execFile('journalctl', args, { cwd: this.rootDir, timeout: 15_000 });
+    const lines = stdout.split(/\r?\n/).filter(Boolean);
+    const cursorLine = lines.filter((line) => line.startsWith('-- cursor: ')).at(-1);
+    const entries = lines.flatMap((line) => {
+      if (!line.startsWith('{')) return [];
+      let record: Record<string, unknown>;
+      try {
+        record = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return [];
+      }
+      const unit = String(record._SYSTEMD_USER_UNIT ?? record._SYSTEMD_UNIT ?? record.UNIT ?? '');
+      if (!this.managedServiceUnits.includes(unit as BotServiceUnit)) return [];
+      const cursor = String(record.__CURSOR ?? '');
+      if (!cursor) return [];
+      const realtimeMicros = Number(record.__REALTIME_TIMESTAMP ?? 0);
+      const priority = Number(record.PRIORITY);
+      const invocationId = String(record._SYSTEMD_INVOCATION_ID ?? record.INVOCATION_ID ?? '');
+      const syslogIdentifier = String(record.SYSLOG_IDENTIFIER ?? '');
+      const messageId = String(record.MESSAGE_ID ?? '');
+      return [{
+        cursor,
+        unit: unit as BotServiceUnit,
+        invocationId: invocationId || null,
+        priority: Number.isInteger(priority) ? priority : null,
+        syslogIdentifier: syslogIdentifier || null,
+        messageId: messageId || null,
+        message: typeof record.MESSAGE === 'string' ? record.MESSAGE : '',
+        occurredAt: Number.isFinite(realtimeMicros) ? Math.floor(realtimeMicros / 1_000) : Date.now(),
+      }];
+    });
+    return {
+      entries,
+      cursor: cursorLine?.slice('-- cursor: '.length).trim() || entries.at(-1)?.cursor || afterCursor,
+    };
+  }
+
   async readServiceInvocationJournal(unit: BotServiceUnit, invocationId: string): Promise<string[]> {
     validateServiceAction(unit, 'start');
     if (!this.managedServiceUnits.includes(unit)) throw new Error(`当前运行角色不支持这个服务：${unit}`);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
   ModelConfigAdminAggregate,
 } from '../src/admin/contracts/index.js';
@@ -108,13 +108,31 @@ function aggregate(): ModelConfigAdminAggregate {
 describe('admin unified model page state', () => {
   it('loads the required aggregate through a retryable boundary', async () => {
     const configuration = aggregate();
+    const hydrate = vi.fn();
     await expect(loadModelPageConfiguration(Promise.resolve(configuration))).resolves.toEqual({
       modelState: configuration,
       requiredError: null,
     });
+    await expect(loadModelPageConfiguration(
+      Promise.resolve(configuration),
+      hydrate,
+    )).resolves.toEqual({
+      modelState: configuration,
+      requiredError: null,
+    });
+    expect(hydrate).toHaveBeenCalledWith(configuration);
     await expect(loadModelPageConfiguration(Promise.reject(new Error('models unavailable')))).resolves.toEqual({
       modelState: null,
       requiredError: 'models unavailable',
+    });
+    await expect(loadModelPageConfiguration(
+      Promise.resolve(configuration),
+      () => {
+        throw new Error('draft initialization failed');
+      },
+    )).resolves.toEqual({
+      modelState: null,
+      requiredError: 'draft initialization failed',
     });
   });
 
@@ -132,6 +150,18 @@ describe('admin unified model page state', () => {
     });
     expect(draft.connections[0]).not.toHaveProperty('credentialState');
     expect(draft.connections[0]).not.toHaveProperty('hasSecret');
+  });
+
+  it('clones model drafts across Vue proxy boundaries without DataCloneError', () => {
+    const configuration = new Proxy(aggregate(), {});
+    expect(() => structuredClone(configuration)).toThrow(/could not be cloned|DataCloneError/i);
+
+    const draft = createModelConfigDraft(configuration);
+    const secrets = createSecretDrafts(configuration);
+
+    expect(draft.connections[0].id).toBe('provider');
+    expect(() => buildModelConfigPutInput(configuration, new Proxy(draft, {}), secrets))
+      .not.toThrow();
   });
 
   it('preserves model IDs scoped independently to each connection', () => {

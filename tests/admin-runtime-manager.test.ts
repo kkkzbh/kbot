@@ -1119,4 +1119,44 @@ describe('admin manager', () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
+  it('reads managed-service journal records for runtime issue collection', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const execFile = vi.fn().mockResolvedValue({
+      stdout: [
+        JSON.stringify({
+          __CURSOR: 'runtime-cursor-2',
+          __REALTIME_TIMESTAMP: '1800000000000000',
+          _SYSTEMD_UNIT: 'qqbot-koishi.service',
+          _SYSTEMD_INVOCATION_ID: 'a030b1fd7f4c49d2b54c3e7c339eb284',
+          PRIORITY: '6',
+          SYSLOG_IDENTIFIER: 'env',
+          MESSAGE: '2026-07-27 11:29:49 [E] chatluna Error: Call Embedding Error',
+        }),
+        '-- cursor: runtime-cursor-2',
+      ].join('\n'),
+      stderr: '',
+    });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+
+    await expect(manager.readRuntimeIssueJournal('runtime-cursor-1')).resolves.toEqual({
+      entries: [{
+        cursor: 'runtime-cursor-2',
+        unit: 'qqbot-koishi.service',
+        invocationId: 'a030b1fd7f4c49d2b54c3e7c339eb284',
+        priority: 6,
+        syslogIdentifier: 'env',
+        messageId: null,
+        message: '2026-07-27 11:29:49 [E] chatluna Error: Call Embedding Error',
+        occurredAt: 1_800_000_000_000,
+      }],
+      cursor: 'runtime-cursor-2',
+    });
+    const [, args] = execFile.mock.calls[0];
+    expect(args).toContain('--after-cursor=runtime-cursor-1');
+    expect(args).toContain('qqbot-koishi.service');
+    expect(args).not.toContain('qqbot-voice-tts.service');
+  });
+
 });

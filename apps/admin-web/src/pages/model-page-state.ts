@@ -29,6 +29,10 @@ export interface ModelPageConfigurationLoadResult {
   requiredError: string | null;
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 export function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error.trim()) return error;
@@ -37,9 +41,12 @@ export function errorMessage(error: unknown, fallback: string): string {
 
 export async function loadModelPageConfiguration(
   request: Promise<ModelConfigAdminAggregate>,
+  apply?: (modelState: ModelConfigAdminAggregate) => void,
 ): Promise<ModelPageConfigurationLoadResult> {
   try {
-    return { modelState: await request, requiredError: null };
+    const modelState = await request;
+    apply?.(modelState);
+    return { modelState, requiredError: null };
   } catch (error) {
     return {
       modelState: null,
@@ -51,7 +58,7 @@ export async function loadModelPageConfiguration(
 export function createModelConfigDraft(
   aggregate: ModelConfigAdminAggregate,
 ): ModelConfigDraft {
-  return structuredClone({
+  return cloneJson({
     connections: aggregate.connections.map((connection) => {
       const { credentialState: _credentialState, hasSecret: _hasSecret, ...definition } = connection;
       return definition;
@@ -131,7 +138,7 @@ export function buildModelConfigPutInput(
 ): ModelConfigPutInput {
   return {
     expectedRevision: aggregate.savedRevision,
-    draft: structuredClone(draft),
+    draft: cloneJson(draft),
     secretOperations: draft.connections
       .filter((connection) => connection.auth.kind === 'apiKey')
       .map((connection) => secretOperation(connection.id, secrets[connection.id])),

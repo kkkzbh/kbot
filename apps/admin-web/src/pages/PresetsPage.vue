@@ -9,7 +9,6 @@ import {
 } from 'vue';
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import PageHeader from '@/components/PageHeader.vue';
 import { ApiError } from '@/api/client';
 import {
   createContextPreset,
@@ -898,12 +897,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="context-workbench">
-    <PageHeader
-      eyebrow="CONTEXT COMPOSITION"
-      title="上下文预设"
-      description="选择外层预设，在连续栈中编排上下文，并在右侧修改当前块。"
-    >
-      <template #actions>
+    <header class="workbench-toolbar">
+      <h1>上下文预设</h1>
+      <div class="workbench-actions">
         <el-button @click="createContext">新建</el-button>
         <el-button
           :disabled="!contextDetail || contextDetail.source !== 'runtime' || contextDetail.hasOverride"
@@ -927,8 +923,8 @@ onBeforeUnmount(() => {
         >
           保存上下文
         </el-button>
-      </template>
-    </PageHeader>
+      </div>
+    </header>
 
     <section class="preset-bar panel">
       <div class="preset-picker">
@@ -970,27 +966,6 @@ onBeforeUnmount(() => {
 
     <div v-if="contextDraft" class="workbench-grid">
       <section class="stack-panel panel" aria-label="上下文栈">
-        <div class="panel-head stack-head">
-          <div>
-            <h2>上下文栈</h2>
-            <p>块按最终结构紧贴排列；高度只表达相对预算规模。</p>
-          </div>
-          <el-dropdown :disabled="addableTypes.length === 0" trigger="click" @command="addBlock">
-            <el-button size="small">新增块</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item
-                  v-for="type in addableTypes"
-                  :key="type"
-                  :command="type"
-                >
-                  {{ blockLabels[type] }}
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </div>
-
         <div v-if="previewError" class="preview-error" role="alert">
           <strong>草稿无法编译</strong>
           <span>{{ previewError.message }}</span>
@@ -1043,6 +1018,19 @@ onBeforeUnmount(() => {
             </div>
           </article>
         </div>
+
+        <div v-if="!previewError && !previewing && preview" class="add-block-tray">
+          <span>添加</span>
+          <button
+            v-for="type in addableTypes"
+            :key="type"
+            type="button"
+            @click="addBlock(type)"
+          >
+            {{ blockLabels[type] }}
+          </button>
+          <small v-if="addableTypes.length === 0">当前结构已完整</small>
+        </div>
       </section>
 
       <section class="editor-panel panel">
@@ -1050,7 +1038,7 @@ onBeforeUnmount(() => {
           <div>
             <h2>{{ selectedResolvedBlock ? blockLabels[selectedResolvedBlock.type] : '选择一个块' }}</h2>
             <p v-if="selectedResolvedBlock">
-              owner: {{ selectedResolvedBlock.owner }} · id: {{ selectedResolvedBlock.id }}
+              {{ selectedResolvedBlock.owner }} · {{ selectedResolvedBlock.id }}
             </p>
           </div>
           <div class="block-tools">
@@ -1382,15 +1370,40 @@ onBeforeUnmount(() => {
 <style scoped>
 .context-workbench {
   min-width: 0;
+  --workbench-height: clamp(560px, calc(100vh - 238px), 760px);
+}
+
+.workbench-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 2px 0 14px;
+}
+
+.workbench-toolbar h1 {
+  margin: 0;
+  color: #182033;
+  font-size: 28px;
+  line-height: 1.15;
+  letter-spacing: -.04em;
+}
+
+.workbench-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .preset-bar {
-  min-height: 72px;
+  min-height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
   padding: 13px 16px;
 }
 
@@ -1439,7 +1452,7 @@ onBeforeUnmount(() => {
 .workbench-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.72fr) minmax(440px, 1.28fr);
-  align-items: start;
+  align-items: stretch;
   gap: 18px;
   min-width: 0;
 }
@@ -1447,74 +1460,102 @@ onBeforeUnmount(() => {
 .stack-panel,
 .editor-panel {
   min-width: 0;
+  height: var(--workbench-height);
   overflow: hidden;
 }
 
-.stack-head,
+.stack-panel {
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at 18px 20px, rgba(85, 120, 215, .12), transparent 28px),
+    linear-gradient(180deg, #fbfcff 0%, #f6f8fc 100%);
+}
+
+.editor-panel {
+  display: flex;
+  flex-direction: column;
+}
+
 .editor-head {
-  min-height: 68px;
+  flex: none;
+  min-height: 64px;
+}
+
+.editor-head h2 {
+  margin-bottom: 3px;
+}
+
+.editor-head p {
+  margin: 0;
+  color: #8a94a5;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
 }
 
 .context-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding: 18px;
+  gap: 12px;
+  padding: 18px 18px 12px;
+  overflow: auto;
+}
+
+.context-stack::before {
+  content: "";
+  position: absolute;
+  top: 30px;
+  bottom: 30px;
+  left: 36px;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #b8c7f4, #d9e2f7 55%, #c8d7ff);
 }
 
 .stack-block {
   position: relative;
+  z-index: 1;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 12px;
-  border: 1px solid #dce2ea;
-  border-radius: 0;
+  padding: 12px 13px;
+  border: 1px solid rgba(206, 216, 232, .92);
+  border-radius: 14px;
   color: #263248;
-  background: #fff;
+  background: rgba(255, 255, 255, .92);
+  box-shadow: 0 8px 22px rgba(34, 49, 78, .05);
   outline: none;
-  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
-}
-
-.stack-block + .stack-block {
-  margin-top: -1px;
-}
-
-.stack-block:first-child {
-  border-radius: 10px 10px 0 0;
-}
-
-.stack-block:last-child {
-  border-radius: 0 0 10px 10px;
-}
-
-.stack-block:only-child {
-  border-radius: 10px;
+  transition: transform .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease;
 }
 
 .stack-block:hover,
 .stack-block:focus-visible {
-  z-index: 1;
+  transform: translateY(-1px);
   border-color: #9fb1df;
-  background: #f8faff;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(36, 55, 94, .08);
 }
 
 .stack-block.selected {
   z-index: 2;
-  border-color: #5578d7;
-  background: #edf2ff;
-  box-shadow: inset 3px 0 0 #4a6fd4;
+  border-color: #5c7fe2;
+  background: linear-gradient(180deg, #f8faff, #eef3ff);
+  box-shadow: 0 14px 34px rgba(66, 103, 207, .16), inset 0 0 0 1px rgba(90, 126, 224, .16);
 }
 
 .stack-block.disabled {
   color: #7c8798;
-  background: #f6f7f9;
+  background: rgba(247, 248, 250, .88);
 }
 
 .stack-block.runtime {
-  background: #f5f7fa;
+  border-style: dashed;
+  background: rgba(248, 250, 253, .9);
 }
 
 .stack-block.dragging {
@@ -1522,15 +1563,15 @@ onBeforeUnmount(() => {
 }
 
 .grip {
-  width: 27px;
+  width: 30px;
   height: 30px;
   display: grid;
   place-items: center;
   padding: 0;
-  border: 0;
-  border-radius: 6px;
-  color: #8793a5;
-  background: transparent;
+  border: 1px solid #dce4f1;
+  border-radius: 50%;
+  color: #758399;
+  background: #fff;
   font-size: 19px;
   cursor: grab;
 }
@@ -1541,8 +1582,8 @@ onBeforeUnmount(() => {
 }
 
 .lock {
-  width: 25px;
-  height: 25px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   border: 1px solid #dce2ea;
@@ -1564,7 +1605,7 @@ onBeforeUnmount(() => {
 
 .block-copy strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1582,9 +1623,44 @@ onBeforeUnmount(() => {
   display: grid;
   justify-items: end;
   gap: 3px;
-  color: #7b8696;
+  color: #7a879a;
   font-size: 9px;
   white-space: nowrap;
+}
+
+.add-block-tray {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+  padding: 12px 16px 14px;
+  border-top: 1px solid rgba(219, 226, 238, .9);
+  background: rgba(255, 255, 255, .78);
+  backdrop-filter: blur(10px);
+}
+
+.add-block-tray span,
+.add-block-tray small {
+  color: #8a94a5;
+  font-size: 10px;
+}
+
+.add-block-tray button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #dbe4f2;
+  border-radius: 999px;
+  color: #40506a;
+  background: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.add-block-tray button:hover {
+  border-color: #9db3ef;
+  color: #315fc8;
+  background: #f5f8ff;
 }
 
 .preview-error {
@@ -1615,8 +1691,11 @@ onBeforeUnmount(() => {
 }
 
 .editor-body {
+  flex: 1;
   min-width: 0;
+  min-height: 0;
   padding: 20px;
+  overflow: auto;
 }
 
 .form-grid {
@@ -1729,6 +1808,20 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 820px) {
+  .context-workbench {
+    --workbench-height: auto;
+  }
+
+  .workbench-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workbench-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .preset-bar,
   .preset-picker {
     align-items: stretch;
@@ -1747,8 +1840,18 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .stack-panel,
+  .editor-panel {
+    height: auto;
+  }
+
   .context-stack {
+    max-height: 520px;
     padding: 12px;
+  }
+
+  .context-stack::before {
+    left: 30px;
   }
 }
 
@@ -1759,14 +1862,15 @@ onBeforeUnmount(() => {
 
   .preset-actions-inline,
   .block-tools,
-  .role-actions {
+  .role-actions,
+  .workbench-actions {
     width: 100%;
     align-items: stretch;
     flex-direction: column;
   }
 
   .stack-block {
-    grid-template-columns: 25px minmax(0, 1fr);
+    grid-template-columns: 30px minmax(0, 1fr);
   }
 
   .block-state {
