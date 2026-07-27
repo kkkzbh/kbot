@@ -65,10 +65,7 @@ function createTempDir(): string {
 
 const config: Config = {
   apiPath: '/api/admin/v1',
-  accessToken: 'admin-access-token',
-  sessionSecret: 'admin-session-secret-with-more-than-32-characters',
   allowedOrigins: ['https://admin.example.com'],
-  sessionTtlSeconds: 3600,
 };
 
 function createModelDraft() {
@@ -439,14 +436,7 @@ function createChatLunaService() {
   };
 }
 
-function createKoaCtx(options: { body?: unknown; host?: string; origin?: string; authorization?: string; params?: Record<string,string>; cookie?: string; path?: string; method?: string; secure?: boolean } = {}) {
-  const cookies = new Map<string, string>();
-  if (options.cookie) cookies.set('qqbot_admin_session', options.cookie);
-  const cookieJar = {
-    secure: options.secure ?? true,
-    get: vi.fn((name: string) => cookies.get(name)),
-    set: vi.fn((name: string, value: string) => cookies.set(name, value)),
-  };
+function createKoaCtx(options: { body?: unknown; host?: string; origin?: string; authorization?: string; params?: Record<string,string>; path?: string; method?: string } = {}) {
   return {
     status: 404,
     body: undefined as unknown,
@@ -454,7 +444,6 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
     path: options.path ?? '/',
     method: options.method ?? 'GET',
     host: options.host ?? 'admin.example.com',
-    secure: options.secure ?? true,
     params: options.params ?? {},
     query: {},
     request: { body: options.body },
@@ -465,8 +454,6 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
       if (name.toLowerCase() === 'authorization') return options.authorization ?? '';
       return '';
     }),
-    cookies: cookieJar,
-    cookieValues: cookies,
   };
 }
 
@@ -496,7 +483,9 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/icon-512.png');
     expect(getPaths).toContain('/icon.svg');
     expect(getPaths).toContain('/extensions/(.*)');
-    expect(postPaths).toContain('/api/admin/v1/session');
+    expect(getPaths).not.toContain('/api/admin/v1/session');
+    expect(postPaths).not.toContain('/api/admin/v1/session');
+    expect(server.delete.mock.calls.map((call) => call[0])).not.toContain('/api/admin/v1/session');
     expect(postPaths).toContain('/api/admin/v1/events/acknowledge-all');
     expect(postPaths).toContain('/api/admin/v1/events/:id/action');
     expect(postPaths).toContain('/api/admin/v1/apply/restart');
@@ -527,18 +516,10 @@ describe('independent admin API plugin', () => {
         previousInvocationId: 'old-invocation',
       }]);
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
     const patchSettings = server.patch.mock.calls.find((call) => call[0] === '/api/admin/v1/settings/:section')?.[1];
     const restart = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/apply/restart')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
-    const cookie = loginCtx.cookieValues.get('qqbot_admin_session');
 
     const patchCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       params: { section: 'basic' },
       body: { changes: [{ key: 'CHAT_NATURAL_TRIGGER_ALIASES', value: '小Q' }] },
@@ -547,7 +528,6 @@ describe('independent admin API plugin', () => {
     expect((patchCtx.body as any).restartRequired).toBe(true);
 
     const restartCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       body: {},
     });
@@ -595,18 +575,11 @@ describe('independent admin API plugin', () => {
       .spyOn(AdminRuntimeManager.prototype, 'superviseScheduledRestart')
       .mockResolvedValue({ state: 'restart_observed', job: null });
     const { server, modelConfig } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
     const applyModels = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models/apply',
     )?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
 
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       body: { expectedRevision: 2 },
     });
@@ -661,20 +634,11 @@ describe('independent admin API plugin', () => {
       job: null,
     });
     const { server, modelConfig } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/session',
-    )?.[1];
     const applyModels = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models/apply',
     )?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
 
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       body: { expectedRevision: 2 },
     });
@@ -716,20 +680,11 @@ describe('independent admin API plugin', () => {
       }),
     );
     const { server, modelConfig } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/session',
-    )?.[1];
     const applyModels = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models/apply',
     )?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
 
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       body: { expectedRevision: 2 },
     });
@@ -758,20 +713,11 @@ describe('independent admin API plugin', () => {
     const scheduleRestart = vi
       .spyOn(AdminRuntimeManager.prototype, 'scheduleRestart');
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/session',
-    )?.[1];
     const applyModels = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models/apply',
     )?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
 
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       body: { expectedRevision: 1 },
     });
@@ -807,7 +753,7 @@ describe('independent admin API plugin', () => {
       (request.body as { destroy: () => void }).destroy();
     }
 
-    for (const path of ['/admin', '/api/(.*)', '/campus/(.*)', '/chatluna-storage/(.*)']) {
+    for (const path of ['/login', '/admin', '/api/(.*)', '/campus/(.*)', '/chatluna-storage/(.*)']) {
       expect(routes.has(path)).toBe(false);
     }
   });
@@ -844,76 +790,38 @@ describe('independent admin API plugin', () => {
     (hashedAsset.body as { destroy: () => void }).destroy();
   });
 
-  it('enforces Host and Origin before issuing a session', async () => {
+  it('serves allowed hosts directly and rejects invalid Host or mutation Origin', async () => {
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
+    const readModels = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/models',
+    )?.[1];
+    const patchSettings = server.patch.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/settings/:section',
+    )?.[1];
 
-    const badHost = createKoaCtx({ host: 'public.example.com', origin: 'https://admin.example.com', body: { accessToken: config.accessToken } });
-    await login(badHost);
+    const badHost = createKoaCtx({ host: 'public.example.com' });
+    await readModels(badHost);
     expect(badHost.status).toBe(421);
 
-    const badOrigin = createKoaCtx({ origin: 'https://evil.example.com', body: { accessToken: config.accessToken } });
-    await login(badOrigin);
+    const badOrigin = createKoaCtx({
+      origin: 'https://evil.example.com',
+      params: { section: 'basic' },
+      body: { changes: [{ key: 'CHAT_NATURAL_TRIGGER_ALIASES', value: '小Q' }] },
+    });
+    await patchSettings(badOrigin);
     expect(badOrigin.status).toBe(403);
 
-    const good = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-      secure: false,
-    });
-    await login(good);
+    const good = createKoaCtx();
+    await readModels(good);
     expect(good.status).toBe(200);
-    expect(good.body).toMatchObject({ authenticated: true, expiresAt: expect.any(Number) });
-    expect(good.cookieValues.get('qqbot_admin_session')).toMatch(/^v1\./);
-    expect(good.cookies.secure).toBe(true);
-    expect(good.cookies.set).toHaveBeenCalledWith(
-      'qqbot_admin_session',
-      expect.stringMatching(/^v1\./),
-      expect.objectContaining({ httpOnly: true, sameSite: 'strict', secure: true, path: '/' }),
-    );
-  });
-
-  it('renews an authenticated persistent session when the workspace opens', async () => {
-    const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const check = server.get.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({ origin: 'https://admin.example.com', body: { accessToken: config.accessToken } });
-    await login(loginCtx);
-    const originalCookie = loginCtx.cookieValues.get('qqbot_admin_session');
-
-    const checkCtx = createKoaCtx({ cookie: originalCookie });
-    await check(checkCtx);
-
-    expect(checkCtx.status).toBe(200);
-    expect(checkCtx.body).toMatchObject({ authenticated: true, expiresAt: expect.any(Number) });
-    expect(checkCtx.cookieValues.get('qqbot_admin_session')).toMatch(/^v1\./);
-    expect(checkCtx.cookieValues.get('qqbot_admin_session')).not.toBe(originalCookie);
-  });
-
-  it('rejects protected domain routes without a valid session', async () => {
-    const { server } = createRuntime(createTempDir());
-    const overview = server.get.mock.calls.find((call) => call[0] === '/api/admin/v1/overview')?.[1];
-    const request = createKoaCtx();
-
-    await overview(request);
-
-    expect(request.status).toBe(401);
-    expect(request.body).toMatchObject({ error: { code: 'unauthenticated', requestId: expect.any(String) } });
   });
 
   it('returns the redacted aggregate model configuration and live binding state', async () => {
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     const readModels = server.get.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models',
     )?.[1];
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
     });
 
     await readModels(request);
@@ -941,18 +849,11 @@ describe('independent admin API plugin', () => {
 
   it('saves one aggregate draft with CAS and returns a typed revision conflict', async () => {
     const { server, modelConfig } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     const saveModels = server.put.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models',
     )?.[1];
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       body: {
         expectedRevision: 2,
         draft: createModelDraft(),
@@ -972,7 +873,6 @@ describe('independent admin API plugin', () => {
 
     const stale = createKoaCtx({
       origin: 'https://admin.example.com',
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       body: {
         expectedRevision: 2,
         draft: createModelDraft(),
@@ -1005,18 +905,11 @@ describe('independent admin API plugin', () => {
       }), { status: 401 }));
     vi.stubGlobal('fetch', fetchMock);
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     const catalog = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models/connections/:id/catalog',
     )?.[1];
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       params: { id: 'openai' },
       body: {},
     });
@@ -1038,7 +931,6 @@ describe('independent admin API plugin', () => {
 
     const rejected = createKoaCtx({
       origin: 'https://admin.example.com',
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       params: { id: 'openai' },
       body: {},
     });
@@ -1070,18 +962,11 @@ describe('independent admin API plugin', () => {
     const { server } = createRuntime(createTempDir(), {
       stickerMaintenance: { runIndex },
     });
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     const runStickerIndex = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models/maintenance/sticker-index',
     )?.[1];
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       body: {},
     });
 
@@ -1100,13 +985,9 @@ describe('independent admin API plugin', () => {
 
   it('never returns managed secret values from settings', async () => {
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({ origin: 'https://admin.example.com', body: { accessToken: config.accessToken } });
-    await login(loginCtx);
-    const cookie = loginCtx.cookieValues.get('qqbot_admin_session');
 
     const readSettings = server.get.mock.calls.find((call) => call[0] === '/api/admin/v1/settings/:section')?.[1];
-    const settingsCtx = createKoaCtx({ cookie, params: { section: 'features' } });
+    const settingsCtx = createKoaCtx({ params: { section: 'features' } });
     await readSettings(settingsCtx);
     expect(settingsCtx.status).toBe(200);
     const secret = (settingsCtx.body as any).fields.find((field: any) => field.key === 'QQ_VOICE_TTS_API_KEY');
@@ -1119,13 +1000,9 @@ describe('independent admin API plugin', () => {
     mkdirSync(join(dir, 'config'), { recursive: true });
     writeFileSync(join(dir, 'config/voice-tts.local.env'), 'VOICE_TTS_API_KEY=local-tts-secret\n', 'utf8');
     const { server } = createRuntime(dir);
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({ origin: 'https://admin.example.com', body: { accessToken: config.accessToken } });
-    await login(loginCtx);
-    const cookie = loginCtx.cookieValues.get('qqbot_admin_session');
 
     const readTts = server.get.mock.calls.find((call) => call[0] === '/api/admin/v1/tts')?.[1];
-    const ttsCtx = createKoaCtx({ cookie });
+    const ttsCtx = createKoaCtx();
     await readTts(ttsCtx);
 
     expect(ttsCtx.status).toBe(200);
@@ -1137,17 +1014,10 @@ describe('independent admin API plugin', () => {
   it('rejects model and cross-domain keys on the TTS mutation endpoint', async () => {
     const saveTtsSettings = vi.spyOn(AdminRuntimeManager.prototype, 'saveTtsSettings');
     const { server } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     const patchTts = server.patch.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/tts',
     )?.[1];
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       body: {
         botChanges: [{ key: 'QQBOT_MODEL_CONFIG_PATH', value: '/unexpected/model-config.json' }],
@@ -1189,13 +1059,6 @@ describe('independent admin API plugin', () => {
 
   it('delegates independent context and role CRUD, preview, and default mutations', async () => {
     const { server, preset } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
-    const cookie = loginCtx.cookieValues.get('qqbot_admin_session');
     const roleDefinition = createRolePresetDefinition('new-role');
     const contextDefinition = createContextPresetDefinition('new-context', 'new-role');
 
@@ -1203,7 +1066,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/role-presets',
     )?.[1];
     const createRoleCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       body: { rolePreset: roleDefinition },
     });
@@ -1220,7 +1082,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/context-presets',
     )?.[1];
     const createContextCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       body: { contextPreset: contextDefinition },
     });
@@ -1236,7 +1097,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/context-presets/preview',
     )?.[1];
     const previewCtx = createKoaCtx({
-      cookie,
       body: { contextPreset: contextDefinition, inputTokenLimit: 8192 },
     });
     await preview(previewCtx);
@@ -1260,7 +1120,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/role-presets/:id',
     )?.[1];
     const updateRoleCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       params: { id: 'new-role' },
       body: {
@@ -1279,7 +1138,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/context-presets/default',
     )?.[1];
     const defaultCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       body: { id: 'new-context' },
     });
@@ -1293,7 +1151,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/context-presets/:id',
     )?.[1];
     const removeContextCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       params: { id: 'new-context' },
       body: { expectedRevision: 'revision-context-new-context' },
@@ -1309,7 +1166,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/role-presets/:id',
     )?.[1];
     const removeRoleCtx = createKoaCtx({
-      cookie,
       origin: 'https://admin.example.com',
       params: { id: 'new-role' },
       body: { expectedRevision: 'revision-role-new-role-updated' },
@@ -1324,12 +1180,6 @@ describe('independent admin API plugin', () => {
 
   it('maps PresetError details without returning the underlying secret cause', async () => {
     const { server, preset } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     const cause = Object.assign(new Error('Bearer upstream-secret'), {
       status: 409,
       code: 'revision_conflict',
@@ -1351,7 +1201,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/context-presets/:id',
     )?.[1];
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       params: { id: 'sakiko' },
       body: {
@@ -1383,12 +1232,6 @@ describe('independent admin API plugin', () => {
 
   it('returns role reference ids on typed delete conflicts', async () => {
     const { server, preset } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find((call) => call[0] === '/api/admin/v1/session')?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     preset.deleteRolePreset.mockRejectedValueOnce(Object.assign(
       new Error('Role preset is referenced.'),
       {
@@ -1405,7 +1248,6 @@ describe('independent admin API plugin', () => {
       (call) => call[0] === '/api/admin/v1/role-presets/:id',
     )?.[1];
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       origin: 'https://admin.example.com',
       params: { id: 'sakiko' },
       body: { expectedRevision: 'revision-role-sakiko' },
@@ -1431,14 +1273,6 @@ describe('independent admin API plugin', () => {
 
   it('maps context preview compile failures to typed draft errors', async () => {
     const { server, preset } = createRuntime(createTempDir());
-    const login = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/session',
-    )?.[1];
-    const loginCtx = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { accessToken: config.accessToken },
-    });
-    await login(loginCtx);
     preset.previewContextPreset.mockImplementationOnce(() => {
       throw new ContextPresetCompileError(
         'invalid_anchor',
@@ -1467,7 +1301,6 @@ describe('independent admin API plugin', () => {
       entries: [],
     });
     const request = createKoaCtx({
-      cookie: loginCtx.cookieValues.get('qqbot_admin_session'),
       body: { contextPreset: draft },
     });
 

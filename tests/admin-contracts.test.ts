@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   adminErrorSchema,
   affinitySettingsRequestSchema,
-  loginRequestSchema,
   modelAdminAggregateSchema,
   modelConfigPutSchema,
   modelOAuthPollRequestSchema,
@@ -86,10 +85,9 @@ const modelDraft = {
 };
 
 describe('admin shared contracts', () => {
-  it('validates login and structured errors', () => {
-    expect(loginRequestSchema.parse({ accessToken: 'secret' })).toEqual({ accessToken: 'secret' });
-    expect(adminErrorSchema.parse({ error: { code: 'unauthenticated', message: 'expired', requestId: 'request-1' } })).toEqual({
-      error: { code: 'unauthenticated', message: 'expired', requestId: 'request-1' },
+  it('validates structured errors', () => {
+    expect(adminErrorSchema.parse({ error: { code: 'bad_request', message: 'invalid input', requestId: 'request-1' } })).toEqual({
+      error: { code: 'bad_request', message: 'invalid input', requestId: 'request-1' },
     });
   });
 

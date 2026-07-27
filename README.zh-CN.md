@@ -92,7 +92,7 @@ pnpm start:server
 
 ```dotenv
 ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001
-KOISHI_HOST=0.0.0.0
+KOISHI_HOST=127.0.0.1
 KOISHI_PORT=5140
 SQLITE_PATH=./data/koishi.db
 LLBOT_RUNTIME_DIR=./.runtime/llbot
@@ -105,15 +105,13 @@ LLONEBOT_DATA_DIR=./.runtime/llonebot
 
 管理工作台由 Koishi 进程直接通过根路径 `/` 提供静态 SPA，并通过同源 `/api/admin/v1` 访问运行时能力。它不依赖 Koishi Console。`/api/**`、校园绑定页和 Storage 等机器人 HTTP 路由继续由各自插件处理。
 
-启动前必须显式配置：
+启动前必须显式配置浏览器实际使用的 Origin：
 
 ```dotenv
-QQBOT_ADMIN_ACCESS_TOKEN=至少16个字符
-QQBOT_ADMIN_SESSION_SECRET=至少32个随机字符
 QQBOT_ADMIN_ORIGIN=https://实际管理端域名
 ```
 
-`QQBOT_ADMIN_ORIGIN` 必须是浏览器实际使用的完整 Origin。Admin API 会校验 Host；所有变更请求还会校验 Origin。登录成功后只设置 HttpOnly、SameSite=Strict session cookie，Secret 字段只返回是否已配置。
+`QQBOT_ADMIN_ORIGIN` 必须是浏览器实际使用的完整 Origin。Admin API 会校验 Host；所有变更请求还会校验 Origin。生产环境中的 Koishi 只监听 loopback，管理台通过 Tailnet-only Tailscale Serve 入口发布。Secret 字段只返回是否已配置。
 
 ## 运行辅助脚本
 

@@ -1,5 +1,4 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import { useSessionStore } from '@/stores/session';
 
 export const router = createRouter({
   history: createWebHistory('/'),
@@ -15,7 +14,6 @@ export const router = createRouter({
     return { top: 0 };
   },
   routes: [
-    { path: '/login', name: 'login', component: () => import('@/pages/LoginPage.vue'), meta: { public: true, title: '登录' } },
     { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '总览', description: '服务、模型与运行风险一览' } },
     { path: '/runtime/services', name: 'services', component: () => import('@/pages/ServicesPage.vue'), meta: { title: '服务管理', description: 'systemd 服务状态与生命周期操作' } },
     { path: '/runtime/events', name: 'events', component: () => import('@/pages/EventsPage.vue'), meta: { title: '事件中心', description: '待处理运行事件与历史记录' } },
@@ -36,20 +34,6 @@ export const router = createRouter({
     { path: '/system/basic', name: 'basic', component: () => import('@/pages/SettingsPage.vue'), props: { section: 'basic', mode: 'all' }, meta: { title: '基础设置', description: '触发别名与权限基础参数' } },
     { path: '/system/features', name: 'features', component: () => import('@/pages/SettingsPage.vue'), props: { section: 'features', mode: 'system' }, meta: { title: '功能设置', description: '运行功能与集成配置' } },
   ],
-});
-
-router.beforeEach(async (to) => {
-  const session = useSessionStore();
-  if (!session.checked) {
-    try {
-      await session.check();
-    } catch {
-      session.$patch({ checked: true, authenticated: false, expiresAt: null });
-    }
-  }
-  if (to.meta.public) return session.authenticated ? { name: 'overview' } : true;
-  if (!session.authenticated) return { name: 'login', query: { redirect: to.fullPath } };
-  return true;
 });
 
 router.afterEach((to) => {

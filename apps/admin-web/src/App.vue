@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from 'vue';
-import { isNavigationFailure, useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import {
@@ -28,10 +28,8 @@ import {
   Volume2,
 } from '@lucide/vue';
 import type { BotServiceStatus, BotServiceUnit } from '@contracts';
-import { useSessionStore } from '@/stores/session';
 import { useRuntimeStore, type ApplyState } from '@/stores/runtime';
 import { rawApi, rawJsonBody } from '@/api/client';
-import { runLogoutFlow } from '@/logout-flow';
 
 type NavItem = {
   key: string;
@@ -88,14 +86,12 @@ const groups: NavGroup[] = [
 
 const route = useRoute();
 const router = useRouter();
-const session = useSessionStore();
 const runtime = useRuntimeStore();
 const mobileOpen = ref(false);
 const commandOpen = ref(false);
 const commandQuery = ref('');
 const restartBusy = ref(false);
 const expandedBranches = reactive<Record<string, boolean>>({});
-const isLogin = computed(() => route.name === 'login');
 const filteredCommands = computed(() => {
   const query = commandQuery.value.trim().toLowerCase();
   return groups.flatMap((group) => group.items.flatMap((item) => item.children
@@ -152,21 +148,6 @@ async function navigate(path: string) {
   commandOpen.value = false;
   mobileOpen.value = false;
   await router.push(path);
-}
-
-async function logout() {
-  const result = await runLogoutFlow({
-    prepareLeave: async () => {
-      if (route.name === 'overview') return true;
-      const failure = await router.push({ name: 'overview' });
-      return !isNavigationFailure(failure);
-    },
-    logout: () => session.logout(),
-    navigateToLogin: async () => {
-      await router.replace('/login');
-    },
-  });
-  if (result === 'logged_out') ElMessage.success('管理会话已退出');
 }
 
 function delay(ms: number): Promise<void> {
@@ -248,8 +229,7 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
 
 <template>
   <el-config-provider :locale="zhCn">
-    <router-view v-if="isLogin" />
-    <div v-else class="app-shell">
+    <div class="app-shell">
     <aside class="sidebar" :class="{ 'is-open': mobileOpen }">
       <nav class="nav-scroll">
         <section v-for="group in groups" :key="group.label" class="nav-group">
@@ -308,7 +288,6 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
             <span>{{ restartBusy ? '重启中' : '待重启' }}</span>
           </button>
           <span class="topbar-health"><i class="status-dot ok" />运行中</span>
-          <el-button text @click="logout">退出</el-button>
         </div>
       </header>
       <main class="content" :class="{ 'content-logs': route.name === 'logs' }">

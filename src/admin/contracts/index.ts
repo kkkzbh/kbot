@@ -35,11 +35,11 @@ export const adminJsonValueSchema: z.ZodType<AdminJsonValue> = z.lazy(() => z.un
 
 export const adminErrorCodeSchema = z.enum([
   'bad_request',
-  'unauthenticated',
   'forbidden_origin',
   'invalid_host',
   'not_found',
   'conflict',
+  'provider_auth_required',
   'upstream_error',
   'service_unavailable',
   'internal_error',
@@ -52,15 +52,6 @@ export const adminErrorSchema = z.object({
     requestId: z.string(),
     details: z.unknown().optional(),
   }),
-});
-
-export const loginRequestSchema = z.object({
-  accessToken: z.string().min(1),
-});
-
-export const sessionStateSchema = z.object({
-  authenticated: z.boolean(),
-  expiresAt: z.number().int().nullable(),
 });
 
 export const adminLogLevelSchema = z.enum(['success', 'error', 'info', 'warn', 'debug']);
@@ -510,7 +501,6 @@ export const conversationTargetRequestSchema = z.object({
 export type AdminError = z.infer<typeof adminErrorSchema>;
 export type AdminLogEntry = z.infer<typeof adminLogEntrySchema>;
 export type AdminLogsResponse = z.infer<typeof adminLogsResponseSchema>;
-export type SessionState = z.infer<typeof sessionStateSchema>;
 export type SettingsField = z.infer<typeof settingsFieldSchema>;
 export type SettingsSection = z.infer<typeof settingsSectionSchema>;
 export type SettingsPatchRequest = z.infer<typeof settingsPatchRequestSchema>;

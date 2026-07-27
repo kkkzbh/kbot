@@ -14,7 +14,6 @@ import {
   connectionIdSchema,
   conversationTargetRequestSchema,
   featureOverridesRequestSchema,
-  loginRequestSchema,
   memoryKindSchema,
   memoryMutationSchema,
   emptyRequestSchema,
@@ -86,11 +85,10 @@ import {
   type ModelContextSnapshotStore,
 } from './model-context.js';
 import {
-  ADMIN_SESSION_COOKIE,
+  AdminAccessPolicy,
   AdminHttpError,
-  AdminSessionService,
   createRequestId,
-} from './session.js';
+} from './access-policy.js';
 
 type DatabaseLike = {
   get: (table: string, query: Record<string, unknown>, cursor?: unknown) => Promise<any[]>;
@@ -121,7 +119,7 @@ export type RegisterAdminApiOptions = {
   };
   apiPath: string;
   manager: AdminRuntimeManager;
-  session: AdminSessionService;
+  accessPolicy: AdminAccessPolicy;
   services: AdminRuntimeServices;
   logs: AdminLogService;
   events: OperationalEventService;
@@ -137,7 +135,6 @@ type KoaContext = any;
 type ApiHandler = (koaCtx: KoaContext) => Promise<unknown> | unknown;
 
 type ApiRouteOptions = {
-  authenticated?: boolean;
   mutation?: boolean;
 };
 
@@ -489,36 +486,6 @@ function unavailableMemorySummary() {
   };
 }
 
-function getCookie(koaCtx: KoaContext): string | undefined {
-  return koaCtx.cookies?.get?.(ADMIN_SESSION_COOKIE);
-}
-
-function setSessionCookie(koaCtx: KoaContext, session: AdminSessionService, token: string, expiresAt: number): void {
-  const secure = session.shouldUseSecureCookie(requestHost(koaCtx));
-  if (secure) koaCtx.cookies.secure = true;
-  koaCtx.cookies.set(ADMIN_SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure,
-    overwrite: true,
-    path: '/',
-    expires: new Date(expiresAt),
-  });
-}
-
-function clearSessionCookie(koaCtx: KoaContext, session: AdminSessionService): void {
-  const secure = session.shouldUseSecureCookie(requestHost(koaCtx));
-  if (secure) koaCtx.cookies.secure = true;
-  koaCtx.cookies.set(ADMIN_SESSION_COOKIE, '', {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure,
-    overwrite: true,
-    path: '/',
-    expires: new Date(0),
-  });
-}
-
 export function registerAdminApi(options: RegisterAdminApiOptions): void {
   const apiPath = normalizeBasePath(options.apiPath);
   const applyState = new AdminApplyState();
@@ -538,9 +505,8 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       koaCtx.set?.('x-request-id', requestId);
       koaCtx.set?.('cache-control', 'no-store');
       try {
-        options.session.assertHost(requestHost(koaCtx));
-        if (routeOptions.mutation) options.session.assertMutationOrigin(requestOrigin(koaCtx));
-        if (routeOptions.authenticated !== false) options.session.require(getCookie(koaCtx));
+        options.accessPolicy.assertHost(requestHost(koaCtx));
+        if (routeOptions.mutation) options.accessPolicy.assertMutationOrigin(requestOrigin(koaCtx));
         const body = await handler(koaCtx);
         if (koaCtx.body === undefined && body !== undefined) writeJson(koaCtx, 200, body);
       } catch (error) {
@@ -553,25 +519,6 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       }
     });
   };
-
-  register('get', '/session', (koaCtx) => {
-    const current = options.session.verify(getCookie(koaCtx));
-    if (!current.authenticated) return current;
-    const renewed = options.session.issue();
-    setSessionCookie(koaCtx, options.session, renewed.token, renewed.expiresAt);
-    return { authenticated: true, expiresAt: renewed.expiresAt };
-  }, { authenticated: false });
-  register('post', '/session', (koaCtx) => {
-    const input = parseInput(loginRequestSchema, koaCtx.request.body);
-    options.session.authenticateAccessToken(input.accessToken);
-    const issued = options.session.issue();
-    setSessionCookie(koaCtx, options.session, issued.token, issued.expiresAt);
-    return { authenticated: true, expiresAt: issued.expiresAt };
-  }, { authenticated: false, mutation: true });
-  register('delete', '/session', (koaCtx) => {
-    clearSessionCookie(koaCtx, options.session);
-    koaCtx.status = 204;
-  }, { authenticated: false, mutation: true });
 
   register('get', '/overview', async () => {
     const [services, modelAggregate, tts, memoryStatus, memorySummary, affinity, eventSummary] = await Promise.all([

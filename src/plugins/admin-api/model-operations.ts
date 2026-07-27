@@ -10,7 +10,7 @@ import {
   type ModelConfigAggregate,
   type ModelConfigService,
 } from '../model-config/index.js';
-import { AdminHttpError } from './session.js';
+import { AdminHttpError } from './access-policy.js';
 
 type OAuthAction = 'start' | 'poll' | 'logout';
 
@@ -245,7 +245,7 @@ export class ModelConnectionOperations {
     throw new AdminHttpError(
       status.authStatus === 'unauthenticated' || status.authStatus === 'expired' ? 401 : 502,
       status.authStatus === 'unauthenticated' || status.authStatus === 'expired'
-        ? 'unauthenticated'
+        ? 'provider_auth_required'
         : 'upstream_error',
       `连接 ${connectionId} 的 OAuth 状态为 ${status.authStatus}。`,
       {

@@ -7,31 +7,15 @@ const rootDir = process.cwd()
 loadDotenv(resolveBotEnvPath())
 
 const adminOrigin = requireOrigin(process.env.QQBOT_ADMIN_ORIGIN)
-const accessToken = requireValue(
-  process.env.QQBOT_ADMIN_ACCESS_TOKEN,
-  'QQBOT_ADMIN_ACCESS_TOKEN',
-)
 const apiBase = `${adminOrigin}/api/admin/v1`
 
 async function main() {
-  const sessionResponse = await fetch(`${apiBase}/session`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      origin: adminOrigin,
-    },
-    body: JSON.stringify({ accessToken }),
-  })
-  await assertSuccess(sessionResponse, 'create admin session')
-  const cookie = extractSessionCookie(sessionResponse)
-
   const maintenanceResponse = await fetch(
     `${apiBase}/models/maintenance/sticker-index`,
     {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        cookie,
         origin: adminOrigin,
       },
       body: '{}',
@@ -107,19 +91,6 @@ function requireValue(value, name) {
   const normalized = String(value || '').trim()
   if (!normalized) throw new Error(`${name} is required`)
   return normalized
-}
-
-function extractSessionCookie(response) {
-  const values = typeof response.headers.getSetCookie === 'function'
-    ? response.headers.getSetCookie()
-    : [response.headers.get('set-cookie')].filter(Boolean)
-  const sessionCookie = values
-    .map((value) => String(value).split(';', 1)[0])
-    .find((value) => value.startsWith('qqbot_admin_session='))
-  if (!sessionCookie) {
-    throw new Error('admin session response did not set qqbot_admin_session')
-  }
-  return sessionCookie
 }
 
 async function assertSuccess(response, operation) {

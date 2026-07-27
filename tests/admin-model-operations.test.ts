@@ -6,7 +6,7 @@ import type {
   ModelConfigService,
 } from '../src/plugins/model-config/index.js';
 import { ModelConnectionOperations } from '../src/plugins/admin-api/model-operations.js';
-import { AdminHttpError } from '../src/plugins/admin-api/session.js';
+import { AdminHttpError } from '../src/plugins/admin-api/access-policy.js';
 
 const connection = {
   id: 'openai',

@@ -27,17 +27,13 @@ cp .env.server.example .env.server
 
 Fill the real server values in `.env.server`. `deploy/deploy.sh` creates the remote `/opt/qqbot` directories and installs `.env.server` to `/opt/qqbot/shared/.env.server` when the remote file does not exist. Existing remote server env is preserved.
 
-The independent admin workspace requires three production values before deployment:
+The independent admin workspace requires its browser-facing Origin before deployment:
 
 ```dotenv
-QQBOT_ADMIN_ACCESS_TOKEN=<at least 16 characters>
-QQBOT_ADMIN_SESSION_SECRET=<at least 32 random characters>
 QQBOT_ADMIN_ORIGIN=https://admin.example.com
 ```
 
-`QQBOT_ADMIN_ORIGIN` must exactly match the browser-facing origin and must not include a path. The installer validates these values before replacing the active application. It reports only validation errors and never prints either secret.
-
-After the first successful token login, the admin workspace stores only a signed HttpOnly session cookie. The session lasts 90 days and renews whenever the workspace is opened. The raw access token is never stored in browser JavaScript storage.
+`QQBOT_ADMIN_ORIGIN` must exactly match the browser-facing origin and must not include a path. The installer validates this value before replacing the active application. Production binds Koishi to loopback; Tailscale Serve owns Tailnet access to the admin workspace.
 
 Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
 

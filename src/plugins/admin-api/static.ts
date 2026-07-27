@@ -2,7 +2,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
 import type { Context, Logger } from 'koishi';
 import type {} from '@koishijs/plugin-server';
-import { AdminHttpError, AdminSessionService, createRequestId } from './session.js';
+import { AdminAccessPolicy, AdminHttpError, createRequestId } from './access-policy.js';
 
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -24,7 +24,6 @@ const ADMIN_ROUTES = [
   '/icon-180.png',
   '/icon-512.png',
   '/icon.svg',
-  '/login',
   '/policies',
   '/assets/(.*)',
   '/runtime',
@@ -48,7 +47,7 @@ function fileExists(filePath: string): boolean {
 export function registerAdminStatic(options: {
   ctx: Context;
   assetDir: string;
-  session: AdminSessionService;
+  accessPolicy: AdminAccessPolicy;
   logger: Logger;
 }): void {
   const assetDir = resolve(options.assetDir);
@@ -58,7 +57,7 @@ export function registerAdminStatic(options: {
     const path = String(koaCtx.path || '');
     const requestId = createRequestId();
     try {
-      options.session.assertHost(String(koaCtx.host || koaCtx.request?.host || koaCtx.get?.('host') || '').trim().toLowerCase());
+      options.accessPolicy.assertHost(String(koaCtx.host || koaCtx.request?.host || koaCtx.get?.('host') || '').trim().toLowerCase());
       if (koaCtx.method !== 'GET' && koaCtx.method !== 'HEAD') {
         koaCtx.status = 405;
         koaCtx.set('allow', 'GET, HEAD');

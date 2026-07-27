@@ -8,7 +8,7 @@ plugins:
       token: ${{ env.ONEBOT_TOKEN || '' }}
       endpoint: ${{ env.ONEBOT_WS_ENDPOINT || 'ws://127.0.0.1:3001' }}
     server:0b8t2q:
-      host: ${{ env.KOISHI_HOST || '0.0.0.0' }}
+      host: ${{ env.KOISHI_HOST || '127.0.0.1' }}
       port: ${{ +env.KOISHI_PORT || 5140 }}
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
@@ -40,11 +40,8 @@ plugins:
     ./dist/plugins/tool-policy:tool-policy: {}
     ./dist/plugins/admin-api:admin-api:
       apiPath: /api/admin/v1
-      accessToken: ${{ env.QQBOT_ADMIN_ACCESS_TOKEN }}
-      sessionSecret: ${{ env.QQBOT_ADMIN_SESSION_SECRET }}
       allowedOrigins:
         - ${{ env.QQBOT_ADMIN_ORIGIN }}
-      sessionTtlSeconds: 7776000
     cron:task: {}
     ./dist/plugins/automation:automation:
       pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}

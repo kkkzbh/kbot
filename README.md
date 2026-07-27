@@ -92,7 +92,7 @@ Important runtime values:
 
 ```dotenv
 ONEBOT_WS_ENDPOINT=ws://127.0.0.1:3001
-KOISHI_HOST=0.0.0.0
+KOISHI_HOST=127.0.0.1
 KOISHI_PORT=5140
 SQLITE_PATH=./data/koishi.db
 LLBOT_RUNTIME_DIR=./.runtime/llbot
@@ -105,15 +105,13 @@ Server voice input is intentionally disabled by default. If voice output is enab
 
 The Koishi process serves the standalone SPA directly at `/`; the SPA uses the same-origin `/api/admin/v1` runtime API and has no Koishi Console dependency. Bot-owned HTTP routes such as `/api/**`, campus binding pages, and Storage remain owned by their respective plugins.
 
-Configure these values explicitly before startup:
+Configure the browser-facing origin explicitly before startup:
 
 ```dotenv
-QQBOT_ADMIN_ACCESS_TOKEN=at-least-16-characters
-QQBOT_ADMIN_SESSION_SECRET=at-least-32-random-characters
 QQBOT_ADMIN_ORIGIN=https://actual-admin-origin.example
 ```
 
-`QQBOT_ADMIN_ORIGIN` must match the browser's complete Origin. The API validates Host on every request and Origin on every mutation. Login creates an HttpOnly, SameSite=Strict session cookie, and Secret fields only expose whether a value is configured.
+`QQBOT_ADMIN_ORIGIN` must match the browser's complete Origin. The API validates Host on every request and Origin on every mutation. Production binds Koishi to loopback and publishes the admin workspace through its Tailnet-only Tailscale Serve endpoint. Secret fields only expose whether a value is configured.
 
 ## Runtime Helpers
 

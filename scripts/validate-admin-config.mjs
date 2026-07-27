@@ -5,16 +5,6 @@ function fail(message) {
   process.exit(2);
 }
 
-function requireSecret(name, minimumLength, placeholder) {
-  const value = process.env[name];
-  if (!value) fail(`${name} is required`);
-  if (value === placeholder) fail(`${name} still contains the example placeholder`);
-  if (value.length < minimumLength) fail(`${name} must contain at least ${minimumLength} characters`);
-}
-
-requireSecret('QQBOT_ADMIN_ACCESS_TOKEN', 16, 'replace-with-at-least-16-characters');
-requireSecret('QQBOT_ADMIN_SESSION_SECRET', 32, 'replace-with-at-least-32-random-characters');
-
 const rawOrigin = process.env.QQBOT_ADMIN_ORIGIN;
 if (!rawOrigin) fail('QQBOT_ADMIN_ORIGIN is required');
 if (rawOrigin === 'https://admin.example.com') {
@@ -40,4 +30,4 @@ if (
   fail('QQBOT_ADMIN_ORIGIN must contain only scheme, host, and optional port');
 }
 
-console.log('[admin-config] credentials and origin verified');
+console.log('[admin-config] origin verified');

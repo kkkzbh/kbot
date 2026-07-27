@@ -13,7 +13,7 @@ import type { MemoryAdminService } from '../memory/index.js';
 import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
 import type { StickerMaintenanceService } from '../../types/model-config.js';
 import { AdminRuntimeManager } from './server.js';
-import { AdminSessionService } from './session.js';
+import { AdminAccessPolicy } from './access-policy.js';
 import { AdminLogService } from './logs.js';
 import { registerAdminApi, type AdminRuntimeServices } from './http-api.js';
 import { registerAdminStatic } from './static.js';
@@ -39,18 +39,12 @@ export const inject = {
 
 export interface Config {
   apiPath: string;
-  accessToken: string;
-  sessionSecret: string;
   allowedOrigins: string[];
-  sessionTtlSeconds: number;
 }
 
 export const Config: Schema<Config> = Schema.object({
   apiPath: Schema.string().default('/api/admin/v1').description('Admin HTTP API 的基础路径。'),
-  accessToken: Schema.string().role('secret').required().description('登录独立管理端使用的 access token。'),
-  sessionSecret: Schema.string().role('secret').required().description('签发管理 session 的 HMAC secret。'),
   allowedOrigins: Schema.array(Schema.string()).required().description('允许访问管理端的完整 Origin 列表。'),
-  sessionTtlSeconds: Schema.natural().min(300).max(31536000).default(7776000).description('管理 session 持久化有效期；每次打开管理台会滚动续期。'),
 });
 
 type RuntimeContext = Context & {
@@ -75,12 +69,7 @@ export function apply(ctx: Context, config: Config): void {
   const copilotBridge = runtimeCtx.copilotBridge;
   const codexBridge = runtimeCtx.codexBridge;
   const manager = new AdminRuntimeManager({ rootDir: ctx.baseDir });
-  const session = new AdminSessionService({
-    accessToken: config.accessToken,
-    sessionSecret: config.sessionSecret,
-    allowedOrigins: config.allowedOrigins,
-    ttlSeconds: config.sessionTtlSeconds,
-  });
+  const accessPolicy = new AdminAccessPolicy(config.allowedOrigins);
   const logs = new AdminLogService();
   const contextSnapshots = new ModelContextSnapshotStore(
     Date.now,
@@ -117,7 +106,7 @@ export function apply(ctx: Context, config: Config): void {
     ctx: runtimeCtx,
     apiPath: config.apiPath,
     manager,
-    session,
+    accessPolicy,
     services,
     logs,
     events,
@@ -130,7 +119,7 @@ export function apply(ctx: Context, config: Config): void {
   registerAdminStatic({
     ctx,
     assetDir: join(ctx.baseDir, 'dist/admin-web'),
-    session,
+    accessPolicy,
     logger,
   });
   registerInternalBridges({
