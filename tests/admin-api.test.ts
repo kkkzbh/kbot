@@ -49,6 +49,9 @@ import {
   type ScheduledRestartHandle,
 } from '../src/plugins/admin-api/server.js';
 import { ModelConfigError } from '../src/plugins/model-config/index.js';
+import type { RedactedResolvedBinding } from '../src/plugins/model-config/types.js';
+import { MemoryRuntimeError } from '../src/plugins/memory/errors.js';
+import { createUnavailableMemoryStatusSnapshot } from '../src/plugins/shared/memory-status.js';
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -103,7 +106,6 @@ function createModelDraft() {
       { workload: 'memory.embedding', mode: 'disabled' as const },
       { workload: 'affinity.analysis', mode: 'inheritMain' as const },
       { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
-      { workload: 'chatluna.defaultEmbedding', mode: 'disabled' as const },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
       { workload: 'sticker.index', mode: 'disabled' as const },
     ],
@@ -138,7 +140,7 @@ function createModelConfigService() {
       credentialState: 'configured' as const,
       hasSecret: true,
     })),
-    liveBindings: [],
+    liveBindings: [] as RedactedResolvedBinding[],
   });
   return {
     getAggregate: vi.fn(() => aggregate()),
@@ -435,7 +437,18 @@ function createChatLunaService() {
   };
 }
 
-function createKoaCtx(options: { body?: unknown; host?: string; origin?: string; authorization?: string; params?: Record<string,string>; path?: string; method?: string } = {}) {
+function createKoaCtx(options: {
+  body?: unknown;
+  host?: string;
+  origin?: string;
+  authorization?: string;
+  tailscaleLogin?: string | null;
+  remoteAddress?: string;
+  params?: Record<string,string>;
+  query?: Record<string,string>;
+  path?: string;
+  method?: string;
+} = {}) {
   return {
     status: 404,
     body: undefined as unknown,
@@ -444,13 +457,17 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
     method: options.method ?? 'GET',
     host: options.host ?? 'admin.example.com',
     params: options.params ?? {},
-    query: {},
+    query: options.query ?? {},
+    req: { socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' } },
     request: { body: options.body },
     set: vi.fn(),
     get: vi.fn((name: string) => {
       if (name.toLowerCase() === 'origin') return options.origin ?? '';
       if (name.toLowerCase() === 'host') return options.host ?? 'admin.example.com';
       if (name.toLowerCase() === 'authorization') return options.authorization ?? '';
+      if (name.toLowerCase() === 'tailscale-user-login') {
+        return options.tailscaleLogin === null ? '' : options.tailscaleLogin ?? 'operator@example.com';
+      }
       return '';
     }),
   };
@@ -466,7 +483,9 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/events');
     expect(getPaths).toContain('/api/admin/v1/events/summary');
     expect(getPaths).toContain('/api/admin/v1/events/:id');
-    expect(getPaths).toContain('/api/admin/v1/memory/users');
+    expect(getPaths).toContain('/api/admin/v1/memory');
+    expect(getPaths).toContain('/api/admin/v1/memory/assertions');
+    expect(getPaths).toContain('/api/admin/v1/memory/reviews');
     expect(getPaths).toContain('/api/admin/v1/logs');
     expect(getPaths).toContain('/api/admin/v1/models');
     expect(getPaths).toContain('/api/admin/v1/context-presets');
@@ -498,6 +517,13 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/context-presets');
     expect(postPaths).toContain('/api/admin/v1/context-presets/preview');
     expect(postPaths).toContain('/api/admin/v1/role-presets');
+    expect(postPaths).toContain('/api/admin/v1/memory/reviews/:streamId');
+    expect(postPaths).toContain('/api/admin/v1/memory/forget');
+    expect(postPaths).toContain('/api/admin/v1/memory/backfill');
+    expect(postPaths).toContain('/api/admin/v1/memory/probe/:workload');
+    expect(getPaths).not.toContain('/api/admin/v1/memory/users');
+    expect(getPaths).not.toContain('/api/admin/v1/memory/:kind');
+    expect(postPaths).not.toContain('/api/admin/v1/memory/mutations');
     expect(putPaths).toContain('/api/admin/v1/models');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
@@ -505,6 +531,224 @@ describe('independent admin API plugin', () => {
     expect(getPaths).not.toContain('/api/admin/v1/model-context/blueprint');
     expect(getPaths).not.toContain('/api/admin/v1/models/runtime');
     expect(postPaths).not.toContain('/api/admin/v1/models/:provider/list');
+  });
+
+  it('serves only the typed Memory Ledger V2 API and derives backfill identity from live binding', async () => {
+    const modelConfig = createModelConfigService();
+    const baseAggregate = modelConfig.getAggregate();
+    modelConfig.getAggregate.mockImplementation(() => ({
+      ...baseAggregate,
+      liveBindings: [
+        {
+          workload: 'memory.extract',
+          sourceWorkload: 'main.chat',
+          mode: 'inheritMain',
+          revision: 7,
+          canonicalModel: 'qqbot-openai/gpt-test',
+          connectionId: 'openai',
+          modelId: 'gpt-test',
+        },
+        {
+          workload: 'memory.embedding',
+          sourceWorkload: 'memory.embedding',
+          mode: 'dedicated',
+          revision: 7,
+          canonicalModel: 'qqbot-siliconflow/qwen3-embedding-8b',
+          connectionId: 'siliconflow',
+          modelId: 'qwen3-embedding-8b',
+        },
+      ],
+    }));
+    const status = createUnavailableMemoryStatusSnapshot({
+      available: true,
+      enabled: true,
+      maintenance: false,
+      readEnabled: true,
+      writeEnabled: true,
+      extractConfigured: true,
+      embedConfigured: true,
+      extractModel: 'qqbot-openai/gpt-test',
+      embedModel: 'qqbot-siliconflow/qwen3-embedding-8b',
+    });
+    const memoryAdmin = {
+      getAssertionsPage: vi.fn(async (query) => ({
+        items: [],
+        total: 0,
+        page: query.page,
+        pageSize: query.pageSize,
+      })),
+      getReviewsPage: vi.fn(async (query) => ({
+        items: [],
+        total: 0,
+        page: query.page,
+        pageSize: query.pageSize,
+      })),
+      review: vi.fn(async () => undefined),
+      archive: vi.fn(async () => undefined),
+      forget: vi.fn(async () => 1),
+      backfill: vi.fn(async () => ({ queued: 59 })),
+      getOperationalAttentionItems: vi.fn(async () => []),
+    };
+    const memoryStatus = {
+      getSnapshot: vi.fn(async () => status),
+      probeEmbedding: vi.fn(),
+      probeExtraction: vi.fn(),
+    };
+    const { server } = createRuntime(createTempDir(), {
+      modelConfig,
+      memoryAdmin,
+      memoryStatus,
+    });
+    const readMemory = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/memory',
+    )?.[1];
+    const readAssertions = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/memory/assertions',
+    )?.[1];
+    const runBackfill = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/memory/backfill',
+    )?.[1];
+    const archiveMemory = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/memory/archive',
+    )?.[1];
+
+    const overviewRequest = createKoaCtx();
+    await readMemory(overviewRequest);
+    expect(overviewRequest.status).toBe(200);
+    expect(overviewRequest.body).toMatchObject({
+      status: { schemaVersion: 2, counts: { active: 0, stranded: 0 } },
+      bindings: {
+        extraction: { mode: 'inheritMain', canonicalModel: 'qqbot-openai/gpt-test' },
+        embedding: { mode: 'dedicated', canonicalModel: 'qqbot-siliconflow/qwen3-embedding-8b' },
+      },
+    });
+
+    const assertionsRequest = createKoaCtx({
+      query: { page: '2', pageSize: '25', subjectKey: 'qq:user:1' },
+    });
+    await readAssertions(assertionsRequest);
+    expect(assertionsRequest.status).toBe(200);
+    expect(memoryAdmin.getAssertionsPage).toHaveBeenCalledWith({
+      page: 2,
+      pageSize: 25,
+      subjectKey: 'qq:user:1',
+    });
+
+    const archiveRequest = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { streamId: 'stream-1', reasonCode: 'duplicate' },
+    });
+    await archiveMemory(archiveRequest);
+    expect(archiveRequest.status).toBe(200);
+    expect(memoryAdmin.archive).toHaveBeenCalledWith({
+      streamId: 'stream-1',
+      reasonCode: 'duplicate',
+    });
+
+    const backfillRequest = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: {},
+    });
+    await runBackfill(backfillRequest);
+    expect(backfillRequest.status).toBe(200);
+    expect(memoryAdmin.backfill).toHaveBeenCalledWith({
+      canonicalModel: 'qqbot-siliconflow/qwen3-embedding-8b',
+      modelRevision: 7,
+    });
+    expect(backfillRequest.body).toMatchObject({ queued: 59 });
+
+    const invalidBackfill = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { canonicalModel: 'attacker-selected/model' },
+    });
+    await runBackfill(invalidBackfill);
+    expect(invalidBackfill.status).toBe(400);
+    expect(memoryAdmin.backfill).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves typed Memory V2 failures without leaking provider credentials', async () => {
+    const memoryAdmin = {
+      getAssertionsPage: vi.fn(),
+      getReviewsPage: vi.fn(),
+      review: vi.fn(),
+      archive: vi.fn(),
+      forget: vi.fn(async () => {
+        throw new MemoryRuntimeError(
+          'forget',
+          'authorization',
+          'subject_private_required',
+          '仅记忆主体可执行此操作 token=must-not-surface',
+          { providerCode: 'subject_private_required' },
+        );
+      }),
+      backfill: vi.fn(),
+      getOperationalAttentionItems: vi.fn(async () => []),
+    };
+    const { server } = createRuntime(createTempDir(), { memoryAdmin });
+    const forgetMemory = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/memory/forget',
+    )?.[1];
+    const request = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { streamId: 'stream-1', reasonCode: 'operator-delete' },
+    });
+
+    await forgetMemory(request);
+
+    expect(request.status).toBe(403);
+    expect(request.body).toMatchObject({
+      error: {
+        code: 'memory_error',
+        details: {
+          operation: 'forget',
+          stage: 'authorization',
+          memoryCode: 'subject_private_required',
+          providerCode: 'subject_private_required',
+        },
+      },
+    });
+    expect(JSON.stringify(request.body)).not.toContain('must-not-surface');
+  });
+
+  it('maps missing Memory V2 streams to a typed 404 response', async () => {
+    const memoryAdmin = {
+      getAssertionsPage: vi.fn(),
+      getReviewsPage: vi.fn(),
+      review: vi.fn(),
+      archive: vi.fn(async () => {
+        throw new MemoryRuntimeError(
+          'archive',
+          'validation',
+          'memory_stream_not_found',
+          'Memory stream does not exist.',
+        );
+      }),
+      forget: vi.fn(),
+      backfill: vi.fn(),
+      getOperationalAttentionItems: vi.fn(async () => []),
+    };
+    const { server } = createRuntime(createTempDir(), { memoryAdmin });
+    const archiveMemory = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/memory/archive',
+    )?.[1];
+    const request = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { streamId: 'missing-stream', reasonCode: 'operator-archive' },
+    });
+
+    await archiveMemory(request);
+
+    expect(request.status).toBe(404);
+    expect(request.body).toMatchObject({
+      error: {
+        code: 'memory_error',
+        details: {
+          operation: 'archive',
+          stage: 'validation',
+          memoryCode: 'memory_stream_not_found',
+        },
+      },
+    });
   });
 
   it('restarts the services implied by pending configuration and clears apply state', async () => {
@@ -768,6 +1012,16 @@ describe('independent admin API plugin', () => {
     const { server } = createRuntime(dir);
     const routes = new Map(server.get.mock.calls.map((call) => [call[0], call[1]]));
 
+    const unauthenticatedManifest = createKoaCtx({
+      path: '/manifest.webmanifest',
+      tailscaleLogin: null,
+    });
+    await routes.get('/manifest.webmanifest')?.(unauthenticatedManifest);
+    expect(unauthenticatedManifest.status).toBe(401);
+    expect(unauthenticatedManifest.body).toMatchObject({
+      error: { code: 'unauthorized' },
+    });
+
     const manifest = createKoaCtx({ path: '/manifest.webmanifest' });
     await routes.get('/manifest.webmanifest')?.(manifest);
     expect(manifest.status).toBe(200);
@@ -789,7 +1043,7 @@ describe('independent admin API plugin', () => {
     (hashedAsset.body as { destroy: () => void }).destroy();
   });
 
-  it('serves allowed hosts directly and rejects invalid Host or mutation Origin', async () => {
+  it('requires an authenticated transport, an allowed Host, and mutation Origin', async () => {
     const { server } = createRuntime(createTempDir());
     const readModels = server.get.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models',
@@ -801,6 +1055,17 @@ describe('independent admin API plugin', () => {
     const badHost = createKoaCtx({ host: 'public.example.com' });
     await readModels(badHost);
     expect(badHost.status).toBe(421);
+
+    const missingTailnetIdentity = createKoaCtx({ tailscaleLogin: null });
+    await readModels(missingTailnetIdentity);
+    expect(missingTailnetIdentity.status).toBe(401);
+    expect(missingTailnetIdentity.body).toMatchObject({
+      error: { code: 'unauthorized' },
+    });
+
+    const nonLoopbackTransport = createKoaCtx({ remoteAddress: '192.0.2.40' });
+    await readModels(nonLoopbackTransport);
+    expect(nonLoopbackTransport.status).toBe(401);
 
     const badOrigin = createKoaCtx({
       origin: 'https://evil.example.com',

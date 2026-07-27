@@ -6,7 +6,10 @@ import {
   renderOutboundMessageSegmentsHistoryText,
   type ReplyTransportPlan,
 } from '../shared/outbound/index.js';
-import type { PromptEnvelopeMessage } from '../shared/prompt-context/index.js';
+import {
+  injectPromptEnvelope,
+  type PromptEnvelopeMessage,
+} from '../shared/prompt-context/index.js';
 import {
   applyReplyOutputContract,
   buildReplyTransportPlanFromResolvedActions,
@@ -186,12 +189,11 @@ export async function generateAffinityProactiveViaChatLuna(args: {
   }));
   if (!envelope?.messages.length) return skipResult('prompt_envelope_empty');
 
-  contextManager.inject({
+  injectPromptEnvelope(contextManager, {
     name: 'qqbot_affinity_proactive_prompt_envelope',
-    value: envelope.messages,
+    envelope,
     once: true,
     conversationId,
-    stage: 'after_scratchpad',
   });
 
   try {

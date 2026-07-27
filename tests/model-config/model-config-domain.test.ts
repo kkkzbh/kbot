@@ -47,6 +47,17 @@ describe('canonical model config schema', () => {
     expect(modelConfigDraftSchema.safeParse(duplicate).success).toBe(false);
   });
 
+  it('rejects the removed ChatLuna embedding workload at the runtime contract', () => {
+    const draft = createValidModelConfigDraft() as unknown as {
+      bindings: Array<Record<string, unknown>>;
+    };
+    draft.bindings.push({
+      workload: 'chatluna.defaultEmbedding',
+      mode: 'disabled',
+    });
+    expect(modelConfigDraftSchema.safeParse(draft).success).toBe(false);
+  });
+
   it('rejects duplicate connection IDs, connection-scoped model IDs, and secret references', () => {
     const duplicateConnection = createValidModelConfigDraft();
     duplicateConnection.connections.push(

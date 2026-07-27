@@ -2,6 +2,7 @@ import { Schema } from 'koishi';
 
 export interface Config {
   enabled?: boolean;
+  maintenance?: boolean;
   readEnabled?: boolean;
   writeEnabled?: boolean;
   queryTopK?: number;
@@ -18,6 +19,7 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   enabled: Schema.boolean().description('是否启用本地长期记忆。'),
+  maintenance: Schema.boolean().description('记忆维护模式：只允许 schema/status 检查，关闭召回、提炼、审核、worker 和 backfill。'),
   readEnabled: Schema.boolean().description('是否启用长期记忆召回。'),
   writeEnabled: Schema.boolean().description('是否启用长期记忆提炼写入。'),
   queryTopK: Schema.natural().description('长期记忆召回条数上限。'),
@@ -34,6 +36,7 @@ export const Config: Schema<Config> = Schema.object({
 
 export interface MemoryRuntimeConfig {
   enabled: boolean;
+  maintenance: boolean;
   readEnabled: boolean;
   writeEnabled: boolean;
   queryTopK: number;
@@ -71,6 +74,7 @@ function requireBooleanConfig(config: Config, key: keyof Config): boolean {
 export function toRuntimeConfig(config: Config): MemoryRuntimeConfig {
   return {
     enabled: requireBooleanConfig(config, 'enabled'),
+    maintenance: requireBooleanConfig(config, 'maintenance'),
     readEnabled: requireBooleanConfig(config, 'readEnabled'),
     writeEnabled: requireBooleanConfig(config, 'writeEnabled'),
     queryTopK: requireNaturalConfig(config, 'queryTopK', 1),

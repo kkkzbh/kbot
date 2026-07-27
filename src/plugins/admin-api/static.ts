@@ -57,7 +57,11 @@ export function registerAdminStatic(options: {
     const path = String(koaCtx.path || '');
     const requestId = createRequestId();
     try {
-      options.accessPolicy.assertHost(String(koaCtx.host || koaCtx.request?.host || koaCtx.get?.('host') || '').trim().toLowerCase());
+      options.accessPolicy.assertAuthenticatedTransport({
+        host: String(koaCtx.host || koaCtx.request?.host || koaCtx.get?.('host') || '').trim().toLowerCase(),
+        remoteAddress: String(koaCtx.req?.socket?.remoteAddress || koaCtx.request?.socket?.remoteAddress || '').trim(),
+        tailscaleUserLogin: String(koaCtx.get?.('tailscale-user-login') || '').trim(),
+      });
       if (koaCtx.method !== 'GET' && koaCtx.method !== 'HEAD') {
         koaCtx.status = 405;
         koaCtx.set('allow', 'GET, HEAD');

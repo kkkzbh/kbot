@@ -1,13 +1,4 @@
 import type {
-  MemoryJobStatus,
-  MemoryJobType,
-  MemoryOutputProtocolId,
-  MemoryProfileKind,
-  MemoryRecordType,
-  MemorySensitivity,
-  MemoryVisibility,
-} from './memory.js';
-import type {
   ClearConversationHistoryResult,
   ClearConversationHistoryTarget,
   DeleteConversationRoomResult,
@@ -79,11 +70,10 @@ export type OperationalEventStatus = 'open' | 'acknowledged' | 'resolved';
 export type OperationalEventResolution =
   | 'recovered'
   | 'retried'
-  | 'discarded'
   | 'completed'
   | 'deduplicated'
   | null;
-export type OperationalEventAction = 'acknowledge' | 'retry' | 'discard';
+export type OperationalEventAction = 'acknowledge' | 'retry';
 
 export interface OperationalEventItem {
   id: number;
@@ -101,8 +91,6 @@ export interface OperationalEventItem {
   occurrenceCount: number;
   unit: BotServiceUnit | null;
   invocationId: string | null;
-  memoryJobId: number | null;
-  memoryCandidateId: number | null;
   occurredAt: number;
   lastOccurredAt: number;
   acknowledgedAt: number | null;
@@ -263,116 +251,6 @@ export interface ProbeTtsHealthResponse {
 export interface SynthesizeTtsSampleRequest {
   text: string;
   style: AdminTtsStyleId;
-}
-
-export interface AdminMemoryUserItem {
-  userKey: string;
-  platform: string | null;
-  userId: string | null;
-  qqNick: string | null;
-  avatarUrl: string | null;
-  label: string;
-  factCount: number;
-  episodeCount: number;
-  pendingReviewCount: number;
-  readEnabled: boolean;
-  writeEnabled: boolean;
-  latestSeenAt: number | null;
-}
-
-export interface AdminMemoryFactItem {
-  id: number;
-  userKey: string;
-  sourceContextKey: string;
-  kind: MemoryProfileKind;
-  topicKey: string;
-  content: string;
-  keywords: string[];
-  importance: number;
-  confidence: number;
-  sensitivity: MemorySensitivity;
-  visibility: MemoryVisibility;
-  firstSeenAt: number;
-  lastSeenAt: number;
-  lastAccessedAt: number | null;
-  hasEmbedding: boolean;
-  archived: boolean;
-  conflictSetId: string | null;
-}
-
-export interface AdminMemoryEpisodeItem {
-  id: number;
-  userKey: string;
-  sourceContextKey: string;
-  title: string;
-  summary: string;
-  keywords: string[];
-  importance: number;
-  confidence: number;
-  sensitivity: MemorySensitivity;
-  visibility: MemoryVisibility;
-  periodStart: number | null;
-  periodEnd: number | null;
-  firstSeenAt: number;
-  lastSeenAt: number;
-  lastAccessedAt: number | null;
-  hasEmbedding: boolean;
-  archived: boolean;
-  conflictSetId: string | null;
-}
-
-export interface AdminMemoryPendingReviewItem {
-  id: number;
-  batchId: string;
-  candidateType: 'fact' | 'episode' | 'drop';
-  userKey: string;
-  contextKey: string;
-  conversationId: string;
-  payload: string;
-  sensitivity: MemorySensitivity;
-  suggestedVisibility: MemoryVisibility;
-  finalVisibility: MemoryVisibility | null;
-  dropReason: string | null;
-  providerRoute: MemoryOutputProtocolId;
-  createdAt: number;
-}
-
-export interface AdminMemoryJobItem {
-  id: number;
-  jobType: MemoryJobType;
-  status: MemoryJobStatus;
-  userKey: string | null;
-  contextKey: string | null;
-  conversationId: string | null;
-  retryCount: number;
-  nextRunAt: number;
-  lockedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-  lastError: string | null;
-}
-
-export interface AdminMemoryAuditItem {
-  id: number;
-  userKey: string | null;
-  contextKey: string | null;
-  eventType: string;
-  memoryType: MemoryRecordType | null;
-  memoryId: number | null;
-  candidateId: number | null;
-  turnId: string | null;
-  detail: string | null;
-  createdAt: number;
-}
-
-export interface AdminMemorySummary {
-  userCount: number;
-  factCount: number;
-  episodeCount: number;
-  pendingReviewCount: number;
-  pendingJobs: number;
-  processingJobs: number;
-  deadLetterJobs: number;
 }
 
 export interface SaveAffinitySettingsRequest {

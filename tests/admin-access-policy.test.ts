@@ -10,10 +10,36 @@ describe('admin Tailnet access policy', () => {
 
     expect(() => policy.assertHost('public.example.com')).toThrow(AdminHttpError);
     expect(() => policy.assertMutationOrigin('https://evil.example.com')).toThrow(AdminHttpError);
-    expect(() => policy.assertHost('admin.example.com')).not.toThrow();
+    expect(() => policy.assertAuthenticatedTransport({
+      host: 'admin.example.com',
+      remoteAddress: '127.0.0.1',
+      tailscaleUserLogin: 'operator@example.com',
+    })).not.toThrow();
     expect(() => policy.assertMutationOrigin('https://admin.example.com')).not.toThrow();
-    expect(() => policy.assertHost('127.0.0.1:5140')).not.toThrow();
+    expect(() => policy.assertAuthenticatedTransport({
+      host: '127.0.0.1:5140',
+      remoteAddress: '::ffff:127.0.0.1',
+      tailscaleUserLogin: '',
+    })).not.toThrow();
     expect(() => policy.assertMutationOrigin('http://127.0.0.1:5140')).not.toThrow();
+  });
+
+  it('requires a loopback transport and a Tailnet identity outside the SSH origin', () => {
+    const policy = new AdminAccessPolicy([
+      'https://admin.example.com',
+      'http://127.0.0.1:5140',
+    ]);
+
+    expect(() => policy.assertAuthenticatedTransport({
+      host: 'admin.example.com',
+      remoteAddress: '127.0.0.1',
+      tailscaleUserLogin: '',
+    })).toThrowError(expect.objectContaining({ status: 401, code: 'unauthorized' }));
+    expect(() => policy.assertAuthenticatedTransport({
+      host: '127.0.0.1:5140',
+      remoteAddress: '192.0.2.40',
+      tailscaleUserLogin: '',
+    })).toThrowError(expect.objectContaining({ status: 401, code: 'unauthorized' }));
   });
 
   it('requires explicit origins without paths or credentials', () => {

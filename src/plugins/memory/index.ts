@@ -1,9 +1,18 @@
 import { Context, Logger, type Session } from 'koishi';
+import type { MemoryAddress } from '../../types/memory.js';
 import type { ModelRuntimeClient } from '../model-config/index.js';
 import { resolveChatLunaRoomLike } from '../shared/chatluna-conversation.js';
-import { consumePromptEnvelope, registerPromptFragment } from '../shared/prompt-context/index.js';
-import { resolveSessionAvatarUrl, resolveSessionDisplayName, resolveSessionQqNick } from '../shared/session/index.js';
-import { buildMemoryAddress, type MemoryMiddlewareContextLike } from './address.js';
+import {
+  consumePromptEnvelope,
+  injectPromptEnvelope,
+  registerPromptFragment,
+} from '../shared/prompt-context/index.js';
+import { resolveSessionAvatarUrl, resolveSessionDisplayName } from '../shared/session/index.js';
+import {
+  buildMemoryAddress,
+  resolveCurrentMemoryAudience,
+  type MemoryMiddlewareContextLike,
+} from './address.js';
 import {
   Config as ConfigSchema,
   toRuntimeConfig,
@@ -11,19 +20,35 @@ import {
   type MemoryRuntimeConfig,
 } from './config.js';
 import { registerMemoryCommands } from './commands.js';
+import { memorySafeErrorMessage, MemoryRuntimeError } from './errors.js';
 import { retrieveMemoryForContext } from './recall.js';
-import { ensureMemoryTables } from './schema.js';
-import { runLegacyMemoryMigration } from './migration.js';
+import { registerMemoryLedgerModels } from './schema.js';
 import { MemoryStatusService } from './status.js';
 export { MemoryStatusService, createUnavailableMemoryStatusSnapshot } from './status.js';
 import { embedTexts } from './providers/embedding-client.js';
 import { extractMemoryCandidates } from './providers/router.js';
-import { runMemoryJobTick, processMaintenanceJob } from './pipeline.js';
-import { extractPlainText, MemoryStore } from './store.js';
-export { MemoryStore } from './store.js';
+import { processMaintenance, runMemoryJobTick } from './pipeline.js';
+import {
+  clearMemoryReadinessMarker,
+  publishMemoryReadinessMarker,
+} from './readiness.js';
+import { extractPlainText, MemoryStore, type MemoryDatabaseLike } from './store.js';
+export { MemoryStore, MemoryUnitOfWork } from './store.js';
+export {
+  createMemoryExtractLaneKey,
+  type MemoryExtractLaneKey,
+} from './identity.js';
+export { MemoryPolicyService } from './policy.js';
+export { MemoryRuntimeError } from './errors.js';
 import { MemoryAdminService } from './admin.js';
 export { MemoryAdminService } from './admin.js';
-export type { MemoryOperationalAttentionItem } from './admin.js';
+export type {
+  MemoryAdminAssertionItem,
+  MemoryAdminPage,
+  MemoryAdminPageQuery,
+  MemoryAdminReviewItem,
+  MemoryOperationalAttentionItem,
+} from './admin.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
@@ -64,13 +89,7 @@ type ContextServiceView = {
   get?: (name: string) => unknown;
   chatluna?: ChatLunaLike;
   modelRuntime?: ModelRuntimeClient;
-  database?: {
-    get: (table: string, query: Record<string, unknown>) => Promise<any[]>;
-    set: (table: string, query: Record<string, unknown>, data: Record<string, unknown>) => Promise<unknown>;
-    upsert?: (table: string, rows: Record<string, unknown>[], keys?: string[]) => Promise<unknown>;
-    create: (table: string, row: Record<string, unknown>) => Promise<Record<string, unknown>>;
-    remove: (table: string, query: Record<string, unknown>) => Promise<unknown>;
-  };
+  database?: MemoryDatabaseLike;
 };
 
 function resolveChatLunaService(ctx: ContextServiceView): ChatLunaLike | undefined {
@@ -86,27 +105,54 @@ function resolveInputText(session: Session, context: MemoryMiddlewareContextLike
   return extractPlainText(session.stripped?.content ?? session.content ?? context.options?.inputMessage?.content);
 }
 
+function resolveEmbeddingIdentity(modelRuntime: ModelRuntimeClient): {
+  canonicalModel: string;
+  modelRevision: number;
+} | null {
+  const binding = modelRuntime.resolve('memory.embedding');
+  if (!binding.target) return null;
+  return {
+    canonicalModel: binding.target.canonicalModel,
+    modelRevision: binding.revision,
+  };
+}
+
 async function injectMemoryContext(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
   modelRuntime: ModelRuntimeClient,
-  address: ReturnType<typeof buildMemoryAddress> extends infer T ? NonNullable<T> : never,
+  address: NonNullable<ReturnType<typeof buildMemoryAddress>>,
   query: string,
 ): Promise<void> {
-  let queryEmbedding: number[] | null = null;
-  if (query.trim()) {
-    const [vector] = await embedTexts(modelRuntime, [query]);
-    queryEmbedding = vector;
+  const identity = resolveEmbeddingIdentity(modelRuntime);
+  if (!identity) {
+    throw new MemoryRuntimeError(
+      'recall',
+      'validation',
+      'memory_embedding_disabled',
+      'memory.embedding must be configured while memory recall is enabled.',
+    );
+  }
+  const [queryEmbedding] = await embedTexts(modelRuntime, [query]);
+  if (!queryEmbedding?.length) {
+    throw new MemoryRuntimeError(
+      'recall',
+      'provider',
+      'memory_query_embedding_empty',
+      'Memory embedding provider returned no query vector.',
+      { retryable: true },
+    );
   }
   const result = await retrieveMemoryForContext(store, address, query, {
     topK: runtime.queryTopK,
     promptBudgetTokens: runtime.promptBudgetTokens,
+    embeddingIdentity: identity,
     queryEmbedding,
   });
   if (!result.prompt) return;
   registerPromptFragment(address.conversationId, {
     source: 'qqbot_memory',
-    title: 'Long-Term Memory Reference',
+    title: 'QQBot Memory Reference',
     authority: 'reference',
     trust: 'untrusted',
     ttl: 'turn',
@@ -122,74 +168,101 @@ export function apply(ctx: Context, config: Config): void {
   const database = services.database;
   const modelRuntime = services.modelRuntime;
   const runtime = toRuntimeConfig(config);
-  if (!runtime.enabled || !database) return;
-  if (!modelRuntime) {
-    throw new Error('memory requires modelRuntime service.');
-  }
+  if (!runtime.enabled) return;
+  if (!database) throw new Error('memory requires database service.');
+  if (!modelRuntime) throw new Error('memory requires modelRuntime service.');
+  clearMemoryReadinessMarker();
 
-  ensureMemoryTables(ctx);
+  registerMemoryLedgerModels(ctx, database);
   const store = new MemoryStore(database);
-  const adminService = new MemoryAdminService(database, store);
+  const adminService = new MemoryAdminService(database, store, runtime);
   const statusService = new MemoryStatusService(
     runtime,
     modelRuntime,
     store,
     async () => {
-      const [vector] = await embedTexts(modelRuntime, ['healthcheck']);
-      if (!vector) throw new Error('empty_embedding_vector');
+      const binding = modelRuntime.resolve('memory.embedding');
+      if (!binding.target) {
+        throw new MemoryRuntimeError('embed', 'validation', 'memory_embedding_probe_disabled', 'Embedding probe has no live model target.');
+      }
+      const [vector] = await embedTexts(modelRuntime, ['memory ledger healthcheck']);
+      if (!vector?.length || vector.some((value) => !Number.isFinite(value))) {
+        throw new MemoryRuntimeError('embed', 'provider', 'memory_embedding_probe_empty', 'Embedding probe returned no vector.');
+      }
+      return {
+        canonicalModel: binding.target.canonicalModel,
+        schemaValid: true as const,
+        dimensions: vector.length,
+      };
     },
     async () => {
+      const binding = modelRuntime.resolve('memory.extract');
+      if (!binding.target) {
+        throw new MemoryRuntimeError('extract', 'validation', 'memory_extract_probe_disabled', 'Extraction probe has no live model target.');
+      }
       const output = await extractMemoryCandidates({
         address: {
-          userKey: 'probe:memory',
-          contextKey: 'probe:memory',
+          userKey: 'probe:user:memory',
+          contextKey: 'probe:bot:memory:dm:memory',
           channelType: 'direct',
           platform: 'probe',
-          botSelfId: 'probe-bot',
-          userId: 'probe-user',
+          botSelfId: 'memory',
+          userId: 'memory',
           conversationId: 'probe-memory-extract',
           observedAt: Date.now(),
         },
         target: {
-          speakerId: 'probe-user',
+          speakerId: 'memory',
           speakerName: 'probe',
         },
-        turns: [
-          {
-            id: 'probe-message',
-            role: 'human',
-            text: '记忆提炼健康检查，不需要写入任何长期记忆。',
-            speakerId: 'probe-user',
-            speakerName: 'probe',
-            ownerUserKey: 'probe:memory',
-            isTarget: true,
-            attributionSource: 'direct_session',
-          },
-        ],
+        turns: [{
+          id: 'probe-message',
+          role: 'human',
+          text: '记忆提炼健康检查，不写入长期记忆。',
+          speakerId: 'memory',
+          speakerName: 'probe',
+          ownerUserKey: 'probe:user:memory',
+          isTarget: true,
+          attributionSource: 'direct_session',
+          parentId: null,
+          occurredAt: Date.now(),
+        }],
         modelRuntime,
         maxFacts: 1,
         maxEpisodes: 1,
       });
       statusService.recordRoute(output.route, output.ok, output.error);
-      if (!output.ok) throw new Error(output.error ?? 'memory_extract_failed');
+      if (!output.ok) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'provider',
+          'memory_extract_probe_failed',
+          'Memory extraction probe failed.',
+        );
+      }
+      return {
+        canonicalModel: binding.target.canonicalModel,
+        schemaValid: true as const,
+        dimensions: null,
+      };
     },
   );
   ctx.provide('memoryStatus');
   ctx.set('memoryStatus', statusService);
   ctx.provide('memoryAdmin');
   ctx.set('memoryAdmin', adminService);
-  registerMemoryCommands(ctx, store, statusService);
+  registerMemoryCommands(ctx, store, statusService, runtime, modelRuntime);
 
   let processing = false;
   let lastMaintenanceAt = 0;
   const tick = async (): Promise<void> => {
-    if (processing) return;
+    if (processing || runtime.maintenance) return;
     processing = true;
     try {
       await runMemoryJobTick(store, runtime, modelRuntime, statusService);
       const now = Date.now();
       if (!lastMaintenanceAt || now - lastMaintenanceAt >= 6 * 60 * 60 * 1000) {
-        await processMaintenanceJob(store, runtime, statusService);
+        await processMaintenance(store, runtime, statusService);
         lastMaintenanceAt = now;
       }
     } finally {
@@ -197,74 +270,83 @@ export function apply(ctx: Context, config: Config): void {
     }
   };
 
-  let memoryRuntimeRegistered = false;
-  let startupTasksStarted = false;
+  let schemaReady = false;
+  let runtimeRegistered = false;
+  let workersStarted = false;
+  let readinessPublished = false;
 
-  const startMemoryStartupTasks = (): void => {
-    if (startupTasksStarted) return;
-    startupTasksStarted = true;
-    void (async () => {
-      const migrated = await runLegacyMemoryMigration(database);
-      const migratedCount = migrated.factsMigrated + migrated.episodesMigrated + migrated.profilesMigrated;
-      if (
-        migratedCount > 0 ||
-        migrated.groupRowsDiscarded > 0 ||
-        migrated.legacyRowsRemoved > 0 ||
-        migrated.legacyJobsRemoved > 0
-      ) {
-        logger.info(
-          'memory migration imported %d direct rows, discarded %d legacy group rows, removed %d legacy rows and %d legacy jobs',
-          migratedCount,
-          migrated.groupRowsDiscarded,
-          migrated.legacyRowsRemoved,
-          migrated.legacyJobsRemoved,
-        );
-      }
-      const recovered = await store.requeueStaleProcessingJobs(runtime.jobLockTimeoutMs);
-      if (recovered > 0) {
-        logger.warn('memory recovered %d stale processing jobs after startup', recovered);
-      }
-      ctx.setInterval(() => void tick(), 10_000);
-      await tick();
-    })().catch((error) => {
-      logger.warn('memory startup recovery failed: %s', error instanceof Error ? error.message : String(error));
-      ctx.setInterval(() => void tick(), 10_000);
-      void tick();
+  const publishReadiness = (): void => {
+    if (readinessPublished || !schemaReady || !runtimeRegistered) return;
+    const extraction = modelRuntime.resolve('memory.extract');
+    const embedding = modelRuntime.resolve('memory.embedding');
+    if (!extraction.target || !embedding.target) {
+      throw new MemoryRuntimeError(
+        'startup',
+        'validation',
+        'memory_model_binding_missing',
+        'Memory V2 requires live extraction and embedding model bindings.',
+      );
+    }
+    if (
+      !Number.isInteger(extraction.revision)
+      || extraction.revision < 1
+      || extraction.revision !== embedding.revision
+    ) {
+      throw new MemoryRuntimeError(
+        'startup',
+        'validation',
+        'memory_model_revision_mismatch',
+        'Memory V2 model bindings must resolve from one positive applied revision.',
+      );
+    }
+    publishMemoryReadinessMarker({
+      appliedModelRevision: extraction.revision,
+      extractionModel: extraction.target.canonicalModel,
+      embeddingModel: embedding.target.canonicalModel,
     });
+    readinessPublished = true;
   };
 
-  const ensureMemoryRuntimeRegistered = (): boolean => {
-    if (memoryRuntimeRegistered) return true;
+  const registerRuntime = (): boolean => {
+    if (runtimeRegistered) return true;
     const chatluna = resolveChatLunaService(services);
     const chain = chatluna?.chatChain;
     const contextManager = chatluna?.contextManager;
     if (!chain) return false;
-    if (!contextManager) {
-      throw new Error('memory requires chatluna.contextManager.');
-    }
+    if (!contextManager) throw new Error('memory requires chatluna.contextManager.');
 
     chain
       .middleware('qqbot_memory', async (rawSession, rawContext) => {
+        if (!schemaReady || runtime.maintenance) {
+          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        }
         const session = rawSession as Session;
         const context = rawContext as MemoryMiddlewareContextLike;
         if (!session.userId || session.userId === session.bot?.selfId) {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
-
-        const address = buildMemoryAddress(session, context);
+        const baseAddress = buildMemoryAddress(session, context);
         const inputText = resolveInputText(session, context);
-        if (!address || !inputText) {
+        if (!baseAddress || !inputText) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        let address: MemoryAddress;
+        try {
+          address = await resolveCurrentMemoryAudience(session, baseAddress);
+        } catch (error) {
+          logger.warn(
+            'memory audience resolution failed at %s/%s: %s',
+            error instanceof MemoryRuntimeError ? error.operation : 'address',
+            error instanceof MemoryRuntimeError ? error.stage : 'provider',
+            memorySafeErrorMessage(error),
+          );
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
-
         await store.upsertAddress(address, {
-          qqNick: resolveSessionQqNick(session),
+          displayName: resolveSessionDisplayName(session),
           avatarUrl: resolveSessionAvatarUrl(session),
-          profileUpdatedAt: address.observedAt,
         });
         const flags = await store.getUserFlags(address.userKey);
         if (runtime.writeEnabled && flags.writeEnabled) {
-          await store.queueExtractJob({
+          await store.queueExtractWork({
             address,
             targetSpeakerId: address.userId,
             targetSpeakerName: resolveSessionDisplayName(session),
@@ -272,21 +354,18 @@ export function apply(ctx: Context, config: Config): void {
             nextRunAt: Date.now() + runtime.extractIdleMs,
           });
         }
-
         if (runtime.readEnabled && flags.readEnabled) {
           try {
-            await injectMemoryContext(
-              store,
-              runtime,
-              modelRuntime,
-              address,
-              inputText,
-            );
+            await injectMemoryContext(store, runtime, modelRuntime, address, inputText);
           } catch (error) {
-            logger.warn('memory recall skipped: %s', error instanceof Error ? error.message : String(error));
+            logger.warn(
+              'memory recall failed at %s/%s: %s',
+              error instanceof MemoryRuntimeError ? error.operation : 'unknown',
+              error instanceof MemoryRuntimeError ? error.stage : 'unknown',
+              memorySafeErrorMessage(error),
+            );
           }
         }
-
         return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
       })
       .after('read_chat_message')
@@ -300,21 +379,15 @@ export function apply(ctx: Context, config: Config): void {
         if (!session.userId || session.userId === session.bot?.selfId) {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
-
         const conversationId = resolveChatLunaRoomLike(context.options)?.conversationId?.trim();
         if (!conversationId) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
-
         const envelope = consumePromptEnvelope(conversationId);
-        if (!envelope?.messages.length) {
-          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
-        }
-
-        contextManager.inject({
+        if (!envelope?.messages.length) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        injectPromptEnvelope(contextManager, {
           name: 'qqbot_prompt_envelope',
-          value: envelope.messages,
+          envelope,
           once: true,
           conversationId,
-          stage: 'after_scratchpad',
         });
         return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
       })
@@ -324,16 +397,28 @@ export function apply(ctx: Context, config: Config): void {
       .after('qqbot_turn_context')
       .before('lifecycle-handle_command');
 
-    memoryRuntimeRegistered = true;
-    startMemoryStartupTasks();
+    runtimeRegistered = true;
     return true;
   };
 
-  ctx.on('ready', () => {
-    ensureMemoryRuntimeRegistered();
+  const startWorkers = (): void => {
+    if (workersStarted || runtime.maintenance) return;
+    workersStarted = true;
+    ctx.setInterval(() => void tick(), 10_000);
+    void tick();
+  };
+
+  ctx.on('ready', async () => {
+    await store.assertSchemaVersion();
+    schemaReady = true;
+    registerRuntime();
+    startWorkers();
+    publishReadiness();
   });
 
   ctx.on('chatluna/chat-chain-added', () => {
-    ensureMemoryRuntimeRegistered();
+    if (!schemaReady) return;
+    registerRuntime();
+    publishReadiness();
   });
 }

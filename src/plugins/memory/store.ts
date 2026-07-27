@@ -1,48 +1,46 @@
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   MemoryAddress,
-  MemoryAuditEventRecord,
-  MemoryChannelType,
-  MemoryCandidateReviewStatus,
-  MemoryCandidateRecord,
-  MemoryEpisodeRecord,
-  MemoryFactRecord,
-  MemoryJobRecord,
-  MemoryJobStatus,
-  MemoryJobType,
+  MemoryAssertionType,
+  MemoryAudiencePolicy,
+  MemoryLedgerCounts,
+  MemoryLedgerItem,
   MemoryOutputProtocolId,
-  MemoryProfileRecord,
-  MemoryRecordType,
-  MemoryScopeType,
-  MemorySensitivity,
-  MemoryTombstoneRecord,
   MemoryQueueSummary,
-  MemoryVisibility,
+  MemorySensitivity,
+  MemoryV2AuditRecord,
+  MemoryV2CursorRecord,
+  MemoryV2EmbeddingRecord,
+  MemoryV2EvidenceRecord,
+  MemoryV2EventRecord,
+  MemoryV2HeadRecord,
+  MemoryV2PayloadRecord,
+  MemoryV2SuppressionRecord,
+  MemoryV2WorkRecord,
+  MemoryWorkStatus,
+  MemoryWorkType,
 } from '../../types/memory.js';
-import { isMemoryVisibleInContext, type ExtractedMemoryCandidate, type PrivacyDecision } from './gates.js';
 import {
-  buildRetrievalText,
-  deriveTopicKey,
-  parseJsonArray,
-  slugify,
-  stringifyEmbedding,
-  stringifyStringArray,
-  toTimestamp,
-  uniqueKeywords,
-} from './format.js';
+  MEMORY_LEDGER_SCHEMA_VERSION,
+  MEMORY_LEDGER_TABLES,
+  assertMemoryLedgerSqliteSchema,
+} from './schema.js';
+import { asMemoryRuntimeError, MemoryRuntimeError, memoryErrorDetail, type MemoryOperation } from './errors.js';
+import { runDeterministicCaptureGuard, type ExtractedMemoryCandidate } from './gates.js';
+import { createMemoryExtractLaneKey } from './identity.js';
 import {
-  buildMemoryKey,
-  buildSourceId,
-  buildStoredMemoryKey,
-  episodeTopicKey,
-  isMemoryScopeType,
-  resolveRecordScopeKey,
-  resolveRecordScopeType,
-  scopeKeyForType,
-  scopeTypeFromVisibility,
-  sourceKindFromContextKey,
-  visibilityFromScopeType,
-} from './scope.js';
+  MemoryPolicyService,
+  parseAudienceContextKeys,
+  parseAudienceSnapshots,
+  parseCaptureAudienceSubjectKeys,
+} from './policy.js';
 import type { MemoryConversationTurn } from './providers/schemas.js';
+import {
+  memoryLexicalProjectionMatches,
+  SqliteMemorySearchIndex,
+  type MemoryLexicalProjectionRow,
+  type MemorySearchIndex,
+} from './search-index.js';
 
 export interface StoredConversationRecord {
   id: string;
@@ -58,83 +56,273 @@ export interface StoredMessageRecord {
   additional_kwargs?: unknown;
   additional_kwargs_binary?: unknown;
   name?: string | null;
+  createdAt?: number | null;
 }
 
-export interface ExtractJobPayload {
+export interface ExtractWorkPayload {
   address: MemoryAddress;
-  ownerUserKey: string;
   targetSpeakerId: string;
   targetSpeakerName: string | null;
-  contextKey: string;
-  conversationId: string;
-  rangeStartAfterMessageId: string | null;
   latestAnchorMessageId: string;
   maxMessages: number;
+  capturedAudiences: Array<{
+    messageId: string;
+    observedAt: number;
+    audienceSubjectKeys: string[];
+  }>;
 }
 
-export interface PrivacyReviewJobPayload {
-  batchId: string;
-  address: MemoryAddress;
+export interface EmbeddingWorkPayload {
+  streamId: string;
+  eventId: string;
+  revision: number;
+  canonicalModel: string;
+  modelRevision: number;
+  contentHash: string;
 }
 
-export interface ConsolidateJobPayload {
-  candidateId: number;
-  address: MemoryAddress;
-}
+export type MemoryWorkPayload = ExtractWorkPayload | EmbeddingWorkPayload | Record<string, unknown>;
 
-export interface EmbedJobPayload {
-  recordType: MemoryRecordType;
-  recordId: number;
+export interface MemoryEmbeddingIdentity {
+  canonicalModel: string;
+  modelRevision: number;
 }
-
-export type MemoryJobPayload =
-  | ExtractJobPayload
-  | PrivacyReviewJobPayload
-  | ConsolidateJobPayload
-  | EmbedJobPayload
-  | Record<string, unknown>;
 
 export interface MemoryDatabaseLike {
-  get(table: string, query: Record<string, unknown>): Promise<any[]>;
+  get(
+    table: string,
+    query: Record<string, unknown>,
+    modifiers?: Record<string, unknown>,
+  ): Promise<any[]>;
   set(table: string, query: Record<string, unknown>, data: Record<string, unknown>): Promise<unknown>;
-  upsert?: (table: string, rows: Record<string, unknown>[], keys?: string[]) => Promise<unknown>;
   create(table: string, row: Record<string, unknown>): Promise<Record<string, unknown>>;
   remove(table: string, query: Record<string, unknown>): Promise<unknown>;
+  withTransaction<T>(callback: (database: MemoryDatabaseLike) => Promise<T>): Promise<T>;
 }
 
-export interface MemoryUserProfilePatch {
-  qqNick?: string | null;
+export interface MemoryPrincipalPatch {
+  displayName?: string | null;
   avatarUrl?: string | null;
-  profileUpdatedAt?: number | null;
 }
 
-const logger = {
-  warn: (...args: unknown[]) => {
-    void args;
-  },
-};
-const DAY_MS = 86_400_000;
+export interface MemoryEvidenceInput {
+  messageId: string;
+  speakerId: string;
+  contextKey: string;
+  threadId?: string | null;
+  captureAudienceSubjectKeys: string[];
+  replyToMessageId?: string | null;
+  excerpt?: string | null;
+  occurredAt: number;
+}
+
+export interface AppendAssertionInput {
+  streamId?: string;
+  idempotencyKey: string;
+  assertionType: MemoryAssertionType;
+  subjectType: 'user' | 'group' | 'assistant';
+  subjectKey: string;
+  actorKey: string;
+  sourceContextKey: string;
+  audiencePolicy: MemoryAudiencePolicy;
+  audienceContextKeys: string[];
+  audienceSnapshots: Record<string, string[]>;
+  sensitivity: MemorySensitivity;
+  state: 'active' | 'pendingReview';
+  content: string;
+  retrievalText: string;
+  importance: number;
+  confidence: number;
+  validFrom?: number | null;
+  validUntil?: number | null;
+  expiresAt?: number | null;
+  evidence: MemoryEvidenceInput[];
+  embeddingIdentity?: MemoryEmbeddingIdentity | null;
+  causationId?: string | null;
+  auditWorkKey?: string | null;
+  createdAt?: number;
+}
+
+export interface DeterministicDomainMemoryInput {
+  address: MemoryAddress;
+  content: string;
+  retrievalText: string;
+  evidenceMessageIds: string[];
+  capturedAudiences?: ExtractWorkPayload['capturedAudiences'];
+  turns: readonly MemoryConversationTurn[];
+  sensitivity: MemorySensitivity;
+  importance: number;
+  confidence: number;
+  validFrom?: number | null;
+  validUntil?: number | null;
+  expiresAt?: number | null;
+  embeddingIdentity?: MemoryEmbeddingIdentity | null;
+  createdAt?: number;
+}
+
+export interface DeterministicDomainMemoryResult {
+  head: MemoryV2HeadRecord;
+  laneKey: string;
+  workKey: string;
+  idempotencyKey: string;
+}
+
+export interface ClaimedMemoryWork {
+  work: MemoryV2WorkRecord;
+  leaseToken: string;
+}
+
+export type EmbeddingWorkResolution =
+  | {
+      state: 'ready';
+      payload: EmbeddingWorkPayload;
+      text: string;
+    }
+  | {
+      state: 'obsolete';
+      reasonCode:
+        | 'memory_embedding_identity_superseded'
+        | 'memory_embedding_target_superseded';
+    };
+
+interface ForgottenSourceIdentity {
+  contextKey: string;
+  sourceMessageDigest: string;
+}
+
+interface ForgetDependencyClosure {
+  heads: MemoryV2HeadRecord[];
+  sources: ForgottenSourceIdentity[];
+}
+
+const FORBIDDEN_AUDIT_KEY = /(?:content|payload|excerpt|summary|title|providerbody|response|token|cookie|secret|password)/iu;
+const CANONICAL_MEMORY_REASON_CODES = new Set([
+  'attribution_evidence_outside_window',
+  'attribution_evidence_audience_missing',
+  'attribution_evidence_untrusted',
+  'attribution_missing_evidence',
+  'attribution_owner_mismatch',
+  'attribution_speaker_mismatch',
+  'attribution_subject_assistant',
+  'attribution_subject_group_shared',
+  'attribution_subject_other_speaker',
+  'attribution_subject_unknown',
+  'candidate_invalid',
+  'duplicate',
+  'empty_candidate',
+  'forgotten-source',
+  'group_joke_guard',
+  'incorrect-memory',
+  'lexical',
+  'memory_deletion_generation_changed',
+  'memory_embedding_identity_superseded',
+  'memory_embedding_superseded',
+  'memory_embedding_target_superseded',
+  'memory_lease_expired',
+  'operator-archive',
+  'operator-delete',
+  'outdated',
+  'pii_guard',
+  'privacy-request',
+  'provider_drop',
+  'quality',
+  'quality-review',
+  'retention-policy',
+  'secret_guard',
+  'semantic',
+  'subject-forget',
+  'superseded',
+  'third_party_privacy_guard',
+]);
+const CANONICAL_REASON_CODE_PATTERN = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/u;
+const TRUSTED_ATTRIBUTION_SOURCES = new Set<MemoryConversationTurn['attributionSource']>([
+  'additional_kwargs',
+  'direct_session',
+]);
+
+export function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function serialize(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function parseJson<T>(raw: string, operation: MemoryOperation, stage: 'validation' | 'read' | 'decode'): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    throw new MemoryRuntimeError(operation, stage, 'memory_json_invalid', 'Stored memory JSON is invalid.', {
+      cause: error,
+    });
+  }
+}
+
+function toTimestamp(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clamp01(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+function uniqueStrings(values: readonly unknown[]): string[] {
+  return [...new Set(values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean))].sort();
+}
+
+function intersectStringSets(values: readonly string[][]): string[] {
+  if (!values.length) return [];
+  const [first, ...rest] = values.map((items) => uniqueStrings(items));
+  return first!.filter((item) => rest.every((items) => items.includes(item)));
+}
+
+function messageSuppressionDigest(messageId: string): string {
+  return sha256(serialize(['memory-source-message-v2', messageId]));
+}
+
+function sourceSuppressionKey(identity: ForgottenSourceIdentity): string {
+  return `source:${sha256(serialize([
+    'memory-source-evidence-v2',
+    identity.contextKey,
+    identity.sourceMessageDigest,
+  ]))}`;
+}
+
+function parseVector(raw: string): number[] {
+  const value = parseJson<unknown>(raw, 'recall', 'read');
+  if (!Array.isArray(value) || !value.length || value.some((item) => typeof item !== 'number' || !Number.isFinite(item))) {
+    throw new MemoryRuntimeError('recall', 'validation', 'memory_embedding_invalid', 'Stored memory embedding is invalid.');
+  }
+  return value;
+}
 
 export function extractPlainText(raw: unknown): string {
   if (typeof raw === 'string') return raw.trim();
   if (raw && typeof raw === 'object' && 'text' in raw) {
-    const text = (raw as { text?: unknown }).text;
-    return typeof text === 'string' ? text.trim() : '';
+    return normalizeText((raw as { text?: unknown }).text);
   }
-  if (Array.isArray(raw)) {
-    return raw
-      .map((item) => {
-        if (typeof item === 'string') return item;
-        if (item && typeof item === 'object' && 'text' in item) {
-          const text = (item as { text?: unknown }).text;
-          return typeof text === 'string' ? text : '';
-        }
-        return '';
-      })
-      .join('')
-      .trim();
-  }
-  return '';
+  if (!Array.isArray(raw)) return '';
+  return raw.map((item) => {
+    if (typeof item === 'string') return item;
+    if (item && typeof item === 'object' && 'text' in item) {
+      return typeof (item as { text?: unknown }).text === 'string'
+        ? (item as { text: string }).text
+        : '';
+    }
+    return '';
+  }).join('').trim();
 }
 
 async function decodeStoredMessageText(content: unknown): Promise<string> {
@@ -150,606 +338,1077 @@ function hasStoredBinary(raw: unknown): boolean {
   return false;
 }
 
-async function decodeStoredAdditionalKwargs(row: StoredMessageRecord): Promise<Record<string, unknown> | null> {
-  if (hasStoredBinary(row.additional_kwargs_binary)) {
-    try {
-      const { decodeStoredMessageJson } = await import('../shared/stored-message.js');
-      return parsePlainRecord(await decodeStoredMessageJson(row.additional_kwargs_binary));
-    } catch (error) {
-      logger.warn('failed to decode stored message additional kwargs for %s: %s', row.id, (error as Error).message);
-      return null;
-    }
-  }
-  return parsePlainRecord(row.additional_kwargs);
-}
-
-function serialize(value: unknown): string {
-  return JSON.stringify(value);
-}
-
-function parsePayload<T>(raw: string): T | null {
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
 function parsePlainRecord(raw: unknown): Record<string, unknown> | null {
   if (!raw) return null;
   if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
   if (typeof raw !== 'string' || !raw.trim()) return null;
+  const parsed = parseJson<unknown>(raw, 'extract', 'decode');
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+}
+
+async function decodeStoredAdditionalKwargs(row: StoredMessageRecord): Promise<Record<string, unknown> | null> {
+  if (!hasStoredBinary(row.additional_kwargs_binary)) return parsePlainRecord(row.additional_kwargs);
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
+    const { decodeStoredMessageJson } = await import('../shared/stored-message.js');
+    return parsePlainRecord(await decodeStoredMessageJson(row.additional_kwargs_binary));
+  } catch (error) {
+    throw asMemoryRuntimeError(error, 'extract', 'decode', 'memory_message_metadata_decode_failed');
   }
 }
 
-function parseAccessContextKeyList(raw: unknown): string[] | null {
-  if (raw == null) return [];
-  if (typeof raw !== 'string') return null;
-  if (!raw.trim()) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    const values: string[] = [];
-    for (const item of parsed) {
-      if (typeof item !== 'string') return null;
-      const normalized = item.trim();
-      if (normalized) values.push(normalized);
-    }
-    return values;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-type ParsedSpeakerTag = {
-  speakerId: string;
+type ParsedSpeaker = {
+  speakerId: string | null;
   speakerName: string | null;
-  end: number;
+  text: string;
+  ownerUserKey: string | null;
+  isTarget: boolean;
+  attributionSource: MemoryConversationTurn['attributionSource'];
 };
 
 const SPEAKER_TAG_PREFIX = /^\[speaker_id=([^\]\s]+)(?:\s+speaker_name=("(?:\\.|[^"\\])*"|[^\]\s]+))?\][ \t]*/;
 
-function parseSpeakerNameToken(raw: string | undefined): string | null {
-  const value = normalizeText(raw);
-  if (!value) return null;
-  if (value.startsWith('"')) {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return normalizeText(parsed) || null;
-    } catch {
-      return value.slice(1, -1).trim() || null;
-    }
-  }
-  return value;
-}
-
-function parseSpeakerTag(text: string): ParsedSpeakerTag | null {
+function parseSpeakerTag(text: string): { speakerId: string; speakerName: string | null; end: number } | null {
   const match = text.match(SPEAKER_TAG_PREFIX);
   const speakerId = normalizeText(match?.[1]);
   if (!speakerId) return null;
+  const nameToken = normalizeText(match?.[2]);
+  let speakerName: string | null = nameToken || null;
+  if (nameToken.startsWith('"')) {
+    speakerName = normalizeText(parseJson<unknown>(nameToken, 'extract', 'decode')) || null;
+  }
   return {
     speakerId,
-    speakerName: parseSpeakerNameToken(match?.[2]),
+    speakerName,
     end: match?.[0]?.length ?? 0,
   };
 }
 
-function parseSpeakerFormat(additionalKwargs: unknown): { speakerId: string; speakerName: string | null } | null {
-  const record = parsePlainRecord(additionalKwargs);
-  const speakerFormat = parsePlainRecord(record?.qqbot_speaker_format);
-  if (normalizeText(speakerFormat?.version) !== 'speaker_id_v1') return null;
-  if (speakerFormat?.isDirect === true || speakerFormat?.preformatted === true) return null;
-  const speakerId = normalizeText(speakerFormat?.speakerId);
+function parseSpeakerFormat(raw: unknown): { speakerId: string; speakerName: string | null } | null {
+  const record = parsePlainRecord(raw);
+  const format = parsePlainRecord(record?.qqbot_speaker_format);
+  if (normalizeText(format?.version) !== 'speaker_id_v1') return null;
+  if (format?.isDirect === true || format?.preformatted === true) return null;
+  const speakerId = normalizeText(format?.speakerId);
   if (!speakerId) return null;
   return {
     speakerId,
-    speakerName: normalizeText(speakerFormat?.speakerName) || null,
+    speakerName: normalizeText(format?.speakerName) || null,
   };
 }
 
-function stripMatchingSpeakerTag(text: string, speakerId: string): string {
-  const tag = parseSpeakerTag(text);
-  if (!tag || tag.speakerId !== speakerId) return text;
-  return text.slice(tag.end).trim();
-}
-
-function isJobStatus(value: unknown): value is MemoryJobStatus {
-  return value === 'pending' || value === 'processing' || value === 'done' || value === 'failed' || value === 'dead_letter';
-}
-
-function toCandidatePayload(row: MemoryCandidateRecord): ExtractedMemoryCandidate | null {
-  return parsePayload<ExtractedMemoryCandidate>(row.payload);
-}
-
-function candidateTopic(candidate: ExtractedMemoryCandidate): string | null {
-  if (candidate.candidateType !== 'fact') return null;
-  return deriveTopicKey({
-    topicKey: candidate.topicKey,
-    content: candidate.content ?? '',
-    keywords: candidate.keywords,
-  });
-}
-
-function buildEpisodeFingerprint(candidate: ExtractedMemoryCandidate): string {
-  return slugify([candidate.title ?? '', ...(candidate.keywords ?? []).slice(0, 3)].join('-')) || 'episode';
-}
-
-function resolveCandidateVisibility(row: MemoryCandidateRecord): MemoryVisibility {
-  return (row.finalVisibility ?? row.suggestedVisibility) as MemoryVisibility;
-}
-
-function resolveCandidateScope(row: MemoryCandidateRecord, candidate: ExtractedMemoryCandidate): {
-  visibility: MemoryVisibility;
-  scopeType: MemoryScopeType;
-  scopeKey: string | null;
-  sourceKind: MemoryChannelType;
-} {
-  const visibility = resolveCandidateVisibility(row);
-  const scopeType = isMemoryScopeType(candidate.scopeType) ? candidate.scopeType : scopeTypeFromVisibility(visibility);
-  return {
-    visibility,
-    scopeType,
-    scopeKey: scopeKeyForType(scopeType, row.contextKey),
-    sourceKind: sourceKindFromContextKey(row.contextKey),
+function safeAuditDetail(detail: Record<string, unknown> | null): string | null {
+  if (!detail) return null;
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (FORBIDDEN_AUDIT_KEY.test(key)) {
+        throw new MemoryRuntimeError('audit', 'validation', 'memory_audit_contains_content', `Audit key is not content-safe: ${key}`);
+      }
+      if (key === 'reasonCode') {
+        assertCanonicalMemoryReasonCode(child, 'audit');
+      }
+      visit(child);
+    }
   };
+  visit(detail);
+  return serialize(detail);
 }
 
-function isActiveTemporalRow(row: {
-  archived?: number | null;
-  validUntil?: number | null;
-  expiresAt?: number | null;
-  invalidatedAt?: number | null;
-}, now = Date.now()): boolean {
-  if (Number(row.archived ?? 0) === 1) return false;
-  if (row.invalidatedAt != null && Number(row.invalidatedAt) <= now) return false;
-  if (row.validUntil != null && Number(row.validUntil) < now) return false;
-  if (row.expiresAt != null && Number(row.expiresAt) < now) return false;
-  return true;
-}
-
-function keywordOverlap(left: string[], right: string[]): number {
-  if (!left.length || !right.length) return 0;
-  const rightSet = new Set(right);
-  let hits = 0;
-  for (const item of new Set(left)) {
-    if (rightSet.has(item)) hits += 1;
+function assertCanonicalMemoryReasonCode(
+  value: unknown,
+  operation: MemoryOperation,
+): string {
+  if (
+    typeof value !== 'string'
+    || !CANONICAL_REASON_CODE_PATTERN.test(value)
+    || !CANONICAL_MEMORY_REASON_CODES.has(value)
+  ) {
+    throw new MemoryRuntimeError(
+      operation,
+      'validation',
+      'memory_reason_code_invalid',
+      'Memory reason code is not canonical.',
+    );
   }
-  return hits / Math.max(new Set(left).size, rightSet.size, 1);
+  return value;
 }
 
-function evidenceIds(candidate: ExtractedMemoryCandidate): string[] {
-  return uniqueKeywords(candidate.evidenceMessageIds ?? []);
+function workPayload<T>(work: MemoryV2WorkRecord): T {
+  return parseJson<T>(work.payload, work.workType === 'embed' || work.workType === 'backfill' ? 'embed' : 'extract', 'validation');
 }
 
-function evidenceSpeakers(candidate: ExtractedMemoryCandidate): string[] {
-  return uniqueKeywords(candidate.evidenceSpeakerIds ?? []);
+function dueSort(left: MemoryV2WorkRecord, right: MemoryV2WorkRecord): number {
+  return left.nextRunAt - right.nextRunAt || left.id - right.id;
 }
 
-function evaluateCandidateAttribution(
-  candidate: ExtractedMemoryCandidate,
-  turns: readonly MemoryConversationTurn[],
-  targetSpeakerId: string,
-): {
-  status: 'verified' | 'rejected';
-  reason: string | null;
-  evidenceMessageIds: string[];
-  evidenceSpeakerIds: string[];
-} {
-  if (candidate.candidateType === 'drop') {
+function embeddingTuple(payload: EmbeddingWorkPayload): string {
+  return serialize([
+    payload.streamId,
+    payload.eventId,
+    payload.revision,
+    payload.canonicalModel,
+    payload.modelRevision,
+    payload.contentHash,
+  ]);
+}
+
+function embeddingWorkKey(type: 'embed' | 'backfill', payload: EmbeddingWorkPayload): string {
+  return `${type}:${sha256(embeddingTuple(payload))}`;
+}
+
+function candidateContent(candidate: ExtractedMemoryCandidate): {
+  assertionType: MemoryAssertionType;
+  content: string;
+  retrievalText: string;
+} | null {
+  if (candidate.candidateType === 'fact') {
+    const content = normalizeText(candidate.content);
+    if (!content) return null;
+    const keywords = uniqueStrings(candidate.keywords);
     return {
-      status: 'rejected',
-      reason: candidate.dropReason ?? 'model_drop',
-      evidenceMessageIds: evidenceIds(candidate),
-      evidenceSpeakerIds: evidenceSpeakers(candidate),
+      assertionType: candidate.subject === 'group_shared'
+        ? 'groupArtifact'
+        : candidate.subject === 'assistant'
+          ? 'assistantCommitment'
+          : 'userAssertion',
+      content,
+      retrievalText: [candidate.kind, candidate.topicKey, content, ...keywords].filter(Boolean).join('\n'),
     };
   }
-
-  if (candidate.subject !== 'target_user') {
+  if (candidate.candidateType === 'episode') {
+    const title = normalizeText(candidate.title);
+    const summary = normalizeText(candidate.summary);
+    if (!title || !summary) return null;
     return {
-      status: 'rejected',
-      reason: `ownership_subject_${candidate.subject}`,
-      evidenceMessageIds: evidenceIds(candidate),
-      evidenceSpeakerIds: evidenceSpeakers(candidate),
+      assertionType: 'episode',
+      content: `${title}\n${summary}`,
+      retrievalText: [title, summary, ...uniqueStrings(candidate.keywords)].join('\n'),
     };
   }
+  return null;
+}
 
-  if (normalizeText(candidate.ownerSpeakerId) !== targetSpeakerId) {
-    return {
-      status: 'rejected',
-      reason: 'ownership_owner_mismatch',
-      evidenceMessageIds: evidenceIds(candidate),
-      evidenceSpeakerIds: evidenceSpeakers(candidate),
-    };
-  }
+export class MemoryUnitOfWork {
+  constructor(private readonly database: MemoryDatabaseLike) {}
 
-  const byId = new Map(turns.map((turn) => [turn.id, turn]));
-  const ids = evidenceIds(candidate);
-  if (!ids.length) {
-    return {
-      status: 'rejected',
-      reason: 'ownership_missing_evidence',
-      evidenceMessageIds: [],
-      evidenceSpeakerIds: evidenceSpeakers(candidate),
-    };
-  }
-
-  const actualSpeakerIds: string[] = [];
-  for (const id of ids) {
-    const turn = byId.get(id);
-    if (!turn) {
-      return {
-        status: 'rejected',
-        reason: 'ownership_evidence_not_in_window',
-        evidenceMessageIds: ids,
-        evidenceSpeakerIds: evidenceSpeakers(candidate),
-      };
+  async run<T>(
+    operation: MemoryOperation,
+    callback: (database: MemoryDatabaseLike) => Promise<T>,
+  ): Promise<T> {
+    if (typeof this.database.withTransaction !== 'function') {
+      throw new MemoryRuntimeError(
+        operation,
+        'transaction',
+        'memory_transaction_unavailable',
+        'The memory database does not provide transactional writes.',
+      );
     }
-    if (turn.role !== 'human' || !turn.isTarget || turn.speakerId !== targetSpeakerId) {
-      return {
-        status: 'rejected',
-        reason: 'ownership_evidence_not_target',
-        evidenceMessageIds: ids,
-        evidenceSpeakerIds: uniqueKeywords(actualSpeakerIds),
-      };
+    try {
+      return await this.database.withTransaction(callback);
+    } catch (error) {
+      throw asMemoryRuntimeError(error, operation, 'transaction', 'memory_transaction_failed');
     }
-    if (turn.attributionSource !== 'additional_kwargs' && turn.attributionSource !== 'direct_session') {
-      return {
-        status: 'rejected',
-        reason: 'ownership_evidence_untrusted_speaker',
-        evidenceMessageIds: ids,
-        evidenceSpeakerIds: [turn.speakerId],
-      };
-    }
-    actualSpeakerIds.push(turn.speakerId);
   }
-
-  const declaredSpeakers = evidenceSpeakers(candidate);
-  if (!declaredSpeakers.length || declaredSpeakers.some((speakerId) => speakerId !== targetSpeakerId)) {
-    return {
-      status: 'rejected',
-      reason: 'ownership_evidence_speaker_mismatch',
-      evidenceMessageIds: ids,
-      evidenceSpeakerIds: declaredSpeakers,
-    };
-  }
-
-  return {
-    status: 'verified',
-    reason: null,
-    evidenceMessageIds: ids,
-    evidenceSpeakerIds: uniqueKeywords(actualSpeakerIds),
-  };
-}
-
-function jobKey(jobType: MemoryJobType, payload: MemoryJobPayload): string {
-  if (jobType === 'extract') {
-    const input = payload as ExtractJobPayload;
-    return `extract:${input.contextKey}:${input.ownerUserKey}`;
-  }
-  if (jobType === 'privacy_review') {
-    return `privacy_review:${(payload as PrivacyReviewJobPayload).batchId}`;
-  }
-  if (jobType === 'consolidate') {
-    return `consolidate:${(payload as ConsolidateJobPayload).candidateId}`;
-  }
-  if (jobType === 'embed' || jobType === 'reembed') {
-    const input = payload as EmbedJobPayload;
-    return `${jobType}:${input.recordType}:${input.recordId}`;
-  }
-  return `${jobType}:${JSON.stringify(payload)}`;
 }
 
 export class MemoryStore {
-  constructor(private readonly database: MemoryDatabaseLike) {}
+  private readonly unitOfWork: MemoryUnitOfWork;
 
-  async upsertAddress(address: MemoryAddress, profile: MemoryUserProfilePatch | null = null): Promise<void> {
-    const [user] = await this.database.get('memory_user', { userKey: address.userKey });
-    const profilePatch: Record<string, unknown> = {};
-    if (profile?.qqNick != null) profilePatch.qqNick = profile.qqNick;
-    if (profile?.avatarUrl != null) profilePatch.avatarUrl = profile.avatarUrl;
-    if (profile?.profileUpdatedAt != null) profilePatch.profileUpdatedAt = profile.profileUpdatedAt;
-    if (user?.id) {
-      await this.database.set('memory_user', { id: user.id }, { lastSeenAt: address.observedAt, ...profilePatch });
-    } else {
-      await this.database.create('memory_user', {
-        userKey: address.userKey,
-        platform: address.platform,
-        userId: address.userId,
-        qqNick: profile?.qqNick ?? null,
-        avatarUrl: profile?.avatarUrl ?? null,
-        profileUpdatedAt: profile?.profileUpdatedAt ?? null,
-        firstSeenAt: address.observedAt,
+  constructor(
+    private readonly database: MemoryDatabaseLike,
+    readonly policy = new MemoryPolicyService(),
+    private readonly searchIndex: MemorySearchIndex = new SqliteMemorySearchIndex(),
+  ) {
+    this.unitOfWork = new MemoryUnitOfWork(database);
+  }
+
+  async assertSchemaVersion(): Promise<void> {
+    const rows = await this.database.get(MEMORY_LEDGER_TABLES.meta, { key: 'schemaVersion' });
+    if (rows.length !== 1 || String(rows[0]?.value) !== String(MEMORY_LEDGER_SCHEMA_VERSION)) {
+      throw new MemoryRuntimeError(
+        'startup',
+        'schema',
+        'memory_schema_version_invalid',
+        `Memory Ledger schemaVersion=${MEMORY_LEDGER_SCHEMA_VERSION} is required.`,
+      );
+    }
+    assertMemoryLedgerSqliteSchema(this.database);
+    await this.searchIndex.assertReady(this.database);
+  }
+
+  async upsertAddress(address: MemoryAddress, patch: MemoryPrincipalPatch | null = null): Promise<void> {
+    await this.unitOfWork.run('address', async (database) => {
+      const [principal] = await database.get(MEMORY_LEDGER_TABLES.principal, { userKey: address.userKey });
+      const principalPatch = {
+        displayName: patch?.displayName ?? principal?.displayName ?? null,
+        avatarUrl: patch?.avatarUrl ?? principal?.avatarUrl ?? null,
         lastSeenAt: address.observedAt,
-        readEnabled: 1,
-        writeEnabled: 1,
-      });
-    }
+      };
+      if (principal) {
+        await database.set(MEMORY_LEDGER_TABLES.principal, { id: principal.id }, principalPatch);
+      } else {
+        await database.create(MEMORY_LEDGER_TABLES.principal, {
+          userKey: address.userKey,
+          platform: address.platform,
+          userId: address.userId,
+          ...principalPatch,
+          readEnabled: 1,
+          writeEnabled: 1,
+          firstSeenAt: address.observedAt,
+        });
+      }
 
-    const [context] = await this.database.get('memory_context', { contextKey: address.contextKey });
-    const contextRecord = {
-      platform: address.platform,
-      botSelfId: address.botSelfId,
-      channelType: address.channelType,
-      groupId: address.groupId ?? null,
-      channelId: address.channelId ?? null,
-      rawContextId: address.rawContextId ?? null,
-      lastSeenAt: address.observedAt,
-    };
-    if (context?.id) {
-      await this.database.set('memory_context', { id: context.id }, contextRecord);
-    } else {
-      await this.database.create('memory_context', {
-        contextKey: address.contextKey,
-        ...contextRecord,
-        firstSeenAt: address.observedAt,
-      });
-    }
+      const [context] = await database.get(MEMORY_LEDGER_TABLES.context, { contextKey: address.contextKey });
+      const contextPatch = {
+        platform: address.platform,
+        botSelfId: address.botSelfId,
+        channelType: address.channelType,
+        groupId: address.groupId ?? null,
+        channelId: address.channelId ?? null,
+        rawContextId: address.rawContextId ?? null,
+        lastSeenAt: address.observedAt,
+      };
+      if (context) {
+        await database.set(MEMORY_LEDGER_TABLES.context, { id: context.id }, contextPatch);
+      } else {
+        await database.create(MEMORY_LEDGER_TABLES.context, {
+          contextKey: address.contextKey,
+          ...contextPatch,
+          firstSeenAt: address.observedAt,
+        });
+      }
+    });
   }
 
   async getUserFlags(userKey: string): Promise<{ readEnabled: boolean; writeEnabled: boolean }> {
-    const [row] = await this.database.get('memory_user', { userKey });
+    const [row] = await this.database.get(MEMORY_LEDGER_TABLES.principal, { userKey });
     return {
-      readEnabled: row?.readEnabled == null ? true : Number(row.readEnabled) === 1,
-      writeEnabled: row?.writeEnabled == null ? true : Number(row.writeEnabled) === 1,
+      readEnabled: row ? Number(row.readEnabled) === 1 : true,
+      writeEnabled: row ? Number(row.writeEnabled) === 1 : true,
     };
   }
 
-  async setUserFlags(userKey: string, flags: {
-    readEnabled?: boolean;
-    writeEnabled?: boolean;
+  async setUserFlags(userKey: string, flags: { readEnabled?: boolean; writeEnabled?: boolean }): Promise<void> {
+    await this.unitOfWork.run('address', async (database) => {
+      const [row] = await database.get(MEMORY_LEDGER_TABLES.principal, { userKey });
+      if (!row) {
+        throw new MemoryRuntimeError('address', 'validation', 'memory_principal_missing', 'Memory principal does not exist.');
+      }
+      const update: Record<string, unknown> = { lastSeenAt: Date.now() };
+      if (flags.readEnabled != null) update.readEnabled = flags.readEnabled ? 1 : 0;
+      if (flags.writeEnabled != null) update.writeEnabled = flags.writeEnabled ? 1 : 0;
+      await database.set(MEMORY_LEDGER_TABLES.principal, { id: row.id }, update);
+    });
+  }
+
+  private async laneGeneration(
+    database: MemoryDatabaseLike,
+    subjectKey: string,
+    contextKey: string | null,
+  ): Promise<number> {
+    const rows = await database.get(MEMORY_LEDGER_TABLES.suppression, { subjectKey }) as MemoryV2SuppressionRecord[];
+    return rows
+      .filter((row) => (
+        row.sourceMessageDigest == null
+        && row.streamId == null
+        && (
+        row.contextKey == null || row.contextKey === contextKey
+        )
+      ))
+      .reduce((max, row) => Math.max(max, Number(row.generation)), 0);
+  }
+
+  private async streamGeneration(
+    database: MemoryDatabaseLike,
+    subjectKey: string,
+    streamId: string,
+  ): Promise<number> {
+    const rows = await database.get(MEMORY_LEDGER_TABLES.suppression, {
+      subjectKey,
+      streamId,
+    }) as MemoryV2SuppressionRecord[];
+    return rows
+      .filter((row) => row.sourceMessageDigest == null)
+      .reduce((max, row) => Math.max(max, Number(row.generation)), 0);
+  }
+
+  private async filterSuppressedTurnsTx(
+    database: MemoryDatabaseLike,
+    subjectKey: string,
+    contextKey: string,
+    turns: readonly MemoryConversationTurn[],
+  ): Promise<MemoryConversationTurn[]> {
+    const [laneRows, contextRows] = await Promise.all([
+      database.get(MEMORY_LEDGER_TABLES.suppression, {
+        subjectKey,
+      }) as Promise<MemoryV2SuppressionRecord[]>,
+      database.get(MEMORY_LEDGER_TABLES.suppression, {
+        contextKey,
+      }) as Promise<MemoryV2SuppressionRecord[]>,
+    ]);
+    const suppressedSources = new Set(
+      contextRows
+        .filter((row) => row.subjectKey == null && row.streamId == null)
+        .map((row) => row.sourceMessageDigest)
+        .filter((digest): digest is string => Boolean(digest)),
+    );
+    const cutoff = laneRows
+      .filter((row) => (
+        row.cutoffAt != null
+        && row.sourceMessageDigest == null
+        && row.streamId == null
+        && (row.contextKey == null || row.contextKey === contextKey)
+      ))
+      .reduce((latest, row) => Math.max(latest, Number(row.cutoffAt)), 0);
+    return turns.filter((turn) => (
+      !suppressedSources.has(messageSuppressionDigest(turn.id))
+      && (!cutoff || (turn.occurredAt != null && turn.occurredAt > cutoff))
+    ));
+  }
+
+  private async assertEvidenceSourcesAvailable(
+    database: MemoryDatabaseLike,
+    evidence: readonly Pick<MemoryEvidenceInput, 'contextKey' | 'messageId'>[],
+  ): Promise<void> {
+    const contexts = uniqueStrings(evidence.map((item) => item.contextKey));
+    const suppressed = new Set<string>();
+    for (const contextKey of contexts) {
+      const rows = await database.get(MEMORY_LEDGER_TABLES.suppression, {
+        contextKey,
+      }) as MemoryV2SuppressionRecord[];
+      for (const row of rows) {
+        if (
+          row.subjectKey == null
+          && row.streamId == null
+          && row.sourceMessageDigest
+        ) {
+          suppressed.add(sourceSuppressionKey({
+            contextKey,
+            sourceMessageDigest: row.sourceMessageDigest,
+          }));
+        }
+      }
+    }
+    if (evidence.some((item) => suppressed.has(sourceSuppressionKey({
+      contextKey: item.contextKey,
+      sourceMessageDigest: messageSuppressionDigest(item.messageId),
+    })))) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'finalize',
+        'memory_source_suppressed',
+        'Memory evidence was invalidated by a source deletion barrier.',
+      );
+    }
+  }
+
+  private async writeAudit(
+    database: MemoryDatabaseLike,
+    input: {
+      idempotencyKey: string;
+      subjectKey?: string | null;
+      contextKey?: string | null;
+      eventType: string;
+      streamId?: string | null;
+      eventId?: string | null;
+      workKey?: string | null;
+      detail?: Record<string, unknown> | null;
+      createdAt?: number;
+    },
+  ): Promise<void> {
+    const existing = await database.get(MEMORY_LEDGER_TABLES.audit, { idempotencyKey: input.idempotencyKey });
+    if (existing.length) return;
+    await database.create(MEMORY_LEDGER_TABLES.audit, {
+      auditId: randomUUID(),
+      idempotencyKey: input.idempotencyKey,
+      subjectKey: input.subjectKey ?? null,
+      contextKey: input.contextKey ?? null,
+      eventType: input.eventType,
+      streamId: input.streamId ?? null,
+      eventId: input.eventId ?? null,
+      workKey: input.workKey ?? null,
+      detailJson: safeAuditDetail(input.detail ?? null),
+      createdAt: input.createdAt ?? Date.now(),
+    });
+  }
+
+  async audit(input: {
+    idempotencyKey?: string;
+    subjectKey?: string | null;
+    contextKey?: string | null;
+    eventType: string;
+    streamId?: string | null;
+    eventId?: string | null;
+    workKey?: string | null;
+    detail?: Record<string, unknown> | null;
+    createdAt?: number;
   }): Promise<void> {
-    const patch: Record<string, number> = {};
-    if (flags.readEnabled != null) patch.readEnabled = flags.readEnabled ? 1 : 0;
-    if (flags.writeEnabled != null) patch.writeEnabled = flags.writeEnabled ? 1 : 0;
-    if (!Object.keys(patch).length) return;
-
-    const [row] = await this.database.get('memory_user', { userKey });
-    if (row?.id) {
-      await this.database.set('memory_user', { id: row.id }, { ...patch, lastSeenAt: Date.now() });
-      return;
-    }
-
-    const [platform = 'unknown', , userId = userKey] = userKey.split(':');
-    await this.database.create('memory_user', {
-      userKey,
-      platform,
-      userId,
-      firstSeenAt: Date.now(),
-      lastSeenAt: Date.now(),
-      readEnabled: flags.readEnabled == null ? 1 : patch.readEnabled,
-      writeEnabled: flags.writeEnabled == null ? 1 : patch.writeEnabled,
-    });
+    await this.unitOfWork.run('audit', (database) => this.writeAudit(database, {
+      ...input,
+      idempotencyKey: input.idempotencyKey ?? `audit:${randomUUID()}`,
+    }));
   }
 
-  async getConversationLatestMessageId(conversationId: string): Promise<string | null> {
-    const [conversation] = await this.database.get('chatluna_conversation', { id: conversationId }) as StoredConversationRecord[];
-    return normalizeText(conversation?.latestMessageId) || null;
-  }
-
-  private async getExtractCursor(ownerUserKey: string, contextKey: string): Promise<string | null> {
-    const [row] = await this.database.get('memory_extract_cursor', { ownerUserKey, contextKey });
-    return normalizeText(row?.lastExtractedMessageId) || null;
-  }
-
-  async updateExtractCursor(payload: ExtractJobPayload): Promise<void> {
+  private async queueWork(
+    database: MemoryDatabaseLike,
+    input: {
+      workKey: string;
+      workType: MemoryWorkType;
+      subjectKey?: string | null;
+      contextKey?: string | null;
+      streamId?: string | null;
+      laneKey?: string | null;
+      payload: MemoryWorkPayload;
+      inputHash: string;
+      targetRevision?: number | null;
+      deletionGeneration: number;
+      nextRunAt?: number;
+    },
+  ): Promise<boolean> {
+    const existing = await database.get(MEMORY_LEDGER_TABLES.work, { workKey: input.workKey }) as MemoryV2WorkRecord[];
+    if (existing.length) return false;
     const now = Date.now();
-    const [row] = await this.database.get('memory_extract_cursor', {
-      ownerUserKey: payload.ownerUserKey,
-      contextKey: payload.contextKey,
-    });
-    const patch = {
-      conversationId: payload.conversationId,
-      lastExtractedMessageId: payload.latestAnchorMessageId,
-      lastExtractedAt: now,
+    await database.create(MEMORY_LEDGER_TABLES.work, {
+      workKey: input.workKey,
+      workType: input.workType,
+      status: 'pending',
+      subjectKey: input.subjectKey ?? null,
+      contextKey: input.contextKey ?? null,
+      streamId: input.streamId ?? null,
+      laneKey: input.laneKey ?? null,
+      payload: serialize(input.payload),
+      inputHash: input.inputHash,
+      targetRevision: input.targetRevision ?? null,
+      deletionGeneration: input.deletionGeneration,
+      retryCount: 0,
+      nextRunAt: input.nextRunAt ?? now,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      lastErrorCode: null,
+      lastErrorStage: null,
+      upstreamStatus: null,
+      providerCode: null,
+      createdAt: now,
       updatedAt: now,
-    };
-    if (row?.id) {
-      await this.database.set('memory_extract_cursor', { id: row.id }, patch);
-      return;
-    }
-    await this.database.create('memory_extract_cursor', {
-      ownerUserKey: payload.ownerUserKey,
-      contextKey: payload.contextKey,
-      firstSeenAt: now,
-      ...patch,
+      completedAt: null,
     });
+    return true;
   }
 
-  async queueExtractJob(input: {
+  async queueExtractWork(input: {
     address: MemoryAddress;
     targetSpeakerId: string;
     targetSpeakerName: string | null;
     maxMessages: number;
     nextRunAt: number;
   }): Promise<boolean> {
-    const latestAnchorMessageId = await this.getConversationLatestMessageId(input.address.conversationId);
+    const expectedUserKey = `${input.address.platform}:user:${input.targetSpeakerId}`;
+    if (
+      input.targetSpeakerId !== input.address.userId
+      || input.address.userKey !== expectedUserKey
+    ) {
+      throw new MemoryRuntimeError(
+        'enqueue',
+        'validation',
+        'memory_extract_target_conflict',
+        'Extraction target conflicts with the authenticated session speaker.',
+      );
+    }
+    const [conversation] = await this.database.get('chatluna_conversation', {
+      id: input.address.conversationId,
+    }) as StoredConversationRecord[];
+    const latestAnchorMessageId = normalizeText(conversation?.latestMessageId);
     if (!latestAnchorMessageId) return false;
-    const rangeStartAfterMessageId = await this.getExtractCursor(input.address.userKey, input.address.contextKey);
-    if (rangeStartAfterMessageId === latestAnchorMessageId) return false;
-    await this.queueJob(
-      'extract',
-      {
+    const audienceSubjectKeys = uniqueStrings(
+      input.address.currentAudienceSubjectKeys ?? [],
+    );
+    if (
+      audienceSubjectKeys.length === 0
+      || !audienceSubjectKeys.includes(input.address.userKey)
+    ) {
+      throw new MemoryRuntimeError(
+        'enqueue',
+        'validation',
+        'memory_extract_audience_missing',
+        'Extraction requires the authoritative audience captured for this message.',
+      );
+    }
+
+    return this.unitOfWork.run('enqueue', async (database) => {
+      const key = createMemoryExtractLaneKey(
+        input.address.userKey,
+        input.address.contextKey,
+      );
+      const [cursor] = await database.get(MEMORY_LEDGER_TABLES.cursor, { laneKey: key }) as MemoryV2CursorRecord[];
+      const effectiveCursorMessageId = cursor?.discardBeforeMessageId ?? cursor?.lastMessageId ?? null;
+      if (effectiveCursorMessageId === latestAnchorMessageId) {
+        return false;
+      }
+      if (
+        cursor?.lastMessageAt != null
+        && cursor.lastMessageAt >= input.address.observedAt
+      ) {
+        return false;
+      }
+      const pendingRows = (
+        await database.get(MEMORY_LEDGER_TABLES.work, {
+          laneKey: key,
+          workType: 'extract',
+          status: 'pending',
+        }) as MemoryV2WorkRecord[]
+      ).sort(dueSort);
+      const pending = pendingRows[0];
+      const capturedAudience = {
+        messageId: latestAnchorMessageId,
+        observedAt: input.address.observedAt,
+        audienceSubjectKeys,
+      };
+      if (pending) {
+        const existingPayloads = pendingRows.map(
+          (row) => workPayload<ExtractWorkPayload>(row),
+        );
+        if (existingPayloads.some((payload) => (
+          payload.address.conversationId !== input.address.conversationId
+          || payload.targetSpeakerId !== input.targetSpeakerId
+        ))) {
+          throw new MemoryRuntimeError(
+            'enqueue',
+            'validation',
+            'memory_extract_lane_conflict',
+            'A pending extraction lane targets a different conversation or speaker.',
+          );
+        }
+        const alreadyCaptured = existingPayloads.some(
+          (payload) => payload.capturedAudiences.some(
+            (capture) => capture.messageId === latestAnchorMessageId,
+          ),
+        );
+        if (alreadyCaptured && pendingRows.length === 1) {
+          return false;
+        }
+        const maxMessages = Math.max(
+          1,
+          Math.floor(Math.max(
+            input.maxMessages,
+            ...existingPayloads.map((payload) => payload.maxMessages),
+          )),
+        );
+        const captureByMessageId = new Map(
+          existingPayloads
+            .flatMap((payload) => payload.capturedAudiences)
+            .map((capture) => [capture.messageId, capture]),
+        );
+        if (!captureByMessageId.has(capturedAudience.messageId)) {
+          captureByMessageId.set(capturedAudience.messageId, capturedAudience);
+        }
+        const capturedAudiences = [...captureByMessageId.values()]
+          .sort((left, right) => (
+            left.observedAt - right.observedAt
+            || left.messageId.localeCompare(right.messageId)
+          ))
+          .slice(-maxMessages);
+        const payload: ExtractWorkPayload = {
+          address: input.address,
+          targetSpeakerId: input.targetSpeakerId,
+          targetSpeakerName: input.targetSpeakerName,
+          latestAnchorMessageId,
+          maxMessages,
+          capturedAudiences,
+        };
+        const inputHash = sha256(serialize(payload));
+        await database.set(MEMORY_LEDGER_TABLES.work, {
+          id: pending.id,
+          status: 'pending',
+          inputHash: pending.inputHash,
+        }, {
+          payload: serialize(payload),
+          inputHash,
+          retryCount: 0,
+          nextRunAt: input.nextRunAt,
+          lastErrorCode: null,
+          lastErrorStage: null,
+          upstreamStatus: null,
+          providerCode: null,
+          completedAt: null,
+          updatedAt: Date.now(),
+        });
+        for (const duplicate of pendingRows.slice(1)) {
+          await database.set(MEMORY_LEDGER_TABLES.work, {
+            id: duplicate.id,
+            status: 'pending',
+            inputHash: duplicate.inputHash,
+          }, {
+            status: 'cancelled',
+            payload: '{}',
+            leaseToken: null,
+            leaseExpiresAt: null,
+            lastErrorCode: 'memory_extract_lane_coalesced',
+            lastErrorStage: 'finalize',
+            upstreamStatus: null,
+            providerCode: null,
+            updatedAt: Date.now(),
+            completedAt: Date.now(),
+          });
+        }
+        return true;
+      }
+      const payload: ExtractWorkPayload = {
         address: input.address,
-        ownerUserKey: input.address.userKey,
         targetSpeakerId: input.targetSpeakerId,
         targetSpeakerName: input.targetSpeakerName,
-        contextKey: input.address.contextKey,
-        conversationId: input.address.conversationId,
-        rangeStartAfterMessageId,
         latestAnchorMessageId,
         maxMessages: input.maxMessages,
-      },
-      input.nextRunAt,
-    );
-    return true;
-  }
-
-  async queueJob(jobType: MemoryJobType, payload: MemoryJobPayload, nextRunAt = Date.now()): Promise<void> {
-    const now = Date.now();
-    const key = jobKey(jobType, payload);
-    const [existing] = await this.database.get('memory_job', { jobKey: key, status: 'pending' });
-    let nextPayload = payload;
-    if (jobType === 'extract' && existing?.payload) {
-      const previous = parsePayload<ExtractJobPayload>(String(existing.payload));
-      const incoming = payload as ExtractJobPayload;
-      nextPayload = {
-        ...incoming,
-        rangeStartAfterMessageId: previous?.rangeStartAfterMessageId ?? incoming.rangeStartAfterMessageId,
+        capturedAudiences: [capturedAudience],
       };
-    }
-    const row = {
-      jobType,
-      status: 'pending',
-      payload: serialize(nextPayload),
-      nextRunAt,
-      lockedAt: null,
-      lastError: null,
-      updatedAt: now,
-    };
-    if (existing?.id) {
-      await this.database.set('memory_job', { id: existing.id }, row);
-      return;
-    }
-    await this.database.create('memory_job', {
-      jobKey: key,
-      retryCount: 0,
-      createdAt: now,
-      ...row,
-    });
-  }
-
-  async listDueJobs(jobType: MemoryJobType, now: number): Promise<MemoryJobRecord[]> {
-    const rows = await this.database.get('memory_job', { jobType, status: 'pending' }) as MemoryJobRecord[];
-    return rows.filter((row) => Number(row.nextRunAt ?? 0) <= now).sort((left, right) => left.nextRunAt - right.nextRunAt);
-  }
-
-  async markJobProcessing(job: MemoryJobRecord): Promise<void> {
-    await this.database.set('memory_job', { id: job.id }, {
-      status: 'processing',
-      lockedAt: Date.now(),
-      updatedAt: Date.now(),
-      lastError: null,
-    });
-  }
-
-  async completeJob(job: MemoryJobRecord): Promise<void> {
-    await this.database.remove('memory_job', { id: job.id });
-  }
-
-  async retryJob(job: MemoryJobRecord, error: unknown, delayMs: number, maxRetries: number): Promise<void> {
-    const retryCount = Number(job.retryCount ?? 0) + 1;
-    const status: MemoryJobStatus = retryCount > maxRetries ? 'dead_letter' : 'pending';
-    await this.database.set('memory_job', { id: job.id }, {
-      status,
-      retryCount,
-      nextRunAt: Date.now() + delayMs * Math.max(1, retryCount),
-      lockedAt: null,
-      lastError: error instanceof Error ? error.message : String(error),
-      updatedAt: Date.now(),
-    });
-  }
-
-  async deadLetterJob(job: MemoryJobRecord, error: unknown): Promise<void> {
-    await this.database.set('memory_job', { id: job.id }, {
-      status: 'dead_letter',
-      retryCount: Number(job.retryCount ?? 0) + 1,
-      nextRunAt: Date.now(),
-      lockedAt: null,
-      lastError: error instanceof Error ? error.message : String(error),
-      updatedAt: Date.now(),
-    });
-  }
-
-  async requeueDeadLetterJob(id: number): Promise<boolean> {
-    const [job] = await this.database.get('memory_job', { id, status: 'dead_letter' }) as MemoryJobRecord[];
-    if (!job) return false;
-    await this.database.set('memory_job', { id, status: 'dead_letter' }, {
-      status: 'pending',
-      retryCount: 0,
-      nextRunAt: Date.now(),
-      lockedAt: null,
-      lastError: null,
-      updatedAt: Date.now(),
-    });
-    return true;
-  }
-
-  async discardDeadLetterJob(id: number): Promise<boolean> {
-    const [job] = await this.database.get('memory_job', { id, status: 'dead_letter' }) as MemoryJobRecord[];
-    if (!job) return false;
-    await this.database.remove('memory_job', { id, status: 'dead_letter' });
-    return true;
-  }
-
-  async requeueStaleProcessingJobs(lockTimeoutMs: number): Promise<number> {
-    const rows = await this.database.get('memory_job', { status: 'processing' }) as MemoryJobRecord[];
-    const threshold = Date.now() - lockTimeoutMs;
-    let count = 0;
-    for (const row of rows) {
-      if (Number(row.lockedAt ?? 0) > threshold) continue;
-      await this.database.set('memory_job', { id: row.id }, {
-        status: 'pending',
-        lockedAt: null,
-        nextRunAt: Date.now(),
-        updatedAt: Date.now(),
+      const inputHash = sha256(serialize(payload));
+      const generation = await this.laneGeneration(
+        database,
+        input.address.userKey,
+        input.address.contextKey,
+      );
+      return this.queueWork(database, {
+        workKey: `extract:${key}:${randomUUID()}`,
+        workType: 'extract',
+        subjectKey: input.address.userKey,
+        contextKey: input.address.contextKey,
+        laneKey: key,
+        payload,
+        inputHash,
+        deletionGeneration: generation,
+        nextRunAt: input.nextRunAt,
       });
-      count += 1;
-    }
-    return count;
+    });
   }
 
-  async getJobSummary(): Promise<MemoryQueueSummary> {
-    const rows = await this.database.get('memory_job', {} as Record<string, never>) as MemoryJobRecord[];
-    return rows.reduce<MemoryQueueSummary>(
-      (summary, row) => {
-        if (row.status === 'dead_letter') summary.deadLetter += 1;
-        if (row.jobType === 'extract' && row.status === 'pending') summary.extractPending += 1;
-        if (row.jobType === 'extract' && row.status === 'processing') summary.extractProcessing += 1;
-        if (row.jobType === 'privacy_review' && row.status === 'pending') summary.privacyReviewPending += 1;
-        if (row.jobType === 'consolidate' && row.status === 'pending') summary.consolidatePending += 1;
-        if ((row.jobType === 'embed' || row.jobType === 'reembed') && row.status === 'pending') summary.embedPending += 1;
-        if ((row.jobType === 'embed' || row.jobType === 'reembed') && row.status === 'processing') summary.embedProcessing += 1;
-        return summary;
-      },
-      {
-        extractPending: 0,
-        extractProcessing: 0,
-        privacyReviewPending: 0,
-        consolidatePending: 0,
-        embedPending: 0,
-        embedProcessing: 0,
-        deadLetter: 0,
+  async claimDueWork(
+    workType: MemoryWorkType,
+    now: number,
+    leaseMs: number,
+  ): Promise<ClaimedMemoryWork | null> {
+    return this.unitOfWork.run('claim', async (database) => {
+      const [rows, leased] = await Promise.all([
+        database.get(MEMORY_LEDGER_TABLES.work, {
+          workType,
+          status: 'pending',
+        }) as Promise<MemoryV2WorkRecord[]>,
+        database.get(MEMORY_LEDGER_TABLES.work, {
+          workType,
+          status: 'leased',
+        }) as Promise<MemoryV2WorkRecord[]>,
+      ]);
+      const leasedLanes = new Set(
+        leased.map((row) => row.laneKey).filter((key): key is string => Boolean(key)),
+      );
+      const work = rows
+        .filter((row) => (
+          row.nextRunAt <= now
+          && (!row.laneKey || !leasedLanes.has(row.laneKey))
+        ))
+        .sort(dueSort)[0];
+      if (!work) return null;
+      const leaseToken = randomUUID();
+      await database.set(MEMORY_LEDGER_TABLES.work, {
+        id: work.id,
+        status: 'pending',
+        inputHash: work.inputHash,
+      }, {
+        status: 'leased',
+        leaseToken,
+        leaseExpiresAt: now + leaseMs,
+        updatedAt: now,
+      });
+      const [claimed] = await database.get(MEMORY_LEDGER_TABLES.work, { id: work.id }) as MemoryV2WorkRecord[];
+      if (!claimed || claimed.status !== 'leased' || claimed.leaseToken !== leaseToken) return null;
+      return { work: claimed, leaseToken };
+    });
+  }
+
+  async requeueExpiredLeases(
+    now = Date.now(),
+    maxRetries = 1,
+  ): Promise<number> {
+    return this.unitOfWork.run('maintenance', async (database) => {
+      const rows = await database.get(MEMORY_LEDGER_TABLES.work, { status: 'leased' }) as MemoryV2WorkRecord[];
+      const expired = rows.filter((row) => row.leaseExpiresAt != null && row.leaseExpiresAt <= now);
+      let resolved = 0;
+      for (const row of expired) {
+        if (await this.resolveExpiredLeaseTx(
+          database,
+          row,
+          row.leaseToken,
+          maxRetries,
+          now,
+        )) {
+          resolved += 1;
+        }
+      }
+      return resolved;
+    });
+  }
+
+  parseWorkPayload<T extends MemoryWorkPayload>(work: MemoryV2WorkRecord): T {
+    return workPayload<T>(work);
+  }
+
+  private async assertLease(
+    database: MemoryDatabaseLike,
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    allowExpired = false,
+  ): Promise<MemoryV2WorkRecord> {
+    const [current] = await database.get(MEMORY_LEDGER_TABLES.work, { id: work.id }) as MemoryV2WorkRecord[];
+    if (!current || current.status !== 'leased' || current.leaseToken !== leaseToken || current.inputHash !== work.inputHash) {
+      throw new MemoryRuntimeError('claim', 'finalize', 'memory_lease_lost', 'Memory work lease is no longer valid.');
+    }
+    const generation = !current.subjectKey
+      ? 0
+      : current.workType === 'extract'
+        ? await this.laneGeneration(database, current.subjectKey, current.contextKey)
+        : current.streamId
+          ? await this.streamGeneration(database, current.subjectKey, current.streamId)
+          : 0;
+    if (generation !== current.deletionGeneration) {
+      throw new MemoryRuntimeError(
+        current.workType === 'embed' || current.workType === 'backfill' ? 'embed' : 'extract',
+        'finalize',
+        'memory_deletion_generation_changed',
+        'Memory work was invalidated by a deletion barrier.',
+      );
+    }
+    if (
+      !allowExpired
+      && (current.leaseExpiresAt == null || current.leaseExpiresAt <= Date.now())
+    ) {
+      throw new MemoryRuntimeError(
+        current.workType === 'embed' || current.workType === 'backfill' ? 'embed' : 'extract',
+        'finalize',
+        'memory_lease_expired',
+        'Memory work lease expired before finalization.',
+      );
+    }
+    return current;
+  }
+
+  private async terminateInvalidLease(
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    reasonCode: 'memory_deletion_generation_changed',
+  ): Promise<void> {
+    await this.unitOfWork.run(
+      work.workType === 'embed' || work.workType === 'backfill' ? 'embed' : 'extract',
+      async (database) => {
+        const [current] = await database.get(MEMORY_LEDGER_TABLES.work, {
+          id: work.id,
+        }) as MemoryV2WorkRecord[];
+        if (
+          !current
+          || current.status !== 'leased'
+          || current.leaseToken !== leaseToken
+          || current.inputHash !== work.inputHash
+        ) {
+          return;
+        }
+        const now = Date.now();
+        await database.set(MEMORY_LEDGER_TABLES.work, { id: current.id }, {
+          status: 'cancelled',
+          leaseToken: null,
+          leaseExpiresAt: null,
+          payload: '{}',
+          lastErrorCode: reasonCode,
+          lastErrorStage: 'finalize',
+          upstreamStatus: null,
+          providerCode: null,
+          updatedAt: now,
+          completedAt: now,
+        });
+        await this.writeAudit(database, {
+          idempotencyKey: `work-invalidated:${current.workKey}:${reasonCode}`,
+          subjectKey: current.subjectKey,
+          contextKey: current.contextKey,
+          eventType: 'work_invalidated',
+          workKey: current.workKey,
+          detail: { reasonCode },
+          createdAt: now,
+        });
       },
     );
   }
 
-  parseJobPayload<T>(job: MemoryJobRecord): T | null {
-    if (!isJobStatus(job.status)) return null;
-    return parsePayload<T>(job.payload);
+  private async expiredLeaseInvalidationReason(
+    database: MemoryDatabaseLike,
+    work: MemoryV2WorkRecord,
+  ): Promise<string | null> {
+    const generation = !work.subjectKey
+      ? 0
+      : work.workType === 'extract'
+        ? await this.laneGeneration(database, work.subjectKey, work.contextKey)
+        : work.streamId
+          ? await this.streamGeneration(database, work.subjectKey, work.streamId)
+          : 0;
+    if (generation !== work.deletionGeneration) {
+      return 'memory_deletion_generation_changed';
+    }
+    if (work.workType === 'extract') {
+      const payload = workPayload<ExtractWorkPayload>(work);
+      const anchorCapture = payload.capturedAudiences?.find(
+        (capture) => capture.messageId === payload.latestAnchorMessageId,
+      );
+      if (!payload.address?.contextKey || !anchorCapture) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'validation',
+          'memory_extract_payload_invalid',
+          'Active extraction work payload is invalid.',
+        );
+      }
+      const [cursor] = await database.get(MEMORY_LEDGER_TABLES.cursor, {
+        laneKey: work.laneKey,
+      }) as MemoryV2CursorRecord[];
+      if (
+        cursor?.lastMessageAt != null
+        && cursor.lastMessageAt >= anchorCapture.observedAt
+        && cursor.lastMessageId !== payload.latestAnchorMessageId
+      ) {
+        return 'memory_extract_anchor_superseded';
+      }
+      return null;
+    }
+    if (
+      (work.workType === 'embed' || work.workType === 'backfill')
+      && work.streamId
+    ) {
+      const payload = workPayload<EmbeddingWorkPayload>(work);
+      const [head] = await database.get(MEMORY_LEDGER_TABLES.head, {
+        streamId: work.streamId,
+      }) as MemoryV2HeadRecord[];
+      if (
+        !head
+        || head.state !== 'active'
+        || head.eventId !== payload.eventId
+        || head.revision !== payload.revision
+        || head.contentHash !== payload.contentHash
+        || head.deletionGeneration !== work.deletionGeneration
+      ) {
+        return 'memory_embedding_target_superseded';
+      }
+    }
+    return null;
+  }
+
+  private async resolveExpiredLeaseTx(
+    database: MemoryDatabaseLike,
+    work: MemoryV2WorkRecord,
+    leaseToken: string | null,
+    maxRetries: number,
+    now: number,
+  ): Promise<boolean> {
+    const [current] = await database.get(MEMORY_LEDGER_TABLES.work, {
+      id: work.id,
+      status: 'leased',
+      leaseToken,
+      inputHash: work.inputHash,
+    }) as MemoryV2WorkRecord[];
+    if (
+      !current
+      || current.leaseExpiresAt == null
+      || current.leaseExpiresAt > now
+    ) {
+      return false;
+    }
+    const invalidationReason = await this.expiredLeaseInvalidationReason(
+      database,
+      current,
+    );
+    if (invalidationReason) {
+      await database.set(MEMORY_LEDGER_TABLES.work, {
+        id: current.id,
+        status: 'leased',
+        leaseToken,
+        inputHash: current.inputHash,
+      }, {
+        status: 'cancelled',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        payload: '{}',
+        lastErrorCode: invalidationReason,
+        lastErrorStage: 'finalize',
+        upstreamStatus: null,
+        providerCode: null,
+        updatedAt: now,
+        completedAt: now,
+      });
+      await this.writeAudit(database, {
+        idempotencyKey: `work-invalidated:${current.workKey}:${invalidationReason}`,
+        subjectKey: current.subjectKey,
+        contextKey: current.contextKey,
+        eventType: 'work_invalidated',
+        workKey: current.workKey,
+        detail: { errorCode: invalidationReason },
+        createdAt: now,
+      });
+      return true;
+    }
+
+    const retryCount = current.retryCount + 1;
+    const retry = retryCount <= maxRetries;
+    await database.set(MEMORY_LEDGER_TABLES.work, {
+      id: current.id,
+      status: 'leased',
+      leaseToken,
+      inputHash: current.inputHash,
+    }, {
+      status: retry ? 'pending' : 'deadLetter',
+      retryCount,
+      nextRunAt: retry ? now : current.nextRunAt,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      payload: retry ? current.payload : '{}',
+      lastErrorCode: 'memory_lease_expired',
+      lastErrorStage: 'finalize',
+      upstreamStatus: null,
+      providerCode: null,
+      updatedAt: now,
+      completedAt: retry ? null : now,
+    });
+    await this.writeAudit(database, {
+      idempotencyKey: `work-expired:${current.workKey}:${retryCount}`,
+      subjectKey: current.subjectKey,
+      contextKey: current.contextKey,
+      eventType: retry ? 'work_retry_scheduled' : 'work_dead_lettered',
+      workKey: current.workKey,
+      detail: {
+        reasonCode: 'memory_lease_expired',
+        retryCount,
+      },
+      createdAt: now,
+    });
+    return true;
+  }
+
+  private async requeueExpiredLease(
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    maxRetries: number,
+  ): Promise<void> {
+    await this.unitOfWork.run(
+      work.workType === 'embed' || work.workType === 'backfill' ? 'embed' : 'extract',
+      async (database) => {
+        const [current] = await database.get(MEMORY_LEDGER_TABLES.work, {
+          id: work.id,
+        }) as MemoryV2WorkRecord[];
+        if (
+          !current
+          || current.status !== 'leased'
+          || current.leaseToken !== leaseToken
+          || current.inputHash !== work.inputHash
+        ) {
+          return;
+        }
+        await this.resolveExpiredLeaseTx(
+          database,
+          current,
+          leaseToken,
+          maxRetries,
+          Date.now(),
+        );
+      },
+    );
+  }
+
+  private async runLeaseTransaction<T>(
+    operation: 'extract' | 'embed',
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    callback: (database: MemoryDatabaseLike, current: MemoryV2WorkRecord) => Promise<T>,
+    options: {
+      allowExpired?: boolean;
+      maxLeaseRetries?: number;
+    } = {},
+  ): Promise<T> {
+    try {
+      return await this.unitOfWork.run(operation, async (database) => (
+        callback(
+          database,
+          await this.assertLease(
+            database,
+            work,
+            leaseToken,
+            options.allowExpired ?? false,
+          ),
+        )
+      ));
+    } catch (error) {
+      if (
+        error instanceof MemoryRuntimeError
+        && error.code === 'memory_lease_expired'
+      ) {
+        await this.requeueExpiredLease(
+          work,
+          leaseToken,
+          options.maxLeaseRetries ?? 1,
+        );
+      } else if (
+        error instanceof MemoryRuntimeError
+        && error.code === 'memory_deletion_generation_changed'
+      ) {
+        await this.terminateInvalidLease(work, leaseToken, error.code);
+      }
+      throw error;
+    }
+  }
+
+  async failWork(
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    error: unknown,
+    options: { maxRetries: number; retryDelayMs: number },
+  ): Promise<void> {
+    await this.runLeaseTransaction(work.workType === 'embed' || work.workType === 'backfill' ? 'embed' : 'extract', work, leaseToken, async (database, current) => {
+      const detail = memoryErrorDetail(error);
+      const retryCount = current.retryCount + 1;
+      const retry = detail.retryable && retryCount <= options.maxRetries;
+      await database.set(MEMORY_LEDGER_TABLES.work, { id: current.id }, {
+        status: retry ? 'pending' : 'deadLetter',
+        retryCount,
+        nextRunAt: retry ? Date.now() + options.retryDelayMs : current.nextRunAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: detail.code,
+        lastErrorStage: detail.stage,
+        upstreamStatus: detail.upstreamStatus,
+        providerCode: detail.providerCode,
+        updatedAt: Date.now(),
+        completedAt: retry ? null : Date.now(),
+        payload: retry ? current.payload : '{}',
+      });
+      await this.writeAudit(database, {
+        idempotencyKey: `work-failed:${current.workKey}:${retryCount}`,
+        subjectKey: current.subjectKey,
+        contextKey: current.contextKey,
+        eventType: retry ? 'work_retry_scheduled' : 'work_dead_lettered',
+        workKey: current.workKey,
+        detail: {
+          errorCode: detail.code,
+          errorStage: detail.stage,
+          upstreamStatus: detail.upstreamStatus,
+          providerCode: detail.providerCode,
+          retryable: detail.retryable,
+          retryCount,
+        },
+      });
+    }, {
+      maxLeaseRetries: options.maxRetries,
+    });
   }
 
   private buildTurnSpeaker(
     row: StoredMessageRecord,
     text: string,
     additionalKwargs: Record<string, unknown> | null,
-    payload: ExtractJobPayload,
-  ): {
-    text: string;
-    speakerId: string | null;
-    speakerName: string | null;
-    ownerUserKey: string | null;
-    isTarget: boolean;
-    attributionSource: MemoryConversationTurn['attributionSource'];
-  } {
+    payload: ExtractWorkPayload,
+  ): ParsedSpeaker {
     if (row.role !== 'human') {
       return {
         text,
@@ -760,34 +1419,31 @@ export class MemoryStore {
         attributionSource: 'assistant',
       };
     }
-
     if (payload.address.channelType === 'direct') {
       return {
         text,
         speakerId: payload.targetSpeakerId,
         speakerName: payload.targetSpeakerName,
-        ownerUserKey: payload.ownerUserKey,
+        ownerUserKey: payload.address.userKey,
         isTarget: true,
         attributionSource: 'direct_session',
       };
     }
-
-    const speakerFormat = parseSpeakerFormat(additionalKwargs);
-    if (speakerFormat) {
-      const ownerUserKey = `${payload.address.platform}:user:${speakerFormat.speakerId}`;
+    const formatted = parseSpeakerFormat(additionalKwargs);
+    if (formatted) {
+      const ownerUserKey = `${payload.address.platform}:user:${formatted.speakerId}`;
+      const tag = parseSpeakerTag(text);
       return {
-        text: stripMatchingSpeakerTag(text, speakerFormat.speakerId),
-        speakerId: speakerFormat.speakerId,
-        speakerName: speakerFormat.speakerName ?? (normalizeText(row.name) || null),
+        text: tag?.speakerId === formatted.speakerId ? text.slice(tag.end).trim() : text,
+        speakerId: formatted.speakerId,
+        speakerName: formatted.speakerName ?? (normalizeText(row.name) || null),
         ownerUserKey,
-        isTarget: ownerUserKey === payload.ownerUserKey && speakerFormat.speakerId === payload.targetSpeakerId,
+        isTarget: ownerUserKey === payload.address.userKey && formatted.speakerId === payload.targetSpeakerId,
         attributionSource: 'additional_kwargs',
       };
     }
-
-    const speakerTag = parseSpeakerTag(text);
-    const speakerId = speakerTag?.speakerId ?? null;
-    if (!speakerId) {
+    const tag = parseSpeakerTag(text);
+    if (!tag) {
       return {
         text,
         speakerId: null,
@@ -797,51 +1453,103 @@ export class MemoryStore {
         attributionSource: 'unknown',
       };
     }
-
-    const ownerUserKey = `${payload.address.platform}:user:${speakerId}`;
+    const ownerUserKey = `${payload.address.platform}:user:${tag.speakerId}`;
     return {
-      text: speakerTag ? text.slice(speakerTag.end).trim() : text,
-      speakerId,
-      speakerName: speakerTag?.speakerName ?? (normalizeText(row.name) || null),
+      text: text.slice(tag.end).trim(),
+      speakerId: tag.speakerId,
+      speakerName: tag.speakerName ?? (normalizeText(row.name) || null),
       ownerUserKey,
-      isTarget: ownerUserKey === payload.ownerUserKey && speakerId === payload.targetSpeakerId,
+      isTarget: ownerUserKey === payload.address.userKey && tag.speakerId === payload.targetSpeakerId,
       attributionSource: 'speaker_tag',
     };
   }
 
-  async readConversationWindow(payload: ExtractJobPayload): Promise<MemoryConversationTurn[]> {
-    if (!payload.conversationId || !payload.latestAnchorMessageId) return [];
-    const rows = await this.database.get('chatluna_message', { conversationId: payload.conversationId }) as StoredMessageRecord[];
-    const messageMap = new Map(rows.map((row) => [row.id, row]));
+  async readConversationWindow(payload: ExtractWorkPayload): Promise<MemoryConversationTurn[]> {
+    const rows = await this.database.get('chatluna_message', {
+      conversationId: payload.address.conversationId,
+    }) as StoredMessageRecord[];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const [laneCursor] = await this.database.get(MEMORY_LEDGER_TABLES.cursor, {
+      laneKey: createMemoryExtractLaneKey(
+        payload.address.userKey,
+        payload.address.contextKey,
+      ),
+    }) as MemoryV2CursorRecord[];
+    const rangeStartAfterMessageId = laneCursor?.discardBeforeMessageId
+      ?? laneCursor?.lastMessageId
+      ?? null;
+    if (rangeStartAfterMessageId === payload.latestAnchorMessageId) return [];
+    const anchorCapture = payload.capturedAudiences.find(
+      (capture) => capture.messageId === payload.latestAnchorMessageId,
+    );
+    if (!anchorCapture) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_extract_anchor_audience_missing',
+        'Extraction anchor has no immutable audience capture.',
+      );
+    }
+    if (
+      laneCursor?.lastMessageAt != null
+      && laneCursor.lastMessageAt >= anchorCapture.observedAt
+      && laneCursor.lastMessageId !== payload.latestAnchorMessageId
+    ) {
+      return [];
+    }
     const window: MemoryConversationTurn[] = [];
-    const maxMessages = Math.max(1, Number(payload.maxMessages ?? 1));
-    const maxScan = Math.max(maxMessages * 4, maxMessages);
+    const maxMessages = Math.max(1, Math.floor(payload.maxMessages));
+    const maxScan = maxMessages * 4;
+    let cursor: string | null = payload.latestAnchorMessageId;
     let scanned = 0;
-    let cursor: string | null | undefined = payload.latestAnchorMessageId;
-    while (cursor && scanned < maxScan) {
-      if (cursor === payload.rangeStartAfterMessageId) break;
+    while (cursor && cursor !== rangeStartAfterMessageId && scanned < maxScan) {
+      const row = byId.get(cursor);
+      if (!row) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'read',
+          'memory_message_chain_broken',
+          'Stored memory message chain is incomplete.',
+        );
+      }
+      const storedOccurredAt = Number(row.createdAt);
+      if (laneCursor?.lastMessageAt != null) {
+        if (!Number.isFinite(storedOccurredAt)) {
+          throw new MemoryRuntimeError(
+            'extract',
+            'read',
+            'memory_message_time_missing',
+            'Stored memory message is missing its immutable occurrence time.',
+          );
+        }
+        if (storedOccurredAt <= laneCursor.lastMessageAt) break;
+      }
+      const occurredAt = Number.isFinite(storedOccurredAt)
+        ? storedOccurredAt
+        : payload.address.observedAt;
       scanned += 1;
-      const row = messageMap.get(cursor);
-      if (!row) break;
       if (row.role === 'human' || row.role === 'ai') {
+        let text: string;
         try {
-          const text = await decodeStoredMessageText(row.content);
-          if (text) {
-            const additionalKwargs = await decodeStoredAdditionalKwargs(row);
-            const speaker = this.buildTurnSpeaker(row, text, additionalKwargs, payload);
-            window.push({
-              id: row.id,
-              role: row.role,
-              text: speaker.text,
-              speakerId: speaker.speakerId,
-              speakerName: speaker.speakerName,
-              ownerUserKey: speaker.ownerUserKey,
-              isTarget: speaker.isTarget,
-              attributionSource: speaker.attributionSource,
-            });
-          }
+          text = await decodeStoredMessageText(row.content);
         } catch (error) {
-          logger.warn('failed to decode stored message content for %s: %s', row.id, (error as Error).message);
+          throw asMemoryRuntimeError(error, 'extract', 'decode', 'memory_message_content_decode_failed');
+        }
+        if (text) {
+          const kwargs = await decodeStoredAdditionalKwargs(row);
+          const speaker = this.buildTurnSpeaker(row, text, kwargs, payload);
+          window.push({
+            id: row.id,
+            role: row.role,
+            text: speaker.text,
+            speakerId: speaker.speakerId,
+            speakerName: speaker.speakerName,
+            ownerUserKey: speaker.ownerUserKey,
+            isTarget: speaker.isTarget,
+            attributionSource: speaker.attributionSource,
+            parentId: row.parentId ?? null,
+            occurredAt,
+          });
         }
       }
       cursor = row.parentId ?? null;
@@ -849,939 +1557,2656 @@ export class MemoryStore {
     return window.reverse().slice(-maxMessages);
   }
 
-  async filterTombstonedTurns(userKey: string, turns: MemoryConversationTurn[]): Promise<MemoryConversationTurn[]> {
-    const tombstones = await this.database.get('memory_tombstone', { userKey }) as MemoryTombstoneRecord[];
-    const sourceIds = new Set(
-      tombstones
-        .filter((row) => row.memoryType === 'source' && row.sourceMessageId)
-        .map((row) => row.sourceMessageId as string),
+  async filterSuppressedTurns(
+    subjectKey: string,
+    contextKey: string,
+    turns: MemoryConversationTurn[],
+  ): Promise<MemoryConversationTurn[]> {
+    return this.filterSuppressedTurnsTx(
+      this.database,
+      subjectKey,
+      contextKey,
+      turns,
     );
-    return turns.filter((turn) => !sourceIds.has(turn.id));
   }
 
-  async writeCandidateBatch(input: {
-    address: MemoryAddress;
-    payload: ExtractJobPayload;
-    batchId: string;
-    candidates: ExtractedMemoryCandidate[];
+  private capturedAudienceForEvidence(
+    payload: ExtractWorkPayload,
+    messageId: string,
+  ): string[] | null {
+    const audience = this.capturedAudienceForMessage(payload, messageId);
+    if (!audience?.includes(payload.address.userKey)) return null;
+    return audience;
+  }
+
+  private capturedAudienceForMessage(
+    payload: ExtractWorkPayload,
+    messageId: string,
+  ): string[] | null {
+    const capture = payload.capturedAudiences.find(
+      (item) => item.messageId === messageId,
+    );
+    if (!capture) return null;
+    const audience = uniqueStrings(capture.audienceSubjectKeys);
+    return audience.length ? audience : null;
+  }
+
+  private async messageDescendsFrom(
+    database: MemoryDatabaseLike,
+    conversationId: string,
+    descendantMessageId: string,
+    ancestorMessageId: string,
+  ): Promise<boolean> {
+    const rows = await database.get('chatluna_message', {
+      conversationId,
+    }) as StoredMessageRecord[];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const visited = new Set<string>();
+    let messageId: string | null = descendantMessageId;
+    while (messageId) {
+      if (messageId === ancestorMessageId) return true;
+      if (visited.has(messageId)) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'read',
+          'memory_message_chain_cycle',
+          'Stored memory message chain contains a cycle.',
+        );
+      }
+      visited.add(messageId);
+      const row = byId.get(messageId);
+      if (!row) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'read',
+          'memory_message_chain_broken',
+          'Stored memory message chain is incomplete.',
+        );
+      }
+      messageId = row.parentId ?? null;
+    }
+    return false;
+  }
+
+  private evaluateAttribution(
+    candidate: ExtractedMemoryCandidate,
+    turns: readonly MemoryConversationTurn[],
+    payload: ExtractWorkPayload,
+  ): {
+      ok: true;
+      evidence: Array<{
+        turn: MemoryConversationTurn;
+        captureAudienceSubjectKeys: string[];
+      }>;
+    } | { ok: false; reasonCode: string } {
+    if (candidate.subject !== 'target_user') return { ok: false, reasonCode: `attribution_subject_${candidate.subject}` };
+    if (normalizeText(candidate.ownerSpeakerId) !== payload.targetSpeakerId) {
+      return { ok: false, reasonCode: 'attribution_owner_mismatch' };
+    }
+    const evidenceIds = uniqueStrings(candidate.evidenceMessageIds ?? []);
+    const declaredSpeakers = uniqueStrings(candidate.evidenceSpeakerIds ?? []);
+    if (!evidenceIds.length) return { ok: false, reasonCode: 'attribution_missing_evidence' };
+    if (declaredSpeakers.length !== 1 || declaredSpeakers[0] !== payload.targetSpeakerId) {
+      return { ok: false, reasonCode: 'attribution_speaker_mismatch' };
+    }
+    const byId = new Map(turns.map((turn) => [turn.id, turn]));
+    const evidence: Array<{
+      turn: MemoryConversationTurn;
+      captureAudienceSubjectKeys: string[];
+    }> = [];
+    for (const messageId of evidenceIds) {
+      const turn = byId.get(messageId);
+      if (!turn) return { ok: false, reasonCode: 'attribution_evidence_outside_window' };
+      if (
+        turn.role !== 'human'
+        || !turn.isTarget
+        || turn.speakerId !== payload.targetSpeakerId
+        || !TRUSTED_ATTRIBUTION_SOURCES.has(turn.attributionSource)
+      ) {
+        return { ok: false, reasonCode: 'attribution_evidence_untrusted' };
+      }
+      const captureAudienceSubjectKeys = this.capturedAudienceForEvidence(
+        payload,
+        messageId,
+      );
+      if (!captureAudienceSubjectKeys) {
+        return { ok: false, reasonCode: 'attribution_evidence_audience_missing' };
+      }
+      evidence.push({ turn, captureAudienceSubjectKeys });
+    }
+    return { ok: true, evidence };
+  }
+
+  private evaluateDomainAttribution(
+    candidate: ExtractedMemoryCandidate,
+    turns: readonly MemoryConversationTurn[],
+    payload: ExtractWorkPayload,
+  ): {
+      ok: true;
+      assertionType: 'groupArtifact' | 'assistantCommitment';
+      subjectType: 'group' | 'assistant';
+      subjectKey: string;
+      evidence: MemoryEvidenceInput[];
+      safeAudience: string[];
+    } | { ok: false; reasonCode: string } {
+    if (
+      candidate.candidateType !== 'fact'
+      || (candidate.subject !== 'group_shared' && candidate.subject !== 'assistant')
+    ) {
+      return { ok: false, reasonCode: 'candidate_invalid' };
+    }
+    if (candidate.sensitivity !== 'low') {
+      return { ok: false, reasonCode: 'quality' };
+    }
+    const evidenceIds = uniqueStrings(candidate.evidenceMessageIds ?? []);
+    const declaredSpeakers = uniqueStrings(candidate.evidenceSpeakerIds ?? []);
+    if (!evidenceIds.length) {
+      return { ok: false, reasonCode: 'attribution_missing_evidence' };
+    }
+    const byId = new Map(turns.map((turn) => [turn.id, turn]));
+    const evidence: MemoryEvidenceInput[] = [];
+
+    if (candidate.subject === 'group_shared') {
+      const groupId = normalizeText(
+        payload.address.groupId
+        ?? payload.address.channelId
+        ?? payload.address.rawContextId,
+      );
+      if (payload.address.channelType !== 'group' || !groupId) {
+        return { ok: false, reasonCode: 'candidate_invalid' };
+      }
+      if (normalizeText(candidate.ownerSpeakerId) !== 'group') {
+        return { ok: false, reasonCode: 'attribution_owner_mismatch' };
+      }
+      const actualSpeakers: string[] = [];
+      for (const messageId of evidenceIds) {
+        const turn = byId.get(messageId);
+        if (!turn) {
+          return { ok: false, reasonCode: 'attribution_evidence_outside_window' };
+        }
+        const speakerId = normalizeText(turn.speakerId);
+        const speakerKey = `${payload.address.platform}:user:${speakerId}`;
+        if (
+          turn.role !== 'human'
+          || turn.attributionSource !== 'additional_kwargs'
+          || !speakerId
+          || turn.ownerUserKey !== speakerKey
+        ) {
+          return { ok: false, reasonCode: 'attribution_evidence_untrusted' };
+        }
+        const captureAudienceSubjectKeys = this.capturedAudienceForMessage(
+          payload,
+          messageId,
+        );
+        if (
+          !captureAudienceSubjectKeys
+          || !captureAudienceSubjectKeys.includes(speakerKey)
+        ) {
+          return { ok: false, reasonCode: 'attribution_evidence_audience_missing' };
+        }
+        actualSpeakers.push(speakerId);
+        evidence.push({
+          messageId,
+          speakerId,
+          contextKey: payload.address.contextKey,
+          threadId: payload.address.conversationId,
+          captureAudienceSubjectKeys,
+          replyToMessageId: turn.parentId ?? null,
+          excerpt: turn.text,
+          occurredAt: turn.occurredAt ?? payload.address.observedAt,
+        });
+      }
+      if (serialize(uniqueStrings(actualSpeakers)) !== serialize(declaredSpeakers)) {
+        return { ok: false, reasonCode: 'attribution_speaker_mismatch' };
+      }
+      const safeAudience = intersectStringSets(
+        evidence.map((item) => item.captureAudienceSubjectKeys),
+      );
+      if (!safeAudience.length) {
+        return { ok: false, reasonCode: 'attribution_evidence_audience_missing' };
+      }
+      return {
+        ok: true,
+        assertionType: 'groupArtifact',
+        subjectType: 'group',
+        subjectKey: `${payload.address.platform}:group:${groupId}`,
+        evidence,
+        safeAudience,
+      };
+    }
+
+    if (normalizeText(candidate.ownerSpeakerId) !== payload.address.botSelfId) {
+      return { ok: false, reasonCode: 'attribution_owner_mismatch' };
+    }
+    if (
+      declaredSpeakers.length !== 1
+      || declaredSpeakers[0] !== payload.address.botSelfId
+    ) {
+      return { ok: false, reasonCode: 'attribution_speaker_mismatch' };
+    }
+    for (const messageId of evidenceIds) {
+      const turn = byId.get(messageId);
+      if (
+        !turn
+        || turn.role !== 'ai'
+        || turn.attributionSource !== 'assistant'
+        || turn.speakerId !== payload.address.botSelfId
+      ) {
+        return {
+          ok: false,
+          reasonCode: turn
+            ? 'attribution_evidence_untrusted'
+            : 'attribution_evidence_outside_window',
+        };
+      }
+      const parent = turn.parentId ? byId.get(turn.parentId) : null;
+      const actorSpeakerId = normalizeText(parent?.speakerId);
+      const actorKey = `${payload.address.platform}:user:${actorSpeakerId}`;
+      if (
+        !parent
+        || parent.role !== 'human'
+        || !actorSpeakerId
+        || parent.ownerUserKey !== actorKey
+        || !TRUSTED_ATTRIBUTION_SOURCES.has(parent.attributionSource)
+      ) {
+        return { ok: false, reasonCode: 'attribution_evidence_untrusted' };
+      }
+      const captureAudienceSubjectKeys = this.capturedAudienceForMessage(
+        payload,
+        parent.id,
+      );
+      if (
+        !captureAudienceSubjectKeys
+        || !captureAudienceSubjectKeys.includes(actorKey)
+      ) {
+        return { ok: false, reasonCode: 'attribution_evidence_audience_missing' };
+      }
+      evidence.push({
+        messageId,
+        speakerId: payload.address.botSelfId,
+        contextKey: payload.address.contextKey,
+        threadId: payload.address.conversationId,
+        captureAudienceSubjectKeys,
+        replyToMessageId: parent.id,
+        excerpt: turn.text,
+        occurredAt: turn.occurredAt ?? payload.address.observedAt,
+      });
+    }
+    const safeAudience = intersectStringSets(
+      evidence.map((item) => item.captureAudienceSubjectKeys),
+    );
+    if (!safeAudience.length) {
+      return { ok: false, reasonCode: 'attribution_evidence_audience_missing' };
+    }
+    return {
+      ok: true,
+      assertionType: 'assistantCommitment',
+      subjectType: 'assistant',
+      subjectKey: `${payload.address.platform}:bot:${payload.address.botSelfId}`,
+      evidence,
+      safeAudience,
+    };
+  }
+
+  private async appendAssertionTx(
+    database: MemoryDatabaseLike,
+    input: AppendAssertionInput,
+  ): Promise<MemoryV2HeadRecord> {
+    const duplicate = await database.get(MEMORY_LEDGER_TABLES.event, { idempotencyKey: input.idempotencyKey }) as MemoryV2EventRecord[];
+    if (duplicate.length) {
+      const [head] = await database.get(MEMORY_LEDGER_TABLES.head, { streamId: duplicate[0]!.streamId }) as MemoryV2HeadRecord[];
+      if (!head) {
+        throw new MemoryRuntimeError('extract', 'write', 'memory_idempotency_projection_missing', 'Existing memory event has no head projection.');
+      }
+      return head;
+    }
+    if (
+      !input.content.trim()
+      || !input.retrievalText.trim()
+      || input.evidence.length === 0
+      || input.evidence.some((evidence) => uniqueStrings(evidence.captureAudienceSubjectKeys).length === 0)
+    ) {
+      throw new MemoryRuntimeError('extract', 'validation', 'memory_assertion_invalid', 'Memory assertions require content, retrieval text, and evidence.');
+    }
+    if (
+      input.subjectType === 'user'
+      && input.evidence.some((evidence) => evidence.speakerId !== input.subjectKey.split(':').at(-1))
+    ) {
+      throw new MemoryRuntimeError('extract', 'validation', 'memory_assertion_speaker_conflict', 'Evidence speaker conflicts with the assertion subject.');
+    }
+    const streamId = input.streamId ?? randomUUID();
+    const existingHead = await database.get(MEMORY_LEDGER_TABLES.head, { streamId }) as MemoryV2HeadRecord[];
+    if (existingHead.length) {
+      throw new MemoryRuntimeError('extract', 'validation', 'memory_stream_exists', 'Memory stream already exists.');
+    }
+    const now = input.createdAt ?? Date.now();
+    const eventId = randomUUID();
+    const payloadId = randomUUID();
+    const content = input.content.trim();
+    const retrievalText = input.retrievalText.trim();
+    const contentHash = sha256(serialize([content, retrievalText]));
+    const generation = await this.streamGeneration(database, input.subjectKey, streamId);
+    const audienceContextKeys = uniqueStrings(input.audienceContextKeys);
+    let audienceSnapshots: Record<string, string[]>;
+    try {
+      audienceSnapshots = parseAudienceSnapshots(serialize(input.audienceSnapshots));
+    } catch (error) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_capture_audience_missing',
+        'Memory assertions require valid per-context capture audiences.',
+        { cause: error },
+      );
+    }
+    if (
+      input.audiencePolicy !== 'subjectAllContexts'
+      && audienceContextKeys.some((contextKey) => !audienceSnapshots[contextKey]?.length)
+    ) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_capture_audience_missing',
+        'Every memory audience context requires an immutable capture snapshot.',
+      );
+    }
+    const event: Omit<MemoryV2EventRecord, 'id'> = {
+      eventId,
+      streamId,
+      revision: 1,
+      eventType: 'asserted',
+      assertionType: input.assertionType,
+      subjectType: input.subjectType,
+      subjectKey: input.subjectKey,
+      actorKey: input.actorKey,
+      sourceContextKey: input.sourceContextKey,
+      audiencePolicy: input.audiencePolicy,
+      audienceContextKeys: serialize(audienceContextKeys),
+      audienceSnapshots: serialize(audienceSnapshots),
+      sensitivity: input.sensitivity,
+      payloadId,
+      causationId: input.causationId ?? null,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: now,
+    };
+    await database.create(MEMORY_LEDGER_TABLES.event, event);
+    await database.create(MEMORY_LEDGER_TABLES.payload, {
+      payloadId,
+      eventId,
+      payloadKind: 'assertion',
+      content,
+      retrievalText,
+      contentHash,
+      createdAt: now,
+    });
+    for (const evidence of input.evidence) {
+      let excerptPayloadId: string | null = null;
+      if (evidence.excerpt?.trim()) {
+        excerptPayloadId = randomUUID();
+        const excerpt = evidence.excerpt.trim();
+        await database.create(MEMORY_LEDGER_TABLES.payload, {
+          payloadId: excerptPayloadId,
+          eventId,
+          payloadKind: 'evidenceExcerpt',
+          content: excerpt,
+          retrievalText: null,
+          contentHash: sha256(excerpt),
+          createdAt: now,
+        });
+      }
+      await database.create(MEMORY_LEDGER_TABLES.evidence, {
+        evidenceId: randomUUID(),
+        eventId,
+        messageId: evidence.messageId,
+        speakerId: evidence.speakerId,
+        contextKey: evidence.contextKey,
+        threadId: evidence.threadId ?? null,
+        captureAudienceSubjectKeys: serialize(uniqueStrings(evidence.captureAudienceSubjectKeys)),
+        replyToMessageId: evidence.replyToMessageId ?? null,
+        excerptPayloadId,
+        occurredAt: evidence.occurredAt,
+      });
+    }
+    const head = await database.create(MEMORY_LEDGER_TABLES.head, {
+      streamId,
+      eventId,
+      revision: 1,
+      state: input.state,
+      assertionType: input.assertionType,
+      subjectType: input.subjectType,
+      subjectKey: input.subjectKey,
+      sourceContextKey: input.sourceContextKey,
+      audiencePolicy: input.audiencePolicy,
+      audienceContextKeys: serialize(audienceContextKeys),
+      audienceSnapshots: serialize(audienceSnapshots),
+      sensitivity: input.sensitivity,
+      payloadId,
+      contentHash,
+      importance: clamp01(input.importance),
+      confidence: clamp01(input.confidence),
+      validFrom: input.validFrom ?? null,
+      validUntil: input.validUntil ?? null,
+      expiresAt: input.expiresAt ?? null,
+      deletionGeneration: generation,
+      createdAt: now,
+      updatedAt: now,
+    }) as unknown as MemoryV2HeadRecord;
+    if (input.state === 'active') {
+      await this.searchIndex.insert(database, {
+        streamId,
+        eventId,
+        revision: 1,
+        contentHash,
+        canonicalText: retrievalText,
+      });
+      if (input.embeddingIdentity) {
+        const embedPayload: EmbeddingWorkPayload = {
+          streamId,
+          eventId,
+          revision: 1,
+          canonicalModel: input.embeddingIdentity.canonicalModel,
+          modelRevision: input.embeddingIdentity.modelRevision,
+          contentHash,
+        };
+        await this.queueWork(database, {
+          workKey: embeddingWorkKey('embed', embedPayload),
+          workType: 'embed',
+          subjectKey: input.subjectKey,
+          contextKey: input.sourceContextKey,
+          streamId,
+          payload: embedPayload,
+          inputHash: sha256(embeddingTuple(embedPayload)),
+          targetRevision: 1,
+          deletionGeneration: generation,
+        });
+      }
+    }
+    await this.writeAudit(database, {
+      idempotencyKey: `asserted:${input.idempotencyKey}`,
+      subjectKey: input.subjectKey,
+      contextKey: input.sourceContextKey,
+      eventType: input.state === 'active' ? 'assertion_activated' : 'assertion_pending_review',
+      streamId,
+      eventId,
+      workKey: input.auditWorkKey ?? null,
+      detail: {
+        assertionType: input.assertionType,
+        state: input.state,
+        evidenceCount: input.evidence.length,
+      },
+      createdAt: now,
+    });
+    return head;
+  }
+
+  async appendAssertion(input: AppendAssertionInput): Promise<MemoryV2HeadRecord> {
+    if (
+      input.subjectType !== 'user'
+      || (input.assertionType !== 'userAssertion' && input.assertionType !== 'episode')
+    ) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_user_assertion_domain_invalid',
+        'Automatic assertion ingestion only accepts user assertions and episodes.',
+      );
+    }
+    return this.unitOfWork.run('extract', (database) => this.appendAssertionTx(database, input));
+  }
+
+  private deterministicDomainEvidence(
+    input: DeterministicDomainMemoryInput,
+    domain: 'groupArtifact' | 'assistantCommitment',
+  ): {
+      evidence: MemoryEvidenceInput[];
+      audience: string[];
+      subjectKey: string;
+      laneKey: string;
+    } {
+    if (input.sensitivity !== 'low') {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_sensitivity_invalid',
+        'Deterministic domain ingestion only accepts low-sensitivity content.',
+      );
+    }
+    const evidenceMessageIds = uniqueStrings(input.evidenceMessageIds);
+    if (!evidenceMessageIds.length) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_evidence_missing',
+        'Deterministic domain ingestion requires evidence.',
+      );
+    }
+    const byId = new Map(input.turns.map((turn) => [turn.id, turn]));
+    if (byId.size !== input.turns.length) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_evidence_duplicate',
+        'Deterministic domain evidence message IDs must be unique.',
+      );
+    }
+    const selected = evidenceMessageIds.map((messageId) => byId.get(messageId));
+    if (selected.some((turn) => !turn)) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_evidence_outside_window',
+        'Deterministic domain evidence must exist in the supplied window.',
+      );
+    }
+    const captureByMessageId = new Map(
+      (input.capturedAudiences ?? []).map((capture) => [
+        capture.messageId,
+        uniqueStrings(capture.audienceSubjectKeys),
+      ]),
+    );
+    if (!captureByMessageId.size) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_audience_missing',
+        'Deterministic domain ingestion requires immutable per-message audience captures.',
+      );
+    }
+
+    let subjectKey: string;
+    const evidence: MemoryEvidenceInput[] = [];
+    if (domain === 'groupArtifact') {
+      const groupId = normalizeText(
+        input.address.groupId
+        ?? input.address.channelId
+        ?? input.address.rawContextId,
+      );
+      if (input.address.channelType !== 'group' || !groupId) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'validation',
+          'memory_group_artifact_context_invalid',
+          'Group artifacts require an immutable group context.',
+        );
+      }
+      subjectKey = `${input.address.platform}:group:${groupId}`;
+      for (const turn of selected as MemoryConversationTurn[]) {
+        const speakerId = normalizeText(turn.speakerId);
+        const speakerKey = speakerId
+          ? `${input.address.platform}:user:${speakerId}`
+          : null;
+        const capturedAudience = captureByMessageId.get(turn.id) ?? [];
+        if (
+          turn.role !== 'human'
+          || !speakerId
+          || !speakerKey
+          || turn.ownerUserKey !== speakerKey
+          || turn.attributionSource !== 'additional_kwargs'
+          || !capturedAudience.includes(speakerKey)
+        ) {
+          throw new MemoryRuntimeError(
+            'extract',
+            'validation',
+            'memory_group_artifact_evidence_untrusted',
+            'Every group artifact evidence message requires trusted speaker attribution.',
+          );
+        }
+        evidence.push({
+          messageId: turn.id,
+          speakerId,
+          contextKey: input.address.contextKey,
+          threadId: input.address.conversationId,
+          captureAudienceSubjectKeys: capturedAudience,
+          replyToMessageId: turn.parentId ?? null,
+          excerpt: turn.text,
+          occurredAt: turn.occurredAt ?? input.address.observedAt,
+        });
+      }
+    } else {
+      subjectKey = `${input.address.platform}:bot:${input.address.botSelfId}`;
+      for (const turn of selected as MemoryConversationTurn[]) {
+        const parent = turn.parentId ? byId.get(turn.parentId) : null;
+        const actorSpeakerId = normalizeText(parent?.speakerId);
+        const actorKey = `${input.address.platform}:user:${actorSpeakerId}`;
+        const capturedAudience = parent
+          ? captureByMessageId.get(parent.id) ?? []
+          : [];
+        if (
+          turn.role !== 'ai'
+          || turn.attributionSource !== 'assistant'
+          || !parent
+          || parent.role !== 'human'
+          || !actorSpeakerId
+          || parent.ownerUserKey !== actorKey
+          || !TRUSTED_ATTRIBUTION_SOURCES.has(parent.attributionSource)
+          || !capturedAudience.includes(actorKey)
+        ) {
+          throw new MemoryRuntimeError(
+            'extract',
+            'validation',
+            'memory_assistant_commitment_evidence_untrusted',
+            'Assistant commitments require assistant message evidence.',
+          );
+        }
+        evidence.push({
+          messageId: turn.id,
+          speakerId: input.address.botSelfId,
+          contextKey: input.address.contextKey,
+          threadId: input.address.conversationId,
+          captureAudienceSubjectKeys: capturedAudience,
+          replyToMessageId: parent.id,
+          excerpt: turn.text,
+          occurredAt: turn.occurredAt ?? input.address.observedAt,
+        });
+      }
+    }
+    const audience = intersectStringSets(
+      evidence.map((item) => item.captureAudienceSubjectKeys),
+    );
+    if (!audience.length) {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_audience_missing',
+        'Deterministic domain evidence audiences have no safe intersection.',
+      );
+    }
+
+    const guard = runDeterministicCaptureGuard({
+      candidateType: 'fact',
+      subject: domain === 'groupArtifact' ? 'group_shared' : 'assistant',
+      ownerSpeakerId: domain === 'groupArtifact' ? 'group' : input.address.botSelfId,
+      kind: 'plan',
+      topicKey: domain,
+      content: input.content,
+      keywords: [],
+      importance: input.importance,
+      confidence: input.confidence,
+      sensitivity: input.sensitivity,
+      evidenceMessageIds,
+      evidenceSpeakerIds: selected.map((turn) => (
+        domain === 'assistantCommitment'
+          ? input.address.botSelfId
+          : (turn as MemoryConversationTurn).speakerId!
+      )),
+    }, {
+      ...input.address,
+      currentAudienceSubjectKeys: audience,
+    }, this.policy);
+    if (guard.state !== 'active' || guard.sensitivity !== 'low') {
+      throw new MemoryRuntimeError(
+        'extract',
+        'validation',
+        'memory_domain_ingest_safety_rejected',
+        'Deterministic domain content did not pass the capture safety policy.',
+      );
+    }
+
+    const laneKey = `domain:${domain}:${subjectKey}:${input.address.contextKey}`;
+    return {
+      subjectKey,
+      audience,
+      laneKey,
+      evidence,
+    };
+  }
+
+  private async ingestDeterministicDomain(
+    domain: 'groupArtifact' | 'assistantCommitment',
+    input: DeterministicDomainMemoryInput,
+  ): Promise<DeterministicDomainMemoryResult> {
+    const resolved = this.deterministicDomainEvidence(input, domain);
+    const evidenceMessageIds = uniqueStrings(input.evidenceMessageIds);
+    const inputHash = sha256(serialize([
+      input.content.trim(),
+      input.retrievalText.trim(),
+      evidenceMessageIds,
+    ]));
+    const workKey = `domain-ingest:${sha256(serialize([
+      resolved.laneKey,
+      inputHash,
+    ]))}`;
+    const idempotencyKey = `domain:${domain}:${sha256(serialize([
+      resolved.laneKey,
+      evidenceMessageIds,
+      inputHash,
+    ]))}`;
+    const head = await this.unitOfWork.run('extract', async (database) => {
+      await this.assertEvidenceSourcesAvailable(database, resolved.evidence);
+      return this.appendAssertionTx(database, {
+        idempotencyKey,
+        assertionType: domain,
+        subjectType: domain === 'groupArtifact' ? 'group' : 'assistant',
+        subjectKey: resolved.subjectKey,
+        actorKey: `memory.domain.${domain}`,
+        sourceContextKey: input.address.contextKey,
+        audiencePolicy: input.address.channelType === 'group'
+          ? 'captureAudience'
+          : 'sourceContext',
+        audienceContextKeys: [input.address.contextKey],
+        audienceSnapshots: {
+          [input.address.contextKey]: resolved.audience,
+        },
+        sensitivity: input.sensitivity,
+        state: 'active',
+        content: input.content,
+        retrievalText: input.retrievalText,
+        importance: input.importance,
+        confidence: input.confidence,
+        validFrom: input.validFrom,
+        validUntil: input.validUntil,
+        expiresAt: input.expiresAt,
+        evidence: resolved.evidence,
+        embeddingIdentity: input.embeddingIdentity,
+        causationId: workKey,
+        auditWorkKey: workKey,
+        createdAt: input.createdAt,
+      });
+    });
+    return {
+      head,
+      laneKey: resolved.laneKey,
+      workKey,
+      idempotencyKey,
+    };
+  }
+
+  async ingestGroupArtifact(
+    input: DeterministicDomainMemoryInput,
+  ): Promise<DeterministicDomainMemoryResult> {
+    return this.ingestDeterministicDomain('groupArtifact', input);
+  }
+
+  async ingestAssistantCommitment(
+    input: DeterministicDomainMemoryInput,
+  ): Promise<DeterministicDomainMemoryResult> {
+    return this.ingestDeterministicDomain('assistantCommitment', input);
+  }
+
+  async finalizeExtraction(input: {
+    work: MemoryV2WorkRecord;
+    leaseToken: string;
+    payload: ExtractWorkPayload;
     turns: MemoryConversationTurn[];
-    messageIds: string[];
+    candidates: ExtractedMemoryCandidate[];
     providerRoute: MemoryOutputProtocolId;
     rawTextHash: string | null;
-  }): Promise<number> {
-    const messageIds = stringifyStringArray(input.messageIds);
-    const attributionByCandidate = input.candidates.map((candidate) => evaluateCandidateAttribution(
-      candidate,
-      input.turns,
-      input.payload.targetSpeakerId,
-    ));
-    const allEvidenceMessageIds = uniqueKeywords(attributionByCandidate.flatMap((item) => item.evidenceMessageIds));
-    const allEvidenceSpeakerIds = uniqueKeywords(attributionByCandidate.flatMap((item) => item.evidenceSpeakerIds));
-    await this.upsertMemorySource({
-      address: input.address,
-      payload: input.payload,
-      messageIds: input.messageIds,
-      evidenceMessageIds: allEvidenceMessageIds,
-      evidenceSpeakerIds: allEvidenceSpeakerIds,
-      rawTextHash: input.rawTextHash,
-    });
-    let pendingCount = 0;
-    for (let index = 0; index < input.candidates.length; index += 1) {
-      const candidate = input.candidates[index]!;
-      const attribution = attributionByCandidate[index]!;
-      const reviewStatus: MemoryCandidateReviewStatus = attribution.status === 'verified' ? 'pending' : 'rejected';
-      if (reviewStatus === 'pending') pendingCount += 1;
-      await this.database.create('memory_candidate', {
-        batchId: input.batchId,
-        candidateType: candidate.candidateType,
-        ownerUserKey: input.payload.ownerUserKey,
-        contextKey: input.address.contextKey,
-        conversationId: input.address.conversationId,
-        targetSpeakerId: input.payload.targetSpeakerId,
-        targetSpeakerName: input.payload.targetSpeakerName,
-        messageIds,
-        evidenceMessageIds: stringifyStringArray(attribution.evidenceMessageIds),
-        evidenceSpeakerIds: stringifyStringArray(attribution.evidenceSpeakerIds),
-        attributionStatus: attribution.status,
-        payload: serialize(candidate),
-        reviewStatus,
-        sensitivity: candidate.sensitivity,
-        suggestedVisibility: candidate.suggestedVisibility,
-        finalVisibility: null,
-        dropReason: attribution.reason ?? candidate.dropReason ?? null,
-        providerRoute: input.providerRoute,
-        rawTextHash: input.rawTextHash,
-        createdAt: Date.now(),
-        reviewedAt: reviewStatus === 'rejected' ? Date.now() : null,
-        consolidatedAt: reviewStatus === 'rejected' ? Date.now() : null,
-      });
-    }
-    await this.audit({
-      userKey: input.address.userKey,
-      contextKey: input.address.contextKey,
-      eventType: 'extract_candidates_written',
-      turnId: input.address.conversationId,
-      detail: {
-        batchId: input.batchId,
-        count: input.candidates.length,
-        providerRoute: input.providerRoute,
-        pendingCount,
-      },
-    });
-    return pendingCount;
-  }
-
-  private async upsertMemorySource(input: {
-    address: MemoryAddress;
-    payload: ExtractJobPayload;
-    messageIds: string[];
-    evidenceMessageIds: string[];
-    evidenceSpeakerIds: string[];
-    rawTextHash: string | null;
-  }): Promise<void> {
-    const sourceId = buildSourceId({
-      userKey: input.payload.ownerUserKey,
-      contextKey: input.address.contextKey,
-      conversationId: input.address.conversationId,
-      messageIds: input.messageIds,
-    });
-    const [existing] = await this.database.get('memory_source', { sourceId });
-    if (existing?.id) return;
-    await this.database.create('memory_source', {
-      sourceId,
-      ownerUserKey: input.payload.ownerUserKey,
-      contextKey: input.address.contextKey,
-      conversationId: input.address.conversationId,
-      targetSpeakerId: input.payload.targetSpeakerId,
-      targetSpeakerName: input.payload.targetSpeakerName,
-      messageIds: stringifyStringArray(input.messageIds) ?? '[]',
-      evidenceMessageIds: stringifyStringArray(input.evidenceMessageIds) ?? '[]',
-      evidenceSpeakerIds: stringifyStringArray(input.evidenceSpeakerIds) ?? '[]',
-      attributionStatus: input.evidenceMessageIds.length ? 'verified' : 'unknown',
-      roleWindowHash: input.rawTextHash ?? sourceId,
-      excerpt: null,
-      redactedExcerpt: null,
-      createdAt: Date.now(),
-    });
-  }
-
-  async listBatchCandidates(batchId: string): Promise<MemoryCandidateRecord[]> {
-    return await this.database.get('memory_candidate', { batchId }) as MemoryCandidateRecord[];
-  }
-
-  async getCandidateById(candidateId: number): Promise<MemoryCandidateRecord | null> {
-    const [row] = await this.database.get('memory_candidate', { id: candidateId }) as MemoryCandidateRecord[];
-    return row ?? null;
-  }
-
-  async applyPrivacyDecision(row: MemoryCandidateRecord, decision: PrivacyDecision): Promise<void> {
-    await this.database.set('memory_candidate', { id: row.id }, {
-      reviewStatus: decision.status,
-      sensitivity: decision.sensitivity,
-      finalVisibility: decision.visibility,
-      dropReason: decision.reason,
-      reviewedAt: Date.now(),
-    });
-    await this.audit({
-      userKey: row.ownerUserKey,
-      contextKey: row.contextKey,
-      eventType: 'privacy_review',
-      candidateId: row.id,
-      detail: decision,
-    });
-  }
-
-  async queueApprovedConsolidation(row: MemoryCandidateRecord, address: MemoryAddress): Promise<void> {
-    if (row.reviewStatus !== 'approved') return;
-    await this.queueJob('consolidate', { candidateId: row.id, address });
-  }
-
-  private async isTopicTombstoned(userKey: string, contextKey: string, topicKey: string | null): Promise<boolean> {
-    if (!topicKey) return false;
-    const rows = await this.database.get('memory_tombstone', { userKey }) as MemoryTombstoneRecord[];
-    return rows.some((row) => {
-      if (row.memoryType !== 'topic' && row.memoryType !== 'fact') return false;
-      if (row.topicKey !== topicKey) return false;
-      return !row.contextKey || row.contextKey === contextKey;
-    });
-  }
-
-  private async isCandidateSourceTombstoned(row: MemoryCandidateRecord): Promise<boolean> {
-    const tombstones = await this.database.get('memory_tombstone', { userKey: row.ownerUserKey }) as MemoryTombstoneRecord[];
-    const tombstonedSources = new Set(
-      tombstones
-        .filter((item) => item.memoryType === 'source' && item.sourceMessageId)
-        .map((item) => item.sourceMessageId as string),
-    );
-    return parseJsonArray(row.messageIds).some((id) => tombstonedSources.has(id));
-  }
-
-  async consolidateCandidate(row: MemoryCandidateRecord, address: MemoryAddress): Promise<{ type: MemoryRecordType; id: number } | null> {
-    if (row.reviewStatus !== 'approved' || row.consolidatedAt != null) return null;
-    if (row.attributionStatus !== 'verified') {
-      await this.database.set('memory_candidate', { id: row.id }, {
-        reviewStatus: 'rejected',
-        dropReason: row.dropReason ?? 'ownership_guard',
-        consolidatedAt: Date.now(),
-      });
-      return null;
-    }
-    if (await this.isCandidateSourceTombstoned(row)) {
-      await this.database.set('memory_candidate', { id: row.id }, {
-        reviewStatus: 'rejected',
-        dropReason: 'source_tombstoned',
-        consolidatedAt: Date.now(),
-      });
-      return null;
-    }
-    const candidate = toCandidatePayload(row);
-    if (!candidate || candidate.candidateType === 'drop') {
-      await this.database.set('memory_candidate', { id: row.id }, { consolidatedAt: Date.now() });
-      return null;
-    }
-
-    if (candidate.candidateType === 'fact') {
-      const topicKey = candidateTopic(candidate);
-      if (!topicKey || await this.isTopicTombstoned(row.ownerUserKey, row.contextKey, topicKey)) {
-        await this.database.set('memory_candidate', { id: row.id }, {
-          reviewStatus: 'rejected',
-          dropReason: 'topic_tombstoned',
-          consolidatedAt: Date.now(),
-        });
-        return null;
+    embeddingIdentity: MemoryEmbeddingIdentity | null;
+    maxLeaseRetries?: number;
+  }): Promise<{ active: number; pendingReview: number; rejected: number }> {
+    return this.runLeaseTransaction('extract', input.work, input.leaseToken, async (database, current) => {
+      const counts = { active: 0, pendingReview: 0, rejected: 0 };
+      const [cursor] = await database.get(MEMORY_LEDGER_TABLES.cursor, {
+        laneKey: current.laneKey,
+      }) as MemoryV2CursorRecord[];
+      const anchorCapture = input.payload.capturedAudiences.find(
+        (capture) => capture.messageId === input.payload.latestAnchorMessageId,
+      );
+      if (!anchorCapture) {
+        throw new MemoryRuntimeError(
+          'extract',
+          'validation',
+          'memory_extract_anchor_audience_missing',
+          'Extraction anchor has no immutable audience capture.',
+        );
       }
-      const result = await this.upsertFact(row, candidate, topicKey);
-      await this.database.set('memory_candidate', { id: row.id }, { consolidatedAt: Date.now() });
-      await this.createProvenance(row, 'fact', result.id);
-      await this.upsertProfileFromFactId(result.id);
-      await this.queueJob('embed', { recordType: 'fact', recordId: result.id });
-      await this.audit({
-        userKey: row.ownerUserKey,
-        contextKey: row.contextKey,
-        eventType: result.created ? 'fact_created' : 'fact_updated',
-        memoryType: 'fact',
-        memoryId: result.id,
-        candidateId: row.id,
-        turnId: address.conversationId,
+      if (
+        cursor?.lastMessageAt != null
+        && cursor.lastMessageAt >= anchorCapture.observedAt
+        && cursor.lastMessageId !== input.payload.latestAnchorMessageId
+      ) {
+        await this.cancelWorkTx(
+          database,
+          current,
+          'memory_extract_anchor_superseded',
+        );
+        return counts;
+      }
+      const turns = await this.filterSuppressedTurnsTx(
+        database,
+        input.payload.address.userKey,
+        input.payload.address.contextKey,
+        input.turns,
+      );
+      for (const [index, candidate] of input.candidates.entries()) {
+        const normalized = candidateContent(candidate);
+        if (
+          candidate.candidateType === 'fact'
+          && (candidate.subject === 'group_shared' || candidate.subject === 'assistant')
+        ) {
+          const attribution = this.evaluateDomainAttribution(
+            candidate,
+            turns,
+            input.payload,
+          );
+          const domainCapture = attribution.ok
+            ? runDeterministicCaptureGuard(candidate, {
+                ...input.payload.address,
+                currentAudienceSubjectKeys: attribution.safeAudience,
+              }, this.policy)
+            : null;
+          if (
+            !attribution.ok
+            || !normalized
+            || !domainCapture
+            || domainCapture.state !== 'active'
+            || domainCapture.sensitivity !== 'low'
+          ) {
+            counts.rejected += 1;
+            await this.writeAudit(database, {
+              idempotencyKey: `extract-rejected:${current.workKey}:${index}`,
+              subjectKey: input.payload.address.userKey,
+              contextKey: input.payload.address.contextKey,
+              eventType: 'candidate_rejected',
+              workKey: current.workKey,
+              detail: {
+                candidateIndex: index,
+                reasonCode: attribution.ok
+                  ? domainCapture?.reasonCode ?? 'quality'
+                  : attribution.reasonCode,
+              },
+            });
+            continue;
+          }
+          const evidenceMessageIds = attribution.evidence
+            .map((item) => item.messageId)
+            .sort();
+          await this.appendAssertionTx(database, {
+            idempotencyKey: `extract-domain:${sha256(serialize([
+              attribution.assertionType,
+              attribution.subjectKey,
+              input.payload.address.contextKey,
+              evidenceMessageIds,
+              normalized.content,
+              normalized.retrievalText,
+            ]))}`,
+            assertionType: attribution.assertionType,
+            subjectType: attribution.subjectType,
+            subjectKey: attribution.subjectKey,
+            actorKey: 'memory.extract',
+            sourceContextKey: input.payload.address.contextKey,
+            audiencePolicy: input.payload.address.channelType === 'group'
+              ? 'captureAudience'
+              : 'sourceContext',
+            audienceContextKeys: [input.payload.address.contextKey],
+            audienceSnapshots: {
+              [input.payload.address.contextKey]: attribution.safeAudience,
+            },
+            sensitivity: 'low',
+            state: 'active',
+            content: normalized.content,
+            retrievalText: normalized.retrievalText,
+            importance: candidate.importance,
+            confidence: candidate.confidence,
+            validFrom: toTimestamp(candidate.validFrom),
+            validUntil: toTimestamp(candidate.validUntil),
+            expiresAt: toTimestamp(candidate.expiresAt),
+            evidence: attribution.evidence,
+            embeddingIdentity: input.embeddingIdentity,
+            causationId: current.workKey,
+          });
+          counts.active += 1;
+          continue;
+        }
+        const attribution = this.evaluateAttribution(
+          candidate,
+          turns,
+          input.payload,
+        );
+        const safeAudience = attribution.ok
+          ? intersectStringSets(
+              attribution.evidence.map(
+                (evidence) => evidence.captureAudienceSubjectKeys,
+              ),
+            )
+          : [];
+        const userCapture = attribution.ok
+          ? runDeterministicCaptureGuard(candidate, {
+              ...input.payload.address,
+              currentAudienceSubjectKeys: safeAudience,
+            }, this.policy)
+          : null;
+        if (
+          !attribution.ok
+          || !userCapture
+          || userCapture.state === 'rejected'
+          || !normalized
+          || !safeAudience.includes(input.payload.address.userKey)
+        ) {
+          counts.rejected += 1;
+          await this.writeAudit(database, {
+            idempotencyKey: `extract-rejected:${current.workKey}:${index}`,
+            subjectKey: input.payload.address.userKey,
+            contextKey: input.payload.address.contextKey,
+            eventType: 'candidate_rejected',
+            workKey: current.workKey,
+            detail: {
+              candidateIndex: index,
+              reasonCode: attribution.ok
+                ? userCapture?.reasonCode ?? 'candidate_invalid'
+                : attribution.reasonCode,
+            },
+          });
+          continue;
+        }
+        const evidence: MemoryEvidenceInput[] = attribution.evidence.map((item) => ({
+          messageId: item.turn.id,
+          speakerId: item.turn.speakerId!,
+          contextKey: input.payload.address.contextKey,
+          threadId: input.payload.address.conversationId,
+          captureAudienceSubjectKeys: item.captureAudienceSubjectKeys,
+          replyToMessageId: item.turn.parentId ?? null,
+          excerpt: item.turn.text,
+          occurredAt: item.turn.occurredAt ?? input.payload.address.observedAt,
+        }));
+        const state = userCapture.state === 'pendingReview' ? 'pendingReview' : 'active';
+        const evidenceMessageIds = evidence
+          .map((item) => item.messageId)
+          .sort();
+        await this.appendAssertionTx(database, {
+          idempotencyKey: `extract:${sha256(serialize([
+            current.laneKey,
+            normalized.assertionType,
+            evidenceMessageIds,
+            normalized.content,
+          ]))}`,
+          assertionType: normalized.assertionType,
+          subjectType: 'user',
+          subjectKey: input.payload.address.userKey,
+          actorKey: 'memory.extract',
+          sourceContextKey: input.payload.address.contextKey,
+          audiencePolicy: userCapture.audiencePolicy,
+          audienceContextKeys: userCapture.audienceContextKeys,
+          audienceSnapshots: userCapture.audienceSnapshots,
+          sensitivity: userCapture.sensitivity,
+          state,
+          content: normalized.content,
+          retrievalText: normalized.retrievalText,
+          importance: candidate.importance,
+          confidence: candidate.confidence,
+          validFrom: toTimestamp(candidate.validFrom),
+          validUntil: toTimestamp(candidate.validUntil),
+          expiresAt: toTimestamp(candidate.expiresAt),
+          evidence,
+          embeddingIdentity: state === 'active' ? input.embeddingIdentity : null,
+          causationId: current.workKey,
+        });
+        counts[state] += 1;
+      }
+      const now = Date.now();
+      const cursorPatch = {
+        subjectKey: input.payload.address.userKey,
+        contextKey: input.payload.address.contextKey,
+        conversationId: input.payload.address.conversationId,
+        lastMessageId: input.payload.latestAnchorMessageId,
+        lastMessageAt: input.payload.address.observedAt,
+        lastWindowHash: input.rawTextHash,
+        discardBeforeMessageId: null,
+        updatedAt: now,
+      };
+      const previousCursorMessageId = cursor?.discardBeforeMessageId
+        ?? cursor?.lastMessageId
+        ?? null;
+      const canAdvanceCursor = !cursor
+        || previousCursorMessageId == null
+        || previousCursorMessageId === input.payload.latestAnchorMessageId
+        || await this.messageDescendsFrom(
+          database,
+          input.payload.address.conversationId,
+          input.payload.latestAnchorMessageId,
+          previousCursorMessageId,
+        );
+      if (
+        cursor
+        && canAdvanceCursor
+      ) {
+        await database.set(MEMORY_LEDGER_TABLES.cursor, {
+          id: cursor.id,
+          lastMessageId: cursor.lastMessageId,
+          lastMessageAt: cursor.lastMessageAt,
+        }, cursorPatch);
+      } else {
+        if (!cursor && canAdvanceCursor) {
+          await database.create(MEMORY_LEDGER_TABLES.cursor, {
+            laneKey: current.laneKey,
+            ...cursorPatch,
+            firstSeenAt: now,
+          });
+        }
+      }
+      await database.set(MEMORY_LEDGER_TABLES.work, { id: current.id }, {
+        status: 'succeeded',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        payload: '{}',
+        updatedAt: now,
+        completedAt: now,
       });
-      return { type: 'fact', id: result.id };
-    }
-
-    const result = await this.upsertEpisode(row, candidate);
-    await this.database.set('memory_candidate', { id: row.id }, { consolidatedAt: Date.now() });
-    await this.createProvenance(row, 'episode', result.id);
-    await this.queueJob('embed', { recordType: 'episode', recordId: result.id });
-    await this.audit({
-      userKey: row.ownerUserKey,
-      contextKey: row.contextKey,
-      eventType: result.created ? 'episode_created' : 'episode_updated',
-      memoryType: 'episode',
-      memoryId: result.id,
-      candidateId: row.id,
-      turnId: address.conversationId,
+      await this.writeAudit(database, {
+        idempotencyKey: `extract-finalized:${current.workKey}`,
+        subjectKey: current.subjectKey,
+        contextKey: current.contextKey,
+        eventType: 'extract_finalized',
+        workKey: current.workKey,
+        detail: {
+          providerRoute: input.providerRoute,
+          activeCount: counts.active,
+          pendingReviewCount: counts.pendingReview,
+          rejectedCount: counts.rejected,
+        },
+      });
+      return counts;
+    }, {
+      maxLeaseRetries: input.maxLeaseRetries,
     });
-    return { type: 'episode', id: result.id };
   }
 
-  private async upsertFact(
-    row: MemoryCandidateRecord,
-    candidate: ExtractedMemoryCandidate,
-    topicKey: string,
-  ): Promise<{ id: number; created: boolean }> {
-    const now = Date.now();
-    const kind = candidate.kind ?? 'preference';
-    const scope = resolveCandidateScope(row, candidate);
-    const memoryKey = buildMemoryKey({
-      userKey: row.ownerUserKey,
-      layer: 'fact',
-      kind,
-      topicKey,
-      scopeType: scope.scopeType,
-      scopeKey: scope.scopeKey,
+  async completeEmptyExtraction(
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    payload: ExtractWorkPayload,
+    rawTextHash: string | null,
+    maxLeaseRetries?: number,
+  ): Promise<void> {
+    await this.finalizeExtraction({
+      work,
+      leaseToken,
+      payload,
+      turns: [],
+      candidates: [],
+      providerRoute: 'native_chat_json_schema',
+      rawTextHash,
+      embeddingIdentity: null,
+      maxLeaseRetries,
     });
-    const [exactExisting] = await this.database.get('memory_fact', { memoryKey, archived: 0 }) as MemoryFactRecord[];
-    const legacyRows = exactExisting?.id
-      ? []
-      : await this.database.get('memory_fact', { ownerUserKey: row.ownerUserKey, kind, topicKey, archived: 0 }) as MemoryFactRecord[];
-    const existing = exactExisting?.id
-      ? exactExisting
-      : legacyRows.find((item) => {
-        if (!isActiveTemporalRow(item, now)) return false;
-        const key = item.memoryKey || buildStoredMemoryKey('fact', item);
-        return key === memoryKey;
-      }) ?? null;
-    const keywords = uniqueKeywords([
-      ...parseJsonArray(existing?.keywords),
-      ...candidate.keywords,
-    ]);
-    const patch = {
-      kind,
-      topicKey,
-      content: candidate.content?.trim() ?? '',
-      keywords: stringifyStringArray(keywords),
-      importance: Math.max(Number(existing?.importance ?? 0), Number(candidate.importance ?? 0.6)),
-      confidence: Math.max(Number(existing?.confidence ?? 0), Number(candidate.confidence ?? 0.8)),
-      sensitivity: row.sensitivity,
-      visibility: scope.visibility,
-      scopeType: scope.scopeType,
-      scopeKey: scope.scopeKey,
-      memoryKey,
-      sourceKind: scope.sourceKind,
-      sourceContextKey: row.contextKey,
-      targetSpeakerId: row.targetSpeakerId,
-      targetSpeakerName: row.targetSpeakerName,
-      evidenceMessageIds: row.evidenceMessageIds,
-      evidenceSpeakerIds: row.evidenceSpeakerIds,
-      attributionStatus: row.attributionStatus,
-      allowedContextKeys: null,
-      deniedContextKeys: null,
-      applicability: candidate.applicability ?? null,
-      validFrom: toTimestamp(candidate.validFrom),
-      validUntil: toTimestamp(candidate.validUntil),
-      expiresAt: toTimestamp(candidate.expiresAt),
-      invalidatedAt: null,
-      retrievalText: `${kind}:${topicKey}\n${candidate.content?.trim() ?? ''}`.trim(),
-      lastUsedReason: null,
-      lastSeenAt: now,
-      lastAccessedAt: existing?.lastAccessedAt ?? null,
-      embeddingModel: null,
-      embedding: null,
-      version: Number(existing?.version ?? 0) + 1,
-      archived: 0,
-      supersedesId: existing?.supersedesId ?? null,
-      conflictSetId: candidate.conflictHint ? slugify(candidate.conflictHint) : existing?.conflictSetId ?? null,
+  }
+
+  private async cancelWorkTx(
+    database: MemoryDatabaseLike,
+    work: MemoryV2WorkRecord,
+    reasonCode: string,
+    now = Date.now(),
+  ): Promise<void> {
+    await database.set(MEMORY_LEDGER_TABLES.work, { id: work.id }, {
+      status: 'cancelled',
+      leaseToken: null,
+      leaseExpiresAt: null,
+      payload: '{}',
+      lastErrorCode: reasonCode,
+      lastErrorStage: 'finalize',
+      upstreamStatus: null,
+      providerCode: null,
+      updatedAt: now,
+      completedAt: now,
+    });
+  }
+
+  private async cancelEmbeddingWorkForStream(
+    database: MemoryDatabaseLike,
+    streamId: string,
+    reasonCode: string,
+    now = Date.now(),
+  ): Promise<void> {
+    const work = await database.get(MEMORY_LEDGER_TABLES.work, {
+      streamId,
+    }) as MemoryV2WorkRecord[];
+    for (const row of work) {
+      if (
+        (row.workType === 'embed' || row.workType === 'backfill')
+        && (
+          row.status === 'pending'
+          || row.status === 'leased'
+          || row.status === 'failed'
+          || row.status === 'deadLetter'
+        )
+      ) {
+        await this.cancelWorkTx(database, row, reasonCode, now);
+      }
+    }
+  }
+
+  private async cancelObsoleteEmbeddingWork(
+    database: MemoryDatabaseLike,
+    activeByStream: ReadonlyMap<string, MemoryV2HeadRecord>,
+    identity: MemoryEmbeddingIdentity,
+    now = Date.now(),
+  ): Promise<void> {
+    const work = await database.get(MEMORY_LEDGER_TABLES.work, {}) as MemoryV2WorkRecord[];
+    for (const row of work) {
+      if (
+        (row.workType !== 'embed' && row.workType !== 'backfill')
+        || (
+          row.status !== 'pending'
+          && row.status !== 'leased'
+          && row.status !== 'failed'
+          && row.status !== 'deadLetter'
+        )
+      ) {
+        continue;
+      }
+      const payload = workPayload<EmbeddingWorkPayload>(row);
+      const head = activeByStream.get(payload.streamId);
+      const current = head
+        && payload.eventId === head.eventId
+        && payload.revision === head.revision
+        && payload.contentHash === head.contentHash
+        && payload.canonicalModel === identity.canonicalModel
+        && payload.modelRevision === identity.modelRevision
+        && row.deletionGeneration === head.deletionGeneration;
+      if (!current) {
+        await this.cancelWorkTx(
+          database,
+          row,
+          'memory_embedding_superseded',
+          now,
+        );
+      }
+    }
+  }
+
+  async resolveEmbeddingWork(
+    work: MemoryV2WorkRecord,
+    identity: MemoryEmbeddingIdentity,
+  ): Promise<EmbeddingWorkResolution> {
+    const payload = workPayload<EmbeddingWorkPayload>(work);
+    if (
+      payload.canonicalModel !== identity.canonicalModel
+      || payload.modelRevision !== identity.modelRevision
+    ) {
+      return {
+        state: 'obsolete',
+        reasonCode: 'memory_embedding_identity_superseded',
+      };
+    }
+    const [head] = await this.database.get(MEMORY_LEDGER_TABLES.head, {
+      streamId: payload.streamId,
+    }) as MemoryV2HeadRecord[];
+    if (
+      !head
+      || head.state !== 'active'
+      || head.eventId !== payload.eventId
+      || head.revision !== payload.revision
+      || head.contentHash !== payload.contentHash
+      || !head.payloadId
+    ) {
+      return {
+        state: 'obsolete',
+        reasonCode: 'memory_embedding_target_superseded',
+      };
+    }
+    const [storedPayload] = await this.database.get(MEMORY_LEDGER_TABLES.payload, {
+      payloadId: head.payloadId,
+    }) as MemoryV2PayloadRecord[];
+    if (!storedPayload || storedPayload.contentHash !== payload.contentHash || !storedPayload.retrievalText?.trim()) {
+      return {
+        state: 'obsolete',
+        reasonCode: 'memory_embedding_target_superseded',
+      };
+    }
+    return {
+      state: 'ready',
+      payload,
+      text: storedPayload.retrievalText,
     };
-    if (existing?.id) {
-      await this.database.set('memory_fact', { id: existing.id }, patch);
-      return { id: existing.id, created: false };
-    }
-    const created = await this.database.create('memory_fact', {
-      ownerUserKey: row.ownerUserKey,
-      firstSeenAt: now,
-      ...patch,
-    }) as unknown as MemoryFactRecord;
-    return { id: Number(created.id), created: true };
   }
 
-  private async upsertEpisode(
-    row: MemoryCandidateRecord,
-    candidate: ExtractedMemoryCandidate,
-  ): Promise<{ id: number; created: boolean }> {
-    const now = Date.now();
-    const scope = resolveCandidateScope(row, candidate);
-    const incomingKeywords = uniqueKeywords(candidate.keywords);
-    const incomingFingerprint = buildEpisodeFingerprint(candidate);
-    const memoryKey = buildMemoryKey({
-      userKey: row.ownerUserKey,
-      layer: 'episode',
-      kind: 'episode',
-      topicKey: incomingFingerprint,
-      scopeType: scope.scopeType,
-      scopeKey: scope.scopeKey,
-    });
-    const [exactExisting] = await this.database.get('memory_episode', { memoryKey, archived: 0 }) as MemoryEpisodeRecord[];
-    const existingRows = exactExisting?.id
-      ? []
-      : await this.database.get('memory_episode', { ownerUserKey: row.ownerUserKey, archived: 0 }) as MemoryEpisodeRecord[];
-    const existing = exactExisting?.id ? exactExisting : existingRows.find((episode) => {
-      if (!isActiveTemporalRow(episode, now)) return false;
-      const existingScopeType = resolveRecordScopeType(episode);
-      const existingScopeKey = resolveRecordScopeKey(episode);
-      if (existingScopeType !== scope.scopeType || existingScopeKey !== scope.scopeKey) return false;
-      const existingFingerprint = slugify([episode.title, ...parseJsonArray(episode.keywords).slice(0, 3)].join('-')) || 'episode';
-      return existingFingerprint === incomingFingerprint || keywordOverlap(parseJsonArray(episode.keywords), incomingKeywords) >= 0.6;
-    }) ?? null;
-    const keywords = uniqueKeywords([
-      ...parseJsonArray(existing?.keywords),
-      ...incomingKeywords,
-    ]);
-    const patch = {
-      title: candidate.title?.trim() ?? '',
-      summary: candidate.summary?.trim() ?? '',
-      keywords: stringifyStringArray(keywords),
-      importance: Math.max(Number(existing?.importance ?? 0), Number(candidate.importance ?? 0.62)),
-      confidence: Math.max(Number(existing?.confidence ?? 0), Number(candidate.confidence ?? 0.8)),
-      sensitivity: row.sensitivity,
-      visibility: scope.visibility,
-      scopeType: scope.scopeType,
-      scopeKey: scope.scopeKey,
-      memoryKey,
-      sourceKind: scope.sourceKind,
-      sourceContextKey: row.contextKey,
-      targetSpeakerId: row.targetSpeakerId,
-      targetSpeakerName: row.targetSpeakerName,
-      evidenceMessageIds: row.evidenceMessageIds,
-      evidenceSpeakerIds: row.evidenceSpeakerIds,
-      attributionStatus: row.attributionStatus,
-      allowedContextKeys: null,
-      deniedContextKeys: null,
-      applicability: candidate.applicability ?? null,
-      periodStart: toTimestamp(candidate.periodStart) ?? existing?.periodStart ?? null,
-      periodEnd: toTimestamp(candidate.periodEnd) ?? existing?.periodEnd ?? null,
-      validFrom: toTimestamp(candidate.validFrom),
-      validUntil: toTimestamp(candidate.validUntil),
-      expiresAt: toTimestamp(candidate.expiresAt),
-      invalidatedAt: null,
-      retrievalText: `${candidate.title?.trim() ?? ''}\n${candidate.summary?.trim() ?? ''}`.trim(),
-      lastUsedReason: null,
-      lastSeenAt: now,
-      lastAccessedAt: existing?.lastAccessedAt ?? null,
-      embeddingModel: null,
-      embedding: null,
-      version: Number(existing?.version ?? 0) + 1,
-      archived: 0,
-      supersedesId: existing?.supersedesId ?? null,
-      conflictSetId: candidate.conflictHint ? slugify(candidate.conflictHint) : existing?.conflictSetId ?? null,
-    };
-    if (existing?.id) {
-      await this.database.set('memory_episode', { id: existing.id }, patch);
-      return { id: existing.id, created: false };
-    }
-    const created = await this.database.create('memory_episode', {
-      ownerUserKey: row.ownerUserKey,
-      firstSeenAt: now,
-      ...patch,
-    }) as unknown as MemoryEpisodeRecord;
-    return { id: Number(created.id), created: true };
-  }
-
-  private async createProvenance(row: MemoryCandidateRecord, memoryType: MemoryRecordType, memoryId: number): Promise<void> {
-    await this.database.create('memory_provenance', {
-      ownerUserKey: row.ownerUserKey,
-      contextKey: row.contextKey,
-      memoryType,
-      memoryId,
-      candidateId: row.id,
-      conversationId: row.conversationId,
-      messageIds: row.messageIds,
-      evidenceMessageIds: row.evidenceMessageIds,
-      evidenceSpeakerIds: row.evidenceSpeakerIds,
-      attributionStatus: row.attributionStatus,
-      source: 'qqbot_memory',
-      createdAt: Date.now(),
+  async finalizeEmbedding(input: {
+    work: MemoryV2WorkRecord;
+    leaseToken: string;
+    payload: EmbeddingWorkPayload;
+    vector: number[];
+    maxLeaseRetries?: number;
+  }): Promise<void> {
+    await this.runLeaseTransaction('embed', input.work, input.leaseToken, async (database, current) => {
+      const [head] = await database.get(MEMORY_LEDGER_TABLES.head, {
+        streamId: input.payload.streamId,
+      }) as MemoryV2HeadRecord[];
+      if (
+        !head
+        || head.state !== 'active'
+        || head.eventId !== input.payload.eventId
+        || head.revision !== input.payload.revision
+        || head.contentHash !== input.payload.contentHash
+        || head.deletionGeneration !== current.deletionGeneration
+      ) {
+        const now = Date.now();
+        await this.cancelWorkTx(
+          database,
+          current,
+          'memory_embedding_target_superseded',
+          now,
+        );
+        await this.writeAudit(database, {
+          idempotencyKey: `embedding-superseded:${current.workKey}`,
+          subjectKey: current.subjectKey,
+          contextKey: current.contextKey,
+          eventType: 'embedding_work_superseded',
+          streamId: current.streamId,
+          workKey: current.workKey,
+          detail: {
+            reasonCode: 'memory_embedding_target_superseded',
+          },
+          createdAt: now,
+        });
+        return;
+      }
+      const embeddingKey = sha256(embeddingTuple(input.payload));
+      const existing = await database.get(MEMORY_LEDGER_TABLES.embedding, { embeddingKey }) as MemoryV2EmbeddingRecord[];
+      if (!existing.length) {
+        await database.create(MEMORY_LEDGER_TABLES.embedding, {
+          embeddingKey,
+          ...input.payload,
+          dimensions: input.vector.length,
+          vector: serialize(input.vector),
+          createdAt: Date.now(),
+        });
+      }
+      await database.set(MEMORY_LEDGER_TABLES.work, { id: current.id }, {
+        status: 'succeeded',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        payload: '{}',
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      });
+      await this.writeAudit(database, {
+        idempotencyKey: `embedding-finalized:${current.workKey}`,
+        subjectKey: current.subjectKey,
+        contextKey: current.contextKey,
+        eventType: 'embedding_finalized',
+        streamId: current.streamId,
+        workKey: current.workKey,
+        detail: {
+          canonicalModel: input.payload.canonicalModel,
+          modelRevision: input.payload.modelRevision,
+          dimensions: input.vector.length,
+        },
+      });
+    }, {
+      maxLeaseRetries: input.maxLeaseRetries,
     });
   }
 
-  private async upsertProfileFromFactId(factId: number): Promise<void> {
-    const [fact] = await this.database.get('memory_fact', { id: factId }) as MemoryFactRecord[];
-    if (!fact?.id || !isActiveTemporalRow(fact)) return;
-    if (Number(fact.importance ?? 0) < 0.72 || Number(fact.confidence ?? 0) < 0.72) return;
-    if (!fact.content?.trim()) return;
-
-    const scopeType = resolveRecordScopeType(fact);
-    if (scopeType === 'pending_review' || scopeType === 'archived') return;
-    const scopeKey = resolveRecordScopeKey(fact);
-    const profileKey = fact.topicKey;
-    const [existing] = await this.database.get('memory_profile', {
-      ownerUserKey: fact.ownerUserKey,
-      kind: fact.kind,
-      profileKey,
-      scopeType,
-      scopeKey,
-      archived: 0,
-    }) as MemoryProfileRecord[];
-    const now = Date.now();
-    const patch = {
-      profileKey,
-      kind: fact.kind,
-      content: fact.content.trim(),
-      valueJson: serialize({ sourceMemoryType: 'fact', sourceMemoryId: fact.id }),
-      importance: Number(fact.importance ?? 0),
-      confidence: Number(fact.confidence ?? 0),
-      sensitivity: fact.sensitivity,
-      scopeType,
-      scopeKey,
-      sourceContextKey: fact.sourceContextKey,
-      targetSpeakerId: fact.targetSpeakerId,
-      targetSpeakerName: fact.targetSpeakerName,
-      evidenceMessageIds: fact.evidenceMessageIds,
-      evidenceSpeakerIds: fact.evidenceSpeakerIds,
-      attributionStatus: fact.attributionStatus,
-      allowedContextKeys: fact.allowedContextKeys,
-      deniedContextKeys: fact.deniedContextKeys,
-      validFrom: fact.validFrom,
-      validUntil: fact.validUntil,
-      expiresAt: fact.expiresAt,
-      lastSeenAt: now,
-      lastAccessedAt: existing?.lastAccessedAt ?? null,
-      version: Number(existing?.version ?? 0) + 1,
-      archived: 0,
-      supersedesId: existing?.supersedesId ?? null,
-      conflictSetId: fact.conflictSetId ?? existing?.conflictSetId ?? null,
-    };
-    if (existing?.id) {
-      await this.database.set('memory_profile', { id: existing.id }, patch);
-      return;
-    }
-    await this.database.create('memory_profile', {
-      ownerUserKey: fact.ownerUserKey,
-      firstSeenAt: now,
-      ...patch,
+  async cancelWork(
+    work: MemoryV2WorkRecord,
+    leaseToken: string,
+    reasonCode: string,
+  ): Promise<void> {
+    await this.runLeaseTransaction(work.workType === 'extract' ? 'extract' : 'embed', work, leaseToken, async (database, current) => {
+      await this.cancelWorkTx(database, current, reasonCode);
+    }, {
+      allowExpired: true,
     });
   }
 
-  async resolveEmbedJob(job: MemoryJobRecord): Promise<{ payload: EmbedJobPayload; text: string } | null> {
-    const payload = this.parseJobPayload<EmbedJobPayload>(job);
-    if (!payload || (payload.recordType !== 'fact' && payload.recordType !== 'episode') || !payload.recordId) return null;
-    if (payload.recordType === 'fact') {
-      const [row] = await this.database.get('memory_fact', { id: payload.recordId }) as MemoryFactRecord[];
-      if (!row?.id || row.archived === 1) return null;
-      return { payload, text: row.retrievalText?.trim() || buildRetrievalText('fact', row) };
-    }
-    const [row] = await this.database.get('memory_episode', { id: payload.recordId }) as MemoryEpisodeRecord[];
-    if (!row?.id || row.archived === 1) return null;
-    return { payload, text: row.retrievalText?.trim() || buildRetrievalText('episode', row) };
-  }
+  async queueBackfill(identity: MemoryEmbeddingIdentity): Promise<number> {
+    return this.unitOfWork.run('backfill', async (database) => {
+      const heads = await database.get(MEMORY_LEDGER_TABLES.head, {}) as MemoryV2HeadRecord[];
+      const activeByStream = new Map(
+        heads.filter((head) => head.state === 'active').map((head) => [head.streamId, head]),
+      );
+      await this.cancelObsoleteEmbeddingWork(
+        database,
+        activeByStream,
+        identity,
+      );
+      const projections = await this.searchIndex.list(database);
+      for (const projection of projections) {
+        if (!activeByStream.has(projection.streamId)) {
+          await this.searchIndex.remove(database, projection.streamId);
+        }
+      }
+      const embeddings = await database.get(
+        MEMORY_LEDGER_TABLES.embedding,
+        {},
+      ) as MemoryV2EmbeddingRecord[];
+      for (const embedding of embeddings) {
+        const head = activeByStream.get(embedding.streamId);
+        if (
+          !head
+          || embedding.eventId !== head.eventId
+          || embedding.revision !== head.revision
+          || embedding.contentHash !== head.contentHash
+          || embedding.canonicalModel !== identity.canonicalModel
+          || embedding.modelRevision !== identity.modelRevision
+        ) {
+          await database.remove(MEMORY_LEDGER_TABLES.embedding, { id: embedding.id });
+        }
+      }
 
-  async applyEmbedding(payload: EmbedJobPayload, model: string, embedding: number[]): Promise<void> {
-    const table = payload.recordType === 'fact' ? 'memory_fact' : 'memory_episode';
-    await this.database.set(table, { id: payload.recordId }, {
-      embeddingModel: model,
-      embedding: stringifyEmbedding(embedding),
+      let queued = 0;
+      for (const head of activeByStream.values()) {
+        if (!head.payloadId || !head.contentHash) continue;
+        const [assertionPayload] = await database.get(MEMORY_LEDGER_TABLES.payload, {
+          payloadId: head.payloadId,
+          payloadKind: 'assertion',
+        }) as MemoryV2PayloadRecord[];
+        const canonicalText = assertionPayload?.retrievalText ?? assertionPayload?.content ?? '';
+        const currentProjection = await this.searchIndex.get(database, head.streamId);
+        if (
+          !assertionPayload
+          || assertionPayload.contentHash !== head.contentHash
+          || !canonicalText.trim()
+        ) {
+          if (currentProjection.length) {
+            await this.searchIndex.remove(database, head.streamId);
+          }
+          await database.remove(MEMORY_LEDGER_TABLES.embedding, { streamId: head.streamId });
+          continue;
+        }
+        if (
+          currentProjection.length !== 1
+          || !memoryLexicalProjectionMatches(currentProjection[0]!, {
+            streamId: head.streamId,
+            eventId: head.eventId,
+            revision: head.revision,
+            contentHash: head.contentHash,
+            canonicalText,
+          })
+        ) {
+          await this.searchIndex.remove(database, head.streamId);
+          await this.searchIndex.insert(database, {
+            streamId: head.streamId,
+            eventId: head.eventId,
+            revision: head.revision,
+            contentHash: head.contentHash,
+            canonicalText,
+          });
+        }
+
+        const currentEmbedding = await database.get(MEMORY_LEDGER_TABLES.embedding, {
+          streamId: head.streamId,
+          eventId: head.eventId,
+          revision: head.revision,
+          canonicalModel: identity.canonicalModel,
+          modelRevision: identity.modelRevision,
+          contentHash: head.contentHash,
+        });
+        if (currentEmbedding.length) continue;
+        const payload: EmbeddingWorkPayload = {
+          streamId: head.streamId,
+          eventId: head.eventId,
+          revision: head.revision,
+          canonicalModel: identity.canonicalModel,
+          modelRevision: identity.modelRevision,
+          contentHash: head.contentHash,
+        };
+        const liveTargetWork = (
+          await database.get(MEMORY_LEDGER_TABLES.work, {
+            streamId: head.streamId,
+          }) as MemoryV2WorkRecord[]
+        ).some((row) => {
+          if (
+            (row.workType !== 'embed' && row.workType !== 'backfill')
+            || (row.status !== 'pending' && row.status !== 'leased')
+          ) {
+            return false;
+          }
+          const workTarget = workPayload<EmbeddingWorkPayload>(row);
+          return embeddingTuple(workTarget) === embeddingTuple(payload);
+        });
+        if (liveTargetWork) continue;
+        const inserted = await this.queueWork(database, {
+          workKey: embeddingWorkKey('backfill', payload),
+          workType: 'backfill',
+          subjectKey: head.subjectKey,
+          contextKey: head.sourceContextKey,
+          streamId: head.streamId,
+          payload,
+          inputHash: sha256(embeddingTuple(payload)),
+          targetRevision: head.revision,
+          deletionGeneration: head.deletionGeneration,
+        });
+        if (inserted) {
+          queued += 1;
+          continue;
+        }
+        const [existing] = await database.get(MEMORY_LEDGER_TABLES.work, {
+          workKey: embeddingWorkKey('backfill', payload),
+        }) as MemoryV2WorkRecord[];
+        if (existing && existing.status !== 'pending' && existing.status !== 'leased') {
+          const now = Date.now();
+          await database.set(MEMORY_LEDGER_TABLES.work, { id: existing.id }, {
+            workType: 'backfill',
+            status: 'pending',
+            subjectKey: head.subjectKey,
+            contextKey: head.sourceContextKey,
+            streamId: head.streamId,
+            laneKey: null,
+            payload: serialize(payload),
+            inputHash: sha256(embeddingTuple(payload)),
+            targetRevision: head.revision,
+            deletionGeneration: head.deletionGeneration,
+            retryCount: 0,
+            nextRunAt: now,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            lastErrorCode: null,
+            lastErrorStage: null,
+            upstreamStatus: null,
+            providerCode: null,
+            updatedAt: now,
+            completedAt: null,
+          });
+          queued += 1;
+        }
+      }
+      return queued;
     });
   }
 
-  async listFactsForUser(userKey: string): Promise<MemoryFactRecord[]> {
-    return await this.database.get('memory_fact', { ownerUserKey: userKey, archived: 0 }) as MemoryFactRecord[];
-  }
-
-  async listEpisodesForUser(userKey: string): Promise<MemoryEpisodeRecord[]> {
-    return await this.database.get('memory_episode', { ownerUserKey: userKey, archived: 0 }) as MemoryEpisodeRecord[];
-  }
-
-  async listProfilesForUser(userKey: string): Promise<MemoryProfileRecord[]> {
-    return await this.database.get('memory_profile', { ownerUserKey: userKey, archived: 0 }) as MemoryProfileRecord[];
-  }
-
-  private dedupeRowsById<T extends { id: number }>(rows: T[]): T[] {
-    const byId = new Map<number, T>();
-    for (const row of rows) byId.set(row.id, row);
-    return [...byId.values()];
-  }
-
-  private async listScopedRows<T extends {
-    id: number;
-    ownerUserKey: string;
-    visibility: MemoryVisibility;
-    scopeType?: MemoryScopeType | string | null;
-    scopeKey?: string | null;
-    sensitivity: MemorySensitivity;
-    archived: number;
-    sourceContextKey: string;
-    allowedContextKeys: string | null;
-    deniedContextKeys: string | null;
-    validUntil?: number | null;
-    expiresAt?: number | null;
-    invalidatedAt?: number | null;
-  }>(
-    table: string,
+  async listForContext(
     address: MemoryAddress,
-    now: number,
-  ): Promise<T[]> {
-    const scopedQueries: Record<string, unknown>[] = [
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'owner_all_contexts' },
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'source_context_only', scopeKey: address.contextKey },
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'allowed_contexts' },
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'denied_contexts' },
-    ];
-    if (address.channelType === 'direct') {
-      scopedQueries.push({ ownerUserKey: address.userKey, archived: 0, scopeType: 'dm_only' });
+    identity: MemoryEmbeddingIdentity | null,
+    now = Date.now(),
+    query = '',
+  ): Promise<MemoryLedgerItem[]> {
+    const heads = await this.database.get(MEMORY_LEDGER_TABLES.head, { state: 'active' }) as MemoryV2HeadRecord[];
+    const visible = heads.filter((head) => this.policy.canRecall({
+      ...head,
+      audienceContextKeys: parseAudienceContextKeys(head.audienceContextKeys),
+      audienceSnapshots: parseAudienceSnapshots(head.audienceSnapshots),
+    }, address, now));
+    const items: MemoryLedgerItem[] = [];
+    for (const head of visible) {
+      if (!head.payloadId || !head.contentHash) continue;
+      const [payload] = await this.database.get(MEMORY_LEDGER_TABLES.payload, { payloadId: head.payloadId }) as MemoryV2PayloadRecord[];
+      const evidence = payload
+        ? await this.database.get(MEMORY_LEDGER_TABLES.evidence, { eventId: payload.eventId }) as MemoryV2EvidenceRecord[]
+        : [];
+      const projections = await this.searchIndex.get(this.database, head.streamId);
+      const canonicalText = payload?.retrievalText ?? payload?.content ?? '';
+      if (
+        !payload
+        || payload.contentHash !== head.contentHash
+        || !evidence.length
+        || projections.length !== 1
+        || !memoryLexicalProjectionMatches(projections[0]!, {
+          streamId: head.streamId,
+          eventId: head.eventId,
+          revision: head.revision,
+          contentHash: head.contentHash,
+          canonicalText,
+        })
+      ) {
+        continue;
+      }
+      let embedding: MemoryV2EmbeddingRecord | null = null;
+      if (identity) {
+        [embedding] = await this.database.get(MEMORY_LEDGER_TABLES.embedding, {
+          streamId: head.streamId,
+          revision: head.revision,
+          canonicalModel: identity.canonicalModel,
+          modelRevision: identity.modelRevision,
+          contentHash: head.contentHash,
+        }) as MemoryV2EmbeddingRecord[];
+      }
+      items.push({
+        streamId: head.streamId,
+        revision: head.revision,
+        assertionType: head.assertionType,
+        subjectType: head.subjectType,
+        subjectKey: head.subjectKey,
+        sourceContextKey: head.sourceContextKey,
+        audiencePolicy: head.audiencePolicy,
+        audienceContextKeys: parseAudienceContextKeys(head.audienceContextKeys),
+        audienceSnapshots: parseAudienceSnapshots(head.audienceSnapshots),
+        sensitivity: head.sensitivity,
+        state: head.state,
+        content: payload.content,
+        retrievalText: payload.retrievalText ?? payload.content,
+        contentHash: payload.contentHash,
+        importance: head.importance,
+        confidence: head.confidence,
+        validFrom: head.validFrom,
+        validUntil: head.validUntil,
+        expiresAt: head.expiresAt,
+        embeddingModel: embedding?.canonicalModel ?? null,
+        embeddingModelRevision: embedding?.modelRevision ?? null,
+        embedding: embedding ? parseVector(embedding.vector) : null,
+        ftsScore: null,
+        evidence,
+        updatedAt: head.updatedAt,
+      });
     }
+    const ftsScores = query.trim()
+      ? await this.searchIndex.search(
+          this.database,
+          query,
+          items.map((item) => item.streamId),
+          Math.max(100, items.length),
+        )
+      : new Map<string, number>();
+    for (const item of items) item.ftsScore = ftsScores.get(item.streamId) ?? null;
+    return items.sort((left, right) => right.updatedAt - left.updatedAt || left.streamId.localeCompare(right.streamId));
+  }
 
-    const scopedRows = (await Promise.all(scopedQueries.map((query) => this.database.get(table, query) as Promise<T[]>))).flat();
-    return this.dedupeRowsById(scopedRows).filter((row) => {
-      const scopeType = resolveRecordScopeType(row);
-      const allowedContextKeys = parseAccessContextKeyList(row.allowedContextKeys);
-      const deniedContextKeys = parseAccessContextKeyList(row.deniedContextKeys);
-      if (scopeType === 'allowed_contexts' && allowedContextKeys == null) return false;
-      if (scopeType === 'denied_contexts' && deniedContextKeys == null) return false;
+  async listForOwner(
+    address: MemoryAddress,
+    privateExport = false,
+    now = Date.now(),
+  ): Promise<MemoryLedgerItem[]> {
+    const heads = await this.database.get(MEMORY_LEDGER_TABLES.head, { subjectKey: address.userKey }) as MemoryV2HeadRecord[];
+    const items: MemoryLedgerItem[] = [];
+    for (const head of heads) {
+      const audienceContextKeys = parseAudienceContextKeys(head.audienceContextKeys);
+      const audienceSnapshots = parseAudienceSnapshots(head.audienceSnapshots);
+      if (!this.policy.canList({
+        ...head,
+        audienceContextKeys,
+        audienceSnapshots,
+      }, address, privateExport, now)) continue;
+      if (!head.payloadId || !head.contentHash) continue;
+      const [payload] = await this.database.get(MEMORY_LEDGER_TABLES.payload, { payloadId: head.payloadId }) as MemoryV2PayloadRecord[];
+      if (!payload) continue;
+      const evidence = await this.database.get(MEMORY_LEDGER_TABLES.evidence, { eventId: payload.eventId }) as MemoryV2EvidenceRecord[];
+      items.push({
+        streamId: head.streamId,
+        revision: head.revision,
+        assertionType: head.assertionType,
+        subjectType: head.subjectType,
+        subjectKey: head.subjectKey,
+        sourceContextKey: head.sourceContextKey,
+        audiencePolicy: head.audiencePolicy,
+        audienceContextKeys,
+        audienceSnapshots,
+        sensitivity: head.sensitivity,
+        state: head.state,
+        content: payload.content,
+        retrievalText: payload.retrievalText ?? payload.content,
+        contentHash: payload.contentHash,
+        importance: head.importance,
+        confidence: head.confidence,
+        validFrom: head.validFrom,
+        validUntil: head.validUntil,
+        expiresAt: head.expiresAt,
+        embeddingModel: null,
+        embeddingModelRevision: null,
+        embedding: null,
+        ftsScore: null,
+        evidence,
+        updatedAt: head.updatedAt,
+      });
+    }
+    return items.sort((left, right) => right.updatedAt - left.updatedAt || left.streamId.localeCompare(right.streamId));
+  }
 
-      return isMemoryVisibleInContext({
-        visibility: row.visibility,
-        scopeType: row.scopeType,
-        scopeKey: row.scopeKey ?? null,
-        sensitivity: row.sensitivity,
-        archived: row.archived,
-        sourceContextKey: row.sourceContextKey,
-        allowedContextKeys: allowedContextKeys ?? [],
-        deniedContextKeys: deniedContextKeys ?? [],
-        address,
-        now,
-        validUntil: row.validUntil ?? null,
-        expiresAt: row.expiresAt ?? null,
-        invalidatedAt: row.invalidatedAt ?? null,
+  async review(input: {
+    streamId: string;
+    actor: { userKey: string; isDirect: boolean; isAdmin?: boolean };
+    decision: 'approve' | 'reject';
+    embeddingIdentity?: MemoryEmbeddingIdentity | null;
+  }): Promise<void> {
+    await this.unitOfWork.run('review', async (database) => {
+      const [head] = await database.get(MEMORY_LEDGER_TABLES.head, { streamId: input.streamId }) as MemoryV2HeadRecord[];
+      if (!head) {
+        throw new MemoryRuntimeError('review', 'validation', 'memory_stream_not_found', 'Memory stream does not exist.');
+      }
+      this.policy.assertCanReview({
+        state: head.state,
+        subjectType: head.subjectType,
+        subjectKey: head.subjectKey,
+      }, input.actor);
+      const now = Date.now();
+      const revision = head.revision + 1;
+      const eventId = randomUUID();
+      const state = input.decision === 'approve' ? 'active' : 'archived';
+      await database.create(MEMORY_LEDGER_TABLES.event, {
+        eventId,
+        streamId: head.streamId,
+        revision,
+        eventType: input.decision === 'approve' ? 'reviewed' : 'archived',
+        assertionType: head.assertionType,
+        subjectType: head.subjectType,
+        subjectKey: head.subjectKey,
+        actorKey: input.actor.isAdmin ? 'admin' : input.actor.userKey,
+        sourceContextKey: head.sourceContextKey,
+        audiencePolicy: head.audiencePolicy,
+        audienceContextKeys: head.audienceContextKeys,
+        audienceSnapshots: head.audienceSnapshots,
+        sensitivity: head.sensitivity,
+        payloadId: input.decision === 'approve' ? head.payloadId : null,
+        causationId: head.eventId,
+        idempotencyKey: `review:${head.streamId}:${revision}:${input.decision}`,
+        createdAt: now,
+      });
+      if (input.decision === 'approve') {
+        const [payload] = await database.get(MEMORY_LEDGER_TABLES.payload, { payloadId: head.payloadId }) as MemoryV2PayloadRecord[];
+        if (!payload?.retrievalText || payload.contentHash !== head.contentHash) {
+          throw new MemoryRuntimeError('review', 'validation', 'memory_review_payload_missing', 'Pending memory payload is unavailable.');
+        }
+        await this.searchIndex.insert(database, {
+          streamId: head.streamId,
+          eventId,
+          revision,
+          contentHash: payload.contentHash,
+          canonicalText: payload.retrievalText,
+        });
+        if (input.embeddingIdentity) {
+          const embedPayload: EmbeddingWorkPayload = {
+            streamId: head.streamId,
+            eventId,
+            revision,
+            canonicalModel: input.embeddingIdentity.canonicalModel,
+            modelRevision: input.embeddingIdentity.modelRevision,
+            contentHash: payload.contentHash,
+          };
+          await this.queueWork(database, {
+            workKey: embeddingWorkKey('embed', embedPayload),
+            workType: 'embed',
+            subjectKey: head.subjectKey,
+            contextKey: head.sourceContextKey,
+            streamId: head.streamId,
+            payload: embedPayload,
+            inputHash: sha256(embeddingTuple(embedPayload)),
+            targetRevision: revision,
+            deletionGeneration: head.deletionGeneration,
+          });
+        }
+      } else {
+        await this.clearStreamContent(database, head.streamId);
+      }
+      await database.set(MEMORY_LEDGER_TABLES.head, { id: head.id }, {
+        eventId,
+        revision,
+        state,
+        payloadId: input.decision === 'approve' ? head.payloadId : null,
+        contentHash: input.decision === 'approve' ? head.contentHash : null,
+        updatedAt: now,
+      });
+      await this.writeAudit(database, {
+        idempotencyKey: `review-audit:${head.streamId}:${revision}`,
+        subjectKey: head.subjectKey,
+        contextKey: head.sourceContextKey,
+        eventType: input.decision === 'approve' ? 'review_approved' : 'review_rejected',
+        streamId: head.streamId,
+        eventId,
+        detail: { reviewer: input.actor.isAdmin ? 'admin' : 'subject' },
       });
     });
   }
 
-  async listFactsForContext(address: MemoryAddress, now = Date.now()): Promise<MemoryFactRecord[]> {
-    return this.listScopedRows<MemoryFactRecord>('memory_fact', address, now);
-  }
-
-  async listEpisodesForContext(address: MemoryAddress, now = Date.now()): Promise<MemoryEpisodeRecord[]> {
-    return this.listScopedRows<MemoryEpisodeRecord>('memory_episode', address, now);
-  }
-
-  async listProfilesForContext(address: MemoryAddress, now = Date.now()): Promise<MemoryProfileRecord[]> {
-    const scopedQueries: Record<string, unknown>[] = [
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'owner_all_contexts' },
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'source_context_only', scopeKey: address.contextKey },
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'allowed_contexts' },
-      { ownerUserKey: address.userKey, archived: 0, scopeType: 'denied_contexts' },
-    ];
-    if (address.channelType === 'direct') {
-      scopedQueries.push({ ownerUserKey: address.userKey, archived: 0, scopeType: 'dm_only' });
-    }
-    const rows = (await Promise.all(scopedQueries.map((query) => this.database.get('memory_profile', query) as Promise<MemoryProfileRecord[]>))).flat();
-    return this.dedupeRowsById(rows).filter((row) => {
-      if (Number(row.importance ?? 0) < 0.72 || Number(row.confidence ?? 0) < 0.72) return false;
-      const scopeType = isMemoryScopeType(row.scopeType) ? row.scopeType : 'pending_review';
-      const allowedContextKeys = parseAccessContextKeyList(row.allowedContextKeys);
-      const deniedContextKeys = parseAccessContextKeyList(row.deniedContextKeys);
-      if (scopeType === 'allowed_contexts' && allowedContextKeys == null) return false;
-      if (scopeType === 'denied_contexts' && deniedContextKeys == null) return false;
-
-      return isMemoryVisibleInContext({
-        visibility: visibilityFromScopeType(scopeType),
-        scopeType,
-        scopeKey: row.scopeKey,
-        sensitivity: row.sensitivity,
-        archived: row.archived,
-        sourceContextKey: row.sourceContextKey,
-        allowedContextKeys: allowedContextKeys ?? [],
-        deniedContextKeys: deniedContextKeys ?? [],
-        address,
+  async promoteAudience(input: {
+    streamId: string;
+    actor: { userKey: string; isDirect: boolean; isAdmin?: boolean };
+    audiencePolicy: 'subjectAllContexts' | 'explicitContexts';
+    audienceContextKeys: string[];
+    audienceSnapshots: Record<string, string[]>;
+    embeddingIdentity: MemoryEmbeddingIdentity;
+  }): Promise<void> {
+    await this.unitOfWork.run('review', async (database) => {
+      const [head] = await database.get(MEMORY_LEDGER_TABLES.head, {
+        streamId: input.streamId,
+      }) as MemoryV2HeadRecord[];
+      if (!head) {
+        throw new MemoryRuntimeError('review', 'validation', 'memory_stream_not_found', 'Memory stream does not exist.');
+      }
+      if (
+        input.actor.isAdmin
+        || !input.actor.isDirect
+        || head.subjectType !== 'user'
+        || head.subjectKey !== input.actor.userKey
+      ) {
+        throw new MemoryRuntimeError(
+          'review',
+          'authorization',
+          'memory_promotion_requires_subject_consent',
+          'Cross-context memory promotion requires the subject in a direct chat.',
+        );
+      }
+      if (head.state !== 'active') {
+        throw new MemoryRuntimeError('review', 'validation', 'memory_promotion_state_invalid', 'Only active memory can be promoted.');
+      }
+      const audienceContextKeys = input.audiencePolicy === 'explicitContexts'
+        ? uniqueStrings(input.audienceContextKeys)
+        : [];
+      if (input.audiencePolicy === 'explicitContexts' && !audienceContextKeys.length) {
+        throw new MemoryRuntimeError('review', 'validation', 'memory_promotion_audience_empty', 'Explicit audience contexts are required.');
+      }
+      const audienceSnapshots = input.audiencePolicy === 'explicitContexts'
+        ? parseAudienceSnapshots(serialize(input.audienceSnapshots))
+        : parseAudienceSnapshots(head.audienceSnapshots);
+      if (
+        input.audiencePolicy === 'explicitContexts'
+        && (
+          Object.keys(audienceSnapshots).length !== audienceContextKeys.length
+          || audienceContextKeys.some((contextKey) => !audienceSnapshots[contextKey]?.length)
+        )
+      ) {
+        throw new MemoryRuntimeError(
+          'review',
+          'validation',
+          'memory_promotion_audience_invalid',
+          'Every explicit context requires its own authoritative audience snapshot.',
+        );
+      }
+      const revision = head.revision + 1;
+      const eventId = randomUUID();
+      const now = Date.now();
+      await database.create(MEMORY_LEDGER_TABLES.event, {
+        eventId,
+        streamId: head.streamId,
+        revision,
+        eventType: 'visibilityChanged',
+        assertionType: head.assertionType,
+        subjectType: head.subjectType,
+        subjectKey: head.subjectKey,
+        actorKey: input.actor.userKey,
+        sourceContextKey: head.sourceContextKey,
+        audiencePolicy: input.audiencePolicy,
+        audienceContextKeys: serialize(audienceContextKeys),
+        audienceSnapshots: serialize(audienceSnapshots),
+        sensitivity: head.sensitivity,
+        payloadId: head.payloadId,
+        causationId: head.eventId,
+        idempotencyKey: `visibility:${head.streamId}:${revision}:${input.audiencePolicy}:${sha256(serialize([
+          audienceContextKeys,
+          audienceSnapshots,
+        ]))}`,
+        createdAt: now,
+      });
+      await database.set(MEMORY_LEDGER_TABLES.head, { id: head.id }, {
+        eventId,
+        revision,
+        audiencePolicy: input.audiencePolicy,
+        audienceContextKeys: serialize(audienceContextKeys),
+        audienceSnapshots: serialize(audienceSnapshots),
+        updatedAt: now,
+      });
+      if (!head.contentHash) {
+        throw new MemoryRuntimeError('review', 'validation', 'memory_promotion_payload_missing', 'Active memory content is unavailable.');
+      }
+      await this.searchIndex.updateIdentity(database, {
+        streamId: head.streamId,
+        eventId,
+        revision,
+        contentHash: head.contentHash,
+      });
+      const previousEmbedding = await database.get(MEMORY_LEDGER_TABLES.embedding, {
+        streamId: head.streamId,
+        revision: head.revision,
+        canonicalModel: input.embeddingIdentity.canonicalModel,
+        modelRevision: input.embeddingIdentity.modelRevision,
+        contentHash: head.contentHash,
+      }) as MemoryV2EmbeddingRecord[];
+      const embedPayload: EmbeddingWorkPayload = {
+        streamId: head.streamId,
+        eventId,
+        revision,
+        canonicalModel: input.embeddingIdentity.canonicalModel,
+        modelRevision: input.embeddingIdentity.modelRevision,
+        contentHash: head.contentHash,
+      };
+      await this.cancelEmbeddingWorkForStream(
+        database,
+        head.streamId,
+        'memory_embedding_target_superseded',
         now,
-        validUntil: row.validUntil,
-        expiresAt: row.expiresAt,
+      );
+      await database.remove(MEMORY_LEDGER_TABLES.embedding, { streamId: head.streamId });
+      if (previousEmbedding.length === 1) {
+        await database.create(MEMORY_LEDGER_TABLES.embedding, {
+          embeddingKey: sha256(embeddingTuple(embedPayload)),
+          ...embedPayload,
+          dimensions: previousEmbedding[0]!.dimensions,
+          vector: previousEmbedding[0]!.vector,
+          createdAt: now,
+        });
+      } else {
+        await this.queueWork(database, {
+          workKey: embeddingWorkKey('embed', embedPayload),
+          workType: 'embed',
+          subjectKey: head.subjectKey,
+          contextKey: head.sourceContextKey,
+          streamId: head.streamId,
+          payload: embedPayload,
+          inputHash: sha256(embeddingTuple(embedPayload)),
+          targetRevision: revision,
+          deletionGeneration: head.deletionGeneration,
+        });
+      }
+      await this.writeAudit(database, {
+        idempotencyKey: `visibility-audit:${head.streamId}:${revision}`,
+        subjectKey: head.subjectKey,
+        contextKey: head.sourceContextKey,
+        eventType: 'audience_promoted_by_subject',
+        streamId: head.streamId,
+        eventId,
+        detail: {
+          audiencePolicy: input.audiencePolicy,
+          audienceContextCount: audienceContextKeys.length,
+        },
       });
     });
   }
 
-  async touchMemory(type: MemoryRecordType, ids: readonly number[]): Promise<void> {
-    const table = type === 'fact' ? 'memory_fact' : 'memory_episode';
-    for (const id of ids) {
-      await this.database.set(table, { id }, { lastAccessedAt: Date.now() });
+  private async resolveForgetDependencyClosure(
+    database: MemoryDatabaseLike,
+    initialHeads: readonly MemoryV2HeadRecord[],
+  ): Promise<ForgetDependencyClosure> {
+    if (!initialHeads.length) {
+      return {
+        heads: [],
+        sources: [],
+      };
     }
+    const [heads, events, evidence] = await Promise.all([
+      database.get(MEMORY_LEDGER_TABLES.head, {}) as Promise<MemoryV2HeadRecord[]>,
+      database.get(MEMORY_LEDGER_TABLES.event, {}) as Promise<MemoryV2EventRecord[]>,
+      database.get(MEMORY_LEDGER_TABLES.evidence, {}) as Promise<MemoryV2EvidenceRecord[]>,
+    ]);
+    const streamByEventId = new Map(
+      events.map((event) => [event.eventId, event.streamId]),
+    );
+    const sourceIdentitiesByKey = new Map<string, ForgottenSourceIdentity>();
+    const sourceKeysByStream = new Map<string, Set<string>>();
+    for (const row of evidence) {
+      const streamId = streamByEventId.get(row.eventId);
+      if (!streamId) continue;
+      const identity: ForgottenSourceIdentity = {
+        contextKey: row.contextKey,
+        sourceMessageDigest: messageSuppressionDigest(row.messageId),
+      };
+      const sourceKey = sourceSuppressionKey(identity);
+      sourceIdentitiesByKey.set(sourceKey, identity);
+      const sourceKeys = sourceKeysByStream.get(streamId) ?? new Set<string>();
+      sourceKeys.add(sourceKey);
+      sourceKeysByStream.set(streamId, sourceKeys);
+    }
+
+    const selectedStreamIds = new Set(
+      initialHeads
+        .filter((head) => head.state !== 'forgotten')
+        .map((head) => head.streamId),
+    );
+    const forgottenSourceKeys = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const streamId of selectedStreamIds) {
+        for (const sourceKey of sourceKeysByStream.get(streamId) ?? []) {
+          if (!forgottenSourceKeys.has(sourceKey)) {
+            forgottenSourceKeys.add(sourceKey);
+            changed = true;
+          }
+        }
+      }
+      for (const head of heads) {
+        if (
+          head.state === 'forgotten'
+          || selectedStreamIds.has(head.streamId)
+        ) {
+          continue;
+        }
+        const sourceKeys = sourceKeysByStream.get(head.streamId);
+        if (
+          sourceKeys
+          && [...sourceKeys].some((sourceKey) => forgottenSourceKeys.has(sourceKey))
+        ) {
+          selectedStreamIds.add(head.streamId);
+          changed = true;
+        }
+      }
+    }
+    const byStreamId = new Map(heads.map((head) => [head.streamId, head]));
+    const selectedHeads = [...selectedStreamIds]
+      .map((streamId) => byStreamId.get(streamId))
+      .filter((head): head is MemoryV2HeadRecord => (
+        Boolean(head)
+        && head!.state !== 'forgotten'
+      ))
+      .sort((left, right) => left.id - right.id);
+    return {
+      heads: selectedHeads,
+      sources: [...forgottenSourceKeys]
+        .map((sourceKey) => sourceIdentitiesByKey.get(sourceKey))
+        .filter((source): source is ForgottenSourceIdentity => Boolean(source))
+        .sort((left, right) => (
+          left.contextKey.localeCompare(right.contextKey)
+          || left.sourceMessageDigest.localeCompare(right.sourceMessageDigest)
+        )),
+    };
   }
 
-  async touchProfiles(ids: readonly number[]): Promise<void> {
-    for (const id of ids) {
-      await this.database.set('memory_profile', { id }, { lastAccessedAt: Date.now() });
+  private async clearStreamContent(
+    database: MemoryDatabaseLike,
+    streamId: string,
+  ): Promise<ForgottenSourceIdentity[]> {
+    const events = await database.get(MEMORY_LEDGER_TABLES.event, { streamId }) as MemoryV2EventRecord[];
+    const eventIds = new Set(events.map((event) => event.eventId));
+    const evidence: MemoryV2EvidenceRecord[] = [];
+    for (const eventId of eventIds) {
+      evidence.push(...await database.get(MEMORY_LEDGER_TABLES.evidence, { eventId }) as MemoryV2EvidenceRecord[]);
     }
-  }
-
-  async archiveExpired(now = Date.now()): Promise<number> {
-    let archived = 0;
-    const facts = await this.database.get('memory_fact', { archived: 0 }) as MemoryFactRecord[];
-    for (const fact of facts) {
-      if (fact.expiresAt == null || fact.expiresAt > now) continue;
-      await this.database.set('memory_fact', { id: fact.id }, { archived: 1, lastSeenAt: now });
-      archived += 1;
-    }
-    const episodes = await this.database.get('memory_episode', { archived: 0 }) as MemoryEpisodeRecord[];
-    for (const episode of episodes) {
-      if (episode.expiresAt == null || episode.expiresAt > now) continue;
-      await this.database.set('memory_episode', { id: episode.id }, { archived: 1, lastSeenAt: now });
-      archived += 1;
-    }
-    return archived;
-  }
-
-  async archiveLowRiskOldEpisodes(archiveDays: number, now = Date.now()): Promise<number> {
-    const threshold = now - archiveDays * DAY_MS;
-    const episodes = await this.database.get('memory_episode', { archived: 0 }) as MemoryEpisodeRecord[];
-    let count = 0;
-    for (const episode of episodes) {
-      const lastTouched = Number(episode.lastAccessedAt ?? episode.lastSeenAt ?? episode.firstSeenAt ?? 0);
-      if (episode.importance >= 0.85 || episode.sensitivity !== 'low' || lastTouched > threshold) continue;
-      await this.database.set('memory_episode', { id: episode.id }, { archived: 1, lastSeenAt: now });
-      count += 1;
-    }
-    return count;
-  }
-
-  async forgetMemory(input: { userKey: string; type: MemoryRecordType; id: number; reason?: string | null }): Promise<boolean> {
-    const table = input.type === 'fact' ? 'memory_fact' : 'memory_episode';
-    const [row] = await this.database.get(table, { id: input.id });
-    if (!row?.id || row.ownerUserKey !== input.userKey) return false;
-    const provenanceRows = await this.database.get('memory_provenance', {
-      memoryType: input.type,
-      memoryId: input.id,
-    });
-    await this.database.remove(table, { id: input.id });
-    await this.database.remove('memory_provenance', { memoryType: input.type, memoryId: input.id });
-    await this.removeJobsReferencing(input.type, input.id);
-    for (const provenance of provenanceRows) {
-      for (const sourceMessageId of parseJsonArray(provenance.messageIds)) {
-        await this.database.create('memory_tombstone', {
-          userKey: input.userKey,
-          contextKey: provenance.contextKey ?? row.sourceContextKey ?? null,
-          memoryType: 'source',
-          memoryId: null,
-          topicKey: null,
-          sourceMessageId,
-          reason: input.reason ?? 'forget',
+    const sources = new Map<string, ForgottenSourceIdentity>();
+    for (const row of evidence) {
+      const identity = {
+        contextKey: row.contextKey,
+        sourceMessageDigest: messageSuppressionDigest(row.messageId),
+      };
+      const sourceKey = sourceSuppressionKey(identity);
+      sources.set(sourceKey, identity);
+      const existing = await database.get(MEMORY_LEDGER_TABLES.suppression, {
+        suppressionKey: sourceKey,
+      });
+      if (!existing.length) {
+        await database.create(MEMORY_LEDGER_TABLES.suppression, {
+          suppressionKey: sourceKey,
+          subjectKey: null,
+          contextKey: row.contextKey,
+          streamId: null,
+          sourceMessageDigest: identity.sourceMessageDigest,
+          cutoffAt: null,
+          generation: 1,
+          reasonCode: 'forgotten-source',
           createdAt: Date.now(),
         });
       }
     }
-    await this.database.create('memory_tombstone', {
-      userKey: input.userKey,
-      contextKey: row.sourceContextKey ?? null,
-      memoryType: input.type,
-      memoryId: input.id,
-      topicKey: input.type === 'fact' ? row.topicKey ?? null : null,
-      sourceMessageId: null,
-      reason: input.reason ?? 'forget',
-      createdAt: Date.now(),
-    });
-    if (input.type === 'fact' && row.topicKey) {
-      await this.database.remove('memory_profile', {
-        ownerUserKey: input.userKey,
-        kind: row.kind,
-        profileKey: row.topicKey,
+    for (const eventId of eventIds) {
+      await database.remove(MEMORY_LEDGER_TABLES.payload, { eventId });
+      await database.remove(MEMORY_LEDGER_TABLES.evidence, { eventId });
+    }
+    await database.remove(MEMORY_LEDGER_TABLES.embedding, { streamId });
+    await this.searchIndex.remove(database, streamId);
+    return [...sources.values()];
+  }
+
+  private async cancelStreamWork(
+    database: MemoryDatabaseLike,
+    streamId: string,
+    reasonCode: string,
+    now: number,
+  ): Promise<void> {
+    const work = await database.get(MEMORY_LEDGER_TABLES.work, {
+      streamId,
+    }) as MemoryV2WorkRecord[];
+    for (const row of work.filter((item) => (
+      item.status === 'pending'
+      || item.status === 'leased'
+      || item.status === 'failed'
+      || item.status === 'deadLetter'
+    ))) {
+      await database.set(MEMORY_LEDGER_TABLES.work, { id: row.id }, {
+        status: 'cancelled',
+        payload: '{}',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: reasonCode,
+        lastErrorStage: 'finalize',
+        upstreamStatus: null,
+        providerCode: null,
+        updatedAt: now,
+        completedAt: now,
       });
-      await this.database.create('memory_tombstone', {
-        userKey: input.userKey,
-        contextKey: row.sourceContextKey ?? null,
-        memoryType: 'topic',
-        memoryId: null,
-        topicKey: row.topicKey,
-        sourceMessageId: null,
-        reason: input.reason ?? 'forget',
-        createdAt: Date.now(),
-      });
     }
-    await this.audit({
-      userKey: input.userKey,
-      contextKey: row.sourceContextKey ?? null,
-      eventType: 'forget',
-      memoryType: input.type,
-      memoryId: input.id,
-      detail: { reason: input.reason ?? 'forget' },
-    });
-    return true;
   }
 
-  async forgetTopic(userKey: string, topicKey: string, contextKey: string | null = null): Promise<number> {
-    const rows = await this.database.get('memory_fact', { ownerUserKey: userKey, topicKey }) as MemoryFactRecord[];
-    let count = 0;
-    for (const row of rows) {
-      if (contextKey && row.sourceContextKey !== contextKey) continue;
-      if (await this.forgetMemory({ userKey, type: 'fact', id: row.id, reason: 'forget_topic' })) count += 1;
-    }
-    await this.database.create('memory_tombstone', {
-      userKey,
-      contextKey,
-      memoryType: 'topic',
-      memoryId: null,
-      topicKey,
-      sourceMessageId: null,
-      reason: 'forget_topic',
-      createdAt: Date.now(),
-    });
-    await this.database.remove('memory_profile', { ownerUserKey: userKey, profileKey: topicKey });
-    return count;
-  }
-
-  async forgetContext(userKey: string, contextKey: string): Promise<number> {
-    const [facts, episodes] = await Promise.all([
-      this.database.get('memory_fact', { ownerUserKey: userKey, sourceContextKey: contextKey }) as Promise<MemoryFactRecord[]>,
-      this.database.get('memory_episode', { ownerUserKey: userKey, sourceContextKey: contextKey }) as Promise<MemoryEpisodeRecord[]>,
-    ]);
-    let count = 0;
-    for (const row of facts) {
-      if (await this.forgetMemory({ userKey, type: 'fact', id: row.id, reason: 'forget_context' })) count += 1;
-    }
-    for (const row of episodes) {
-      if (await this.forgetMemory({ userKey, type: 'episode', id: row.id, reason: 'forget_context' })) count += 1;
-    }
-    await this.database.create('memory_tombstone', {
-      userKey,
-      contextKey,
-      memoryType: 'source',
-      memoryId: null,
-      topicKey: null,
-      sourceMessageId: null,
-      reason: 'forget_context',
-      createdAt: Date.now(),
-    });
-    return count;
-  }
-
-  async forgetAll(userKey: string): Promise<number> {
-    const [facts, episodes] = await Promise.all([
-      this.database.get('memory_fact', { ownerUserKey: userKey }) as Promise<MemoryFactRecord[]>,
-      this.database.get('memory_episode', { ownerUserKey: userKey }) as Promise<MemoryEpisodeRecord[]>,
-    ]);
-    let count = 0;
-    for (const row of facts) {
-      if (await this.forgetMemory({ userKey, type: 'fact', id: row.id, reason: 'forget_all' })) count += 1;
-    }
-    for (const row of episodes) {
-      if (await this.forgetMemory({ userKey, type: 'episode', id: row.id, reason: 'forget_all' })) count += 1;
-    }
-    await this.database.remove('memory_profile', { ownerUserKey: userKey });
-    return count;
-  }
-
-  async updateVisibility(input: {
-    userKey: string;
-    type: MemoryRecordType;
-    id: number;
-    visibility: MemoryVisibility;
-  }): Promise<boolean> {
-    const table = input.type === 'fact' ? 'memory_fact' : 'memory_episode';
-    const [row] = await this.database.get(table, { id: input.id });
-    if (!row?.id || row.ownerUserKey !== input.userKey) return false;
-    const scopeType = scopeTypeFromVisibility(input.visibility);
-    const scopeKey = scopeKeyForType(scopeType, row.sourceContextKey);
-    const memoryKey = input.type === 'fact'
-      ? buildMemoryKey({
-        userKey: row.ownerUserKey,
-        layer: 'fact',
-        kind: row.kind,
-        topicKey: row.topicKey,
-        scopeType,
-        scopeKey,
-      })
-      : buildMemoryKey({
-        userKey: row.ownerUserKey,
-        layer: 'episode',
-        kind: 'episode',
-        topicKey: episodeTopicKey(row),
-        scopeType,
-        scopeKey,
-      });
-    await this.database.set(table, { id: input.id }, {
-      visibility: input.visibility,
-      scopeType,
-      scopeKey,
-      memoryKey,
-      version: Number(row.version ?? 0) + 1,
-    });
-    if (input.type === 'fact') {
-      await this.upsertProfileFromFactId(input.id);
-    }
-    await this.audit({
-      userKey: input.userKey,
-      contextKey: row.sourceContextKey ?? null,
-      eventType: 'visibility_updated',
-      memoryType: input.type,
-      memoryId: input.id,
-      detail: { visibility: input.visibility },
-    });
-    return true;
-  }
-
-  async editMemory(input: {
-    userKey: string;
-    type: MemoryRecordType;
-    id: number;
-    content: string;
-  }): Promise<boolean> {
-    const table = input.type === 'fact' ? 'memory_fact' : 'memory_episode';
-    const [row] = await this.database.get(table, { id: input.id });
-    if (!row?.id || row.ownerUserKey !== input.userKey) return false;
-    const patch = input.type === 'fact'
-      ? {
-          content: input.content.trim(),
-          retrievalText: `${row.kind}:${row.topicKey}\n${input.content.trim()}`.trim(),
-          version: Number(row.version ?? 0) + 1,
-          embedding: null,
-          embeddingModel: null,
+  private async cancelExtractionWorkForForget(
+    database: MemoryDatabaseLike,
+    input: {
+      laneSubjectKey: string | null;
+      laneContextKey: string | null;
+      sourceIdentities: readonly ForgottenSourceIdentity[];
+      advanceLaneCursors: boolean;
+      now: number;
+    },
+  ): Promise<number> {
+    const work = await database.get(MEMORY_LEDGER_TABLES.work, {
+      workType: 'extract',
+    }) as MemoryV2WorkRecord[];
+    const activeWork = work.filter((item) => (
+      item.streamId == null
+      && (item.status === 'pending' || item.status === 'leased')
+    ));
+    const forgottenSourceKeys = new Set(
+      input.sourceIdentities.map((identity) => sourceSuppressionKey(identity)),
+    );
+    const forgottenSourceContexts = new Set(
+      input.sourceIdentities.map((identity) => identity.contextKey),
+    );
+    const watermarks = new Map<string, {
+      row: MemoryV2WorkRecord;
+      payload: ExtractWorkPayload;
+    }>();
+    const selectedWork: MemoryV2WorkRecord[] = [];
+    for (const row of activeWork) {
+      const subjectDependent = input.laneSubjectKey != null
+        && row.subjectKey === input.laneSubjectKey
+        && (input.laneContextKey == null || row.contextKey === input.laneContextKey);
+      const mayDependOnSource = row.contextKey != null
+        && forgottenSourceContexts.has(row.contextKey);
+      let payload: ExtractWorkPayload | null = null;
+      if (
+        (subjectDependent && input.advanceLaneCursors)
+        || mayDependOnSource
+      ) {
+        payload = workPayload<ExtractWorkPayload>(row);
+        if (
+          !payload.latestAnchorMessageId
+          || !payload.address?.userKey
+          || payload.address.userKey !== row.subjectKey
+          || payload.address.contextKey !== row.contextKey
+          || !Array.isArray(payload.capturedAudiences)
+        ) {
+          throw new MemoryRuntimeError(
+            'forget',
+            'validation',
+            'memory_extract_payload_invalid',
+            'Active extraction work payload is invalid.',
+          );
         }
-      : {
-          summary: input.content.trim(),
-          retrievalText: `${row.title}\n${input.content.trim()}`.trim(),
-          version: Number(row.version ?? 0) + 1,
-          embedding: null,
-          embeddingModel: null,
-        };
-    await this.database.set(table, { id: input.id }, patch);
-    if (input.type === 'fact') {
-      await this.upsertProfileFromFactId(input.id);
-    }
-    await this.queueJob('embed', { recordType: input.type, recordId: input.id });
-    await this.audit({
-      userKey: input.userKey,
-      contextKey: row.sourceContextKey ?? null,
-      eventType: 'memory_edited',
-      memoryType: input.type,
-      memoryId: input.id,
-    });
-    return true;
-  }
-
-  async reviewCandidate(input: {
-    candidateId: number;
-    action: 'approve' | 'reject' | 'private';
-  }): Promise<boolean> {
-    const [row] = await this.database.get('memory_candidate', { id: input.candidateId }) as MemoryCandidateRecord[];
-    if (!row?.id) return false;
-    const reviewStatus: MemoryCandidateReviewStatus = input.action === 'reject' ? 'rejected' : 'approved';
-    const finalVisibility: MemoryVisibility | null = input.action === 'private' ? 'private_only' : row.finalVisibility ?? row.suggestedVisibility;
-    await this.database.set('memory_candidate', { id: row.id }, {
-      reviewStatus,
-      finalVisibility,
-      reviewedAt: Date.now(),
-      dropReason: input.action === 'reject' ? 'manual_reject' : row.dropReason,
-    });
-    await this.audit({
-      userKey: row.ownerUserKey,
-      contextKey: row.contextKey,
-      eventType: 'candidate_manual_review',
-      candidateId: row.id,
-      detail: { action: input.action },
-    });
-    return true;
-  }
-
-  async listPendingCandidates(userKey: string): Promise<MemoryCandidateRecord[]> {
-    const rows = await this.database.get('memory_candidate', { ownerUserKey: userKey, reviewStatus: 'pending_review' }) as MemoryCandidateRecord[];
-    return rows.sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0));
-  }
-
-  async getLatestRecallAudit(userKey: string, contextKey: string): Promise<MemoryAuditEventRecord | null> {
-    const rows = await this.database.get('memory_audit_event', {
-      userKey,
-      contextKey,
-      eventType: 'recall_selected',
-    }) as MemoryAuditEventRecord[];
-    return rows.sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0))[0] ?? null;
-  }
-
-  private async removeJobsReferencing(recordType: MemoryRecordType, recordId: number): Promise<void> {
-    const rows = await this.database.get('memory_job', {} as Record<string, never>) as MemoryJobRecord[];
-    for (const row of rows) {
-      const payload = parsePayload<Record<string, unknown>>(row.payload);
-      if (payload?.recordType === recordType && Number(payload.recordId) === recordId) {
-        await this.database.remove('memory_job', { id: row.id });
+      }
+      const sourceDependent = payload != null && [
+        payload.latestAnchorMessageId,
+        ...payload.capturedAudiences.map((capture) => capture.messageId),
+      ].some((messageId) => forgottenSourceKeys.has(sourceSuppressionKey({
+        contextKey: payload!.address.contextKey,
+        sourceMessageDigest: messageSuppressionDigest(messageId),
+      })));
+      if (!subjectDependent && !sourceDependent) continue;
+      selectedWork.push(row);
+      if (!subjectDependent || !input.advanceLaneCursors || !payload) continue;
+      const key = row.laneKey ?? createMemoryExtractLaneKey(
+        payload.address.userKey,
+        payload.address.contextKey,
+      );
+      const current = watermarks.get(key);
+      if (
+        !current
+        || payload.address.observedAt > current.payload.address.observedAt
+        || (
+          payload.address.observedAt === current.payload.address.observedAt
+          && (row.createdAt > current.row.createdAt
+            || (row.createdAt === current.row.createdAt && row.id > current.row.id))
+        )
+      ) {
+        watermarks.set(key, { row, payload });
       }
     }
+    for (const row of selectedWork) {
+      await database.set(MEMORY_LEDGER_TABLES.work, { id: row.id }, {
+        status: 'cancelled',
+        payload: '{}',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: 'memory_forgotten',
+        lastErrorStage: 'finalize',
+        upstreamStatus: null,
+        providerCode: null,
+        updatedAt: input.now,
+        completedAt: input.now,
+      });
+    }
+    for (const [laneKey, watermark] of watermarks) {
+      const payload = watermark.payload;
+      const [cursor] = await database.get(MEMORY_LEDGER_TABLES.cursor, {
+        laneKey,
+      }) as MemoryV2CursorRecord[];
+      const observedAt = payload.address.observedAt;
+      if (!cursor) {
+        await database.create(MEMORY_LEDGER_TABLES.cursor, {
+          laneKey,
+          subjectKey: payload.address.userKey,
+          contextKey: payload.address.contextKey,
+          conversationId: payload.address.conversationId,
+          lastMessageId: payload.latestAnchorMessageId,
+          lastMessageAt: observedAt,
+          lastWindowHash: null,
+          discardBeforeMessageId: payload.latestAnchorMessageId,
+          firstSeenAt: input.now,
+          updatedAt: input.now,
+        });
+      } else if (cursor.lastMessageAt == null || cursor.lastMessageAt < observedAt) {
+        await database.set(MEMORY_LEDGER_TABLES.cursor, { id: cursor.id }, {
+          conversationId: payload.address.conversationId,
+          lastMessageId: payload.latestAnchorMessageId,
+          lastMessageAt: observedAt,
+          lastWindowHash: null,
+          discardBeforeMessageId: payload.latestAnchorMessageId,
+          updatedAt: input.now,
+        });
+      }
+    }
+    return selectedWork.length;
   }
 
-  async audit(input: {
-    userKey?: string | null;
-    contextKey?: string | null;
-    eventType: string;
-    memoryType?: MemoryRecordType | null;
-    memoryId?: number | null;
-    candidateId?: number | null;
-    turnId?: string | null;
-    detail?: unknown;
-  }): Promise<void> {
-    await this.database.create('memory_audit_event', {
-      userKey: input.userKey ?? null,
-      contextKey: input.contextKey ?? null,
-      eventType: input.eventType,
-      memoryType: input.memoryType ?? null,
-      memoryId: input.memoryId ?? null,
-      candidateId: input.candidateId ?? null,
-      turnId: input.turnId ?? null,
-      detail: input.detail == null ? null : serialize(input.detail),
-      createdAt: Date.now(),
-    } satisfies Omit<MemoryAuditEventRecord, 'id'>);
+  private async archiveHeadTx(
+    database: MemoryDatabaseLike,
+    input: {
+      head: MemoryV2HeadRecord;
+      actorKey: string;
+      reasonCode: string;
+      now: number;
+    },
+  ): Promise<void> {
+    const revision = input.head.revision + 1;
+    const eventId = randomUUID();
+    await database.create(MEMORY_LEDGER_TABLES.event, {
+      eventId,
+      streamId: input.head.streamId,
+      revision,
+      eventType: 'archived',
+      assertionType: input.head.assertionType,
+      subjectType: input.head.subjectType,
+      subjectKey: input.head.subjectKey,
+      actorKey: input.actorKey,
+      sourceContextKey: input.head.sourceContextKey,
+      audiencePolicy: input.head.audiencePolicy,
+      audienceContextKeys: input.head.audienceContextKeys,
+      audienceSnapshots: input.head.audienceSnapshots,
+      sensitivity: input.head.sensitivity,
+      payloadId: input.head.payloadId,
+      causationId: input.head.eventId,
+      idempotencyKey: `archived:${input.head.streamId}:${revision}`,
+      createdAt: input.now,
+    });
+    await database.set(MEMORY_LEDGER_TABLES.head, { id: input.head.id }, {
+      eventId,
+      revision,
+      state: 'archived',
+      updatedAt: input.now,
+    });
+    await database.remove(MEMORY_LEDGER_TABLES.embedding, {
+      streamId: input.head.streamId,
+    });
+    await this.searchIndex.remove(database, input.head.streamId);
+    await this.cancelStreamWork(
+      database,
+      input.head.streamId,
+      'memory_archived',
+      input.now,
+    );
+    await this.writeAudit(database, {
+      idempotencyKey: `archived-audit:${input.head.streamId}:${revision}`,
+      subjectKey: input.head.subjectKey,
+      contextKey: input.head.sourceContextKey,
+      eventType: 'memory_archived',
+      streamId: input.head.streamId,
+      eventId,
+      detail: {
+        reasonCode: input.reasonCode,
+        previousState: input.head.state,
+      },
+      createdAt: input.now,
+    });
   }
+
+  async archive(input: {
+    streamId: string;
+    actor: { userKey: string; isDirect: boolean; isAdmin?: boolean };
+    reasonCode?: string;
+  }): Promise<void> {
+    const reasonCode = assertCanonicalMemoryReasonCode(
+      input.reasonCode ?? 'operator-archive',
+      'archive',
+    );
+    await this.unitOfWork.run('archive', async (database) => {
+      if (!input.actor.isAdmin) {
+        throw new MemoryRuntimeError(
+          'archive',
+          'authorization',
+          'memory_archive_admin_required',
+          'Memory archival requires an administrator.',
+        );
+      }
+      const [head] = await database.get(MEMORY_LEDGER_TABLES.head, {
+        streamId: input.streamId,
+      }) as MemoryV2HeadRecord[];
+      if (!head) {
+        throw new MemoryRuntimeError(
+          'archive',
+          'validation',
+          'memory_stream_not_found',
+          'Memory stream does not exist.',
+        );
+      }
+      if (head.state !== 'active' && head.state !== 'pendingReview') {
+        throw new MemoryRuntimeError(
+          'archive',
+          'validation',
+          'memory_archive_state_invalid',
+          'Only active or pending memory can be archived.',
+        );
+      }
+      await this.archiveHeadTx(database, {
+        head,
+        actorKey: 'admin',
+        reasonCode,
+        now: Date.now(),
+      });
+    });
+  }
+
+  async forget(input: {
+    actor: { userKey: string; isDirect: boolean; isAdmin?: boolean };
+    streamId?: string;
+    contextKey?: string;
+    all?: boolean;
+    reasonCode?: string;
+  }): Promise<number> {
+    const reasonCode = assertCanonicalMemoryReasonCode(
+      input.reasonCode ?? 'subject-forget',
+      'forget',
+    );
+    return this.unitOfWork.run('forget', async (database) => {
+      const scopedHeads = await database.get(MEMORY_LEDGER_TABLES.head, input.streamId
+        ? { streamId: input.streamId }
+        : { subjectKey: input.actor.userKey }) as MemoryV2HeadRecord[];
+      const initialTargets = scopedHeads.filter((head) => {
+        if (input.streamId && head.streamId !== input.streamId) return false;
+        if (input.contextKey && head.sourceContextKey !== input.contextKey) return false;
+        return input.all || Boolean(input.streamId) || Boolean(input.contextKey);
+      });
+      for (const head of initialTargets) {
+        this.policy.assertCanForget({
+          subjectType: head.subjectType,
+          subjectKey: head.subjectKey,
+        }, input.actor);
+      }
+      if (input.streamId && initialTargets[0]?.state === 'forgotten') return 0;
+      if (!initialTargets.length && input.streamId) return 0;
+      if (!initialTargets.length && !input.contextKey && !input.all) {
+        throw new MemoryRuntimeError(
+          'forget',
+          'validation',
+          'memory_forget_target_missing',
+          'Forget requires a stream, context, or all-subject target.',
+        );
+      }
+      const closure = await this.resolveForgetDependencyClosure(
+        database,
+        initialTargets,
+      );
+      const laneSubjectKey = input.streamId
+        ? initialTargets[0]?.subjectType === 'user'
+          ? initialTargets[0].subjectKey
+          : null
+        : input.actor.userKey;
+      const laneContextKey = input.all
+        ? null
+        : input.contextKey ?? initialTargets[0]?.sourceContextKey ?? null;
+      const now = Date.now();
+      if (laneSubjectKey) {
+        const laneGeneration = await this.laneGeneration(
+          database,
+          laneSubjectKey,
+          laneContextKey,
+        ) + 1;
+        const barrierKey = `barrier:${sha256(serialize([
+          'lane',
+          laneSubjectKey,
+          laneContextKey,
+          laneGeneration,
+        ]))}`;
+        await database.create(MEMORY_LEDGER_TABLES.suppression, {
+          suppressionKey: barrierKey,
+          subjectKey: laneSubjectKey,
+          contextKey: laneContextKey,
+          streamId: null,
+          sourceMessageDigest: null,
+          cutoffAt: input.streamId ? null : now,
+          generation: laneGeneration,
+          reasonCode,
+          createdAt: now,
+        });
+      }
+
+      for (const head of closure.heads) {
+        const generation = await this.streamGeneration(
+          database,
+          head.subjectKey,
+          head.streamId,
+        ) + 1;
+        await database.create(MEMORY_LEDGER_TABLES.suppression, {
+          suppressionKey: `barrier:${sha256(serialize([
+            'stream',
+            head.subjectKey,
+            head.streamId,
+            generation,
+          ]))}`,
+          subjectKey: head.subjectKey,
+          contextKey: head.sourceContextKey,
+          streamId: head.streamId,
+          sourceMessageDigest: null,
+          cutoffAt: null,
+          generation,
+          reasonCode,
+          createdAt: now,
+        });
+        const revision = head.revision + 1;
+        const eventId = randomUUID();
+        await database.create(MEMORY_LEDGER_TABLES.event, {
+          eventId,
+          streamId: head.streamId,
+          revision,
+          eventType: 'forgotten',
+          assertionType: head.assertionType,
+          subjectType: head.subjectType,
+          subjectKey: head.subjectKey,
+          actorKey: input.actor.isAdmin ? 'admin' : input.actor.userKey,
+          sourceContextKey: head.sourceContextKey,
+          audiencePolicy: 'subjectPrivate',
+          audienceContextKeys: '[]',
+          audienceSnapshots: '{}',
+          sensitivity: head.sensitivity,
+          payloadId: null,
+          causationId: head.eventId,
+          idempotencyKey: `forgotten:${head.streamId}:${revision}`,
+          createdAt: now,
+        });
+        await this.clearStreamContent(
+          database,
+          head.streamId,
+        );
+        await database.set(MEMORY_LEDGER_TABLES.head, { id: head.id }, {
+          eventId,
+          revision,
+          state: 'forgotten',
+          audiencePolicy: 'subjectPrivate',
+          audienceContextKeys: '[]',
+          audienceSnapshots: '{}',
+          payloadId: null,
+          contentHash: null,
+          deletionGeneration: generation,
+          updatedAt: now,
+        });
+        await this.cancelStreamWork(
+          database,
+          head.streamId,
+          'memory_forgotten',
+          now,
+        );
+        await this.writeAudit(database, {
+          idempotencyKey: `forgotten-audit:${head.streamId}:${revision}`,
+          subjectKey: head.subjectKey,
+          contextKey: head.sourceContextKey,
+          eventType: 'memory_forgotten',
+          streamId: head.streamId,
+          eventId,
+          detail: { reasonCode },
+        });
+      }
+      await this.cancelExtractionWorkForForget(database, {
+        laneSubjectKey,
+        laneContextKey,
+        sourceIdentities: closure.sources,
+        advanceLaneCursors: !input.streamId,
+        now,
+      });
+      return closure.heads.length;
+    });
+  }
+
+  async archiveExpired(now = Date.now()): Promise<number> {
+    return this.unitOfWork.run('maintenance', async (database) => {
+      const heads = await database.get(MEMORY_LEDGER_TABLES.head, { state: 'active' }) as MemoryV2HeadRecord[];
+      const expired = heads.filter((head) => (
+        (head.validUntil != null && head.validUntil < now)
+        || (head.expiresAt != null && head.expiresAt < now)
+      ));
+      for (const head of expired) {
+        await this.archiveHeadTx(database, {
+          head,
+          actorKey: 'memory.maintenance',
+          reasonCode: 'retention-policy',
+          now,
+        });
+      }
+      return expired.length;
+    });
+  }
+
+  async archiveLowRiskOldEpisodes(
+    archiveDays: number,
+    now = Date.now(),
+  ): Promise<number> {
+    if (!Number.isInteger(archiveDays) || archiveDays < 1) {
+      throw new MemoryRuntimeError(
+        'maintenance',
+        'validation',
+        'memory_archive_days_invalid',
+        'Memory archiveDays must be a positive integer.',
+      );
+    }
+    const threshold = now - archiveDays * 86_400_000;
+    return this.unitOfWork.run('maintenance', async (database) => {
+      const heads = await database.get(MEMORY_LEDGER_TABLES.head, {
+        state: 'active',
+        assertionType: 'episode',
+      }) as MemoryV2HeadRecord[];
+      const targets = heads.filter((head) => (
+        head.sensitivity === 'low'
+        && head.importance < 0.85
+        && head.updatedAt <= threshold
+      ));
+      for (const head of targets) {
+        await this.archiveHeadTx(database, {
+          head,
+          actorKey: 'memory.maintenance',
+          reasonCode: 'retention-policy',
+          now,
+        });
+      }
+      return targets.length;
+    });
+  }
+
+  async getQueueSummary(): Promise<MemoryQueueSummary> {
+    const rows = await this.database.get(MEMORY_LEDGER_TABLES.work, {}) as MemoryV2WorkRecord[];
+    const active = rows.filter((row) => row.status === 'pending' || row.status === 'leased');
+    const byType: Record<MemoryWorkType, number> = {
+      extract: 0,
+      embed: 0,
+      backfill: 0,
+      maintenance: 0,
+    };
+    for (const row of active) byType[row.workType] += 1;
+    return {
+      pending: rows.filter((row) => row.status === 'pending').length,
+      leased: rows.filter((row) => row.status === 'leased').length,
+      failed: rows.filter((row) => row.status === 'failed').length,
+      deadLetter: rows.filter((row) => row.status === 'deadLetter').length,
+      byType,
+    };
+  }
+
+  async getLedgerCounts(identity: MemoryEmbeddingIdentity | null): Promise<MemoryLedgerCounts> {
+    const heads = await this.database.get(MEMORY_LEDGER_TABLES.head, {}) as MemoryV2HeadRecord[];
+    const [allEvents, allPayloads, allEvidence, allEmbeddings, allProjections] = await Promise.all([
+      this.database.get(MEMORY_LEDGER_TABLES.event, {}) as Promise<MemoryV2EventRecord[]>,
+      this.database.get(MEMORY_LEDGER_TABLES.payload, {}) as Promise<MemoryV2PayloadRecord[]>,
+      this.database.get(MEMORY_LEDGER_TABLES.evidence, {}) as Promise<MemoryV2EvidenceRecord[]>,
+      this.database.get(MEMORY_LEDGER_TABLES.embedding, {}) as Promise<MemoryV2EmbeddingRecord[]>,
+      this.searchIndex.list(this.database),
+    ]);
+    const eventIds = new Set(allEvents.map((event) => event.eventId));
+    const activeByStream = new Map(
+      heads.filter((head) => head.state === 'active').map((head) => [head.streamId, head]),
+    );
+    const payloadById = new Map(allPayloads.map((payload) => [payload.payloadId, payload]));
+    const evidenceByEvent = new Map<string, MemoryV2EvidenceRecord[]>();
+    for (const evidence of allEvidence) {
+      const entries = evidenceByEvent.get(evidence.eventId) ?? [];
+      entries.push(evidence);
+      evidenceByEvent.set(evidence.eventId, entries);
+    }
+    const projectionByStream = new Map<string, MemoryLexicalProjectionRow[]>();
+    for (const projection of allProjections) {
+      const entries = projectionByStream.get(projection.streamId) ?? [];
+      entries.push(projection);
+      projectionByStream.set(projection.streamId, entries);
+    }
+    const inactiveFts = allProjections.filter(
+      (projection) => !activeByStream.has(projection.streamId),
+    ).length;
+    const staleFts = allProjections.filter((projection) => {
+      const head = activeByStream.get(projection.streamId);
+      const payload = head?.payloadId ? payloadById.get(head.payloadId) : null;
+      if (!head) return false;
+      if (!payload || !head.contentHash || payload.contentHash !== head.contentHash) return true;
+      return !memoryLexicalProjectionMatches(projection, {
+        streamId: head.streamId,
+        eventId: head.eventId,
+        revision: head.revision,
+        contentHash: head.contentHash,
+        canonicalText: payload.retrievalText ?? payload.content,
+      });
+    }).length;
+    const inactiveEmbedding = allEmbeddings.filter((embedding) => !activeByStream.has(embedding.streamId)).length;
+    const staleEmbedding = allEmbeddings.filter((embedding) => {
+      const head = activeByStream.get(embedding.streamId);
+      if (!head) return false;
+      return embedding.eventId !== head.eventId
+        || embedding.revision !== head.revision
+        || embedding.contentHash !== head.contentHash
+        || (identity != null && (
+          embedding.canonicalModel !== identity.canonicalModel
+          || embedding.modelRevision !== identity.modelRevision
+        ));
+    }).length;
+    const orphanEvidence = allEvidence.filter((evidence) => !eventIds.has(evidence.eventId)).length;
+    let stranded = 0;
+    const strandedByReason = {
+      payload: 0,
+      evidence: 0,
+      audience: 0,
+      embedding: 0,
+      fts: 0,
+    };
+    for (const head of heads.filter((row) => row.state === 'active')) {
+      if (!head.payloadId || !head.contentHash) {
+        stranded += 1;
+        strandedByReason.payload += 1;
+        continue;
+      }
+      let audienceValid = true;
+      try {
+        parseAudienceContextKeys(head.audienceContextKeys);
+        parseAudienceSnapshots(head.audienceSnapshots);
+      } catch {
+        audienceValid = false;
+      }
+      const payload = payloadById.get(head.payloadId);
+      const evidence = payload ? evidenceByEvent.get(payload.eventId) ?? [] : [];
+      const projections = projectionByStream.get(head.streamId) ?? [];
+      try {
+        if (
+          evidence.some((row) => (
+            !parseCaptureAudienceSubjectKeys(String(row.captureAudienceSubjectKeys)).length
+          ))
+        ) {
+          audienceValid = false;
+        }
+      } catch {
+        audienceValid = false;
+      }
+      const embeddings = identity
+        ? await this.database.get(MEMORY_LEDGER_TABLES.embedding, {
+            streamId: head.streamId,
+            eventId: head.eventId,
+            revision: head.revision,
+            canonicalModel: identity.canonicalModel,
+            modelRevision: identity.modelRevision,
+            contentHash: head.contentHash,
+          })
+        : [];
+      let rowStranded = false;
+      if (!audienceValid) {
+        strandedByReason.audience += 1;
+        rowStranded = true;
+      }
+      if (!payload || payload.contentHash !== head.contentHash) {
+        strandedByReason.payload += 1;
+        rowStranded = true;
+      }
+      if (evidence.length === 0) {
+        strandedByReason.evidence += 1;
+        rowStranded = true;
+      }
+      if (
+        !payload
+        || projections.length !== 1
+        || !memoryLexicalProjectionMatches(projections[0]!, {
+          streamId: head.streamId,
+          eventId: head.eventId,
+          revision: head.revision,
+          contentHash: head.contentHash,
+          canonicalText: payload.retrievalText ?? payload.content,
+        })
+      ) {
+        strandedByReason.fts += 1;
+        rowStranded = true;
+      }
+      if (embeddings.length !== 1) {
+        strandedByReason.embedding += 1;
+        rowStranded = true;
+      }
+      if (rowStranded) stranded += 1;
+    }
+    return {
+      active: heads.filter((row) => row.state === 'active').length,
+      pendingReview: heads.filter((row) => row.state === 'pendingReview').length,
+      archived: heads.filter((row) => row.state === 'archived').length,
+      retracted: heads.filter((row) => row.state === 'retracted').length,
+      forgotten: heads.filter((row) => row.state === 'forgotten').length,
+      stranded,
+      ftsRows: allProjections.length,
+      embeddingRows: allEmbeddings.length,
+      orphanEvidence,
+      staleFts,
+      inactiveFts,
+      staleEmbedding,
+      inactiveEmbedding,
+      strandedByReason,
+    };
+  }
+
+  async getLatestRecallAudit(subjectKey: string, contextKey: string): Promise<MemoryV2AuditRecord | null> {
+    const rows = await this.database.get(MEMORY_LEDGER_TABLES.audit, {
+      subjectKey,
+      contextKey,
+      eventType: 'recall_selected',
+    }) as MemoryV2AuditRecord[];
+    return rows.sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
+  }
+
+  async listDeadLetterWork(): Promise<MemoryV2WorkRecord[]> {
+    return this.database.get(MEMORY_LEDGER_TABLES.work, { status: 'deadLetter' }) as Promise<MemoryV2WorkRecord[]>;
+  }
+
+  async discardDeadLetterWork(id: number): Promise<void> {
+    await this.unitOfWork.run('maintenance', async (database) => {
+      const [work] = await database.get(MEMORY_LEDGER_TABLES.work, { id, status: 'deadLetter' }) as MemoryV2WorkRecord[];
+      if (!work) {
+        throw new MemoryRuntimeError('maintenance', 'validation', 'memory_dead_letter_not_found', 'Dead-letter work does not exist.');
+      }
+      await database.set(MEMORY_LEDGER_TABLES.work, { id: work.id }, {
+        status: 'cancelled',
+        payload: '{}',
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      });
+      await this.writeAudit(database, {
+        idempotencyKey: `dead-letter-discarded:${work.workKey}`,
+        subjectKey: work.subjectKey,
+        contextKey: work.contextKey,
+        eventType: 'dead_letter_discarded',
+        workKey: work.workKey,
+        detail: {
+          errorCode: work.lastErrorCode,
+          errorStage: work.lastErrorStage,
+        },
+      });
+    });
+  }
+}
+
+export function isWorkStatus(value: unknown): value is MemoryWorkStatus {
+  return value === 'pending'
+    || value === 'leased'
+    || value === 'succeeded'
+    || value === 'failed'
+    || value === 'deadLetter'
+    || value === 'cancelled';
 }

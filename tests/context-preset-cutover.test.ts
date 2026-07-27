@@ -107,16 +107,6 @@ function expectedContext(preset: ReturnType<typeof legacyPreset>) {
         maxTokens: null,
       },
       {
-        id: 'long-memory',
-        type: 'longMemory',
-        enabled: true,
-        budgetPriority: 200,
-        maxTokens: null,
-        prompt: 'long memory',
-        extractPrompt: 'extract memory',
-        newQuestionPrompt: 'new question',
-      },
-      {
         id: 'request-documents',
         type: 'requestDocuments',
         enabled: true,

@@ -4,6 +4,14 @@ set -euo pipefail
 BUNDLE_PATH="${1:-}"
 VERIFY_SCOPE="${2:-full}"
 ACTIVATION_MODE="${3:-start}"
+INSTALLER_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOYMENT_TRANSACTION_LIB="${INSTALLER_DIR}/deployment-transaction.sh"
+if [[ ! -f "${DEPLOYMENT_TRANSACTION_LIB}" ]]; then
+  echo "[installer] missing deployment transaction policy: ${DEPLOYMENT_TRANSACTION_LIB}" >&2
+  exit 2
+fi
+# shellcheck disable=SC1090
+source "${DEPLOYMENT_TRANSACTION_LIB}"
 BASE_DIR="${QQBOT_BASE_DIR:-/opt/qqbot}"
 APP_ROOT="${BASE_DIR}/app"
 APP_DIR="${APP_ROOT}/qqbot"
@@ -33,95 +41,159 @@ TRANSACTION_BACKUP_CREATED=0
 TRANSACTION_SNAPSHOT_COMPLETE=0
 APP_SWAPPED=0
 APP_PREVIOUS_EXISTED=0
+DEPLOYMENT_TRANSACTION_STATE_FILE="${SHARED_DIR}/deployment-transaction.state"
+NEW_TRANSACTION_ID="${TRANSACTION_ID}"
+NEW_TRANSACTION_BACKUP_DIR="${TRANSACTION_BACKUP_DIR}"
 
-remove_snapshot_target() {
-  local target="$1"
-  if [[ -d "${target}" && ! -L "${target}" ]]; then
-    rm -r -- "${target}"
-  elif [[ -e "${target}" || -L "${target}" ]]; then
-    rm -f -- "${target}"
+inhibit_deployment_boot() {
+  local inhibit_failed=0
+  local unit
+  for unit in qqbot.target qqbot-koishi.service qqbot-llbot.service; do
+    if systemctl cat "${unit}" >/dev/null 2>&1; then
+      systemctl disable "${unit}" >/dev/null || inhibit_failed=1
+    fi
+  done
+  sync -f "${SYSTEMD_DIR}" || inhibit_failed=1
+  if [[ -d "${SYSTEMD_DIR}/multi-user.target.wants" ]]; then
+    sync -f "${SYSTEMD_DIR}/multi-user.target.wants" || inhibit_failed=1
   fi
+  [[ "${inhibit_failed}" == "0" ]]
 }
 
-snapshot_path() {
-  local key="$1"
-  local target="$2"
-  if [[ ! "${key}" =~ ^[a-z0-9-]+$ ]]; then
-    echo "[installer] invalid transaction snapshot key: ${key}" >&2
+verify_deployment_boot_inhibited() {
+  if systemctl is-enabled --quiet qqbot.target 2>/dev/null; then
+    echo "[installer] qqbot.target is still enabled during deployment transaction" >&2
     return 1
   fi
-  mkdir -p "${TRANSACTION_PATHS_DIR}/${key}"
-  if [[ -e "${target}" || -L "${target}" ]]; then
-    cp -a -- "${target}" "${TRANSACTION_PATHS_DIR}/${key}/value"
-    touch "${TRANSACTION_PATHS_DIR}/${key}/present"
-  else
-    touch "${TRANSACTION_PATHS_DIR}/${key}/absent"
-  fi
-}
-
-restore_snapshot_path() {
-  local key="$1"
-  local target="$2"
-  local snapshot="${TRANSACTION_PATHS_DIR}/${key}"
-  if [[ -f "${snapshot}/present" ]]; then
-    remove_snapshot_target "${target}"
-    mkdir -p "$(dirname "${target}")"
-    cp -a -- "${snapshot}/value" "${target}"
-    return
-  fi
-  if [[ -f "${snapshot}/absent" ]]; then
-    remove_snapshot_target "${target}"
-    return
-  fi
-  echo "[installer] transaction snapshot is missing: ${key}" >&2
-  return 1
-}
-
-snapshot_database() {
-  local target="${DATA_DIR}/koishi.db"
-  local snapshot="${TRANSACTION_PATHS_DIR}/database"
-  mkdir -p "${snapshot}"
-  if [[ -f "${target}" ]]; then
-    python3 - "${target}" "${snapshot}/koishi.db" <<'PY'
-import sqlite3
-import sys
-
-source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
-destination = sqlite3.connect(sys.argv[2])
-try:
-    source.backup(destination)
-finally:
-    destination.close()
-    source.close()
-PY
-    chmod 600 "${snapshot}/koishi.db"
-    touch "${snapshot}/present"
-  elif [[ -e "${target}" || -L "${target}" ]]; then
-    echo "[installer] SQLite path must be a regular file: ${target}" >&2
+  if systemctl is-enabled --quiet qqbot-koishi.service 2>/dev/null; then
+    echo "[installer] qqbot-koishi.service must not own an independent boot path" >&2
     return 1
-  else
-    touch "${snapshot}/absent"
+  fi
+  if systemctl is-enabled --quiet qqbot-llbot.service 2>/dev/null; then
+    echo "[installer] qqbot-llbot.service must not own an independent boot path" >&2
+    return 1
   fi
 }
 
-restore_database_snapshot() {
-  local target="${DATA_DIR}/koishi.db"
-  local snapshot="${TRANSACTION_PATHS_DIR}/database"
-  remove_snapshot_target "${target}"
-  remove_snapshot_target "${target}-wal"
-  remove_snapshot_target "${target}-shm"
-  if [[ -f "${snapshot}/present" ]]; then
-    cp -a -- "${snapshot}/koishi.db" "${target}"
-  elif [[ ! -f "${snapshot}/absent" ]]; then
-    echo "[installer] transaction database snapshot is missing" >&2
+enable_deployment_boot() {
+  systemctl enable qqbot.target >/dev/null || return 1
+  sync -f "${SYSTEMD_DIR}" || return 1
+  sync -f "${SYSTEMD_DIR}/multi-user.target.wants" || return 1
+  if ! systemctl is-enabled --quiet qqbot.target; then
+    echo "[installer] qqbot.target did not become enabled after deployment gates" >&2
     return 1
   fi
 }
 
 restore_early_environment() {
-  restore_snapshot_path "env-server" "${ENV_SERVER}"
-  restore_snapshot_path "env-runtime" "${ENV_RUNTIME}"
-  restore_snapshot_path "env-pmhq" "${SHARED_DIR}/.env.pmhq"
+  local restore_failed=0
+  deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-server" "${ENV_SERVER}" || restore_failed=1
+  deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-runtime" "${ENV_RUNTIME}" || restore_failed=1
+  deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-pmhq" "${SHARED_DIR}/.env.pmhq" || restore_failed=1
+  [[ "${restore_failed}" == "0" ]]
+}
+
+stop_deployment_stack() {
+  local stop_failed=0
+  systemctl stop qqbot.target qqbot-koishi.service qqbot-llbot.service || stop_failed=1
+  inhibit_deployment_boot || stop_failed=1
+  if systemctl is-active --quiet qqbot.target; then
+    echo "[installer] qqbot.target is still active after stop" >&2
+    stop_failed=1
+  fi
+  if systemctl is-active --quiet qqbot-koishi.service; then
+    echo "[installer] qqbot-koishi.service is still active after target stop" >&2
+    stop_failed=1
+  fi
+  verify_deployment_boot_inhibited || stop_failed=1
+  [[ "${stop_failed}" == "0" ]]
+}
+
+restore_offline_transaction() {
+  local restore_failed=0
+
+  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" != "offline-restore-verification" ]]; then
+    deployment_transaction_restore_application \
+      "${APP_ROOT}" \
+      "${PREVIOUS_APP_ROOT}" \
+      "${FAILED_NEW_APP_ROOT}" \
+      || restore_failed=1
+
+    if [[ "${TRANSACTION_SNAPSHOT_COMPLETE}" == "1" ]]; then
+      deployment_transaction_restore_database_snapshot \
+        "${TRANSACTION_PATHS_DIR}" \
+        "${DATA_DIR}/koishi.db" \
+        || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-agents" "${PERSISTENT_AGENT_DIR}" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-skills" "${AGENT_DATA_ROOT}/skills" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-computer" "${AGENT_DATA_ROOT}/computer" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-app-agent" "${LEGACY_APP_AGENT_DIR}" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "archives" "${DATA_DIR}/chatluna/archive" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-presets" "${DATA_DIR}/chathub/presets" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "context-presets" "${DATA_DIR}/chathub/context-presets" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "role-presets" "${DATA_DIR}/chathub/role-presets" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-config" "${DATA_DIR}/model-config.json" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-kek" "${SHARED_DIR}/model-config.kek" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-map" "${MODEL_CONFIG_MAPPING_FILE}" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-llbot" "${SYSTEMD_DIR}/qqbot-llbot.service" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-koishi" "${SYSTEMD_DIR}/qqbot-koishi.service" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-hbu-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-hbu-jw.service" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-genshin-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-genshin.service" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-target" "${SYSTEMD_DIR}/qqbot.target" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf" || restore_failed=1
+    fi
+
+    if [[ "${TRANSACTION_BACKUP_CREATED}" == "1" ]]; then
+      restore_early_environment || restore_failed=1
+    fi
+    if [[ "${restore_failed}" == "0" ]]; then
+      if [[ -f "${DATA_DIR}/koishi.db" ]]; then
+        deployment_transaction_validate_sqlite_database "${DATA_DIR}/koishi.db" || restore_failed=1
+        sync -f "${DATA_DIR}/koishi.db" || restore_failed=1
+      elif [[ -e "${DATA_DIR}/koishi.db" || -L "${DATA_DIR}/koishi.db" ]]; then
+        echo "[installer] restored SQLite path is not a regular file" >&2
+        restore_failed=1
+      fi
+    fi
+    if [[ "${restore_failed}" == "0" ]]; then
+      sync -f "${DATA_DIR}" || restore_failed=1
+      sync -f "${SHARED_DIR}" || restore_failed=1
+      sync -f "${SYSTEMD_DIR}" || restore_failed=1
+      if [[ -d "${APP_ROOT}" ]]; then
+        sync -f "${APP_ROOT}" || restore_failed=1
+      else
+        deployment_transaction_fsync_existing_parent "${APP_ROOT}" || restore_failed=1
+      fi
+    fi
+    if [[ "${restore_failed}" == "0" ]]; then
+      deployment_transaction_mark_restore_verification || restore_failed=1
+    fi
+  fi
+
+  systemctl daemon-reload || restore_failed=1
+  if [[ "${restore_failed}" == "0" && "${APP_PREVIOUS_EXISTED}" == "0" ]]; then
+    deployment_transaction_complete || restore_failed=1
+    [[ "${restore_failed}" == "0" ]]
+    return
+  fi
+  if [[ "${restore_failed}" == "0" ]]; then
+    systemctl start qqbot.target || restore_failed=1
+  fi
+  if [[ "${restore_failed}" == "0" ]]; then
+    QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}" \
+      || restore_failed=1
+  fi
+  if [[ "${restore_failed}" == "0" ]]; then
+    deployment_transaction_complete_after_boot_verification enable_deployment_boot \
+      || restore_failed=1
+  fi
+  if [[ "${restore_failed}" != "0" ]]; then
+    stop_deployment_stack || true
+  fi
+
+  [[ "${restore_failed}" == "0" ]]
 }
 
 rollback_after_failure() {
@@ -133,65 +205,32 @@ rollback_after_failure() {
   set +e
   local rollback_failed=0
   if [[ "${ACTIVATION_STARTED}" == "1" ]]; then
-    echo "[installer] deployment failed after cutover began; restoring transaction ${TRANSACTION_BACKUP_DIR}" >&2
-    systemctl stop qqbot.target >/dev/null 2>&1
-
-    if [[ "${APP_SWAPPED}" == "1" ]]; then
-      if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
-        if [[ -e "${FAILED_NEW_APP_ROOT}" || -L "${FAILED_NEW_APP_ROOT}" ]]; then
-          rollback_failed=1
-          echo "[installer] failed-new-app destination already exists: ${FAILED_NEW_APP_ROOT}" >&2
-        else
-          mv "${APP_ROOT}" "${FAILED_NEW_APP_ROOT}" || rollback_failed=1
-        fi
+    case "${DEPLOYMENT_TRANSACTION_PHASE}" in
+      offline-*|app-swap-intent|app-previous-moved)
+        echo "[installer] deployment failed before runtime ownership transfer; restoring transaction ${TRANSACTION_BACKUP_DIR}" >&2
+        ;;
+    esac
+    deployment_transaction_execute_activated_failure \
+      stop_deployment_stack \
+      restore_offline_transaction \
+      || rollback_failed=1
+    if [[ "${DEPLOYMENT_TRANSACTION_FAILURE_ACTION}" == "stop-and-roll-forward" ]]; then
+      echo "[installer] deployment failed after runtime ownership transfer; no snapshot was restored" >&2
+      echo "[installer] the new application and database remain paired; repair forward before restarting qqbot.target" >&2
+      echo "[installer] recovery material: ${TRANSACTION_BACKUP_DIR}" >&2
+      if [[ "${rollback_failed}" != "0" ]]; then
+        echo "[installer] qqbot.target or qqbot-koishi.service could not be confirmed stopped" >&2
       fi
+      exit "${status}"
     fi
-    if [[ "${APP_PREVIOUS_EXISTED}" == "1" ]]; then
-      if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
-        rollback_failed=1
-        echo "[installer] cannot restore previous app over existing path: ${APP_ROOT}" >&2
-      else
-        mv "${PREVIOUS_APP_ROOT}" "${APP_ROOT}" || rollback_failed=1
-      fi
-    fi
-
-    if [[ "${TRANSACTION_SNAPSHOT_COMPLETE}" == "1" ]]; then
-      restore_database_snapshot || rollback_failed=1
-      restore_snapshot_path "persistent-agents" "${PERSISTENT_AGENT_DIR}" || rollback_failed=1
-      restore_snapshot_path "persistent-skills" "${AGENT_DATA_ROOT}/skills" || rollback_failed=1
-      restore_snapshot_path "persistent-computer" "${AGENT_DATA_ROOT}/computer" || rollback_failed=1
-      restore_snapshot_path "legacy-app-agent" "${LEGACY_APP_AGENT_DIR}" || rollback_failed=1
-      restore_snapshot_path "archives" "${DATA_DIR}/chatluna/archive" || rollback_failed=1
-      restore_snapshot_path "legacy-presets" "${DATA_DIR}/chathub/presets" || rollback_failed=1
-      restore_snapshot_path "context-presets" "${DATA_DIR}/chathub/context-presets" || rollback_failed=1
-      restore_snapshot_path "role-presets" "${DATA_DIR}/chathub/role-presets" || rollback_failed=1
-      restore_snapshot_path "model-config" "${DATA_DIR}/model-config.json" || rollback_failed=1
-      restore_snapshot_path "model-kek" "${SHARED_DIR}/model-config.kek" || rollback_failed=1
-      restore_snapshot_path "model-map" "${MODEL_CONFIG_MAPPING_FILE}" || rollback_failed=1
-      restore_snapshot_path "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container" || rollback_failed=1
-      restore_snapshot_path "unit-llbot" "${SYSTEMD_DIR}/qqbot-llbot.service" || rollback_failed=1
-      restore_snapshot_path "unit-koishi" "${SYSTEMD_DIR}/qqbot-koishi.service" || rollback_failed=1
-      restore_snapshot_path "unit-hbu-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-hbu-jw.service" || rollback_failed=1
-      restore_snapshot_path "unit-genshin-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-genshin.service" || rollback_failed=1
-      restore_snapshot_path "unit-target" "${SYSTEMD_DIR}/qqbot.target" || rollback_failed=1
-      restore_snapshot_path "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service" || rollback_failed=1
-      restore_snapshot_path "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf" || rollback_failed=1
+    if [[ "${DEPLOYMENT_TRANSACTION_FAILURE_ACTION}" == "keep-installed-stopped" ]]; then
+      echo "[installer] deployment remains installed and boot-inhibited for an explicit resume" >&2
+      exit "${status}"
     fi
   fi
 
-  if [[ "${TRANSACTION_BACKUP_CREATED}" == "1" ]]; then
+  if [[ "${ACTIVATION_STARTED}" != "1" && "${TRANSACTION_BACKUP_CREATED}" == "1" ]]; then
     restore_early_environment || rollback_failed=1
-  fi
-
-  if [[ "${ACTIVATION_STARTED}" == "1" ]]; then
-    systemctl daemon-reload || rollback_failed=1
-    if [[ "${rollback_failed}" == "0" ]]; then
-      systemctl start qqbot.target || rollback_failed=1
-    fi
-    if [[ "${rollback_failed}" == "0" ]]; then
-      QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}" \
-        || rollback_failed=1
-    fi
   fi
 
   if [[ "${rollback_failed}" != "0" ]]; then
@@ -226,7 +265,7 @@ require_cmd() {
   fi
 }
 
-for cmd in bash tar node pnpm python3 systemctl journalctl curl podman cloudflared; do
+for cmd in bash tar node pnpm python3 systemctl journalctl curl podman cloudflared sync flock; do
   require_cmd "${cmd}"
 done
 
@@ -276,6 +315,12 @@ chmod 700 \
   "${SHARED_DIR}" \
   "${DATA_DIR}/chatluna/archive" \
   "${DATA_DIR}/chatluna/web-artifacts"
+exec 9>"${SHARED_DIR}/deployment-installer.lock"
+chmod 600 "${SHARED_DIR}/deployment-installer.lock"
+if ! flock -n 9; then
+  echo "[installer] another deployment transaction is active" >&2
+  exit 2
+fi
 
 if [[ ! -f "${ENV_SERVER}" ]]; then
   echo "[installer] missing server env: ${ENV_SERVER}" >&2
@@ -283,14 +328,6 @@ if [[ ! -f "${ENV_SERVER}" ]]; then
   exit 2
 fi
 chmod 600 "${ENV_SERVER}"
-
-mkdir -p "${BASE_DIR}/backup"
-mkdir "${TRANSACTION_BACKUP_DIR}"
-chmod 700 "${TRANSACTION_BACKUP_DIR}"
-snapshot_path "env-server" "${ENV_SERVER}"
-snapshot_path "env-runtime" "${ENV_RUNTIME}"
-snapshot_path "env-pmhq" "${SHARED_DIR}/.env.pmhq"
-TRANSACTION_BACKUP_CREATED=1
 
 ensure_server_env_key() {
   local key="$1"
@@ -314,6 +351,208 @@ remove_env_key() {
   mv "${tmp}" "${file}"
 }
 
+set_env_key() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
+  tmp="$(mktemp "${file}.tmp.XXXXXX")"
+  if [[ -f "${file}" ]]; then
+    awk -v prefix="${key}=" 'index($0, prefix) != 1' "${file}" > "${tmp}"
+  fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${tmp}"
+  chmod 600 "${tmp}"
+  mv "${tmp}" "${file}"
+}
+
+adopt_loaded_deployment_transaction() {
+  VERIFY_SCOPE="${DEPLOYMENT_TRANSACTION_VERIFY_SCOPE}"
+  TRANSACTION_ID="${DEPLOYMENT_TRANSACTION_ID}"
+  TRANSACTION_BACKUP_DIR="${DEPLOYMENT_TRANSACTION_BACKUP_DIR}"
+  TRANSACTION_PATHS_DIR="${TRANSACTION_BACKUP_DIR}/paths"
+  PREVIOUS_APP_ROOT="${TRANSACTION_BACKUP_DIR}/previous-app"
+  FAILED_NEW_APP_ROOT="${TRANSACTION_BACKUP_DIR}/failed-new-app"
+  TRANSACTION_BACKUP_CREATED=1
+  TRANSACTION_SNAPSHOT_COMPLETE="${DEPLOYMENT_TRANSACTION_SNAPSHOT_COMPLETE}"
+  APP_SWAPPED="${DEPLOYMENT_TRANSACTION_APP_SWAPPED}"
+  APP_PREVIOUS_EXISTED="${DEPLOYMENT_TRANSACTION_APP_PREVIOUS_EXISTED}"
+}
+
+reset_new_deployment_transaction() {
+  deployment_transaction_initialize
+  TRANSACTION_ID="${NEW_TRANSACTION_ID}"
+  TRANSACTION_BACKUP_DIR="${NEW_TRANSACTION_BACKUP_DIR}"
+  TRANSACTION_PATHS_DIR="${TRANSACTION_BACKUP_DIR}/paths"
+  PREVIOUS_APP_ROOT="${TRANSACTION_BACKUP_DIR}/previous-app"
+  FAILED_NEW_APP_ROOT="${TRANSACTION_BACKUP_DIR}/failed-new-app"
+  TRANSACTION_BACKUP_CREATED=0
+  TRANSACTION_SNAPSHOT_COMPLETE=0
+  APP_SWAPPED=0
+  APP_PREVIOUS_EXISTED=0
+}
+
+run_memory_v2_runtime_gates() {
+  if [[ "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "memory-v2" && ! -s "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" ]]; then
+    echo "[installer] persisted Memory V2 preflight report is missing: ${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" >&2
+    return 1
+  fi
+
+  verify_deployment_boot_inhibited
+  systemctl daemon-reload
+  systemctl restart qqbot.target
+  QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${DEPLOYMENT_TRANSACTION_VERIFY_SCOPE}"
+
+  if [[ "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "ordinary" ]]; then
+    deployment_transaction_mark_runtime_phase runtime-final
+  fi
+
+  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" == "runtime-bootstrap" ]]; then
+    node "${APP_DIR}/dist/tools/memory-v2-cutover.mjs" bootstrap-verify \
+      --database "${DATA_DIR}/koishi.db" \
+      --model-config "${DATA_DIR}/model-config.json" \
+      --koishi-config "${APP_DIR}/koishi.yml" \
+      --bundled-context-dir "${APP_DIR}/data/chathub/context-presets" \
+      --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
+      --preflight-report "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}"
+    deployment_transaction_mark_runtime_phase runtime-probes
+  fi
+
+  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" == "runtime-probes" ]]; then
+    set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"
+    set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"
+    set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"
+    remove_env_key "${ENV_RUNTIME}" "MEMORY_MAINTENANCE"
+    remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
+    remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
+    systemctl restart qqbot-koishi.service
+    QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" koishi
+    (
+      set -a
+      # shellcheck disable=SC1090
+      . "${ENV_SERVER}"
+      if [[ -f "${ENV_RUNTIME}" ]]; then
+        # shellcheck disable=SC1090
+        . "${ENV_RUNTIME}"
+      fi
+      set +a
+      node "${APP_DIR}/dist/tools/memory-v2-cutover.mjs" probe-gate \
+        --database "${DATA_DIR}/koishi.db" \
+        --preflight-report "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" \
+        --admin-origin "${QQBOT_ADMIN_SSH_ORIGIN}"
+    )
+    deployment_transaction_mark_runtime_phase runtime-backfill
+  fi
+
+  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" == "runtime-backfill" ]]; then
+    local attempt=0
+    local ready=0
+    local verify_error="${STAGING_DIR}/memory-v2-verify.error"
+    mkdir -p "${STAGING_DIR}"
+    while [[ "${attempt}" -lt 180 ]]; do
+      attempt=$((attempt + 1))
+      if node "${APP_DIR}/dist/tools/memory-v2-cutover.mjs" verify \
+        --database "${DATA_DIR}/koishi.db" \
+        --model-config "${DATA_DIR}/model-config.json" \
+        --koishi-config "${APP_DIR}/koishi.yml" \
+        --bundled-context-dir "${APP_DIR}/data/chathub/context-presets" \
+        --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
+        --preflight-report "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" \
+        2>"${verify_error}"
+      then
+        ready=1
+        break
+      fi
+      sleep 5
+    done
+    if [[ "${ready}" != "1" ]]; then
+      cat "${verify_error}" >&2
+      echo "[installer] Memory V2 final backfill and stranded gate timed out" >&2
+      return 1
+    fi
+    rm -f -- "${verify_error}"
+    deployment_transaction_mark_runtime_phase runtime-final
+  fi
+
+  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" != "runtime-final" ]]; then
+    echo "[installer] runtime transaction stopped in unexpected phase: ${DEPLOYMENT_TRANSACTION_PHASE}" >&2
+    return 1
+  fi
+  QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${DEPLOYMENT_TRANSACTION_VERIFY_SCOPE}"
+}
+
+resume_or_recover_deployment_transaction() {
+  local load_status=0
+  deployment_transaction_load_existing "${DEPLOYMENT_TRANSACTION_STATE_FILE}" || load_status=$?
+  if [[ "${load_status}" == "1" ]]; then
+    return 0
+  fi
+  if [[ "${load_status}" != "0" ]]; then
+    return "${load_status}"
+  fi
+
+  case "${DEPLOYMENT_TRANSACTION_BACKUP_DIR}" in
+    "${BASE_DIR}/backup/deploy-"*) ;;
+    *) echo "[installer] persisted deployment backup is outside the managed backup root" >&2; return 2 ;;
+  esac
+  if [[
+    "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "memory-v2"
+    && "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" != "${DEPLOYMENT_TRANSACTION_BACKUP_DIR}/memory-v2-preflight.json"
+  ]]; then
+    echo "[installer] persisted Memory V2 report path is outside its transaction backup" >&2
+    return 2
+  fi
+  adopt_loaded_deployment_transaction
+  inhibit_deployment_boot
+  verify_deployment_boot_inhibited
+  ACTIVATION_STARTED=1
+
+  case "${DEPLOYMENT_TRANSACTION_PHASE}" in
+    runtime-bootstrap|runtime-probes|runtime-backfill|runtime-final)
+      echo "[installer] resuming transaction ${TRANSACTION_ID} at ${DEPLOYMENT_TRANSACTION_PHASE}"
+      run_memory_v2_runtime_gates
+      deployment_transaction_complete_after_boot_verification enable_deployment_boot
+      ACTIVATION_STARTED=0
+      echo "[installer] resumed deployment transaction ${TRANSACTION_ID}"
+      exit 0
+      ;;
+    installed-stopped)
+      if [[ "${ACTIVATION_MODE}" == "keep-stopped" ]]; then
+        echo "[installer] transaction ${TRANSACTION_ID} remains installed and boot-inhibited"
+        ACTIVATION_STARTED=0
+        exit 0
+      fi
+      deployment_transaction_transfer_runtime_ownership
+      run_memory_v2_runtime_gates
+      deployment_transaction_complete_after_boot_verification enable_deployment_boot
+      ACTIVATION_STARTED=0
+      echo "[installer] activated stopped deployment transaction ${TRANSACTION_ID}"
+      exit 0
+      ;;
+    offline-inhibited|offline-snapshot-ready|app-swap-intent|app-previous-moved|offline-app-swapped|offline-restore-verification)
+      echo "[installer] recovering interrupted offline transaction ${TRANSACTION_ID}" >&2
+      restore_offline_transaction
+      ACTIVATION_STARTED=0
+      reset_new_deployment_transaction
+      ;;
+    *)
+      echo "[installer] unsupported persisted deployment phase: ${DEPLOYMENT_TRANSACTION_PHASE}" >&2
+      return 2
+      ;;
+  esac
+}
+
+resume_or_recover_deployment_transaction
+
+mkdir -p "${BASE_DIR}/backup"
+mkdir "${TRANSACTION_BACKUP_DIR}"
+chmod 700 "${TRANSACTION_BACKUP_DIR}"
+sync -f "${BASE_DIR}/backup"
+sync -f "${TRANSACTION_BACKUP_DIR}"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-server" "${ENV_SERVER}"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-runtime" "${ENV_RUNTIME}"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-pmhq" "${SHARED_DIR}/.env.pmhq"
+TRANSACTION_BACKUP_CREATED=1
+
 ensure_server_env_defaults() {
   ensure_server_env_key "GENSHIN_PUBLIC_BASE_URL" "https://genshin.kkkzbh.cn"
   ensure_server_env_key "GENSHIN_BIND_PAGE_PATH" "/genshin/bind"
@@ -333,6 +572,17 @@ ensure_server_env_defaults() {
     remove_env_key "${file}" "CHATLUNA_PRESET_DIRS"
     remove_env_key "${file}" "CHATLUNA_BUNDLED_PRESET_DIR"
     remove_env_key "${file}" "CHATLUNA_RUNTIME_PRESET_DIR"
+    remove_env_key "${file}" "MEMORY_EXTRACT_BASE_URL"
+    remove_env_key "${file}" "MEMORY_EXTRACT_API_KEY"
+    remove_env_key "${file}" "MEMORY_EXTRACT_MODEL"
+    remove_env_key "${file}" "MEMORY_EXTRACT_TIMEOUT_MS"
+    remove_env_key "${file}" "MEMORY_EXTRACT_REQUEST_MODE"
+    remove_env_key "${file}" "MEMORY_EXTRACT_STRUCTURED_OUTPUT_PROTOCOL"
+    remove_env_key "${file}" "MEMORY_EXTRACT_SUPPORTS_JSON_MODE"
+    remove_env_key "${file}" "MEMORY_EMBED_BASE_URL"
+    remove_env_key "${file}" "MEMORY_EMBED_API_KEY"
+    remove_env_key "${file}" "MEMORY_EMBED_MODEL"
+    remove_env_key "${file}" "MEMORY_EMBED_TIMEOUT_MS"
   done
   chmod 600 "${ENV_SERVER}"
 }
@@ -373,12 +623,17 @@ require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
 require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/memory-v2-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"
+require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"
 require_bundle_entry "qqbot/data/chathub/context-presets"
 require_bundle_entry "qqbot/data/chathub/role-presets"
 require_bundle_catalog "qqbot/data/chathub/context-presets"
 require_bundle_catalog "qqbot/data/chathub/role-presets"
+require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
 require_bundle_entry "qqbot/deploy/model-config-contract.mjs"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
+require_bundle_entry "qqbot/scripts/verify-memory-v2-readiness.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "chatluna/packages/core/package.json"
 
@@ -566,6 +821,21 @@ if [[ -d "${APP_DIR}/data/chathub/presets" ]]; then
     --report "${STAGING_DIR}/context-preset-preflight.json"
 fi
 
+MEMORY_V2_STATE="empty"
+if [[ -f "${DATA_DIR}/koishi.db" ]]; then
+  MEMORY_V2_STATUS_JSON="$(
+    node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" status \
+      --database "${DATA_DIR}/koishi.db"
+  )"
+  MEMORY_V2_STATE="$(
+    node -e '
+      const value = JSON.parse(process.argv[1]);
+      if (!["empty", "legacy", "v2"].includes(value.state)) process.exit(2);
+      process.stdout.write(value.state);
+    ' "${MEMORY_V2_STATUS_JSON}"
+  )"
+fi
+
 MODEL_CONFIG_CUTOVER_REQUIRED=0
 MODEL_CONFIG_CONTRACT_REQUIRED=0
 MODEL_CONFIG_BACKUP_DIR=""
@@ -580,9 +850,11 @@ if [[ -e "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
 fi
 if [[ -f "${DATA_DIR}/model-config.json" && -f "${SHARED_DIR}/model-config.kek" ]]; then
   MODEL_CONFIG_CONTRACT_REQUIRED=1
-  node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" preflight \
-    --config "${DATA_DIR}/model-config.json" \
-    --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
+  if [[ "${MEMORY_V2_STATE}" != "legacy" ]]; then
+    node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" preflight \
+      --config "${DATA_DIR}/model-config.json" \
+      --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
+  fi
 elif [[ -e "${DATA_DIR}/model-config.json" || -e "${SHARED_DIR}/model-config.kek" ]]; then
   echo "[installer] canonical model config and KEK must either both exist or both be absent" >&2
   exit 2
@@ -606,32 +878,83 @@ else
     "${MODEL_CONFIG_MAPPING_ARGS[@]}"
 fi
 
-ACTIVATION_STARTED=1
-if systemctl cat qqbot.target >/dev/null 2>&1; then
-  systemctl stop qqbot.target
+MEMORY_V2_CUTOVER_REQUIRED=0
+MEMORY_V2_INITIALIZE_REQUIRED=0
+MEMORY_V2_BACKUP_DIR="${TRANSACTION_BACKUP_DIR}/memory-v2-cutover"
+MEMORY_V2_PREFLIGHT_REPORT="${TRANSACTION_BACKUP_DIR}/memory-v2-preflight.json"
+if [[ -f "${DATA_DIR}/koishi.db" ]]; then
+  if [[ "${MEMORY_V2_STATE}" == "legacy" ]]; then
+    if [[ "${ACTIVATION_MODE}" != "start" ]]; then
+      echo "[installer] Memory V2 cutover requires activation mode start" >&2
+      exit 2
+    fi
+    if [[ ! -f "${DATA_DIR}/model-config.json" || ! -f "${SHARED_DIR}/model-config.kek" ]]; then
+      echo "[installer] Memory V2 cutover requires an already-applied canonical model config" >&2
+      exit 2
+    fi
+    MEMORY_V2_CUTOVER_REQUIRED=1
+    node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" preflight \
+      --database "${DATA_DIR}/koishi.db" \
+      --model-config "${DATA_DIR}/model-config.json" \
+      --koishi-config "${STAGE_QQBOT}/koishi.yml" \
+      --bundled-context-dir "${STAGE_QQBOT}/data/chathub/context-presets" \
+      --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
+      --report "${MEMORY_V2_PREFLIGHT_REPORT}"
+  elif [[ "${MEMORY_V2_STATE}" == "empty" ]]; then
+    MEMORY_V2_INITIALIZE_REQUIRED=1
+  fi
+else
+  MEMORY_V2_INITIALIZE_REQUIRED=1
 fi
 
-snapshot_database
-snapshot_path "persistent-agents" "${PERSISTENT_AGENT_DIR}"
-snapshot_path "persistent-skills" "${AGENT_DATA_ROOT}/skills"
-snapshot_path "persistent-computer" "${AGENT_DATA_ROOT}/computer"
-snapshot_path "legacy-app-agent" "${LEGACY_APP_AGENT_DIR}"
-snapshot_path "archives" "${DATA_DIR}/chatluna/archive"
-snapshot_path "legacy-presets" "${DATA_DIR}/chathub/presets"
-snapshot_path "context-presets" "${DATA_DIR}/chathub/context-presets"
-snapshot_path "role-presets" "${DATA_DIR}/chathub/role-presets"
-snapshot_path "model-config" "${DATA_DIR}/model-config.json"
-snapshot_path "model-kek" "${SHARED_DIR}/model-config.kek"
-snapshot_path "model-map" "${MODEL_CONFIG_MAPPING_FILE}"
-snapshot_path "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container"
-snapshot_path "unit-llbot" "${SYSTEMD_DIR}/qqbot-llbot.service"
-snapshot_path "unit-koishi" "${SYSTEMD_DIR}/qqbot-koishi.service"
-snapshot_path "unit-hbu-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-hbu-jw.service"
-snapshot_path "unit-genshin-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-genshin.service"
-snapshot_path "unit-target" "${SYSTEMD_DIR}/qqbot.target"
-snapshot_path "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service"
-snapshot_path "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf"
+ACTIVATION_STARTED=1
+DEPLOYMENT_TRANSACTION_PURPOSE="ordinary"
+if [[ "${MEMORY_V2_CUTOVER_REQUIRED}" == "1" ]]; then
+  DEPLOYMENT_TRANSACTION_PURPOSE="memory-v2"
+  sync -f "${MEMORY_V2_PREFLIGHT_REPORT}"
+  sync -f "${TRANSACTION_BACKUP_DIR}"
+fi
+deployment_transaction_configure \
+  "${DEPLOYMENT_TRANSACTION_STATE_FILE}" \
+  "${TRANSACTION_ID}" \
+  "${TRANSACTION_BACKUP_DIR}" \
+  "${MEMORY_V2_PREFLIGHT_REPORT}" \
+  "${VERIFY_SCOPE}" \
+  "${DEPLOYMENT_TRANSACTION_PURPOSE}" \
+  "${ACTIVATION_MODE}"
+if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
+  APP_PREVIOUS_EXISTED=1
+fi
+deployment_transaction_set_previous_app_existed "${APP_PREVIOUS_EXISTED}"
+deployment_transaction_begin_offline_activation \
+  inhibit_deployment_boot \
+  verify_deployment_boot_inhibited
+if systemctl cat qqbot.target >/dev/null 2>&1; then
+  stop_deployment_stack
+fi
+
+deployment_transaction_snapshot_database "${TRANSACTION_PATHS_DIR}" "${DATA_DIR}/koishi.db"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-agents" "${PERSISTENT_AGENT_DIR}"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-skills" "${AGENT_DATA_ROOT}/skills"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-computer" "${AGENT_DATA_ROOT}/computer"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-app-agent" "${LEGACY_APP_AGENT_DIR}"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "archives" "${DATA_DIR}/chatluna/archive"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-presets" "${DATA_DIR}/chathub/presets"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "context-presets" "${DATA_DIR}/chathub/context-presets"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "role-presets" "${DATA_DIR}/chathub/role-presets"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-config" "${DATA_DIR}/model-config.json"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-kek" "${SHARED_DIR}/model-config.kek"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-map" "${MODEL_CONFIG_MAPPING_FILE}"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-llbot" "${SYSTEMD_DIR}/qqbot-llbot.service"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-koishi" "${SYSTEMD_DIR}/qqbot-koishi.service"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-hbu-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-hbu-jw.service"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-genshin-tunnel" "${SYSTEMD_DIR}/cloudflared-qqbot-genshin.service"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-target" "${SYSTEMD_DIR}/qqbot.target"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf"
 TRANSACTION_SNAPSHOT_COMPLETE=1
+deployment_transaction_mark_snapshot_complete
 
 (
   set -a
@@ -682,25 +1005,71 @@ if [[ "${MODEL_CONFIG_CUTOVER_REQUIRED}" == "1" ]]; then
     --report "${MODEL_CONFIG_BACKUP_DIR}/applied.json" \
     --confirm-service-stopped
 fi
-if [[ "${MODEL_CONFIG_CONTRACT_REQUIRED}" == "1" ]]; then
+if [[
+  "${MODEL_CONFIG_CONTRACT_REQUIRED}" == "1"
+  && "${MEMORY_V2_CUTOVER_REQUIRED}" != "1"
+]]; then
   node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" apply \
     --config "${DATA_DIR}/model-config.json" \
     --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js" \
     --report "${TRANSACTION_BACKUP_DIR}/model-config-contract.json" \
     --confirm-service-stopped
 fi
-if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then
-  mv "${APP_ROOT}" "${PREVIOUS_APP_ROOT}"
-  APP_PREVIOUS_EXISTED=1
+if [[ "${MEMORY_V2_INITIALIZE_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" initialize \
+    --database "${DATA_DIR}/koishi.db" \
+    --confirm-service-stopped
+  set_env_key "${ENV_SERVER}" "MEMORY_ENABLED" "true"
+  set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"
+  set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"
+  set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_ENABLED"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_MAINTENANCE"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
 fi
-mv "${WORK_DIR}" "${APP_ROOT}"
+if [[ "${MEMORY_V2_CUTOVER_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" apply \
+    --database "${DATA_DIR}/koishi.db" \
+    --model-config "${DATA_DIR}/model-config.json" \
+    --koishi-config "${STAGE_QQBOT}/koishi.yml" \
+    --bundled-context-dir "${STAGE_QQBOT}/data/chathub/context-presets" \
+    --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
+    --preflight-report "${MEMORY_V2_PREFLIGHT_REPORT}" \
+    --backup-dir "${MEMORY_V2_BACKUP_DIR}" \
+    --report "${MEMORY_V2_BACKUP_DIR}/applied.json" \
+    --confirm-service-stopped
+  set_env_key "${ENV_SERVER}" "MEMORY_ENABLED" "true"
+  set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "true"
+  set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"
+  set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_ENABLED"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_MAINTENANCE"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
+  remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
+  if [[ "${MODEL_CONFIG_CONTRACT_REQUIRED}" == "1" ]]; then
+    node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" preflight \
+      --config "${DATA_DIR}/model-config.json" \
+      --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
+    node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" apply \
+      --config "${DATA_DIR}/model-config.json" \
+      --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js" \
+      --report "${TRANSACTION_BACKUP_DIR}/model-config-contract.json" \
+      --confirm-service-stopped
+  fi
+fi
+deployment_transaction_fsync_tree "${WORK_DIR}"
+deployment_transaction_swap_application \
+  "${APP_ROOT}" \
+  "${WORK_DIR}" \
+  "${PREVIOUS_APP_ROOT}"
 APP_SWAPPED=1
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
-systemctl enable qqbot.target >/dev/null
 if [[ "${ACTIVATION_MODE}" == "start" ]]; then
-  systemctl restart qqbot.target
-  QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${VERIFY_SCOPE}"
+  deployment_transaction_transfer_runtime_ownership
+  run_memory_v2_runtime_gates
 else
+  deployment_transaction_mark_installed_stopped
   echo "[installer] application installed with qqbot.target kept stopped"
 fi
 
@@ -709,5 +1078,8 @@ if [[ "${CONTEXT_PRESET_CUTOVER_REQUIRED}" == "1" && "${ACTIVATION_MODE}" == "st
 fi
 clear_managed_dir "${INCOMING_DIR}"
 clear_managed_dir "${STAGING_DIR}"
+if [[ "${ACTIVATION_MODE}" == "start" ]]; then
+  deployment_transaction_complete_after_boot_verification enable_deployment_boot
+fi
 ACTIVATION_STARTED=0
 echo "[installer] deployed single instance to ${APP_ROOT}"

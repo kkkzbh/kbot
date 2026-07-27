@@ -1,5 +1,13 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -15,6 +23,465 @@ function createTempDir(): string {
   tempDirs.push(dir);
   return dir;
 }
+
+function runDeploymentFailureScenario(mode: 'offline' | 'runtime'): {
+  action: string;
+  database: string;
+  stopped: boolean;
+} {
+  const root = createTempDir();
+  const database = join(root, 'koishi.db');
+  const snapshot = join(root, 'koishi.snapshot.db');
+  const stopped = join(root, 'stack.stopped');
+  writeFileSync(database, 'snapshot-state\n');
+  writeFileSync(snapshot, 'snapshot-state\n');
+  const script = [
+    'set -euo pipefail',
+    'source "$1"',
+    'TEST_DATABASE="$2"',
+    'TEST_SNAPSHOT="$3"',
+    'TEST_STOPPED="$4"',
+    'TEST_MODE="$5"',
+    'deployment_transaction_set_previous_app_existed 1',
+    'deployment_transaction_begin_offline_activation',
+    'deployment_transaction_mark_snapshot_complete',
+    'deployment_transaction_mark_app_swap_intent',
+    'deployment_transaction_mark_previous_app_moved',
+    'deployment_transaction_mark_app_swapped 1',
+    'stop_stack() { printf stopped > "${TEST_STOPPED}"; }',
+    'restore_offline() { cp -- "${TEST_SNAPSHOT}" "${TEST_DATABASE}"; }',
+    'if [[ "${TEST_MODE}" == "runtime" ]]; then',
+    '  deployment_transaction_transfer_runtime_ownership',
+    '  printf "unrelated-plugin-write\\n" >> "${TEST_DATABASE}"',
+    'else',
+    '  printf "offline-cutover-mutation\\n" >> "${TEST_DATABASE}"',
+    'fi',
+    'deployment_transaction_execute_activated_failure stop_stack restore_offline',
+    'printf "%s" "${DEPLOYMENT_TRANSACTION_FAILURE_ACTION}"',
+  ].join('\n');
+  const action = execFileSync(
+    'bash',
+    [
+      '-c',
+      script,
+      'deployment-fault-harness',
+      join(process.cwd(), 'deploy/deployment-transaction.sh'),
+      database,
+      snapshot,
+      stopped,
+      mode,
+    ],
+    { encoding: 'utf8' },
+  );
+  return {
+    action,
+    database: readFileSync(database, 'utf8'),
+    stopped: readFileSync(stopped, 'utf8') === 'stopped',
+  };
+}
+
+function runDurableRebootScenario(mode: 'offline' | 'runtime'): {
+  database: string;
+  enabled: boolean;
+  stateExists: boolean;
+  gates: string;
+} {
+  const root = createTempDir();
+  const transaction = join(process.cwd(), 'deploy/deployment-transaction.sh');
+  const state = join(root, 'deployment.state');
+  const database = join(root, 'koishi.db');
+  const snapshot = join(root, 'koishi.snapshot.db');
+  const enabled = join(root, 'qqbot.target.enabled');
+  const gates = join(root, 'gates.log');
+  writeFileSync(database, 'legacy-pair\n');
+  writeFileSync(snapshot, 'legacy-pair\n');
+  writeFileSync(enabled, 'enabled\n');
+
+  const first = spawnSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'TEST_ENABLED="$5"',
+    'deployment_transaction_configure "$2" tx-reboot "$3" "$4" full memory-v2 start',
+    'inhibit() { rm -f -- "$TEST_ENABLED"; }',
+    'verify_inhibited() { [[ ! -e "$TEST_ENABLED" ]]; }',
+    'deployment_transaction_begin_offline_activation inhibit verify_inhibited',
+    'deployment_transaction_mark_snapshot_complete',
+    'printf "v2-published\\n" >> "$6"',
+    'if [[ "$7" == runtime ]]; then',
+    '  deployment_transaction_mark_app_swap_intent',
+    '  deployment_transaction_mark_app_swapped 0',
+    '  deployment_transaction_transfer_runtime_ownership',
+    '  deployment_transaction_mark_runtime_phase runtime-probes',
+    'fi',
+  ].join('\n'), 'first-installer',
+  transaction, state, join(root, 'backup'), join(root, 'preflight.json'), enabled, database, mode]);
+
+  execFileSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_load_existing "$2"',
+    '[[ ! -e "$5" ]]',
+    'if [[ "$7" == offline ]]; then',
+    '  [[ "$DEPLOYMENT_TRANSACTION_PHASE" == offline-snapshot-ready ]]',
+    '  cp -- "$8" "$6"',
+    '  deployment_transaction_mark_restore_verification',
+    'else',
+    '  [[ "$DEPLOYMENT_TRANSACTION_PHASE" == runtime-probes ]]',
+    '  printf "probe-gate\\n" >> "$9"',
+    '  deployment_transaction_mark_runtime_phase runtime-backfill',
+    '  printf "stranded=0\\n" >> "$9"',
+    '  deployment_transaction_mark_runtime_phase runtime-final',
+    'fi',
+    'touch "$5"',
+    'deployment_transaction_complete',
+  ].join('\n'), 'second-installer',
+  transaction, state, join(root, 'backup'), join(root, 'preflight.json'), enabled, database, mode, snapshot, gates]);
+
+  return {
+    database: readFileSync(database, 'utf8'),
+    enabled: existsSync(enabled),
+    stateExists: existsSync(state),
+    gates: existsSync(gates) ? readFileSync(gates, 'utf8') : '',
+  };
+}
+
+function runAppSwapKillScenario(
+  killPoint: 'after-previous-rename' | 'after-new-rename',
+): {
+  activeApp: string;
+  failedNewApp: string | null;
+  phase: string;
+} {
+  const root = createTempDir();
+  const transaction = join(process.cwd(), 'deploy/deployment-transaction.sh');
+  const state = join(root, 'deployment.state');
+  const appRoot = join(root, 'app');
+  const workRoot = join(root, 'work');
+  const previousRoot = join(root, 'backup/previous-app');
+  const failedRoot = join(root, 'backup/failed-new-app');
+  mkdirSync(appRoot, { recursive: true });
+  mkdirSync(workRoot, { recursive: true });
+  mkdirSync(join(root, 'backup'), { recursive: true });
+  writeFileSync(join(appRoot, 'version'), 'old-app\n');
+  writeFileSync(join(workRoot, 'version'), 'new-app\n');
+
+  const first = spawnSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_configure "$2" tx-app-swap "$3" "" full ordinary start',
+    'deployment_transaction_set_previous_app_existed 1',
+    'deployment_transaction_begin_offline_activation',
+    'deployment_transaction_mark_snapshot_complete',
+    'APP_ROOT="$4"',
+    'WORK_ROOT="$5"',
+    'PREVIOUS_ROOT="$6"',
+    'KILL_POINT="$7"',
+    'mv() {',
+    '  command mv "$@"',
+    '  if [[ "$1" == "$APP_ROOT" && "$2" == "$PREVIOUS_ROOT" && "$KILL_POINT" == after-previous-rename ]]; then',
+    '    exit 91',
+    '  fi',
+    '  if [[ "$1" == "$WORK_ROOT" && "$2" == "$APP_ROOT" && "$KILL_POINT" == after-new-rename ]]; then',
+    '    exit 92',
+    '  fi',
+    '}',
+    'deployment_transaction_swap_application "$APP_ROOT" "$WORK_ROOT" "$PREVIOUS_ROOT"',
+  ].join('\n'), 'first-installer',
+  transaction, state, join(root, 'backup'), appRoot, workRoot, previousRoot, killPoint], {
+    encoding: 'utf8',
+  });
+  const expectedStatus = killPoint === 'after-previous-rename' ? 91 : 92;
+  if (first.status !== expectedStatus) {
+    throw new Error(`kill-point installer exited ${String(first.status)}: ${first.stderr}`);
+  }
+
+  const phase = execFileSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_load_existing "$2"',
+    'phase="$DEPLOYMENT_TRANSACTION_PHASE"',
+    'deployment_transaction_restore_application "$3" "$4" "$5"',
+    'printf "%s" "$phase"',
+  ].join('\n'), 'second-installer',
+  transaction, state, appRoot, previousRoot, failedRoot], { encoding: 'utf8' });
+
+  return {
+    activeApp: readFileSync(join(appRoot, 'version'), 'utf8'),
+    failedNewApp: existsSync(join(failedRoot, 'version'))
+      ? readFileSync(join(failedRoot, 'version'), 'utf8')
+      : null,
+    phase,
+  };
+}
+
+function runDurableSnapshotScenario(): {
+  config: string;
+  databaseValue: string;
+  phase: string;
+} {
+  const root = createTempDir();
+  const transaction = join(process.cwd(), 'deploy/deployment-transaction.sh');
+  const state = join(root, 'deployment.state');
+  const backup = join(root, 'backup');
+  const paths = join(backup, 'paths');
+  const config = join(root, 'runtime.conf');
+  const database = join(root, 'koishi.db');
+  mkdirSync(backup, { recursive: true });
+  writeFileSync(config, 'before\n');
+  execFileSync('python3', ['-c', [
+    'import sqlite3, sys',
+    'db = sqlite3.connect(sys.argv[1])',
+    'db.execute("CREATE TABLE state (value TEXT NOT NULL)")',
+    'db.execute("INSERT INTO state VALUES (?)", ("before",))',
+    'db.commit()',
+    'db.close()',
+  ].join('\n'), database]);
+
+  const phase = execFileSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_configure "$2" tx-snapshot "$3" "" full ordinary start',
+    'deployment_transaction_begin_offline_activation',
+    'deployment_transaction_snapshot_path "$4" config "$5"',
+    'deployment_transaction_snapshot_database "$4" "$6"',
+    '[[ -f "$4/config/present" ]]',
+    '[[ -f "$4/database/present" ]]',
+    '[[ -z "$(find "$4" -maxdepth 1 -name ".*.tmp.*" -print -quit)" ]]',
+    'deployment_transaction_mark_snapshot_complete',
+    'printf "after\\n" > "$5"',
+    'python3 - "$6" <<\'PY\'',
+    'import sqlite3',
+    'import sys',
+    'db = sqlite3.connect(sys.argv[1])',
+    'db.execute("UPDATE state SET value = ?", ("after",))',
+    'db.commit()',
+    'db.close()',
+    'PY',
+    'deployment_transaction_restore_snapshot_path "$4" config "$5"',
+    'deployment_transaction_restore_database_snapshot "$4" "$6"',
+    'deployment_transaction_validate_sqlite_database "$6"',
+    'printf "%s" "$DEPLOYMENT_TRANSACTION_PHASE"',
+  ].join('\n'), 'snapshot-harness',
+  transaction, state, backup, paths, config, database], { encoding: 'utf8' });
+
+  const databaseValue = execFileSync('python3', ['-c', [
+    'import sqlite3, sys',
+    'db = sqlite3.connect(sys.argv[1])',
+    'print(db.execute("SELECT value FROM state").fetchone()[0], end="")',
+    'db.close()',
+  ].join('\n'), database], { encoding: 'utf8' });
+
+  return {
+    config: readFileSync(config, 'utf8'),
+    databaseValue,
+    phase,
+  };
+}
+
+function runBootOwnershipResumeScenario(): {
+  enabled: boolean;
+  stateAfterFailure: boolean;
+  stateAfterResume: boolean;
+} {
+  const root = createTempDir();
+  const transaction = join(process.cwd(), 'deploy/deployment-transaction.sh');
+  const state = join(root, 'deployment.state');
+  const backup = join(root, 'backup');
+  const enabled = join(root, 'qqbot.target.enabled');
+  mkdirSync(backup, { recursive: true });
+
+  execFileSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_configure "$2" tx-boot "$3" "" full ordinary start',
+    'deployment_transaction_set_previous_app_existed 1',
+    'deployment_transaction_begin_offline_activation',
+    'deployment_transaction_mark_snapshot_complete',
+    'deployment_transaction_mark_restore_verification',
+    'enable_fails() { return 73; }',
+    'if deployment_transaction_complete_after_boot_verification enable_fails; then',
+    '  exit 90',
+    'fi',
+    '[[ -f "$2" ]]',
+  ].join('\n'), 'first-installer', transaction, state, backup]);
+  const stateAfterFailure = existsSync(state);
+
+  execFileSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_load_existing "$2"',
+    'ENABLED_PATH="$3"',
+    'enable_and_verify() {',
+    '  touch "$ENABLED_PATH"',
+    '  [[ -f "$ENABLED_PATH" ]]',
+    '}',
+    'deployment_transaction_complete_after_boot_verification enable_and_verify',
+  ].join('\n'), 'second-installer', transaction, state, enabled]);
+
+  return {
+    enabled: existsSync(enabled),
+    stateAfterFailure,
+    stateAfterResume: existsSync(state),
+  };
+}
+
+function runCorruptSnapshotRestoreScenario(): string {
+  const root = createTempDir();
+  const transaction = join(process.cwd(), 'deploy/deployment-transaction.sh');
+  const paths = join(root, 'backup/paths');
+  const database = join(root, 'koishi.db');
+  mkdirSync(join(root, 'backup'), { recursive: true });
+  execFileSync('python3', ['-c', [
+    'import sqlite3, sys',
+    'db = sqlite3.connect(sys.argv[1])',
+    'db.execute("CREATE TABLE state (value TEXT NOT NULL)")',
+    'db.execute("INSERT INTO state VALUES (?)", ("before",))',
+    'db.commit()',
+    'db.close()',
+  ].join('\n'), database]);
+
+  execFileSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'deployment_transaction_snapshot_database "$2" "$3"',
+    'python3 - "$3" <<\'PY\'',
+    'import sqlite3',
+    'import sys',
+    'db = sqlite3.connect(sys.argv[1])',
+    'db.execute("UPDATE state SET value = ?", ("after",))',
+    'db.commit()',
+    'db.close()',
+    'PY',
+    'printf "corrupt" > "$2/database/koishi.db"',
+    'if deployment_transaction_restore_database_snapshot "$2" "$3"; then',
+    '  exit 90',
+    'fi',
+    'deployment_transaction_validate_sqlite_database "$3"',
+  ].join('\n'), 'corrupt-snapshot-harness', transaction, paths, database], {
+    stdio: 'pipe',
+  });
+
+  return execFileSync('python3', ['-c', [
+    'import sqlite3, sys',
+    'db = sqlite3.connect(sys.argv[1])',
+    'print(db.execute("SELECT value FROM state").fetchone()[0], end="")',
+    'db.close()',
+  ].join('\n'), database], { encoding: 'utf8' });
+}
+
+describe('deployment transaction ownership', () => {
+  it('restores the database while the application stack has never started', () => {
+    const result = runDeploymentFailureScenario('offline');
+
+    expect(result.action).toBe('restore-offline-snapshot');
+    expect(result.database).toBe('snapshot-state\n');
+    expect(result.stopped).toBe(true);
+  });
+
+  it('keeps post-start database writes and requires roll-forward after a gate failure', () => {
+    const result = runDeploymentFailureScenario('runtime');
+
+    expect(result.action).toBe('stop-and-roll-forward');
+    expect(result.database).toBe('snapshot-state\nunrelated-plugin-write\n');
+    expect(result.stopped).toBe(true);
+  });
+
+  it('survives a reboot after V2 publication and restores the offline snapshot before boot', () => {
+    const result = runDurableRebootScenario('offline');
+
+    expect(result.database).toBe('legacy-pair\n');
+    expect(result.enabled).toBe(true);
+    expect(result.stateExists).toBe(false);
+  });
+
+  it('resumes probes and stranded backfill on a second installer run before boot enablement', () => {
+    const result = runDurableRebootScenario('runtime');
+
+    expect(result.database).toBe('legacy-pair\nv2-published\n');
+    expect(result.gates).toBe('probe-gate\nstranded=0\n');
+    expect(result.enabled).toBe(true);
+    expect(result.stateExists).toBe(false);
+  });
+
+  it('restores the old app when killed immediately after moving APP_ROOT aside', () => {
+    const result = runAppSwapKillScenario('after-previous-rename');
+
+    expect(result.phase).toBe('app-swap-intent');
+    expect(result.activeApp).toBe('old-app\n');
+    expect(result.failedNewApp).toBeNull();
+  });
+
+  it('restores the old app and isolates the new app when killed after publishing APP_ROOT', () => {
+    const result = runAppSwapKillScenario('after-new-rename');
+
+    expect(result.phase).toBe('app-previous-moved');
+    expect(result.activeApp).toBe('old-app\n');
+    expect(result.failedNewApp).toBe('new-app\n');
+  });
+
+  it('publishes complete path and SQLite snapshots before advancing the durable phase', () => {
+    const result = runDurableSnapshotScenario();
+
+    expect(result.phase).toBe('offline-snapshot-ready');
+    expect(result.config).toBe('before\n');
+    expect(result.databaseValue).toBe('before');
+  });
+
+  it('keeps restore state resumable until boot ownership is enabled and verified', () => {
+    const result = runBootOwnershipResumeScenario();
+
+    expect(result.stateAfterFailure).toBe(true);
+    expect(result.enabled).toBe(true);
+    expect(result.stateAfterResume).toBe(false);
+  });
+
+  it('rejects a corrupt SQLite snapshot before replacing the live database', () => {
+    expect(runCorruptSnapshotRestoreScenario()).toBe('after');
+  });
+});
+
+describe('Memory V2 process readiness contract', () => {
+  it('accepts only a private marker bound to the current service PID', () => {
+    const root = createTempDir();
+    const marker = join(root, 'memory-v2-ready.json');
+    const script = join(process.cwd(), 'scripts/verify-memory-v2-readiness.mjs');
+    writeFileSync(marker, JSON.stringify({
+      pid: 4242,
+      schemaVersion: 2,
+      appliedModelRevision: 7,
+      extractionModel: 'qqbot-codex/gpt-5.6-luna',
+      embeddingModel: 'qqbot-siliconflow/qwen3-embedding-8b',
+      readyAt: Date.now(),
+    }));
+    chmodSync(marker, 0o600);
+
+    const valid = execFileSync(process.execPath, [
+      script,
+      '--marker',
+      marker,
+      '--pid',
+      '4242',
+    ], { encoding: 'utf8' });
+    expect(valid).toContain('pid=4242 schema=2 modelRevision=7');
+
+    expect(() => execFileSync(process.execPath, [
+      script,
+      '--marker',
+      marker,
+      '--pid',
+      '4243',
+    ], { stdio: 'pipe' })).toThrow();
+
+    chmodSync(marker, 0o644);
+    expect(() => execFileSync(process.execPath, [
+      script,
+      '--marker',
+      marker,
+      '--pid',
+      '4242',
+    ], { stdio: 'pipe' })).toThrow();
+  });
+});
 
 describe('server runtime artifact rendering', () => {
   it('renders PMHQ as a health-bound Quadlet service and removes legacy boot ownership', () => {
@@ -69,6 +536,10 @@ describe('server runtime artifact rendering', () => {
       `ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/web-artifacts`,
     );
     expect(koishi).toContain(`ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/agents`);
+    expect(koishi).toContain('RuntimeDirectory=qqbot');
+    expect(koishi).toContain('RuntimeDirectoryMode=0700');
+    expect(koishi).toContain('Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v2-ready.json');
+    expect(koishi).toContain('ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v2-ready.json');
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
   });
@@ -107,6 +578,16 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('context-preset-cutover.mjs" apply');
     expect(installer).toContain('model-config-cutover.mjs" preflight');
     expect(installer).toContain('model-config-cutover.mjs" apply');
+    expect(installer).toContain('memory-v2-cutover.mjs" preflight');
+    expect(installer).toContain('memory-v2-cutover.mjs" initialize');
+    expect(installer).toContain(
+      'elif [[ "${MEMORY_V2_STATE}" == "empty" ]]; then',
+    );
+    expect(installer).toContain('MEMORY_V2_INITIALIZE_REQUIRED=1');
+    expect(installer).toContain('memory-v2-cutover.mjs" apply');
+    expect(installer).toContain('memory-v2-cutover.mjs" bootstrap-verify');
+    expect(installer).toContain('memory-v2-cutover.mjs" probe-gate');
+    expect(installer).toContain('memory-v2-cutover.mjs" verify');
     expect(installer).toContain('model-config-contract.mjs" preflight');
     expect(installer).toContain('model-config-contract.mjs" apply');
     expect(installer).toContain('MODEL_CONFIG_MAPPING_FILE="${SHARED_DIR}/model-config-mapping.json"');
@@ -117,12 +598,55 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('--agent-data-root "${AGENT_DATA_ROOT}"');
     expect(installer).toContain('--legacy-agent-root "${LEGACY_APP_AGENT_DIR}"');
     expect(installer).toContain('--confirm-service-stopped');
+    expect(installer).toContain('remove_env_key "${file}" "MEMORY_EXTRACT_API_KEY"');
+    expect(installer).toContain('remove_env_key "${file}" "MEMORY_EMBED_API_KEY"');
+    expect(installer).toContain(
+      'set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"',
+    );
+    expect(installer).toContain(
+      'set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"',
+    );
+    expect(installer).toContain('while [[ "${attempt}" -lt 180 ]]');
+    const memoryApply = installer.indexOf('memory-v2-cutover.mjs" apply');
+    const maintenanceBoot = installer.indexOf(
+      'set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "true"',
+      memoryApply,
+    );
+    const gatesStart = installer.indexOf('run_memory_v2_runtime_gates()');
+    const gatesEnd = installer.indexOf('resume_or_recover_deployment_transaction()', gatesStart);
+    const gates = installer.slice(gatesStart, gatesEnd);
+    const targetRestart = gates.indexOf('systemctl restart qqbot.target');
+    const bootstrapVerify = gates.indexOf('memory-v2-cutover.mjs" bootstrap-verify');
+    const maintenanceRelease = gates.indexOf(
+      'set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"',
+    );
+    const koishiRestart = gates.indexOf('systemctl restart qqbot-koishi.service');
+    const probeGate = gates.indexOf('memory-v2-cutover.mjs" probe-gate');
+    const finalVerify = gates.indexOf('memory-v2-cutover.mjs" verify');
+    expect(maintenanceBoot).toBeGreaterThan(memoryApply);
+    expect(targetRestart).toBeGreaterThanOrEqual(0);
+    expect(bootstrapVerify).toBeGreaterThan(targetRestart);
+    expect(maintenanceRelease).toBeGreaterThan(bootstrapVerify);
+    expect(koishiRestart).toBeGreaterThan(maintenanceRelease);
+    expect(probeGate).toBeGreaterThan(koishiRestart);
+    expect(finalVerify).toBeGreaterThan(probeGate);
+    expect(installer).toContain('Memory V2 final backfill and stranded gate timed out');
     expect(installer).toContain('trap rollback_after_failure EXIT');
+    expect(installer).toContain('deployment_transaction_begin_offline_activation');
+    expect(installer).toContain('deployment_transaction_transfer_runtime_ownership');
+    expect(installer).toContain('resume_or_recover_deployment_transaction');
+    expect(installer).toContain('inhibit_deployment_boot');
+    expect(installer).toContain('verify_deployment_boot_inhibited');
+    expect(installer).toContain(
+      'deployment failed after runtime ownership transfer; no snapshot was restored',
+    );
     expect(installer).toContain('systemctl stop qqbot.target');
-    expect(installer).toContain('snapshot_database');
-    expect(installer).toContain('restore_database_snapshot');
-    expect(installer).toContain('mv "${APP_ROOT}" "${PREVIOUS_APP_ROOT}"');
-    expect(installer).toContain('mv "${PREVIOUS_APP_ROOT}" "${APP_ROOT}"');
+    expect(installer).toContain('deployment_transaction_snapshot_database');
+    expect(installer).toContain('deployment_transaction_restore_database_snapshot');
+    expect(installer).toContain('deployment_transaction_swap_application');
+    expect(installer).toContain(
+      'deployment_transaction_complete_after_boot_verification enable_deployment_boot',
+    );
     expect(installer).toContain('previous deployment restored and verified');
     expect(installer).toContain('rollback incomplete; qqbot.target remains stopped');
     expect(installer).toContain('recovery material: ${TRANSACTION_BACKUP_DIR}');
@@ -142,17 +666,6 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
-    const cutoverStop = installer.indexOf(
-      'ACTIVATION_STARTED=1\nif systemctl cat qqbot.target',
-    );
-    expect(cutoverStop).toBeGreaterThan(0);
-    expect(installer.indexOf('model-config-cutover.mjs" preflight')).toBeLessThan(
-      cutoverStop,
-    );
-    const activationInstaller = installer.slice(cutoverStop);
-    expect(activationInstaller.indexOf('systemctl stop qqbot.target')).toBeLessThan(
-      activationInstaller.indexOf('model-config-cutover.mjs" apply'),
-    );
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
     expect(deploy).toContain(
@@ -162,7 +675,65 @@ describe('server runtime artifact rendering', () => {
       'require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"',
     );
     expect(deploy).toContain(
+      'require_bundle_entry "qqbot/dist/tools/memory-v2-cutover.mjs"',
+    );
+    expect(deploy).toContain(
+      'require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"',
+    );
+    expect(deploy).toContain(
+      'require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"',
+    );
+    expect(installer).toContain(
+      'require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"',
+    );
+    expect(installer).toContain(
+      'require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"',
+    );
+    expect(deploy).toContain(
       'require_bundle_entry "qqbot/deploy/model-config-contract.mjs"',
     );
+    expect(deploy).toContain(
+      'require_bundle_entry "qqbot/deploy/deployment-transaction.sh"',
+    );
+    expect(deploy).toContain(
+      '${REMOTE_SHARED}/deployment-transaction.state',
+    );
+  });
+
+  it('executes each context cutover argument once and validates the new model contract after Memory V2', () => {
+    const installerPath = join(process.cwd(), 'deploy/installer.sh');
+    const installer = readFileSync(installerPath, 'utf8');
+    execFileSync('bash', ['-n', installerPath]);
+
+    const contextBlock = installer.match(
+      /if \[\[ "\$\{CONTEXT_PRESET_CUTOVER_REQUIRED\}" == "1" \]\]; then[\s\S]*?\nfi/u,
+    )?.[0];
+    expect(contextBlock).toBeDefined();
+    const output = execFileSync('bash', ['-c', [
+      'set -euo pipefail',
+      'CONTEXT_PRESET_CUTOVER_REQUIRED=1',
+      'STAGE_QQBOT=/stage/qqbot',
+      'DATA_DIR=/opt/qqbot/data',
+      'APP_DIR=/opt/qqbot/app/qqbot',
+      'CONTEXT_PRESET_BACKUP_DIR=/opt/qqbot/backup/context',
+      'node() { printf "<%s>\\n" "$@"; }',
+      contextBlock!,
+    ].join('\n')], { encoding: 'utf8' });
+    expect(output.match(/<--confirm-service-stopped>/gu)).toHaveLength(1);
+
+    expect(installer).toContain('if [[ "${MEMORY_V2_STATE}" != "legacy" ]]');
+    const memoryApply = installer.indexOf('memory-v2-cutover.mjs" apply');
+    const postMigrationContractPreflight = installer.indexOf(
+      'model-config-contract.mjs" preflight',
+      memoryApply,
+    );
+    const postMigrationContractApply = installer.indexOf(
+      'model-config-contract.mjs" apply',
+      postMigrationContractPreflight,
+    );
+    const appSwap = installer.indexOf('deployment_transaction_swap_application');
+    expect(postMigrationContractPreflight).toBeGreaterThan(memoryApply);
+    expect(postMigrationContractApply).toBeGreaterThan(postMigrationContractPreflight);
+    expect(appSwap).toBeGreaterThan(postMigrationContractApply);
   });
 });

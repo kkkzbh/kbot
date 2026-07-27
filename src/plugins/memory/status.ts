@@ -1,21 +1,18 @@
 import type {
-  MemoryOutputProtocolId,
-  MemoryStatusSource,
   MemoryOperationSnapshot,
+  MemoryOutputProtocolId,
   MemoryProbeResult,
   MemoryProviderRouteStats,
-  MemoryQueueSummary,
   MemoryStatusServiceLike,
   MemoryStatusSnapshot,
+  MemoryStatusSource,
 } from '../../types/memory.js';
 import type { ModelRuntimeClient } from '../model-config/index.js';
 import { createUnavailableMemoryStatusSnapshot } from '../shared/memory-status.js';
-import {
-  isEmbeddingWorkloadEnabled,
-} from './providers/embedding-client.js';
-import {
-  isMemoryExtractWorkloadEnabled,
-} from './providers/router.js';
+import { memorySafeErrorMessage } from './errors.js';
+import { isEmbeddingWorkloadEnabled } from './providers/embedding-client.js';
+import { isMemoryExtractWorkloadEnabled } from './providers/router.js';
+import type { MemoryEmbeddingIdentity, MemoryStore } from './store.js';
 
 export { createUnavailableMemoryStatusSnapshot };
 
@@ -32,8 +29,15 @@ interface OperationStatusDraft {
 
 export interface MemoryStatusRuntimeLike {
   enabled: boolean;
+  maintenance: boolean;
   readEnabled: boolean;
   writeEnabled: boolean;
+}
+
+export interface MemoryProbeSemanticResult {
+  canonicalModel: string;
+  schemaValid: true;
+  dimensions: number | null;
 }
 
 function createEmptyOperationStatus(): OperationStatusDraft {
@@ -50,8 +54,7 @@ function createEmptyOperationStatus(): OperationStatusDraft {
 }
 
 function toErrorSummary(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  return memorySafeErrorMessage(error);
 }
 
 function toOperationSnapshot(draft: OperationStatusDraft, configured: boolean): MemoryOperationSnapshot {
@@ -68,6 +71,15 @@ function toOperationSnapshot(draft: OperationStatusDraft, configured: boolean): 
   };
 }
 
+function resolveEmbeddingIdentity(modelRuntime: ModelRuntimeClient): MemoryEmbeddingIdentity | null {
+  const binding = modelRuntime.resolve('memory.embedding');
+  if (!binding.target) return null;
+  return {
+    canonicalModel: binding.target.canonicalModel,
+    modelRevision: binding.revision,
+  };
+}
+
 export class MemoryStatusService implements MemoryStatusServiceLike {
   private readonly extract = createEmptyOperationStatus();
   private readonly embed = createEmptyOperationStatus();
@@ -77,9 +89,9 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
   constructor(
     private readonly runtime: MemoryStatusRuntimeLike,
     private readonly modelRuntime: ModelRuntimeClient,
-    private readonly store: { getJobSummary: () => Promise<MemoryQueueSummary> },
-    private readonly embedProbe: () => Promise<void>,
-    private readonly extractionProbe: () => Promise<void>,
+    private readonly store: MemoryStore,
+    private readonly embedProbe: () => Promise<MemoryProbeSemanticResult>,
+    private readonly extractionProbe: () => Promise<MemoryProbeSemanticResult>,
   ) {}
 
   recordAttempt(kind: 'extract' | 'embed', source: Exclude<MemoryStatusSource, null>, at = Date.now()): void {
@@ -117,7 +129,7 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
       current.lastError = null;
     } else {
       current.failure += 1;
-      current.lastError = error;
+      current.lastError = error ? 'Memory extraction response validation failed.' : null;
     }
     this.routeStats.set(route, current);
   }
@@ -127,21 +139,28 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
   }
 
   async getSnapshot(): Promise<MemoryStatusSnapshot> {
-    const jobs = await this.store.getJobSummary();
     const extractBinding = this.modelRuntime.resolve('memory.extract');
     const embedBinding = this.modelRuntime.resolve('memory.embedding');
     const extractConfigured = isMemoryExtractWorkloadEnabled(this.modelRuntime);
     const embedConfigured = isEmbeddingWorkloadEnabled(this.modelRuntime);
+    const identity = resolveEmbeddingIdentity(this.modelRuntime);
+    const [jobs, counts] = await Promise.all([
+      this.store.getQueueSummary(),
+      this.store.getLedgerCounts(identity),
+    ]);
     return {
+      schemaVersion: 2,
       available: true,
       enabled: this.runtime.enabled,
-      readEnabled: this.runtime.readEnabled,
-      writeEnabled: this.runtime.writeEnabled,
+      maintenance: this.runtime.maintenance,
+      readEnabled: this.runtime.readEnabled && !this.runtime.maintenance,
+      writeEnabled: this.runtime.writeEnabled && !this.runtime.maintenance,
       extractConfigured,
       embedConfigured,
       extractModel: extractBinding.model ?? '',
       embedModel: embedBinding.model ?? '',
       jobs,
+      counts,
       providerRoutes: [...this.routeStats.values()],
       lastMaintenanceAt: this.lastMaintenanceAt,
       extract: toOperationSnapshot(this.extract, extractConfigured),
@@ -151,7 +170,7 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
 
   async probeEmbedding(): Promise<MemoryProbeResult> {
     return this.runProbe(
-      'embedding',
+      'memory.embedding',
       'embed',
       this.embedProbe,
       isEmbeddingWorkloadEnabled(this.modelRuntime),
@@ -160,7 +179,7 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
 
   async probeExtraction(): Promise<MemoryProbeResult> {
     return this.runProbe(
-      'extraction',
+      'memory.extract',
       'extract',
       this.extractionProbe,
       isMemoryExtractWorkloadEnabled(this.modelRuntime),
@@ -170,17 +189,34 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
   private async runProbe(
     target: MemoryProbeResult['target'],
     kind: 'extract' | 'embed',
-    probe: () => Promise<void>,
+    probe: () => Promise<MemoryProbeSemanticResult>,
     configured: boolean,
   ): Promise<MemoryProbeResult> {
     const checkedAt = Date.now();
+    const canonicalModel = this.modelRuntime.resolve(target).target?.canonicalModel ?? null;
     if (!this.runtime.enabled) {
       return {
         target,
         ok: false,
         checkedAt,
         latencyMs: null,
+        canonicalModel,
+        schemaValid: false,
+        dimensions: null,
         error: 'memory disabled',
+        snapshot: await this.getSnapshot(),
+      };
+    }
+    if (this.runtime.maintenance) {
+      return {
+        target,
+        ok: false,
+        checkedAt,
+        latencyMs: null,
+        canonicalModel,
+        schemaValid: false,
+        dimensions: null,
+        error: 'memory maintenance mode',
         snapshot: await this.getSnapshot(),
       };
     }
@@ -190,33 +226,50 @@ export class MemoryStatusService implements MemoryStatusServiceLike {
         ok: false,
         checkedAt,
         latencyMs: null,
+        canonicalModel,
+        schemaValid: false,
+        dimensions: null,
         error: `${target} runtime is not configured`,
         snapshot: await this.getSnapshot(),
       };
     }
-
     this.recordAttempt(kind, 'probe', checkedAt);
     const startedAt = Date.now();
     try {
-      await probe();
-      const latencyMs = Math.max(0, Date.now() - startedAt);
+      const semantic = await probe();
+      if (semantic.canonicalModel !== canonicalModel || !semantic.schemaValid) {
+        throw new Error(`${target} semantic probe did not match the live model binding`);
+      }
+      if (
+        (kind === 'embed' && (!Number.isInteger(semantic.dimensions) || Number(semantic.dimensions) <= 0))
+        || (kind === 'extract' && semantic.dimensions !== null)
+      ) {
+        throw new Error(`${target} semantic probe returned an invalid dimensions contract`);
+      }
+      const latencyMs = Date.now() - startedAt;
       this.recordSuccess(kind, 'probe', latencyMs, Date.now());
       return {
         target,
         ok: true,
         checkedAt: Date.now(),
         latencyMs,
+        canonicalModel: semantic.canonicalModel,
+        schemaValid: semantic.schemaValid,
+        dimensions: semantic.dimensions,
         error: null,
         snapshot: await this.getSnapshot(),
       };
     } catch (error) {
-      const latencyMs = Math.max(0, Date.now() - startedAt);
+      const latencyMs = Date.now() - startedAt;
       this.recordFailure(kind, 'probe', error, latencyMs, Date.now());
       return {
         target,
         ok: false,
         checkedAt: Date.now(),
         latencyMs,
+        canonicalModel,
+        schemaValid: false,
+        dimensions: null,
         error: toErrorSummary(error),
         snapshot: await this.getSnapshot(),
       };

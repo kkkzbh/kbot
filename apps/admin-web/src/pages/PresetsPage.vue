@@ -49,6 +49,8 @@ type Anchor = LoreContextBlock['anchor'];
 type RoleAnchor = Extract<Anchor, { type: 'role' }>;
 type BlockAnchor = Extract<Anchor, { type: 'block' }>;
 type HistoryAnchor = Extract<Anchor, { type: 'chatHistory' }>;
+type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemory'>;
+type EditableContextPresetBlock = Exclude<ContextPresetBlock, { type: 'longMemory' }>;
 
 const router = useRouter();
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
@@ -75,7 +77,6 @@ let previewSequence = 0;
 const blockLabels: Record<ResolvedContextBlock['type'], string> = {
   role: '角色提示',
   chatHistory: '聊天历史',
-  longMemory: '长期记忆',
   requestDocuments: '请求文档',
   lore: 'Lore',
   authorsNote: '作者注',
@@ -90,7 +91,6 @@ const blockLabels: Record<ResolvedContextBlock['type'], string> = {
 const blockDescriptions: Record<ResolvedContextBlock['type'], string> = {
   role: '共享角色资源',
   chatHistory: '最近的完整对话轮次',
-  longMemory: '召回的长期记忆',
   requestDocuments: '本次请求携带的文档',
   lore: '按关键字激活的世界书条目',
   authorsNote: '固定或按深度注入的作者说明',
@@ -153,12 +153,21 @@ const selectedAnchorBlock = computed<LoreContextBlock | AuthorsNoteContextBlock 
 const roleBlock = computed<RoleContextBlock | null>(() => (
   contextDraft.value?.blocks.find((block): block is RoleContextBlock => block.type === 'role') ?? null
 ));
-const addableTypes = computed<StoredContextBlockType[]>(() => {
+const anchorTargetBlocks = computed<EditableContextPresetBlock[]>(() => (
+  contextDraft.value?.blocks.filter(
+    (block): block is EditableContextPresetBlock => (
+      block.type !== 'longMemory'
+      && block.type !== 'modelOutput'
+      && block.id !== selectedAnchorBlock.value?.id
+    ),
+  ) ?? []
+));
+const addableTypes = computed<EditableStoredContextBlockType[]>(() => {
   const draft = contextDraft.value;
   if (!draft) return [];
   const present = new Set(draft.blocks.map((block) => block.type));
-  const result: StoredContextBlockType[] = ['lore', 'authorsNote', 'knowledge'];
-  for (const type of ['chatHistory', 'longMemory', 'requestDocuments'] as const) {
+  const result: EditableStoredContextBlockType[] = ['lore', 'authorsNote', 'knowledge'];
+  for (const type of ['chatHistory', 'requestDocuments'] as const) {
     if (!present.has(type)) result.push(type);
   }
   if (!present.has('agentScratchpad')) result.push('agentScratchpad');
@@ -175,7 +184,6 @@ const canRemoveSelected = computed(() => {
     || type === 'authorsNote'
     || type === 'knowledge'
     || type === 'chatHistory'
-    || type === 'longMemory'
     || type === 'requestDocuments'
     || type === 'agentScratchpad';
 });
@@ -565,7 +573,7 @@ function insertionIndex(): number {
   return Math.max(1, Math.min(selected < 0 ? input : selected + 1, input));
 }
 
-function createBlock(type: StoredContextBlockType): ContextPresetBlock {
+function createBlock(type: EditableStoredContextBlockType): ContextPresetBlock {
   switch (type) {
     case 'chatHistory':
       return {
@@ -574,17 +582,6 @@ function createBlock(type: StoredContextBlockType): ContextPresetBlock {
         enabled: true,
         budgetPriority: 100,
         maxTokens: null,
-      };
-    case 'longMemory':
-      return {
-        id: uniqueBlockId('long-memory'),
-        type,
-        enabled: true,
-        budgetPriority: 200,
-        maxTokens: null,
-        prompt: null,
-        extractPrompt: null,
-        newQuestionPrompt: null,
       };
     case 'requestDocuments':
       return {
@@ -641,7 +638,7 @@ function createBlock(type: StoredContextBlockType): ContextPresetBlock {
   }
 }
 
-function addBlock(type: StoredContextBlockType): void {
+function addBlock(type: EditableStoredContextBlockType): void {
   if (!contextDraft.value || !addableTypes.value.includes(type)) return;
   const block = createBlock(type);
   const index = type === 'agentScratchpad'
@@ -1224,18 +1221,6 @@ onBeforeUnmount(() => {
                 </div>
               </template>
 
-              <template v-else-if="selectedStoredBlock.type === 'longMemory'">
-                <el-form-item label="召回 Prompt">
-                  <el-input v-model="selectedStoredBlock.prompt" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" />
-                </el-form-item>
-                <el-form-item label="提炼 Prompt">
-                  <el-input v-model="selectedStoredBlock.extractPrompt" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" />
-                </el-form-item>
-                <el-form-item label="新问题 Prompt">
-                  <el-input v-model="selectedStoredBlock.newQuestionPrompt" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" />
-                </el-form-item>
-              </template>
-
               <template v-else-if="selectedStoredBlock.type === 'agentScratchpad'">
                 <el-form-item label="ReAct Instruction">
                   <el-input
@@ -1285,7 +1270,7 @@ onBeforeUnmount(() => {
                     <el-form-item v-if="anchorBlock(selectedAnchorBlock)" label="目标块">
                       <el-select v-model="anchorBlock(selectedAnchorBlock)!.blockId">
                         <el-option
-                          v-for="block in contextDraft.blocks.filter((item) => item.id !== selectedAnchorBlock?.id && item.type !== 'modelOutput')"
+                          v-for="block in anchorTargetBlocks"
                           :key="block.id"
                           :value="block.id"
                           :label="`${blockLabels[block.type]} · ${block.id}`"

@@ -1,12 +1,13 @@
-import { randomUUID } from 'node:crypto';
 import { Logger } from 'koishi';
-import type { MemoryJobRecord, MemoryJobType } from '../../types/memory.js';
+import type { MemoryV2WorkRecord, MemoryWorkType } from '../../types/memory.js';
 import type { ModelRuntimeClient } from '../model-config/index.js';
 import type { MemoryRuntimeConfig } from './config.js';
-import { runDeterministicPrivacyGuard } from './gates.js';
 import {
-  embedTexts,
-} from './providers/embedding-client.js';
+  asMemoryRuntimeError,
+  memorySafeErrorMessage,
+  MemoryRuntimeError,
+} from './errors.js';
+import { embedTexts } from './providers/embedding-client.js';
 import { isNonRetryableMemoryProviderError } from './providers/http-error.js';
 import {
   extractMemoryCandidates,
@@ -14,46 +15,65 @@ import {
 } from './providers/router.js';
 import type { MemoryStatusService } from './status.js';
 import type {
-  ConsolidateJobPayload,
-  EmbedJobPayload,
-  ExtractJobPayload,
+  ClaimedMemoryWork,
+  EmbeddingWorkPayload,
+  ExtractWorkPayload,
+  MemoryEmbeddingIdentity,
   MemoryStore,
-  PrivacyReviewJobPayload,
 } from './store.js';
 
 const logger = new Logger('memory');
 
-export async function processExtractJob(
+function embeddingIdentity(modelRuntime: ModelRuntimeClient): MemoryEmbeddingIdentity {
+  const binding = modelRuntime.resolve('memory.embedding');
+  if (!binding.target) {
+    throw new MemoryRuntimeError(
+      'embed',
+      'validation',
+      'memory_embedding_disabled',
+      'memory.embedding must resolve to an applied model before memory writes can be enabled.',
+    );
+  }
+  return {
+    canonicalModel: binding.target.canonicalModel,
+    modelRevision: binding.revision,
+  };
+}
+
+export async function processExtractWork(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
   modelRuntime: ModelRuntimeClient,
   status: MemoryStatusService,
-  job: MemoryJobRecord,
+  claimed: ClaimedMemoryWork,
 ): Promise<void> {
-  const payload = store.parseJobPayload<ExtractJobPayload>(job);
-  if (!payload?.address?.conversationId) {
-    await store.completeJob(job);
-    return;
+  const payload = store.parseWorkPayload<ExtractWorkPayload>(claimed.work);
+  if (!payload.address?.conversationId || !payload.targetSpeakerId) {
+    throw new MemoryRuntimeError('extract', 'validation', 'memory_extract_payload_invalid', 'Extraction work payload is invalid.');
   }
   if (!isMemoryExtractWorkloadEnabled(modelRuntime)) {
-    await store.audit({
-      userKey: payload.address.userKey,
-      contextKey: payload.address.contextKey,
-      eventType: 'extract_skipped',
-      turnId: payload.address.conversationId,
-      detail: { reason: 'provider_unconfigured' },
-    });
-    await store.completeJob(job);
+    await store.cancelWork(claimed.work, claimed.leaseToken, 'memory_extract_disabled');
     return;
   }
-
-  const turns = await store.filterTombstonedTurns(
-    payload.ownerUserKey,
+  const identity = embeddingIdentity(modelRuntime);
+  const turns = await store.filterSuppressedTurns(
+    payload.address.userKey,
+    payload.address.contextKey,
     await store.readConversationWindow(payload),
   );
-  if (!turns.some((turn) => turn.role === 'human' && turn.isTarget)) {
-    await store.updateExtractCursor(payload);
-    await store.completeJob(job);
+  if (!turns.some((turn) => (
+    turn.role === 'human'
+    && turn.isTarget
+    && turn.speakerId === payload.targetSpeakerId
+    && (turn.attributionSource === 'direct_session' || turn.attributionSource === 'additional_kwargs')
+  ))) {
+    await store.completeEmptyExtraction(
+      claimed.work,
+      claimed.leaseToken,
+      payload,
+      null,
+      runtime.maxJobRetries,
+    );
     return;
   }
 
@@ -70,119 +90,153 @@ export async function processExtractJob(
   });
   status.recordRoute(output.route, output.ok, output.error);
   if (!output.ok) {
-    throw new Error(output.error ?? 'memory_extract_failed');
+    throw new MemoryRuntimeError(
+      'extract',
+      'provider',
+      output.error ?? 'memory_extract_provider_failed',
+      'Memory extraction provider failed.',
+      {
+        retryable: output.error !== 'memory_extract_response_invalid'
+          && output.error !== 'memory_extract_protocol_invalid'
+          && output.error !== 'memory_extract_disabled',
+      },
+    );
   }
-  if (!output.candidates.length) {
-    await store.updateExtractCursor(payload);
-    await store.completeJob(job);
-    return;
-  }
-
-  const batchId = randomUUID();
-  const pendingCount = await store.writeCandidateBatch({
-    address: payload.address,
+  await store.finalizeExtraction({
+    work: claimed.work,
+    leaseToken: claimed.leaseToken,
     payload,
-    batchId,
-    candidates: output.candidates,
     turns,
-    messageIds: turns.map((turn) => turn.id),
+    candidates: output.candidates,
     providerRoute: output.route,
     rawTextHash: output.rawTextHash,
+    embeddingIdentity: identity,
+    maxLeaseRetries: runtime.maxJobRetries,
   });
-  if (pendingCount > 0) {
-    await store.queueJob('privacy_review', { batchId, address: payload.address });
-  }
-  await store.updateExtractCursor(payload);
-  await store.completeJob(job);
 }
 
-export async function processPrivacyReviewJob(
+export async function processEmbeddingWork(
   store: MemoryStore,
-  job: MemoryJobRecord,
+  runtime: Pick<MemoryRuntimeConfig, 'maxJobRetries'>,
+  modelRuntime: ModelRuntimeClient,
+  claimed: ClaimedMemoryWork,
 ): Promise<void> {
-  const payload = store.parseJobPayload<PrivacyReviewJobPayload>(job);
-  if (!payload?.batchId || !payload.address) {
-    await store.completeJob(job);
+  const identity = embeddingIdentity(modelRuntime);
+  const resolved = await store.resolveEmbeddingWork(claimed.work, identity);
+  if (resolved.state === 'obsolete') {
+    await store.cancelWork(
+      claimed.work,
+      claimed.leaseToken,
+      resolved.reasonCode,
+    );
     return;
   }
-  const rows = await store.listBatchCandidates(payload.batchId);
-  for (const row of rows) {
-    if (row.reviewStatus !== 'pending') continue;
-    const candidate = JSON.parse(row.payload);
-    const decision = runDeterministicPrivacyGuard(candidate, payload.address);
-    await store.applyPrivacyDecision(row, decision);
-    if (decision.status === 'approved') {
-      await store.queueJob('consolidate', { candidateId: row.id, address: payload.address });
+  const [vector] = await embedTexts(modelRuntime, [resolved.text]);
+  if (!vector?.length) {
+    throw new MemoryRuntimeError(
+      'embed',
+      'provider',
+      'memory_embedding_empty_vector',
+      'Memory embedding provider returned an empty vector.',
+      { retryable: true },
+    );
+  }
+  await store.finalizeEmbedding({
+    work: claimed.work,
+    leaseToken: claimed.leaseToken,
+    payload: resolved.payload,
+    vector,
+    maxLeaseRetries: runtime.maxJobRetries,
+  });
+}
+
+async function handleFailure(
+  store: MemoryStore,
+  runtime: MemoryRuntimeConfig,
+  claimed: ClaimedMemoryWork,
+  error: unknown,
+): Promise<void> {
+  const operation = claimed.work.workType === 'extract' ? 'extract' : 'embed';
+  const typed = asMemoryRuntimeError(
+    error,
+    operation,
+    error instanceof MemoryRuntimeError ? error.stage : 'provider',
+    error instanceof MemoryRuntimeError ? error.code : `memory_${claimed.work.workType}_failed`,
+    error instanceof MemoryRuntimeError
+      ? error.retryable
+      : !isNonRetryableMemoryProviderError(error),
+  );
+  if (
+    typed.code === 'memory_deletion_generation_changed'
+    || typed.code === 'memory_lease_expired'
+    || typed.code === 'memory_lease_lost'
+  ) {
+    return;
+  }
+  try {
+    await store.failWork(claimed.work, claimed.leaseToken, typed, {
+      maxRetries: runtime.maxJobRetries,
+      retryDelayMs: 60_000,
+    });
+  } catch (failure) {
+    if (
+      failure instanceof MemoryRuntimeError
+      && (
+        failure.code === 'memory_deletion_generation_changed'
+        || failure.code === 'memory_lease_expired'
+        || failure.code === 'memory_lease_lost'
+      )
+    ) {
+      return;
     }
+    throw failure;
   }
-  await store.completeJob(job);
 }
 
-export async function processConsolidateJob(
-  store: MemoryStore,
-  job: MemoryJobRecord,
-): Promise<void> {
-  const payload = store.parseJobPayload<ConsolidateJobPayload>(job);
-  if (!payload?.candidateId || !payload.address) {
-    await store.completeJob(job);
-    return;
-  }
-  const row = await store.getCandidateById(payload.candidateId);
-  if (!row?.id) {
-    await store.completeJob(job);
-    return;
-  }
-  await store.consolidateCandidate(row, payload.address);
-  await store.completeJob(job);
-}
-
-export async function processEmbedJobs(
+async function processOne(
   store: MemoryStore,
   runtime: MemoryRuntimeConfig,
   modelRuntime: ModelRuntimeClient,
-  jobs: MemoryJobRecord[],
-): Promise<void> {
-  if (!jobs.length) return;
-  const binding = modelRuntime.resolve('memory.embedding');
-  if (!binding.target) {
-    for (const job of jobs) await store.completeJob(job);
-    return;
-  }
-  const embeddingModel = binding.target.canonicalModel;
-
-  const resolved: Array<{ job: MemoryJobRecord; payload: EmbedJobPayload; text: string }> = [];
-  for (const job of jobs) {
-    const item = await store.resolveEmbedJob(job);
-    if (!item || !item.text.trim()) {
-      await store.completeJob(job);
-      continue;
+  status: MemoryStatusService,
+  workType: MemoryWorkType,
+): Promise<boolean> {
+  const claimed = await store.claimDueWork(workType, Date.now(), runtime.jobLockTimeoutMs);
+  if (!claimed) return false;
+  const startedAt = Date.now();
+  if (workType === 'extract') status.recordAttempt('extract', 'runtime', startedAt);
+  if (workType === 'embed' || workType === 'backfill') status.recordAttempt('embed', 'runtime', startedAt);
+  try {
+    if (workType === 'extract') {
+      await processExtractWork(store, runtime, modelRuntime, status, claimed);
+      status.recordSuccess('extract', 'runtime', Date.now() - startedAt, Date.now());
+    } else if (workType === 'embed' || workType === 'backfill') {
+      await processEmbeddingWork(store, runtime, modelRuntime, claimed);
+      status.recordSuccess('embed', 'runtime', Date.now() - startedAt, Date.now());
     }
-    resolved.push({ job, payload: item.payload, text: item.text });
+  } catch (error) {
+    if (workType === 'extract') status.recordFailure('extract', 'runtime', error, Date.now() - startedAt, Date.now());
+    if (workType === 'embed' || workType === 'backfill') status.recordFailure('embed', 'runtime', error, Date.now() - startedAt, Date.now());
+    logger.warn(
+      'memory %s work failed at %s/%s: %s',
+      workType,
+      error instanceof MemoryRuntimeError ? error.operation : 'unknown',
+      error instanceof MemoryRuntimeError ? error.stage : 'unknown',
+      memorySafeErrorMessage(error),
+    );
+    await handleFailure(store, runtime, claimed, error);
   }
-  if (!resolved.length) return;
-
-  const vectors = await embedTexts(modelRuntime, resolved.map((item) => item.text));
-  for (const [index, item] of resolved.entries()) {
-    const vector = vectors[index];
-    if (!vector) {
-      throw new Error('empty_embedding_vector');
-    }
-    await store.applyEmbedding(item.payload, embeddingModel, vector);
-    await store.completeJob(item.job);
-  }
+  return true;
 }
 
-export async function processMaintenanceJob(
+export async function processMaintenance(
   store: MemoryStore,
-  runtime: MemoryRuntimeConfig,
+  runtime: Pick<MemoryRuntimeConfig, 'archiveDays' | 'maxJobRetries'>,
   status: MemoryStatusService,
-  job?: MemoryJobRecord,
 ): Promise<void> {
-  await store.requeueStaleProcessingJobs(runtime.jobLockTimeoutMs);
+  await store.requeueExpiredLeases(Date.now(), runtime.maxJobRetries);
   await store.archiveExpired();
   await store.archiveLowRiskOldEpisodes(runtime.archiveDays);
   status.recordMaintenance(Date.now());
-  if (job) await store.completeJob(job);
 }
 
 export async function runMemoryJobTick(
@@ -191,55 +245,17 @@ export async function runMemoryJobTick(
   modelRuntime: ModelRuntimeClient,
   status: MemoryStatusService,
 ): Promise<void> {
-  const now = Date.now();
-  const jobTypes: MemoryJobType[] = ['extract', 'privacy_review', 'consolidate', 'embed', 'reembed', 'maintenance'];
-  for (const jobType of jobTypes) {
-    const jobs = await store.listDueJobs(jobType, now);
-    if (!jobs.length) continue;
-    if (jobType === 'embed' || jobType === 'reembed') {
-      const batch = jobs.slice(0, runtime.embedBatchSize);
-      for (const job of batch) await store.markJobProcessing(job);
-      const startedAt = Date.now();
-      status.recordAttempt('embed', 'runtime', startedAt);
-      try {
-        await processEmbedJobs(store, runtime, modelRuntime, batch);
-        status.recordSuccess('embed', 'runtime', Math.max(0, Date.now() - startedAt), Date.now());
-      } catch (error) {
-        status.recordFailure('embed', 'runtime', error, Math.max(0, Date.now() - startedAt), Date.now());
-        if (isNonRetryableMemoryProviderError(error)) {
-          for (const job of batch) await store.deadLetterJob(job, error);
-        } else {
-          for (const job of batch) await store.retryJob(job, error, 60_000, runtime.maxJobRetries);
-        }
-      }
-      continue;
-    }
-
-    const job = jobs[0];
-    await store.markJobProcessing(job);
-    const startedAt = Date.now();
-    try {
-      if (jobType === 'extract') {
-        status.recordAttempt('extract', 'runtime', startedAt);
-        await processExtractJob(store, runtime, modelRuntime, status, job);
-        status.recordSuccess('extract', 'runtime', Math.max(0, Date.now() - startedAt), Date.now());
-      } else if (jobType === 'privacy_review') {
-        await processPrivacyReviewJob(store, job);
-      } else if (jobType === 'consolidate') {
-        await processConsolidateJob(store, job);
-      } else if (jobType === 'maintenance') {
-        await processMaintenanceJob(store, runtime, status, job);
-      }
-    } catch (error) {
-      if (jobType === 'extract') {
-        status.recordFailure('extract', 'runtime', error, Math.max(0, Date.now() - startedAt), Date.now());
-      }
-      logger.warn('memory %s job failed: %s', jobType, error instanceof Error ? error.message : String(error));
-      if (isNonRetryableMemoryProviderError(error)) {
-        await store.deadLetterJob(job, error);
-      } else {
-        await store.retryJob(job, error, 60_000, runtime.maxJobRetries);
-      }
-    }
+  await processOne(store, runtime, modelRuntime, status, 'extract');
+  for (let index = 0; index < runtime.embedBatchSize; index += 1) {
+    const processedEmbed = await processOne(store, runtime, modelRuntime, status, 'embed');
+    const processedBackfill = await processOne(store, runtime, modelRuntime, status, 'backfill');
+    if (!processedEmbed && !processedBackfill) break;
   }
+}
+
+export function parseEmbeddingWorkPayload(work: MemoryV2WorkRecord): EmbeddingWorkPayload {
+  if (work.workType !== 'embed' && work.workType !== 'backfill') {
+    throw new MemoryRuntimeError('embed', 'validation', 'memory_embedding_work_type_invalid', 'Work is not an embedding operation.');
+  }
+  return JSON.parse(work.payload) as EmbeddingWorkPayload;
 }

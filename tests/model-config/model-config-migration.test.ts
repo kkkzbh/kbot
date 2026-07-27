@@ -435,7 +435,6 @@ describe('model config cutover', () => {
       model.modelType !== 'chat' || model.contextSize === 44_800)).toBe(true);
     expect(binding(plan.draft.bindings, 'memory.extract').mode).toBe('dedicated');
     expect(binding(plan.draft.bindings, 'memory.embedding').mode).toBe('disabled');
-    expect(binding(plan.draft.bindings, 'chatluna.defaultEmbedding').mode).toBe('disabled');
     expect(binding(plan.draft.bindings, 'affinity.analysis').mode).toBe('inheritMain');
     expect(binding(plan.draft.bindings, 'naturalTrigger.decision').mode).toBe('disabled');
     expect(

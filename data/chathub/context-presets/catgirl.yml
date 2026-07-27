@@ -12,14 +12,6 @@ blocks:
     enabled: true
     budgetPriority: 100
     maxTokens: null
-  - id: long-memory
-    type: longMemory
-    enabled: true
-    budgetPriority: 200
-    maxTokens: null
-    prompt: null
-    extractPrompt: null
-    newQuestionPrompt: null
   - id: request-documents
     type: requestDocuments
     enabled: true

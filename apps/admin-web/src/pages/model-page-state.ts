@@ -32,11 +32,10 @@ export interface ModelPageConfigurationLoadResult {
 
 export const MODEL_SETTING_WORKLOAD_ORDER = [
   'main.chat',
-  'naturalTrigger.decision',
-  'affinity.analysis',
   'memory.extract',
   'memory.embedding',
-  'chatluna.defaultEmbedding',
+  'naturalTrigger.decision',
+  'affinity.analysis',
   'agent.subagent.default',
   'sticker.index',
 ] as const satisfies readonly FixedModelWorkload[];

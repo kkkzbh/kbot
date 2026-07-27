@@ -1,17 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  resolveVisibleUserSelection,
+  isMemoryDialogCancellation,
 } from '../apps/admin-web/src/pages/memory-page-state.js';
 
-describe('admin memory page user selection', () => {
-  it('keeps the selection aligned with the visible user page', () => {
-    const users = [
-      { userKey: 'onebot:user:2' },
-      { userKey: 'onebot:user:3' },
-    ];
-
-    expect(resolveVisibleUserSelection(users, 'onebot:user:2')).toBe('onebot:user:2');
-    expect(resolveVisibleUserSelection(users, 'onebot:user:1')).toBe('onebot:user:2');
-    expect(resolveVisibleUserSelection([], 'onebot:user:1')).toBe('');
+describe('admin Memory V2 confirmation state', () => {
+  it('treats only Element Plus dialog cancellation signals as a no-op', () => {
+    expect(isMemoryDialogCancellation('cancel')).toBe(true);
+    expect(isMemoryDialogCancellation('close')).toBe(true);
+    expect(isMemoryDialogCancellation(new Error('cancel'))).toBe(false);
+    expect(isMemoryDialogCancellation('network_error')).toBe(false);
   });
 });

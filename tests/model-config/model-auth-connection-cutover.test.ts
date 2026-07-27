@@ -177,12 +177,6 @@ function createDraft(): ModelConfigDraft {
         mode: 'disabled',
       },
       {
-        workload: 'chatluna.defaultEmbedding',
-        mode: 'dedicated',
-        connectionId: 'memory-embedding',
-        modelId: 'qwen-embedding',
-      },
-      {
         workload: 'agent.subagent.default',
         mode: 'inheritInvocation',
       },

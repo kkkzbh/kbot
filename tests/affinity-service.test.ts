@@ -881,7 +881,7 @@ describe('affinity service random history sync', () => {
     await service.runDueRandomPlans(NOW + 5000);
 
     expect(chat).toHaveBeenCalledTimes(1);
-    expect(contextManager.inject).toHaveBeenCalledTimes(1);
+    expect(contextManager.inject).toHaveBeenCalledTimes(2);
     expect(bot.sendMessage).toHaveBeenCalledTimes(1);
     expect((bot.sendMessage as any).mock.calls[0]?.[0]).toBe('1012912433');
     expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
@@ -1246,7 +1246,8 @@ describe('affinity service random history sync', () => {
 
     await service.runDueRandomPlans(NOW);
 
-    const injectedMessages = contextManager.inject.mock.calls[0]?.[0]?.value as Array<{ content: string }>;
+    const injectedMessages = contextManager.inject.mock.calls
+      .flatMap((call) => call[0]?.value as Array<{ content: string }>);
     const injectedText = injectedMessages.map((message) => message.content).join('\n\n');
     expect(injectedText).toContain('昨天那道缩点题，我还是有一点在意。');
     expect(injectedText).toContain('2026-06-16 09:00:00 +08:00，1天前');
@@ -1325,11 +1326,11 @@ describe('affinity service random history sync', () => {
 
     expect(chat).toHaveBeenCalledTimes(1);
     expect(contextManager.inject).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'qqbot_affinity_proactive_prompt_envelope',
-      stage: 'after_scratchpad',
+      name: 'qqbot_affinity_proactive_prompt_envelope_reference',
+      stage: 'injections',
       value: expect.arrayContaining([
         expect.objectContaining({
-          role: 'system',
+          role: 'human',
           content: expect.stringContaining('Affinity Proactive Task'),
           additional_kwargs: expect.objectContaining({
             qqbot_context: expect.objectContaining({
@@ -1339,7 +1340,8 @@ describe('affinity service random history sync', () => {
         }),
       ]),
     }));
-    const injectedMessages = contextManager.inject.mock.calls[0]?.[0]?.value as Array<{ content: string }>;
+    const injectedMessages = contextManager.inject.mock.calls
+      .flatMap((call) => call[0]?.value as Array<{ content: string }>);
     const injectedText = injectedMessages.map((message) => message.content).join('\n\n');
     expect(injectedText).toContain('# 主动发言任务：承接未完话题');
     expect(injectedText).toContain('Alice');
@@ -1410,7 +1412,8 @@ describe('affinity service random history sync', () => {
 
     await service.runDueRandomPlans(NOW);
 
-    const injectedMessages = contextManager.inject.mock.calls[0]?.[0]?.value as Array<{ content: string }>;
+    const injectedMessages = contextManager.inject.mock.calls
+      .flatMap((call) => call[0]?.value as Array<{ content: string }>);
     const injectedText = injectedMessages.map((message) => message.content).join('\n\n');
     expect(injectedText).toContain('我去吃饭了，晚点再说。');
     expect(injectedText).not.toContain('[speaker_id=u1]');

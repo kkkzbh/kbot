@@ -14,8 +14,21 @@ import {
   connectionIdSchema,
   conversationTargetRequestSchema,
   featureOverridesRequestSchema,
-  memoryKindSchema,
-  memoryMutationSchema,
+  memoryAssertionsResponseSchema,
+  memoryArchiveRequestSchema,
+  memoryArchiveResponseSchema,
+  memoryBackfillRequestSchema,
+  memoryBackfillResponseSchema,
+  memoryForgetRequestSchema,
+  memoryForgetResponseSchema,
+  memoryOverviewResponseSchema,
+  memoryPageQuerySchema,
+  memoryProbeResponseSchema,
+  memoryProbeWorkloadSchema,
+  memoryReviewRequestSchema,
+  memoryReviewResponseSchema,
+  memoryReviewsQuerySchema,
+  memoryReviewsResponseSchema,
   emptyRequestSchema,
   modelAdminAggregateSchema,
   modelApplyRequestSchema,
@@ -27,7 +40,6 @@ import {
   modelOAuthPollRequestSchema,
   operationalEventActionRequestSchema,
   operationalEventListQuerySchema,
-  pageQuerySchema,
   contextPresetCatalogResponseSchema,
   contextPresetCreateRequestSchema,
   contextPresetDefaultRequestSchema,
@@ -69,7 +81,10 @@ import {
   type ModelConfigService,
 } from '../model-config/index.js';
 import { createUnavailableMemoryStatusSnapshot } from '../shared/memory-status.js';
-import type { MemoryAdminService } from '../memory/index.js';
+import {
+  MemoryRuntimeError,
+  type MemoryAdminService,
+} from '../memory/index.js';
 import { TTS_LOCAL_ENV_KEYS } from './tts.js';
 import {
   ADMIN_ENV_FIELDS,
@@ -193,6 +208,14 @@ function requestOrigin(koaCtx: KoaContext): string {
   return String(koaCtx.get?.('origin') || '').trim();
 }
 
+function requestRemoteAddress(koaCtx: KoaContext): string {
+  return String(koaCtx.req?.socket?.remoteAddress || koaCtx.request?.socket?.remoteAddress || '').trim();
+}
+
+function requestTailscaleUserLogin(koaCtx: KoaContext): string {
+  return String(koaCtx.get?.('tailscale-user-login') || '').trim();
+}
+
 function writeJson(koaCtx: KoaContext, status: number, body: unknown): void {
   koaCtx.status = status;
   koaCtx.type = 'application/json';
@@ -283,6 +306,63 @@ async function domain<T>(operation: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof AdminHttpError) throw error;
     throw new AdminHttpError(400, 'bad_request', error instanceof Error ? error.message : String(error));
+  }
+}
+
+function memoryHttpError(error: MemoryRuntimeError): AdminHttpError {
+  const upstreamStatus = Number.isInteger(error.upstreamStatus)
+    && Number(error.upstreamStatus) >= 400
+    && Number(error.upstreamStatus) <= 599
+    ? Number(error.upstreamStatus)
+    : null;
+  const providerCode = typeof error.providerCode === 'string'
+    && /^[A-Za-z0-9._:-]{1,120}$/.test(error.providerCode)
+    && !/(?:secret|token|password|credential|cookie|authorization)/i.test(error.providerCode)
+    ? error.providerCode
+    : null;
+  const status = error.code.includes('not_found')
+    ? 404
+    : error.code.includes('maintenance')
+      ? 503
+      : error.stage === 'authorization'
+    ? 403
+    : error.stage === 'validation'
+      ? 400
+      : error.code.includes('conflict')
+        || error.code.includes('lease')
+        || error.code.includes('revision')
+        || error.code.includes('generation')
+        ? 409
+        : error.stage === 'provider'
+          ? 502
+          : error.retryable
+            ? 503
+            : 500;
+  return new AdminHttpError(
+    status,
+    'memory_error',
+    safeOperationDiagnostic(error),
+    {
+      operation: error.operation,
+      stage: error.stage,
+      memoryCode: error.code,
+      retryable: error.retryable,
+      upstreamStatus,
+      providerCode,
+    },
+  );
+}
+
+async function memoryDomain<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AdminHttpError) throw error;
+    if (error instanceof MemoryRuntimeError) throw memoryHttpError(error);
+    throw new AdminHttpError(500, 'memory_error', 'Memory V2 请求执行失败。', {
+      operation: 'admin',
+      stage: 'unexpected',
+    });
   }
 }
 
@@ -473,19 +553,6 @@ function requireService<T>(service: T | undefined, name: string): T {
   return service;
 }
 
-function unavailableMemorySummary() {
-  return {
-    userCount: 0,
-    factCount: 0,
-    episodeCount: 0,
-    pendingReviewCount: 0,
-    pendingJobs: 0,
-    processingJobs: 0,
-    deadLetterJobs: 0,
-    provenanceCount: 0,
-  };
-}
-
 export function registerAdminApi(options: RegisterAdminApiOptions): void {
   const apiPath = normalizeBasePath(options.apiPath);
   const applyState = new AdminApplyState();
@@ -505,7 +572,11 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       koaCtx.set?.('x-request-id', requestId);
       koaCtx.set?.('cache-control', 'no-store');
       try {
-        options.accessPolicy.assertHost(requestHost(koaCtx));
+        options.accessPolicy.assertAuthenticatedTransport({
+          host: requestHost(koaCtx),
+          remoteAddress: requestRemoteAddress(koaCtx),
+          tailscaleUserLogin: requestTailscaleUserLogin(koaCtx),
+        });
         if (routeOptions.mutation) options.accessPolicy.assertMutationOrigin(requestOrigin(koaCtx));
         const body = await handler(koaCtx);
         if (koaCtx.body === undefined && body !== undefined) writeJson(koaCtx, 200, body);
@@ -521,12 +592,11 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
   };
 
   register('get', '/overview', async () => {
-    const [services, modelAggregate, tts, memoryStatus, memorySummary, affinity, eventSummary] = await Promise.all([
+    const [services, modelAggregate, tts, memoryStatus, affinity, eventSummary] = await Promise.all([
       options.manager.getServiceStatuses(),
       readModelAdminAggregate(options.modelConfig, modelOperations),
       options.manager.getTtsState(),
       options.services.memoryStatus?.getSnapshot() ?? Promise.resolve(createUnavailableMemoryStatusSnapshot()),
-      options.services.memoryAdmin?.getSummary() ?? Promise.resolve(unavailableMemorySummary()),
       options.services.affinity?.getAdminState() ?? Promise.resolve(null),
       options.events.summary(),
     ]);
@@ -560,7 +630,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
         authStatus: activeAuth?.status ?? 'error',
       } : null,
       globalDefaultPresetId: options.ctx.chatluna.preset.getGlobalDefaultContextPresetId().value,
-      memory: { status: memoryStatus, summary: memorySummary },
+      memory: { status: memoryStatus },
       tts: tts.health,
       affinity: affinity ? { available: true, enabled: affinity.settings.enabled } : { available: false, enabled: false },
       events: eventSummary,
@@ -920,31 +990,99 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return redactAffinityState(await requireService(options.services.affinity, 'affinity').adjustUserState(input));
   }, { mutation: true });
 
-  register('get', '/memory', async () => ({
-    summary: await requireService(options.services.memoryAdmin, 'memory admin').getSummary(),
-    status: options.services.memoryStatus ? await options.services.memoryStatus.getSnapshot() : createUnavailableMemoryStatusSnapshot(),
+  register('get', '/memory', async () => memoryDomain(async () => {
+    const aggregate = options.modelConfig.getAggregate();
+    const extraction = aggregate.liveBindings.find(
+      (binding) => binding.workload === 'memory.extract',
+    );
+    const embedding = aggregate.liveBindings.find(
+      (binding) => binding.workload === 'memory.embedding',
+    );
+    if (!extraction || !embedding) {
+      throw new AdminHttpError(
+        503,
+        'service_unavailable',
+        'Memory V2 模型绑定不完整，请先在模型配置页完成设置。',
+      );
+    }
+    return memoryOverviewResponseSchema.parse({
+      status: options.services.memoryStatus
+        ? await options.services.memoryStatus.getSnapshot()
+        : createUnavailableMemoryStatusSnapshot(),
+      bindings: { extraction, embedding },
+    });
   }));
-  register('get', '/memory/users', (koaCtx) => requireService(options.services.memoryAdmin, 'memory admin').getUsersPage(parseInput(pageQuerySchema, koaCtx.query)));
-  register('get', '/memory/:kind', (koaCtx) => requireService(options.services.memoryAdmin, 'memory admin').getRecordsPage(
-    parseInput(memoryKindSchema, koaCtx.params.kind),
-    parseInput(pageQuerySchema, koaCtx.query),
-  ));
-  register('post', '/memory/probe/:target', async (koaCtx) => {
-    const target = parseInput(z.enum(['embedding', 'extraction']), koaCtx.params.target);
+  register('get', '/memory/assertions', async (koaCtx) => memoryDomain(async () => (
+    memoryAssertionsResponseSchema.parse(
+      await requireService(options.services.memoryAdmin, 'memory admin')
+        .getAssertionsPage(parseInput(memoryPageQuerySchema, koaCtx.query)),
+    )
+  )));
+  register('get', '/memory/reviews', async (koaCtx) => memoryDomain(async () => (
+    memoryReviewsResponseSchema.parse(
+      await requireService(options.services.memoryAdmin, 'memory admin')
+        .getReviewsPage(parseInput(memoryReviewsQuerySchema, koaCtx.query)),
+    )
+  )));
+  register('post', '/memory/reviews/:streamId', async (koaCtx) => memoryDomain(async () => {
+    const streamId = parseInput(
+      z.string().trim().min(1).max(256),
+      koaCtx.params.streamId,
+    );
+    const input = parseInput(memoryReviewRequestSchema, koaCtx.request.body);
+    await requireService(options.services.memoryAdmin, 'memory admin').review({
+      streamId,
+      decision: input.decision,
+    });
+    return memoryReviewResponseSchema.parse({ ok: true });
+  }), { mutation: true });
+  register('post', '/memory/archive', async (koaCtx) => memoryDomain(async () => {
+    const input = parseInput(memoryArchiveRequestSchema, koaCtx.request.body);
+    await requireService(options.services.memoryAdmin, 'memory admin').archive(input);
+    return memoryArchiveResponseSchema.parse({ ok: true });
+  }), { mutation: true });
+  register('post', '/memory/forget', async (koaCtx) => memoryDomain(async () => {
+    const input = parseInput(memoryForgetRequestSchema, koaCtx.request.body);
+    const forgotten = await requireService(
+      options.services.memoryAdmin,
+      'memory admin',
+    ).forget(input);
+    return memoryForgetResponseSchema.parse({ forgotten });
+  }), { mutation: true });
+  register('post', '/memory/backfill', async (koaCtx) => memoryDomain(async () => {
+    parseInput(memoryBackfillRequestSchema, koaCtx.request.body);
+    const binding = options.modelConfig.getAggregate().liveBindings.find(
+      (candidate) => candidate.workload === 'memory.embedding',
+    );
+    if (!binding?.canonicalModel || binding.mode === 'disabled') {
+      throw new AdminHttpError(
+        409,
+        'conflict',
+        'memory.embedding 尚未绑定可用模型，无法创建 backfill 任务。',
+      );
+    }
+    const result = await requireService(
+      options.services.memoryAdmin,
+      'memory admin',
+    ).backfill({
+      canonicalModel: binding.canonicalModel,
+      modelRevision: binding.revision,
+    });
+    return memoryBackfillResponseSchema.parse({ ...result, binding });
+  }), { mutation: true });
+  register('post', '/memory/probe/:workload', async (koaCtx) => memoryDomain(async () => {
+    parseInput(emptyRequestSchema, koaCtx.request.body ?? {});
+    const workload = parseInput(
+      memoryProbeWorkloadSchema,
+      koaCtx.params.workload,
+    );
     const service = requireService(options.services.memoryStatus, 'memory status');
-    return target === 'embedding'
-      ? service.probeEmbedding()
-      : service.probeExtraction();
-  }, { mutation: true });
-  register('post', '/memory/mutations', async (koaCtx) => {
-    const input = parseInput(memoryMutationSchema, koaCtx.request.body);
-    return { ok: await requireService(options.services.memoryAdmin, 'memory admin').mutate(input) };
-  }, { mutation: true });
-  register('get', '/memory/export/:userKey', async (koaCtx) => {
-    const userKey = String(koaCtx.params.userKey || '').trim();
-    if (!userKey) throw new AdminHttpError(400, 'bad_request', 'userKey 不能为空。');
-    return requireService(options.services.memoryAdmin, 'memory admin').exportUser(userKey);
-  });
+    return memoryProbeResponseSchema.parse(
+      workload === 'memory.embedding'
+        ? await service.probeEmbedding()
+        : await service.probeExtraction(),
+    );
+  }), { mutation: true });
 
   register('get', '/tts', async () => {
     const [tts, env] = await Promise.all([options.manager.getTtsState(), options.manager.getManagedEnv()]);

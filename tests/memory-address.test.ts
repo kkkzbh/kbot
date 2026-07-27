@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildMemoryAddress } from '../src/plugins/memory/address.js';
+import {
+  buildMemoryAddress,
+  resolveCurrentMemoryAudience,
+} from '../src/plugins/memory/address.js';
 
 describe('memory address', () => {
   it('builds direct address by userKey and dm contextKey', () => {
@@ -90,6 +93,69 @@ describe('memory address', () => {
       channelType: 'group',
       channelId: 'channel-9',
       rawContextId: 'channel-9',
+    });
+  });
+
+  it('resolves an authoritative, complete group audience through the adapter', async () => {
+    const session = {
+      isDirect: false,
+      platform: 'onebot',
+      userId: '10001',
+      guildId: 'group-9',
+      channelId: 'group-9',
+      bot: {
+        selfId: '20001',
+        getGuildMemberMap: async () => ({
+          10003: 'Carol',
+          10001: 'Alice',
+          10002: 'Bob',
+        }),
+      },
+    } as any;
+    const base = buildMemoryAddress(session, {
+      options: {
+        conversation: {
+          conversationId: 'conv-audience',
+          conversation: { id: 'conv-audience' },
+        },
+      },
+    }, 456);
+    expect(base).not.toBeNull();
+    await expect(resolveCurrentMemoryAudience(session, base!)).resolves.toMatchObject({
+      currentAudienceSubjectKeys: [
+        'onebot:user:10001',
+        'onebot:user:10002',
+        'onebot:user:10003',
+      ],
+    });
+  });
+
+  it('fails closed when the group audience cannot be proven', async () => {
+    const session = {
+      isDirect: false,
+      platform: 'onebot',
+      userId: '10001',
+      guildId: 'group-9',
+      channelId: 'group-9',
+      bot: {
+        selfId: '20001',
+        getGuildMemberMap: async () => {
+          throw new Error('adapter unavailable');
+        },
+      },
+    } as any;
+    const base = buildMemoryAddress(session, {
+      options: {
+        conversation: {
+          conversationId: 'conv-audience',
+          conversation: { id: 'conv-audience' },
+        },
+      },
+    }, 456);
+    await expect(resolveCurrentMemoryAudience(session, base!)).rejects.toMatchObject({
+      code: 'memory_group_audience_unavailable',
+      operation: 'address',
+      stage: 'provider',
     });
   });
 });

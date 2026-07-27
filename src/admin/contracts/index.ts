@@ -16,6 +16,8 @@ import {
   type ModelConfigPutInput,
 } from '../../plugins/model-config/types.js';
 
+export * from './memory.js';
+
 export type AdminJsonValue =
   | null
   | boolean
@@ -35,11 +37,13 @@ export const adminJsonValueSchema: z.ZodType<AdminJsonValue> = z.lazy(() => z.un
 
 export const adminErrorCodeSchema = z.enum([
   'bad_request',
+  'unauthorized',
   'forbidden_origin',
   'invalid_host',
   'not_found',
   'conflict',
   'provider_auth_required',
+  'memory_error',
   'upstream_error',
   'service_unavailable',
   'internal_error',
@@ -98,7 +102,7 @@ export const operationalEventListQuerySchema = z.object({
 });
 
 export const operationalEventActionRequestSchema = z.object({
-  action: z.enum(['acknowledge', 'retry', 'discard']),
+  action: z.enum(['acknowledge', 'retry']),
 });
 
 export const settingsSectionSchema = z.enum(['basic', 'features']);
@@ -131,46 +135,6 @@ export const settingsResponseSchema = z.object({
   fields: z.array(settingsFieldSchema),
   restartRequired: z.boolean(),
 });
-
-export const pageQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  userKey: z.string().trim().min(1).optional(),
-  search: z.string().trim().max(200).optional(),
-});
-
-export const memoryKindSchema = z.enum(['facts', 'episodes', 'reviews', 'jobs', 'audit']);
-
-export const memoryMutationSchema = z.discriminatedUnion('action', [
-  z.object({
-    action: z.literal('visibility'),
-    userKey: z.string().min(1),
-    type: z.enum(['fact', 'episode']),
-    id: z.number().int().positive(),
-    visibility: z.enum(['global', 'private_only', 'source_context_only', 'allowed_contexts', 'denied_contexts', 'pending_review', 'archived']),
-  }),
-  z.object({
-    action: z.literal('edit'),
-    userKey: z.string().min(1),
-    type: z.enum(['fact', 'episode']),
-    id: z.number().int().positive(),
-    content: z.string().trim().min(1).max(10_000),
-  }),
-  z.object({
-    action: z.literal('forget'),
-    userKey: z.string().min(1),
-    type: z.enum(['fact', 'episode']).optional(),
-    id: z.number().int().positive().optional(),
-    topicKey: z.string().trim().min(1).optional(),
-    contextKey: z.string().trim().min(1).optional(),
-    all: z.boolean().optional(),
-  }),
-  z.object({
-    action: z.literal('review'),
-    candidateId: z.number().int().positive(),
-    decision: z.enum(['approve', 'reject', 'private']),
-  }),
-]);
 
 export const oauthAttemptSchema = z.object({
   attemptId: z.string().min(1),
@@ -261,8 +225,26 @@ export const emptyResponseSchema = z.void();
 export const presetIdSchema = PresetIdSchema;
 export const presetSourceSchema = z.enum(['bundled', 'runtime']);
 export const rolePresetDefinitionV1Schema = RolePresetDefinitionV1Schema;
-export const contextPresetDefinitionV1Schema = ContextPresetDefinitionV1Schema;
-export const contextPresetBlockSchema = ContextPresetBlockSchema;
+function rejectChatLunaLongMemoryBlock(
+  preset: z.infer<typeof ContextPresetDefinitionV1Schema>,
+  context: z.RefinementCtx,
+): void {
+  const index = preset.blocks.findIndex((block) => block.type === 'longMemory');
+  if (index >= 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['blocks', index, 'type'],
+      message: 'QQBot context presets do not support the ChatLuna longMemory block',
+    });
+  }
+}
+
+export const contextPresetDefinitionV1Schema = ContextPresetDefinitionV1Schema
+  .superRefine(rejectChatLunaLongMemoryBlock);
+export const contextPresetBlockSchema = ContextPresetBlockSchema.refine(
+  (block) => block.type !== 'longMemory',
+  { message: 'QQBot context presets do not support the ChatLuna longMemory block' },
+);
 
 export const contextPresetSummarySchema = z.object({
   id: presetIdSchema,
@@ -278,16 +260,16 @@ export const contextPresetCatalogResponseSchema = z.object({
   globalDefaultContextPresetId: presetIdSchema,
 }).strict();
 export const contextPresetDetailResponseSchema = z.object({
-  contextPreset: ContextPresetDefinitionV1Schema,
+  contextPreset: contextPresetDefinitionV1Schema,
   source: presetSourceSchema,
   hasOverride: z.boolean(),
   revision: z.string().min(1),
 }).strict();
 export const contextPresetCreateRequestSchema = z.object({
-  contextPreset: ContextPresetDefinitionV1Schema,
+  contextPreset: contextPresetDefinitionV1Schema,
 }).strict();
 export const contextPresetUpdateRequestSchema = z.object({
-  contextPreset: ContextPresetDefinitionV1Schema,
+  contextPreset: contextPresetDefinitionV1Schema,
   expectedRevision: z.string().min(1),
 }).strict();
 export const presetRevisionRequestSchema = z.object({
@@ -305,8 +287,8 @@ export const contextPresetDraftDefinitionV1Schema = z.object({
   id: presetIdSchema,
   displayName: z.string().trim().min(1),
   aliases: z.array(z.string().trim().min(1)),
-  blocks: z.array(ContextPresetBlockSchema).min(3),
-}).strict();
+  blocks: z.array(contextPresetBlockSchema).min(3),
+}).strict().superRefine(rejectChatLunaLongMemoryBlock);
 
 export const rolePresetSummarySchema = z.object({
   id: presetIdSchema,
@@ -339,7 +321,6 @@ export const resolvedContextBlockSchema = z.object({
   type: z.enum([
     'role',
     'chatHistory',
-    'longMemory',
     'requestDocuments',
     'lore',
     'authorsNote',
@@ -504,8 +485,6 @@ export type AdminLogsResponse = z.infer<typeof adminLogsResponseSchema>;
 export type SettingsField = z.infer<typeof settingsFieldSchema>;
 export type SettingsSection = z.infer<typeof settingsSectionSchema>;
 export type SettingsPatchRequest = z.infer<typeof settingsPatchRequestSchema>;
-export type MemoryKind = z.infer<typeof memoryKindSchema>;
-export type MemoryMutation = z.infer<typeof memoryMutationSchema>;
 export type OperationalEventListQuery = z.infer<typeof operationalEventListQuerySchema>;
 export type OperationalEventActionRequest = z.infer<typeof operationalEventActionRequestSchema>;
 export type OAuthAttempt = z.infer<typeof oauthAttemptSchema>;

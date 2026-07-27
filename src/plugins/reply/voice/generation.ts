@@ -44,6 +44,7 @@ import {
 import {
   beginPromptAssemblyTurn,
   clearPromptAssemblyTurn,
+  injectPromptEnvelope,
   peekPromptFragments,
   registerPromptFragment,
   type PromptEnvelopeMessage,
@@ -1309,12 +1310,11 @@ function injectReplyPromptEnvelope(args: {
   clearPromptAssemblyTurn(args.conversationId);
   if (!envelope?.messages.length) return [];
 
-  contextManager.inject({
+  injectPromptEnvelope(contextManager, {
     name: 'qqbot_reply_prompt_envelope',
-    value: envelope.messages,
+    envelope,
     once: true,
     conversationId: args.conversationId,
-    stage: 'after_scratchpad',
   });
 
   return envelope.messages;

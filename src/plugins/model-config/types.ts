@@ -279,7 +279,6 @@ export const FIXED_MODEL_WORKLOADS = [
   'memory.embedding',
   'affinity.analysis',
   'naturalTrigger.decision',
-  'chatluna.defaultEmbedding',
   'agent.subagent.default',
   'sticker.index',
 ] as const;
@@ -335,11 +334,10 @@ export type ModelBinding = z.infer<typeof modelBindingSchema>;
 
 export const WORKLOAD_ALLOWED_MODES = {
   'main.chat': ['dedicated'],
-  'memory.extract': ['dedicated', 'disabled'],
+  'memory.extract': ['inheritMain', 'dedicated', 'disabled'],
   'memory.embedding': ['dedicated', 'disabled'],
   'affinity.analysis': ['inheritMain', 'dedicated'],
   'naturalTrigger.decision': ['dedicated', 'disabled'],
-  'chatluna.defaultEmbedding': ['dedicated', 'disabled'],
   'agent.subagent.default': ['inheritInvocation', 'dedicated'],
   'sticker.index': ['dedicated', 'disabled'],
 } as const satisfies Record<FixedModelWorkload, readonly ModelBinding['mode'][]>;
@@ -358,7 +356,6 @@ const REQUIRED_CAPABILITIES: Record<
   'memory.embedding': ['embedding'],
   'affinity.analysis': ['chat', 'structuredOutput'],
   'naturalTrigger.decision': ['chat', 'structuredOutput'],
-  'chatluna.defaultEmbedding': ['embedding'],
   'agent.subagent.default': ['chat', 'tools'],
   'agent.subagent.override': ['chat', 'tools'],
   'sticker.index': ['chat', 'vision', 'structuredOutput'],

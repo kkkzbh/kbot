@@ -14,7 +14,15 @@ import {
 type Overview = RuntimeOverviewState & {
   serviceSummary: ServiceSummary;
   globalDefaultPresetId: string;
-  memory: { summary: { factCount: number; episodeCount: number; pendingReviewCount: number } };
+  memory: {
+    status: {
+      counts: {
+        active: number;
+        pendingReview: number;
+        stranded: number;
+      };
+    };
+  };
 };
 type RefreshablePanel = { refresh: (silent?: boolean) => Promise<void> };
 
@@ -82,7 +90,13 @@ onMounted(() => void loadOverview());
       </article>
       <article class="summary-item">
         <span>长期记忆</span>
-        <div><strong>{{ state.memory.summary.factCount + state.memory.summary.episodeCount }}</strong><small>{{ state.memory.summary.pendingReviewCount }} 项待审核</small></div>
+        <div>
+          <strong>{{ state.memory.status.counts.active }}</strong>
+          <small>
+            {{ state.memory.status.counts.pendingReview }} 项待审核
+            <template v-if="state.memory.status.counts.stranded"> · {{ state.memory.status.counts.stranded }} 项不完整</template>
+          </small>
+        </div>
       </article>
       <article class="summary-item">
         <span>全局默认预设</span>

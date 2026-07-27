@@ -75,7 +75,12 @@ export async function extractMemoryCandidates(
         },
         {
           role: 'user',
-          content: buildMemoryExtractionPrompt(input.turns, route, input.target),
+          content: buildMemoryExtractionPrompt(
+            input.turns,
+            route,
+            input.target,
+            input.address,
+          ),
         },
       ],
     },
@@ -97,17 +102,14 @@ export async function extractMemoryCandidates(
       route,
       ok: true,
       candidates: [...facts, ...episodes, ...dropCandidates],
-      drops: dropCandidates.map((candidate) => candidate.dropReason ?? 'drop'),
+      drops: dropCandidates.map(() => 'provider_drop'),
       rawTextHash: rawText
         ? createHash('sha256').update(rawText).digest('hex')
         : null,
       error: null,
     };
   } catch (error) {
-    return failed(
-      route,
-      error instanceof Error ? error.message : 'memory_extract_response_invalid',
-    );
+    return failed(route, 'memory_extract_response_invalid');
   }
 }
 

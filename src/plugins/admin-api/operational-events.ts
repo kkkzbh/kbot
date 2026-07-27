@@ -41,8 +41,6 @@ type OperationalEventRecord = {
   occurrenceCount: number | null;
   unit: BotServiceUnit | null;
   invocationId: string | null;
-  memoryJobId: number | null;
-  memoryCandidateId: number | null;
   occurredAt: number;
   lastOccurredAt: number | null;
   acknowledgedAt: number | null;
@@ -134,8 +132,6 @@ export function ensureOperationalEventTables(ctx: Context): void {
     occurrenceCount: { type: 'unsigned', nullable: true },
     unit: { type: 'string', nullable: true },
     invocationId: { type: 'string', nullable: true },
-    memoryJobId: { type: 'unsigned', nullable: true },
-    memoryCandidateId: { type: 'unsigned', nullable: true },
     occurredAt: 'double',
     lastOccurredAt: { type: 'double', nullable: true },
     acknowledgedAt: { type: 'double', nullable: true },
@@ -147,7 +143,6 @@ export function ensureOperationalEventTables(ctx: Context): void {
     indexes: [
       ['status', 'lastOccurredAt'],
       ['source', 'unit'],
-      ['source', 'memoryJobId'],
       ['source', 'fingerprint'],
     ],
   });
@@ -300,14 +295,13 @@ function runtimeIssueFromJournal(
 function targetPath(record: OperationalEventRecord): string {
   if (record.source === 'systemd') return `/?service=${encodeURIComponent(record.unit ?? '')}`;
   if (record.source === 'runtime') return '/runtime/logs';
-  if (record.type === 'memory_job_dead_letter') return '/intelligence/memory?tab=jobs';
+  if (record.type === 'memory_job_dead_letter') return '/intelligence/memory';
   return '/intelligence/memory?tab=reviews';
 }
 
 function availableActions(record: OperationalEventRecord): OperationalEventAction[] {
   if (record.status === 'resolved') return [];
   const acknowledge: OperationalEventAction[] = record.status === 'open' ? ['acknowledge'] : [];
-  if (record.type === 'memory_job_dead_letter') return [...acknowledge, 'retry', 'discard'];
   if (record.source === 'systemd') return [...acknowledge, 'retry'];
   return acknowledge;
 }
@@ -639,8 +633,6 @@ export class OperationalEventService {
       occurrenceCount: 1,
       unit: issue.unit,
       invocationId: issue.invocationId,
-      memoryJobId: null,
-      memoryCandidateId: null,
       occurredAt: issue.occurredAt,
       lastOccurredAt: issue.occurredAt,
     });
@@ -661,8 +653,6 @@ export class OperationalEventService {
         summary: entry.message,
         unit: entry.unit,
         invocationId: entry.invocationId,
-        memoryJobId: null,
-        memoryCandidateId: null,
         occurredAt: entry.occurredAt,
       });
     }
@@ -694,8 +684,6 @@ export class OperationalEventService {
           summary: status.healthDetail,
           unit: status.unit,
           invocationId: status.controllerState.invocationId,
-          memoryJobId: null,
-          memoryCandidateId: null,
           occurredAt: status.checkedAt,
         });
         continue;
@@ -711,8 +699,6 @@ export class OperationalEventService {
           summary: status.healthDetail,
           unit: status.unit,
           invocationId: status.controllerState.invocationId,
-          memoryJobId: null,
-          memoryCandidateId: null,
           occurredAt: status.checkedAt,
         });
       }
@@ -723,7 +709,7 @@ export class OperationalEventService {
     const memoryAdmin = this.getMemoryAdmin();
     if (!memoryAdmin) return;
     const attentionItems = await memoryAdmin.getOperationalAttentionItems();
-    const currentKeys = new Set(attentionItems.map((item) => item.sourceKey));
+    const currentKeys = new Set(attentionItems.map((item) => `memory:${item.key}`));
     for (const item of attentionItems) await this.openMemoryEvent(item);
     const existing = await this.database.get(EVENT_TABLE, { source: 'memory' }) as OperationalEventRecord[];
     for (const record of existing) {
@@ -734,16 +720,16 @@ export class OperationalEventService {
 
   private openMemoryEvent(item: MemoryOperationalAttentionItem): Promise<OperationalEventRecord> {
     return this.openEvent({
-      sourceKey: item.sourceKey,
+      sourceKey: `memory:${item.key}`,
       source: 'memory',
-      type: item.type,
-      severity: item.severity,
+      type: item.type === 'memory_work_dead_letter'
+        ? 'memory_job_dead_letter'
+        : 'memory_review_required',
+      severity: item.type === 'memory_work_dead_letter' ? 'error' : 'warning',
       title: item.title,
-      summary: redactAdminLogContent(item.summary),
+      summary: redactAdminLogContent(item.detail),
       unit: null,
       invocationId: null,
-      memoryJobId: item.memoryJobId,
-      memoryCandidateId: item.memoryCandidateId,
       occurredAt: item.occurredAt,
     });
   }
@@ -852,14 +838,6 @@ export class OperationalEventService {
       await this.manager.runServiceAction(record.unit, status.controllerState.activeState === 'active' ? 'restart' : 'start');
       const next = await this.manager.getServiceStatus(record.unit);
       if (next.runtimeState === 'healthy') await this.resolveEvent(id, 'retried');
-      return toItem(await this.getRecord(id));
-    }
-    if (record.type === 'memory_job_dead_letter' && record.memoryJobId) {
-      const memoryAdmin = this.getMemoryAdmin();
-      if (!memoryAdmin) throw new Error('memory admin 当前不可用');
-      if (action === 'retry') await memoryAdmin.retryDeadLetterJob(record.memoryJobId);
-      if (action === 'discard') await memoryAdmin.discardDeadLetterJob(record.memoryJobId);
-      await this.resolveEvent(id, action === 'retry' ? 'retried' : 'discarded');
       return toItem(await this.getRecord(id));
     }
     throw new Error(`事件 ${id} 无法执行 ${action}`);

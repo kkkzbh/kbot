@@ -35,6 +35,7 @@ describe('runtime startup contract', () => {
     const packageJson = JSON.parse(readRepoFile('package.json'));
     const runScript = readRepoFile('scripts/run-koishi-with-env.sh');
     const smokeScript = readRepoFile('scripts/smoke-koishi-start.sh');
+    const hostVerifier = readRepoFile('scripts/verify-qqbot-host-runtime.sh');
     const koishi = readRepoFile('koishi.yml');
     const ci = readRepoFile('.github/workflows/ci.yml');
 
@@ -73,6 +74,9 @@ describe('runtime startup contract', () => {
     expect(koishi).not.toContain('CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR ||');
     expect(koishi).not.toContain('CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR ||');
     expect(koishi).not.toContain('CHATLUNA_ARCHIVE_DIR ||');
+    expect(hostVerifier).toContain('verify-memory-v2-readiness.mjs');
+    expect(hostVerifier).toContain('systemctl show "${KOISHI_UNIT}" --property MainPID --value');
+    expect(hostVerifier).toContain('if [[ "${MEMORY_ENABLED:-true}" != "false" ]]');
   });
 
   it('builds runtime artifacts in a staging directory before replacing dist', () => {
@@ -89,6 +93,12 @@ describe('runtime startup contract', () => {
     );
     expect(buildScript).toContain(
       'node ./scripts/build-model-config-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"',
+    );
+    expect(buildScript).toContain(
+      'node ./scripts/build-memory-v2-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"',
+    );
+    expect(buildScript).toContain(
+      'node ./scripts/build-memory-evaluation-tool.mjs --out-dir "$STAGE_DIST/tools"',
     );
     expect(buildScript).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml --dist "$STAGE_DIST"');
     expect(buildScript).toContain('mv "$STAGE_DIST" "$NEXT_DIST"');
@@ -154,6 +164,9 @@ describe('runtime startup contract', () => {
     writeFileSync(join(distDir, 'tools/context-preset-sqlite.py'), 'raise SystemExit(0)\n', 'utf8');
     writeFileSync(join(distDir, 'tools/model-config-cutover.mjs'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'tools/model-auth-connection-cutover.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/memory-v2-cutover.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/memory-evaluation.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/memory-evaluation-adapter.mjs'), 'export {}\n', 'utf8');
 
     const ok = spawnSync(process.execPath, [scriptPath, '--config', configPath, '--dist', distDir], {
       cwd: dir,
@@ -162,6 +175,21 @@ describe('runtime startup contract', () => {
 
     expect(ok.status).toBe(0);
     expect(ok.stdout).toContain('Runtime artifacts verified: 2 local plugins');
+
+    mkdirSync(join(distDir, 'plugins/memory'), { recursive: true });
+    writeFileSync(
+      join(distDir, 'plugins/memory/migration.js'),
+      'export function runLegacyMemoryMigration() {}\n',
+      'utf8',
+    );
+    const legacyMemory = spawnSync(
+      process.execPath,
+      [scriptPath, '--config', configPath, '--dist', distDir],
+      { cwd: dir, encoding: 'utf8' },
+    );
+    expect(legacyMemory.status).toBe(2);
+    expect(legacyMemory.stderr).toContain('Legacy memory runtime artifact remains');
+    rmSync(join(distDir, 'plugins/memory'), { recursive: true, force: true });
 
     rmSync(join(dir, 'data/chathub/context-presets/sakiko.yml'));
     const emptyCatalog = spawnSync(

@@ -371,16 +371,6 @@ export function migratePresetDefinition(input) {
       maxTokens: null,
     },
     {
-      id: 'long-memory',
-      type: 'longMemory',
-      enabled: true,
-      budgetPriority: 200,
-      maxTokens: null,
-      prompt: prompt.longMemoryPrompt ?? null,
-      extractPrompt: prompt.longMemoryExtractPrompt ?? null,
-      newQuestionPrompt: prompt.longMemoryNewQuestionPrompt ?? null,
-    },
-    {
       id: 'request-documents',
       type: 'requestDocuments',
       enabled: true,

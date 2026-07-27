@@ -105,7 +105,7 @@ describe('operational event service', () => {
     expect(history.items[0]).toMatchObject({ status: 'resolved', resolution: 'recovered' });
   });
 
-  it('routes dead-letter retry to MemoryAdminService and records the resolution', async () => {
+  it('surfaces V2 dead-letter work without exposing legacy replay actions', async () => {
     const database = createDatabase();
     const manager = {
       readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
@@ -114,26 +114,27 @@ describe('operational event service', () => {
     };
     const memoryAdmin = {
       getOperationalAttentionItems: vi.fn(async () => [{
-        sourceKey: 'memory-job:7:dead-letter:1800000000000',
-        type: 'memory_job_dead_letter',
-        severity: 'error',
+        key: 'memory-work:7',
+        type: 'memory_work_dead_letter',
         title: 'extract 记忆任务进入 dead letter',
-        summary: 'provider failed',
-        memoryJobId: 7,
-        memoryCandidateId: null,
+        detail: 'provider/request',
+        memoryWorkId: 7,
         occurredAt: 1_800_000_000_000,
       }]),
-      retryDeadLetterJob: vi.fn(async () => undefined),
-      discardDeadLetterJob: vi.fn(async () => undefined),
     };
     const service = new OperationalEventService(database as any, manager as any, () => memoryAdmin as any, createLogger());
 
     await service.sync();
     const [event] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
-    const updated = await service.runAction(event.id, 'retry');
 
-    expect(memoryAdmin.retryDeadLetterJob).toHaveBeenCalledWith(7);
-    expect(updated).toMatchObject({ status: 'resolved', resolution: 'retried' });
+    expect(event).toMatchObject({
+      sourceKey: 'memory:memory-work:7',
+      type: 'memory_job_dead_letter',
+      availableActions: ['acknowledge'],
+    });
+    await expect(service.runAction(event.id, 'retry')).rejects.toThrow(
+      '不支持操作 retry',
+    );
   });
 
   it('moves acknowledged events from pending into history', async () => {
@@ -179,8 +180,6 @@ describe('operational event service', () => {
         summary: '测试事件',
         unit: 'qqbot-pmhq.service',
         invocationId: null,
-        memoryJobId: null,
-        memoryCandidateId: null,
         occurredAt: now + index,
         acknowledgedAt: null,
         resolvedAt: null,
@@ -292,8 +291,6 @@ describe('operational event service', () => {
         occurrenceCount,
         unit: 'cloudflared-qqbot-hbu-jw.service',
         invocationId: `invocation-${index}`,
-        memoryJobId: null,
-        memoryCandidateId: null,
         occurredAt: now + index,
         lastOccurredAt: now + index,
         acknowledgedAt: null,
@@ -522,13 +519,11 @@ describe('operational event service', () => {
     };
     const memoryAdmin = {
       getOperationalAttentionItems: vi.fn(async () => [{
-        sourceKey: 'memory-job:8:dead-letter:1800000000000',
-        type: 'memory_job_dead_letter',
-        severity: 'error',
+        key: 'memory-work:8',
+        type: 'memory_work_dead_letter',
         title: 'extract 记忆任务进入 dead letter',
-        summary: 'provider failed',
-        memoryJobId: 8,
-        memoryCandidateId: null,
+        detail: 'provider/request',
+        memoryWorkId: 8,
         occurredAt: 1_800_000_000_000,
       }]),
     };

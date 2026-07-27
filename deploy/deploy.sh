@@ -23,8 +23,10 @@ BUNDLE_ENTRIES="${TMP_PARENT}/${RUN_ID}/bundle.entries"
 LLBOT_CACHE_PATH="${CACHE_DIR}/LLBot-${LLBOT_VERSION}.zip"
 REMOTE_INCOMING="${BASE_DIR}/incoming"
 REMOTE_BUNDLE="${REMOTE_INCOMING}/qqbot.tar.gz"
-REMOTE_MANIFEST="${BASE_DIR}/app/build-manifest.json"
 REMOTE_STAGING="${BASE_DIR}/.staging"
+REMOTE_INSTALLER="${REMOTE_STAGING}/installer.sh"
+REMOTE_TRANSACTION_POLICY="${REMOTE_STAGING}/deployment-transaction.sh"
+REMOTE_MANIFEST="${BASE_DIR}/app/build-manifest.json"
 REMOTE_SHARED="${BASE_DIR}/shared"
 REMOTE_DATA="${BASE_DIR}/data"
 REMOTE_ENV_SERVER="${REMOTE_SHARED}/.env.server"
@@ -76,7 +78,7 @@ remote_already_deployed() {
     return 1
   fi
 
-  ssh "${HOST}" "test -f $(remote_quote "${REMOTE_MANIFEST}") && node -e 'const fs = require(\"node:fs\"); const manifest = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\")); process.exit(manifest.qqbot?.sha === process.argv[2] && manifest.chatluna?.sha === process.argv[3] ? 0 : 1);' $(remote_quote "${REMOTE_MANIFEST}") $(remote_quote "${qqbot_sha}") $(remote_quote "${chatluna_sha}")"
+  ssh "${HOST}" "! test -e $(remote_quote "${REMOTE_SHARED}/deployment-transaction.state") && test -f $(remote_quote "${REMOTE_MANIFEST}") && node -e 'const fs = require(\"node:fs\"); const manifest = JSON.parse(fs.readFileSync(process.argv[1], \"utf8\")); process.exit(manifest.qqbot?.sha === process.argv[2] && manifest.chatluna?.sha === process.argv[3] ? 0 : 1);' $(remote_quote "${REMOTE_MANIFEST}") $(remote_quote "${qqbot_sha}") $(remote_quote "${chatluna_sha}")"
 }
 
 ensure_llbot_release_zip() {
@@ -128,13 +130,18 @@ verify_bundle() {
   require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
   require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/memory-v2-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"
+  require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"
   require_bundle_entry "qqbot/data/chathub/context-presets"
   require_bundle_entry "qqbot/data/chathub/role-presets"
   require_bundle_catalog "qqbot/data/chathub/context-presets"
   require_bundle_catalog "qqbot/data/chathub/role-presets"
   require_bundle_entry "qqbot/deploy/installer.sh"
+  require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
   require_bundle_entry "qqbot/deploy/model-config-contract.mjs"
   require_bundle_entry "qqbot/deploy/render-systemd.mjs"
+  require_bundle_entry "qqbot/scripts/verify-memory-v2-readiness.mjs"
   require_bundle_entry "chatluna/packages/core/package.json"
 }
 
@@ -246,6 +253,6 @@ if [[ "${DEPLOY_MODE}" == "upload-only" ]]; then
 fi
 
 echo "[deploy] install on ${HOST}"
-ssh "${HOST}" "tar -xOf $(printf '%q' "${REMOTE_BUNDLE}") qqbot/deploy/installer.sh > $(printf '%q' "${REMOTE_STAGING}/installer.sh") && chmod 700 $(printf '%q' "${REMOTE_STAGING}/installer.sh") && QQBOT_BASE_DIR=$(printf '%q' "${BASE_DIR}") bash $(printf '%q' "${REMOTE_STAGING}/installer.sh") $(printf '%q' "${REMOTE_BUNDLE}") full $(printf '%q' "${ACTIVATION_MODE}")"
+ssh "${HOST}" "tar -xOf $(printf '%q' "${REMOTE_BUNDLE}") qqbot/deploy/installer.sh > $(printf '%q' "${REMOTE_INSTALLER}") && tar -xOf $(printf '%q' "${REMOTE_BUNDLE}") qqbot/deploy/deployment-transaction.sh > $(printf '%q' "${REMOTE_TRANSACTION_POLICY}") && chmod 700 $(printf '%q' "${REMOTE_INSTALLER}") $(printf '%q' "${REMOTE_TRANSACTION_POLICY}") && QQBOT_BASE_DIR=$(printf '%q' "${BASE_DIR}") bash $(printf '%q' "${REMOTE_INSTALLER}") $(printf '%q' "${REMOTE_BUNDLE}") full $(printf '%q' "${ACTIVATION_MODE}")"
 
 echo "[deploy] done"

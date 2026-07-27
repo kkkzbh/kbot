@@ -41,7 +41,6 @@ function statusLabel(item: OperationalEventItem): string {
   const resolution = {
     recovered: '已恢复',
     retried: '已重试',
-    discarded: '已丢弃',
     completed: '已完成',
     deduplicated: '已合并',
   } as const;
@@ -105,13 +104,12 @@ async function openDetail(item: OperationalEventItem): Promise<void> {
   });
 }
 
-async function confirmEventAction(action: 'retry' | 'discard'): Promise<boolean> {
-  const label = action === 'retry' ? '重试这个事件对应的操作' : '永久丢弃这个 dead-letter job';
+async function confirmRetry(): Promise<boolean> {
   try {
     await ElMessageBox.confirm(
-      `${label}？`,
+      '重试这个事件对应的服务操作？',
       '确认事件操作',
-      { type: action === 'discard' ? 'error' : 'warning' },
+      { type: 'warning' },
     );
     return true;
   } catch {
@@ -120,14 +118,14 @@ async function confirmEventAction(action: 'retry' | 'discard'): Promise<boolean>
 }
 
 async function runAction(item: OperationalEventItem, action: OperationalEventAction): Promise<void> {
-  if ((action === 'retry' || action === 'discard') && !await confirmEventAction(action)) return;
+  if (action === 'retry' && !await confirmRetry()) return;
   activeAction.value = `${item.id}:${action}`;
   try {
     const updated = await rawApi<OperationalEventItem>(`/events/${item.id}/action`, {
       method: 'POST',
       body: rawJsonBody({ action }),
     });
-    ElMessage.success(action === 'acknowledge' ? '事件已确认' : action === 'retry' ? '重试已执行' : '任务已丢弃');
+    ElMessage.success(action === 'acknowledge' ? '事件已确认' : '重试已执行');
     await load(true);
     if (drawerOpen.value && detail.value?.id === item.id) {
       detail.value = await rawApi<OperationalEventDetail>(`/events/${updated.id}`);
@@ -321,17 +319,6 @@ defineExpose({ refresh: load });
           >
             重试
           </el-button>
-          <el-button
-            v-if="item.availableActions.includes('discard')"
-            size="small"
-            type="danger"
-            plain
-            :disabled="bulkAcknowledging"
-            :loading="activeAction === `${item.id}:discard`"
-            @click="runAction(item, 'discard')"
-          >
-            丢弃
-          </el-button>
         </div>
       </article>
     </div>
@@ -391,15 +378,6 @@ defineExpose({ refresh: load });
           @click="runAction(detail, 'retry')"
         >
           重试
-        </el-button>
-        <el-button
-          v-if="detail.availableActions.includes('discard')"
-          type="danger"
-          plain
-          :disabled="bulkAcknowledging"
-          @click="runAction(detail, 'discard')"
-        >
-          丢弃
         </el-button>
       </div>
       <section v-if="!detail.occurrences.length" class="cause">

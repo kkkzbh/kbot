@@ -39,6 +39,8 @@ mkdir -p "$STAGE_DIST/plugins/hbu-jw/assets"
 cp -R "$ROOT_DIR/src/plugins/hbu-jw/assets/." "$STAGE_DIST/plugins/hbu-jw/assets/"
 node ./scripts/build-context-preset-cutover-tools.mjs --out-dir "$STAGE_DIST/tools"
 node ./scripts/build-model-config-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"
+node ./scripts/build-memory-v2-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"
+node ./scripts/build-memory-evaluation-tool.mjs --out-dir "$STAGE_DIST/tools"
 node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml --dist "$STAGE_DIST"
 
 rm -rf "$NEXT_DIST" "$PREVIOUS_DIST"

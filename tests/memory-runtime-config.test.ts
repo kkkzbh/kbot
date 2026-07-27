@@ -26,6 +26,7 @@ import {
 function featureConfig(): Config {
   return {
     enabled: true,
+    maintenance: false,
     readEnabled: true,
     writeEnabled: true,
     queryTopK: 4,

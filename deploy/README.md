@@ -36,6 +36,12 @@ QQBOT_ADMIN_SSH_ORIGIN=http://127.0.0.1:5140
 
 `QQBOT_ADMIN_ORIGIN` must exactly match the Tailnet browser origin. `QQBOT_ADMIN_SSH_ORIGIN` must match the browser origin created by the SSH local forward. Neither value may include a path. The installer validates both values before replacing the active application. Production binds Koishi to loopback; Tailscale Serve and SSH local forwarding own the two admin access paths.
 
+The Admin server authenticates the transport before serving either the SPA or
+the API. The SSH origin is accepted only over a loopback socket. Every
+non-loopback browser origin must arrive through Tailscale Serve with its
+`Tailscale-User-Login` identity header. Host and Origin checks remain separate
+authorization boundaries for routing and mutations.
+
 Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
 
 ```bash
@@ -77,6 +83,29 @@ installer owns the stopped migration transaction after the read-only
 preflight. Ordinary deployment can retain the stopped state with
 `QQBOT_DEPLOY_ACTIVATION_MODE=keep-stopped`; that mode deliberately keeps the
 legacy runtime catalog until an explicit start and successful verification.
+
+Snapshot rollback is limited to the interval where `qqbot.target` remains
+stopped. The installer transfers ownership to the new application/database
+pair immediately before the first target start. Any later verification or
+cutover-gate failure stops the target and requires roll-forward repair; it
+does not restore the database snapshot because Koishi or another plugin may
+already have committed new writes.
+
+Before the first offline mutation, the installer disables `qqbot.target` and
+atomically persists `/opt/qqbot/shared/deployment-transaction.state`. The
+target remains disabled across reboots while bootstrap verification, the
+three extraction and three embedding probes, and the final `stranded=0` gate
+are incomplete. A later installer invocation resumes the recorded phase even
+when the database already reports schema V2. Offline interruptions restore
+the paired snapshot; runtime-owned interruptions keep the V2 application and
+database paired and continue roll-forward. Only the final successful verifier
+re-enables `qqbot.target` and clears the transaction record.
+
+`qqbot-koishi.service` publishes a private process-bound Memory V2 readiness
+marker under `/run/qqbot` after strict schema and live model-binding startup
+validation. Host verification requires the marker PID to match systemd's
+current `MainPID`; an HTTP listener without the Memory plugin is not considered
+ready.
 
 The same coordinated installer owns the one-time canonical model configuration
 cutover. Follow

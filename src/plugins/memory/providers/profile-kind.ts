@@ -1,6 +1,6 @@
-import type { MemoryProfileKind } from '../../../types/memory.js';
+import type { MemoryFactKind } from '../gates.js';
 
-export const PROFILE_KINDS = new Set<MemoryProfileKind>([
+export const PROFILE_KINDS = new Set<MemoryFactKind>([
   'identity',
   'preference',
   'trait',
@@ -10,20 +10,8 @@ export const PROFILE_KINDS = new Set<MemoryProfileKind>([
   'response_policy',
 ]);
 
-const PROFILE_KIND_ALIASES: Record<string, MemoryProfileKind> = {
-  interest: 'preference',
-  interests: 'preference',
-  hobby: 'preference',
-  hobbies: 'preference',
-  like: 'preference',
-  likes: 'preference',
-  dislike: 'preference',
-  dislikes: 'preference',
-};
-
-export function normalizeProfileKind(value: unknown): MemoryProfileKind | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().toLowerCase().replace(/-/g, '_');
-  if (PROFILE_KINDS.has(normalized as MemoryProfileKind)) return normalized as MemoryProfileKind;
-  return PROFILE_KIND_ALIASES[normalized] ?? null;
+export function parseProfileKind(value: unknown): MemoryFactKind | null {
+  return typeof value === 'string' && PROFILE_KINDS.has(value as MemoryFactKind)
+    ? value as MemoryFactKind
+    : null;
 }

@@ -5,11 +5,13 @@ export class AdminHttpError extends Error {
     readonly status: number,
     readonly code:
       | 'bad_request'
+      | 'unauthorized'
       | 'forbidden_origin'
       | 'invalid_host'
       | 'not_found'
       | 'conflict'
       | 'provider_auth_required'
+      | 'memory_error'
       | 'upstream_error'
       | 'service_unavailable'
       | 'internal_error',
@@ -34,6 +36,7 @@ function normalizeOrigin(value: string): string {
 export class AdminAccessPolicy {
   readonly allowedOrigins: ReadonlySet<string>;
   readonly allowedHosts: ReadonlySet<string>;
+  private readonly loopbackHosts: ReadonlySet<string>;
 
   constructor(allowedOrigins: string[]) {
     if (!Array.isArray(allowedOrigins) || allowedOrigins.length === 0) {
@@ -42,6 +45,12 @@ export class AdminAccessPolicy {
     const origins = allowedOrigins.map(normalizeOrigin);
     this.allowedOrigins = new Set(origins);
     this.allowedHosts = new Set(origins.map((origin) => new URL(origin).host));
+    this.loopbackHosts = new Set(
+      origins
+        .map((origin) => new URL(origin))
+        .filter((url) => isLoopbackHostname(url.hostname))
+        .map((url) => url.host),
+    );
   }
 
   assertHost(host: string): void {
@@ -55,6 +64,36 @@ export class AdminAccessPolicy {
       throw new AdminHttpError(403, 'forbidden_origin', '当前 Origin 不允许执行管理操作。');
     }
   }
+
+  assertAuthenticatedTransport(input: {
+    host: string;
+    remoteAddress: string;
+    tailscaleUserLogin: string;
+  }): void {
+    const host = input.host.trim().toLowerCase();
+    this.assertHost(host);
+    if (!isLoopbackAddress(input.remoteAddress)) {
+      throw new AdminHttpError(401, 'unauthorized', '管理端只接受本机认证代理或 SSH 转发连接。');
+    }
+    if (this.loopbackHosts.has(host)) return;
+    if (!input.tailscaleUserLogin.trim()) {
+      throw new AdminHttpError(401, 'unauthorized', 'Tailnet 管理端请求缺少认证身份。');
+    }
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === 'localhost'
+    || normalized === '127.0.0.1'
+    || normalized === '::1';
+}
+
+function isLoopbackAddress(address: string): boolean {
+  const normalized = address.trim().toLowerCase();
+  return normalized === '127.0.0.1'
+    || normalized === '::1'
+    || normalized === '::ffff:127.0.0.1';
 }
 
 export function createRequestId(): string {

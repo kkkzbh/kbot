@@ -84,7 +84,6 @@ function aggregate(): ModelConfigAdminAggregate {
       { workload: 'memory.embedding', mode: 'dedicated', connectionId: 'provider', modelId: 'embedding' },
       { workload: 'affinity.analysis', mode: 'inheritMain' },
       { workload: 'naturalTrigger.decision', mode: 'disabled' },
-      { workload: 'chatluna.defaultEmbedding', mode: 'dedicated', connectionId: 'provider', modelId: 'embedding' },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
       { workload: 'sticker.index', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
     ],
@@ -155,7 +154,6 @@ describe('admin unified model page state', () => {
       { workload: 'main.chat', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
       { workload: 'affinity.analysis', mode: 'inheritMain' },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
-      { workload: 'chatluna.defaultEmbedding', mode: 'disabled' },
       { workload: 'memory.extract', mode: 'disabled' },
       { workload: 'naturalTrigger.decision', mode: 'disabled' },
     ] satisfies ModelConfigDraft['bindings'];
@@ -164,11 +162,10 @@ describe('admin unified model page state', () => {
 
     expect(ordered.map(({ binding }) => binding.workload)).toEqual([
       'main.chat',
-      'naturalTrigger.decision',
-      'affinity.analysis',
       'memory.extract',
       'memory.embedding',
-      'chatluna.defaultEmbedding',
+      'naturalTrigger.decision',
+      'affinity.analysis',
       'agent.subagent.default',
       'agent.subagent.preset:research',
       'sticker.index',
@@ -325,7 +322,7 @@ describe('admin unified model page state', () => {
 
   it('preserves the exact workload mode matrix when switching bindings', () => {
     expect(allowedBindingModes('main.chat')).toEqual(['dedicated']);
-    expect(allowedBindingModes('memory.extract')).toEqual(['dedicated', 'disabled']);
+    expect(allowedBindingModes('memory.extract')).toEqual(['inheritMain', 'dedicated', 'disabled']);
     expect(allowedBindingModes('affinity.analysis')).toEqual(['inheritMain', 'dedicated']);
     expect(allowedBindingModes('agent.subagent.researcher')).toEqual(['inheritInvocation', 'dedicated']);
     expect(allowedBindingModes('agent.subagent.builtin:plan')).toEqual(['inheritInvocation', 'dedicated']);

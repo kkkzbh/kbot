@@ -233,6 +233,7 @@ plugins:
       randomWindowEndHour: ${{ +env.AFFINITY_RANDOM_WINDOW_END_HOUR || 22 }}
     ./dist/plugins/memory:memory:
       enabled: ${{ env.MEMORY_ENABLED !== 'false' }}
+      maintenance: ${{ env.MEMORY_MAINTENANCE === 'true' }}
       readEnabled: ${{ env.MEMORY_READ_ENABLED !== 'false' }}
       writeEnabled: ${{ env.MEMORY_WRITE_ENABLED !== 'false' }}
       queryTopK: ${{ +env.MEMORY_QUERY_TOPK || 8 }}

@@ -21,7 +21,7 @@ describe('chatluna prompt pollution regression', () => {
     clearPromptAssemblyTurn('conv-prompt-pollution');
   });
 
-  it('keeps qqbot prompt envelope as system messages only', () => {
+  it('keeps reference fragments out of system messages', () => {
     beginPromptAssemblyTurn('conv-prompt-pollution');
     registerPromptFragment('conv-prompt-pollution', {
       source: 'qqbot_turn_context',
@@ -39,7 +39,7 @@ describe('chatluna prompt pollution regression', () => {
     });
 
     const envelope = compilePromptEnvelope('conv-prompt-pollution');
-    expect(envelope?.messages.every((message) => message.role === 'system')).toBe(true);
+    expect(envelope?.messages.map((message) => message.role)).toEqual(['human']);
     expect(
       envelope?.messages.some((message) =>
         String(message.content).includes('Respond naturally according to your system prompt'),
@@ -78,7 +78,7 @@ describe('chatluna prompt pollution regression', () => {
       ),
     );
 
-    expect(envelope?.messages.every((message) => message.role === 'system')).toBe(true);
+    expect(envelope?.messages.map((message) => message.role)).toEqual(['system', 'system', 'system', 'human']);
     expect(envelope?.messages.some((message) => String(message.content).includes('submit_reply_plan'))).toBe(false);
     expect(envelope?.messages.some((message) => String(message.content).includes('submit_working_state'))).toBe(false);
     expect(envelope?.messages.some((message) => String(message.content).includes('qqbot_reply_chat_style'))).toBe(false);

@@ -77,6 +77,42 @@ function directoryHasFile(dirPath, pattern) {
   }
 }
 
+function collectFilesRecursively(dirPath, output = []) {
+  if (!existsSync(dirPath)) return output;
+  for (const name of readdirSync(dirPath)) {
+    const path = join(dirPath, name);
+    const info = lstatSync(path);
+    if (info.isDirectory()) collectFilesRecursively(path, output);
+    else if (info.isFile()) output.push(path);
+  }
+  return output;
+}
+
+function validateMemoryRuntimeCutover(distDir) {
+  const memoryDir = join(distDir, 'plugins/memory');
+  if (!existsSync(memoryDir)) return;
+  const forbiddenFiles = new Set([
+    'conflict.js',
+    'consolidation.js',
+    'jobs.js',
+    'migration.js',
+    'ranking.js',
+    'scope.js',
+  ]);
+  const forbiddenTable = /\bmemory_(?:fact|episode|profile|candidate|source|provenance|job|tombstone)(?:_v\d+)?\b/u;
+  for (const filePath of collectFilesRecursively(memoryDir)) {
+    const name = filePath.slice(memoryDir.length + 1);
+    if (forbiddenFiles.has(name) || forbiddenFiles.has(name.split('/').at(-1))) {
+      throw new Error(`Legacy memory runtime artifact remains: ${filePath}`);
+    }
+    if (!filePath.endsWith('.js')) continue;
+    const source = readFileSync(filePath, 'utf8');
+    if (source.includes('runLegacyMemoryMigration') || forbiddenTable.test(source)) {
+      throw new Error(`Legacy memory runtime reference remains: ${filePath}`);
+    }
+  }
+}
+
 function artifactPathForSpec(distDir, spec) {
   const localPath = spec.split(':')[0];
   const relativePath = localPath.replace(/^\.\/dist\//, '');
@@ -111,6 +147,7 @@ function main() {
   const distDir = resolveFromRoot(rootDir, options.dist);
   const config = YAML.parse(readFileSync(configPath, 'utf8'));
   const specs = [...collectLocalPluginSpecs(config)].sort();
+  validateMemoryRuntimeCutover(distDir);
   validatePresetCatalog(
     join(rootDir, 'data/chathub/role-presets'),
     RolePresetDefinitionV1Schema,
@@ -153,6 +190,9 @@ function main() {
     join(distDir, 'tools/context-preset-sqlite.py'),
     join(distDir, 'tools/model-config-cutover.mjs'),
     join(distDir, 'tools/model-auth-connection-cutover.mjs'),
+    join(distDir, 'tools/memory-v2-cutover.mjs'),
+    join(distDir, 'tools/memory-evaluation.mjs'),
+    join(distDir, 'tools/memory-evaluation-adapter.mjs'),
   ]) {
     if (!fileExists(toolPath)) missing.push(toolPath);
   }

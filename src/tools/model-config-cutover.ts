@@ -3376,15 +3376,6 @@ export async function buildModelConfigMigrationPlan(
   addBinding(bindings, embeddingBinding);
   addBinding(
     bindings,
-    memoryEmbedding
-      ? dedicatedBinding(
-          'chatluna.defaultEmbedding',
-          requireBuiltModel(catalog, memoryEmbedding.sourceId),
-        )
-      : { workload: 'chatluna.defaultEmbedding', mode: 'disabled' },
-  );
-  addBinding(
-    bindings,
     affinity
       ? dedicatedBinding(
           'affinity.analysis',

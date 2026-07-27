@@ -321,16 +321,18 @@ describe('affinity proactive task prompt and provider adapter', () => {
     expect(modelMessage.additional_kwargs?.qqbot_final_response_schema).toEqual(expect.objectContaining({
       title: 'StructuredReply',
     }));
-    const injectedText = chatluna.contextManager.inject.mock.calls[0]?.[0]?.value
-      .map((message: { content: string }) => message.content)
+    const injectedMessages = chatluna.contextManager.inject.mock.calls
+      .flatMap((call) => call[0]?.value ?? []) as Array<{
+        content: string;
+        additional_kwargs?: Record<string, { source?: string }>;
+      }>;
+    const injectedText = injectedMessages
+      .map((message) => message.content)
       .join('\n\n');
     expect(injectedText).toContain('Affinity Proactive Task');
     expect(injectedText).toContain('Structured Reply Contract');
     expect(injectedText).not.toContain('source: qqbot_affinity_proactive_task');
     expect(injectedText).not.toContain('source: qqbot_structured_reply_contract');
-    const injectedMessages = chatluna.contextManager.inject.mock.calls[0]?.[0]?.value as Array<{
-      additional_kwargs?: Record<string, { source?: string }>;
-    }>;
     expect(injectedMessages.map((message) => message.additional_kwargs?.qqbot_context?.source)).toEqual(
       expect.arrayContaining(['qqbot_affinity_proactive_task', 'qqbot_structured_reply_contract']),
     );
@@ -420,7 +422,8 @@ describe('affinity proactive task prompt and provider adapter', () => {
       instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
     }));
     expect(modelMessage.additional_kwargs?.qqbot_final_response_instruction).toContain('CHAT_REPLY_V1 <nonce>');
-    const injectedText = chatluna.contextManager.inject.mock.calls[0]?.[0]?.value
+    const injectedText = chatluna.contextManager.inject.mock.calls
+      .flatMap((call) => call[0]?.value ?? [])
       .map((message: { content: string }) => message.content)
       .join('\n\n');
     expect(injectedText).toContain('CHAT_REPLY_V1 <nonce>');

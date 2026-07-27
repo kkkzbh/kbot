@@ -729,12 +729,12 @@ describe('task automation tools and execution', () => {
 
     expect(harness.ctx.chatluna.contextManager.inject).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'qqbot_automation_prompt_envelope',
+        name: 'qqbot_automation_prompt_envelope_reference',
         conversationId: expect.any(String),
-        stage: 'after_scratchpad',
+        stage: 'injections',
         value: expect.arrayContaining([
           expect.objectContaining({
-            role: 'system',
+            role: 'human',
             content: expect.stringContaining('Automation Recent Conversation Window'),
             additional_kwargs: expect.objectContaining({
               qqbot_context: expect.objectContaining({
@@ -743,11 +743,11 @@ describe('task automation tools and execution', () => {
             }),
           }),
           expect.objectContaining({
-            role: 'system',
+            role: 'human',
             content: expect.stringContaining('第一句用户消息'),
           }),
           expect.objectContaining({
-            role: 'system',
+            role: 'human',
             content: expect.stringContaining('上一轮助手回复'),
           }),
         ]),

@@ -1535,9 +1535,9 @@ describe('qq voice plugin', () => {
     expect(promptAssemblyMocks.clearPromptAssemblyTurn).toHaveBeenCalledWith('conv-1');
     expect(inject).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'qqbot_reply_prompt_envelope',
+        name: 'qqbot_reply_prompt_envelope_system',
         conversationId: 'conv-1',
-        stage: 'after_scratchpad',
+        stage: 'after_system_prompts',
         value: expect.arrayContaining([
           expect.objectContaining({
             role: 'system',
@@ -1622,7 +1622,7 @@ describe('qq voice plugin', () => {
 
     const injectedEnvelope = inject.mock.calls.find((call) => {
       const payload = call[0] as Record<string, any> | undefined;
-      return payload?.name === 'qqbot_reply_prompt_envelope';
+      return payload?.name === 'qqbot_reply_prompt_envelope_system';
     })?.[0];
     const envelopeText = (injectedEnvelope?.value ?? [])
       .map((message: { content?: unknown }) => String(message?.content ?? ''))
@@ -1630,7 +1630,7 @@ describe('qq voice plugin', () => {
 
     expect(inject).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'qqbot_reply_prompt_envelope',
+        name: 'qqbot_reply_prompt_envelope_system',
         conversationId: 'conv-chat-reply-v1',
         value: expect.arrayContaining([
           expect.objectContaining({
@@ -1735,7 +1735,7 @@ describe('qq voice plugin', () => {
 
     const injectedEnvelope = inject.mock.calls.find((call) => {
       const payload = call[0] as Record<string, any> | undefined;
-      return payload?.name === 'qqbot_reply_prompt_envelope';
+      return payload?.name === 'qqbot_reply_prompt_envelope_system';
     })?.[0];
     expect(injectedEnvelope).toBeDefined();
 

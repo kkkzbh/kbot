@@ -35,6 +35,16 @@ export interface PromptEnvelope {
   fragments: CompiledPromptFragment[];
 }
 
+export interface PromptEnvelopeInjectionTarget {
+  inject: (options: {
+    name: string;
+    value: PromptEnvelopeMessage[];
+    once?: boolean;
+    conversationId?: string;
+    stage?: string;
+  }) => void;
+}
+
 interface RegisteredPromptFragment extends PromptFragment {
   registeredOrder: number;
 }
@@ -228,14 +238,27 @@ function indentBlock(content: string, prefix = '  '): string {
 }
 
 function renderFragment(fragment: PromptFragment, content: string): string {
+  const payload = fragment.trust === 'untrusted'
+    ? JSON.stringify(content)
+    : `\n${indentBlock(content)}`;
   return [
     '[qqbot-context]',
     `kind: ${sectionKindForFragment(fragment)}`,
     `title: ${fragment.title}`,
     `trust: ${fragment.trust}`,
-    'payload:',
-    indentBlock(content),
+    `payload:${payload}`,
+    '[/qqbot-context]',
   ].join('\n');
+}
+
+function messageRoleForFragment(fragment: PromptFragment): PromptEnvelopeMessageRole {
+  if (fragment.authority === 'persona_core' || fragment.authority === 'runtime_contract') {
+    if (fragment.trust !== 'trusted') {
+      throw new Error(`prompt fragment ${fragment.source} cannot use ${fragment.authority} with untrusted content.`);
+    }
+    return 'system';
+  }
+  return 'human';
 }
 
 function fragmentIdentityKey(fragment: PromptFragment, payloadContent: string): string {
@@ -282,7 +305,7 @@ function compileRegisteredFragments(fragments: RegisteredPromptFragment[]): Prom
       compiledOrder: index,
       content,
       message: {
-        role: 'system',
+        role: messageRoleForFragment(fragment),
         content,
         additional_kwargs: {
           qqbot_context: {
@@ -371,4 +394,36 @@ export function consumePromptEnvelope(conversationId: string): PromptEnvelope | 
   const envelope = compilePromptEnvelope(conversationId);
   clearPromptAssemblyTurn(conversationId);
   return envelope;
+}
+
+export function injectPromptEnvelope(
+  target: PromptEnvelopeInjectionTarget,
+  options: {
+    name: string;
+    envelope: PromptEnvelope;
+    conversationId: string;
+    once?: boolean;
+  },
+): void {
+  const systemMessages = options.envelope.messages.filter((message) => message.role === 'system');
+  const referenceMessages = options.envelope.messages.filter((message) => message.role !== 'system');
+
+  if (systemMessages.length > 0) {
+    target.inject({
+      name: `${options.name}_system`,
+      value: systemMessages,
+      once: options.once,
+      conversationId: options.conversationId,
+      stage: 'after_system_prompts',
+    });
+  }
+  if (referenceMessages.length > 0) {
+    target.inject({
+      name: `${options.name}_reference`,
+      value: referenceMessages,
+      once: options.once,
+      conversationId: options.conversationId,
+      stage: 'injections',
+    });
+  }
 }

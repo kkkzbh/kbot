@@ -29,7 +29,11 @@ import {
   type BotMessageSender,
   type NormalizedOutboundMessage,
 } from '../shared/outbound/index.js';
-import { compilePromptEnvelopeFromFragments, type PromptFragment } from '../shared/prompt-context/index.js';
+import {
+  compilePromptEnvelopeFromFragments,
+  injectPromptEnvelope,
+  type PromptFragment,
+} from '../shared/prompt-context/index.js';
 import { decodeStoredMessageText } from '../shared/stored-message.js';
 import { resolveStickerCapabilityArtifacts } from '../sticker/index.js';
 import {
@@ -985,29 +989,16 @@ function injectAutomationPromptFragments(
   if (!normalizedConversationId || !fragments.length) return;
   const envelope = compilePromptEnvelopeFromFragments(fragments);
   if (!envelope?.messages.length) return;
-  const promptMessages = envelope.messages as Array<{
-    role: 'system' | 'human' | 'ai';
-    content: string;
-    additional_kwargs?: Record<string, unknown>;
-  }>;
   const contextManager = automationChatLuna(ctx).contextManager;
   if (!contextManager) {
     throw new Error('automation prompt injection requires chatluna.contextManager.');
   }
-  const injectOptions: {
-    name: string;
-    value: unknown;
-    once?: boolean;
-    conversationId?: string;
-    stage?: string;
-  } = {
+  injectPromptEnvelope(contextManager, {
     name: 'qqbot_automation_prompt_envelope',
-    value: promptMessages,
+    envelope,
     once: true,
     conversationId: normalizedConversationId,
-    stage: 'after_scratchpad',
-  };
-  contextManager.inject(injectOptions);
+  });
 }
 
 async function prepareAutomationExecutionContext(

@@ -5,7 +5,9 @@ import {
   modelAdminAggregateSchema,
   modelConfigPutSchema,
   modelOAuthPollRequestSchema,
-  pageQuerySchema,
+  memoryArchiveRequestSchema,
+  memoryForgetRequestSchema,
+  memoryPageQuerySchema,
   contextPresetCatalogResponseSchema,
   contextPresetCreateRequestSchema,
   contextPresetPreviewResponseSchema,
@@ -77,7 +79,6 @@ const modelDraft = {
     { workload: 'memory.embedding', mode: 'disabled' as const },
     { workload: 'affinity.analysis', mode: 'inheritMain' as const },
     { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
-    { workload: 'chatluna.defaultEmbedding', mode: 'disabled' as const },
     { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
     { workload: 'sticker.index', mode: 'disabled' as const },
   ],
@@ -88,6 +89,26 @@ describe('admin shared contracts', () => {
     expect(adminErrorSchema.parse({ error: { code: 'bad_request', message: 'invalid input', requestId: 'request-1' } })).toEqual({
       error: { code: 'bad_request', message: 'invalid input', requestId: 'request-1' },
     });
+    expect(adminErrorSchema.parse({
+      error: {
+        code: 'unauthorized',
+        message: 'authentication required',
+        requestId: 'request-2',
+      },
+    }).error.code).toBe('unauthorized');
+    expect(adminErrorSchema.parse({
+      error: {
+        code: 'memory_error',
+        message: 'memory operation failed',
+        requestId: 'request-3',
+        details: {
+          operation: 'forget',
+          stage: 'finalize',
+          memoryCode: 'lease_expired',
+          retryable: true,
+        },
+      },
+    }).error.code).toBe('memory_error');
   });
 
   it('models secret retention and explicit clear as separate operations', () => {
@@ -97,9 +118,39 @@ describe('admin shared contracts', () => {
   });
 
   it('normalizes bounded pagination query values', () => {
-    expect(pageQuerySchema.parse({})).toEqual({ page: 1, pageSize: 20 });
-    expect(pageQuerySchema.parse({ page: '2', pageSize: '50' })).toEqual({ page: 2, pageSize: 50 });
-    expect(() => pageQuerySchema.parse({ pageSize: 101 })).toThrow();
+    expect(memoryPageQuerySchema.parse({})).toEqual({ page: 1, pageSize: 20 });
+    expect(memoryPageQuerySchema.parse({ page: '2', pageSize: '50' })).toEqual({ page: 2, pageSize: 50 });
+    expect(() => memoryPageQuerySchema.parse({ pageSize: 101 })).toThrow();
+    expect(memoryForgetRequestSchema.parse({
+      streamId: 'stream-1',
+      reasonCode: 'operator-delete',
+    })).toEqual({
+      streamId: 'stream-1',
+      reasonCode: 'operator-delete',
+    });
+    expect(() => memoryForgetRequestSchema.parse({
+      reasonCode: 'operator-delete',
+    })).toThrow();
+    expect(() => memoryForgetRequestSchema.parse({
+      streamId: 'stream-1',
+      all: true,
+      reasonCode: 'operator-delete',
+    })).toThrow();
+    expect(() => memoryForgetRequestSchema.parse({
+      streamId: 'stream-1',
+      reasonCode: 'contains private content',
+    })).toThrow();
+    expect(memoryArchiveRequestSchema.parse({
+      streamId: 'stream-1',
+      reasonCode: 'duplicate',
+    })).toEqual({
+      streamId: 'stream-1',
+      reasonCode: 'duplicate',
+    });
+    expect(() => memoryArchiveRequestSchema.parse({
+      streamId: 'stream-1',
+      reasonCode: 'free form text',
+    })).toThrow();
   });
 
   it('keeps affinity settings free of model configuration', () => {
@@ -193,6 +244,24 @@ describe('admin shared contracts', () => {
     });
     expect(() => contextPresetCreateRequestSchema.parse(contextPreset)).toThrow();
     expect(() => contextPresetUpdateRequestSchema.parse({ contextPreset })).toThrow();
+    expect(() => contextPresetCreateRequestSchema.parse({
+      contextPreset: {
+        ...contextPreset,
+        blocks: [
+          ...contextPreset.blocks,
+          {
+            id: 'long-memory',
+            type: 'longMemory',
+            enabled: true,
+            budgetPriority: 200,
+            maxTokens: null,
+            prompt: null,
+            extractPrompt: null,
+            newQuestionPrompt: null,
+          },
+        ],
+      },
+    })).toThrow(/do not support the ChatLuna longMemory block/u);
     expect(() => rolePresetUpdateRequestSchema.parse({ rolePreset })).toThrow();
     expect(presetRevisionRequestSchema.parse({
       expectedRevision: 'revision-context',

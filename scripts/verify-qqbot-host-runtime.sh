@@ -22,6 +22,9 @@ KOISHI_UNIT="${QQBOT_KOISHI_UNIT:-qqbot-koishi.service}"
 CLOUDFLARED_HBU_JW_UNIT="${QQBOT_CLOUDFLARED_HBU_JW_UNIT:-cloudflared-qqbot-hbu-jw.service}"
 CLOUDFLARED_GENSHIN_UNIT="${QQBOT_CLOUDFLARED_GENSHIN_UNIT:-cloudflared-qqbot-genshin.service}"
 KOISHI_PORT="${KOISHI_PORT:-5140}"
+VERIFY_SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QQBOT_APP_DIR="${QQBOT_APP_DIR:-$(dirname "${VERIFY_SCRIPT_DIR}")}"
+MEMORY_READY_FILE="${QQBOT_MEMORY_READY_FILE:-/run/qqbot/memory-v2-ready.json}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -123,6 +126,14 @@ systemd_unit_active() {
   systemctl is-active --quiet "${unit}"
 }
 
+memory_v2_runtime_ready() {
+  local main_pid
+  main_pid="$(systemctl show "${KOISHI_UNIT}" --property MainPID --value)"
+  node "${QQBOT_APP_DIR}/scripts/verify-memory-v2-readiness.mjs" \
+    --marker "${MEMORY_READY_FILE}" \
+    --pid "${main_pid}"
+}
+
 wait_until() {
   local description="$1"
   shift
@@ -145,6 +156,9 @@ print_koishi_diagnostics() {
   systemctl status "${KOISHI_UNIT}" --no-pager >&2 || true
   echo "== ${KOISHI_UNIT} logs ==" >&2
   journalctl -u "${KOISHI_UNIT}" --no-pager -n 200 2>/dev/null || true
+  echo "== Memory V2 readiness marker ==" >&2
+  stat "${MEMORY_READY_FILE}" >&2 || true
+  cat "${MEMORY_READY_FILE}" >&2 || true
 }
 
 print_full_diagnostics() {
@@ -180,6 +194,9 @@ trap 'code=$?; if [ "$code" -ne 0 ]; then if [ "${SCOPE}" = full ]; then print_f
 wait_until "${KOISHI_UNIT} is active" systemd_unit_active "${KOISHI_UNIT}"
 wait_until "koishi http endpoint is reachable" \
   node_http_probe "http://127.0.0.1:${KOISHI_PORT}/" "koishi http"
+if [[ "${MEMORY_ENABLED:-true}" != "false" ]]; then
+  wait_until "Memory V2 plugin startup contract is ready" memory_v2_runtime_ready
+fi
 
 if [[ "${SCOPE}" == "koishi" ]]; then
   exit 0
