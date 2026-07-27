@@ -76,7 +76,13 @@ export type OperationalEventType =
   | 'runtime_warning';
 export type OperationalEventSeverity = 'warning' | 'error';
 export type OperationalEventStatus = 'open' | 'acknowledged' | 'resolved';
-export type OperationalEventResolution = 'recovered' | 'retried' | 'discarded' | 'completed' | null;
+export type OperationalEventResolution =
+  | 'recovered'
+  | 'retried'
+  | 'discarded'
+  | 'completed'
+  | 'deduplicated'
+  | null;
 export type OperationalEventAction = 'acknowledge' | 'retry' | 'discard';
 
 export interface OperationalEventItem {
@@ -114,7 +120,19 @@ export interface OperationalEventPage {
   pageSize: number;
 }
 
+export interface OperationalEventOccurrence {
+  id: number;
+  summary: string;
+  details: string;
+  occurrenceCount: number;
+  unit: BotServiceUnit | null;
+  invocationId: string | null;
+  firstOccurredAt: number;
+  lastOccurredAt: number;
+}
+
 export interface OperationalEventDetail extends OperationalEventItem {
+  occurrences: OperationalEventOccurrence[];
   journal: string[];
 }
 

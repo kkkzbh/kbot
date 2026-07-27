@@ -143,6 +143,10 @@ defineExpose({ refresh: load });
       <div><strong>服务状态加载失败</strong><p>{{ loadError }}</p></div>
       <el-button size="small" @click="load()">重试</el-button>
     </div>
+    <div v-if="services.length" class="service-list-toolbar">
+      <span>{{ services.length }} 个托管服务</span>
+      <span>每 5 秒自动刷新</span>
+    </div>
     <div v-if="services.length" v-loading="loading" class="service-list">
       <section
         v-for="service in services"
@@ -211,15 +215,16 @@ defineExpose({ refresh: load });
 </template>
 
 <style scoped>
-.service-panel { min-width: 0; overflow: hidden; }
+.service-panel { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .panel-error { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid #f3c9cf; color: #9b3141; background: #fff4f5; }
 .panel-error strong { font-size: 11px; }
 .panel-error p { margin: 3px 0 0; font-size: 10px; line-height: 1.45; }
+.service-list-toolbar { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); color: #8a94a3; font-size: 10px; }
 .service-list { max-height: 720px; overflow: auto; }
 .service-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(170px, .75fr) minmax(260px, 1.25fr) auto;
+  grid-template-columns: minmax(145px, .75fr) minmax(180px, 1.25fr) auto;
   align-items: center;
   gap: 16px;
   padding: 12px 14px;

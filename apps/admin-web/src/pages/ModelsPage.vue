@@ -77,10 +77,6 @@ const WORKLOAD_DETAILS: Record<string, {
     label: '自然触发判断',
     services: 'Natural Trigger',
   },
-  'search.summary': {
-    label: '搜索总结',
-    services: 'ChatLuna Search',
-  },
   'chatluna.defaultEmbedding': {
     label: 'ChatLuna 默认向量',
     services: 'ChatLuna core',
@@ -918,106 +914,6 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section class="panel binding-panel">
-      <div class="panel-head">
-        <div>
-          <h2>用途绑定</h2>
-        </div>
-        <el-button size="small" @click="addAgentOverride">新增 Agent override</el-button>
-      </div>
-      <div class="binding-list">
-        <article
-          v-for="(binding, index) in draft.bindings"
-          :key="binding.workload"
-          class="binding-row"
-        >
-          <div class="binding-purpose">
-            <strong>{{ bindingMeta(binding.workload).label }}</strong>
-            <code>{{ binding.workload }}</code>
-            <small>影响：{{ bindingMeta(binding.workload).services }}</small>
-          </div>
-          <div class="binding-controls">
-            <el-select
-              :model-value="binding.mode"
-              aria-label="绑定模式"
-              @change="setBindingMode(index, $event)"
-            >
-              <el-option
-                v-for="mode in allowedBindingModes(binding.workload)"
-                :key="mode"
-                :value="mode"
-                :label="MODE_LABELS[mode]"
-              />
-            </el-select>
-            <template v-if="binding.mode === 'dedicated'">
-              <el-select
-                :model-value="binding.connectionId"
-                filterable
-                placeholder="选择 connection"
-                aria-label="绑定 connection"
-                @change="setBindingConnection(binding, $event)"
-              >
-                <el-option
-                  v-for="connection in draft.connections"
-                  :key="connection.id"
-                  :value="connection.id"
-                  :label="connection.displayName"
-                />
-              </el-select>
-              <el-select
-                v-model="binding.modelId"
-                filterable
-                placeholder="选择兼容模型"
-                aria-label="绑定 model"
-              >
-                <el-option
-                  v-for="model in compatibleModels(binding)"
-                  :key="model.id"
-                  :value="model.id"
-                  :label="model.displayName"
-                >
-                  <span>{{ model.displayName }}</span>
-                  <small class="option-id">{{ model.id }}</small>
-                </el-option>
-              </el-select>
-            </template>
-          </div>
-          <div class="binding-state">
-            <div>
-              <span>Configured</span>
-              <strong>{{ configuredCanonicalModel(binding) || MODE_LABELS[binding.mode] }}</strong>
-            </div>
-            <div>
-              <span>Live · revision {{ liveBinding(binding.workload)?.revision ?? '—' }}</span>
-              <strong>{{ liveBinding(binding.workload)?.canonicalModel || MODE_LABELS[liveBinding(binding.workload)?.mode ?? binding.mode] }}</strong>
-            </div>
-          </div>
-          <el-button
-            v-if="!WORKLOAD_DETAILS[binding.workload]"
-            class="remove-binding"
-            text
-            type="danger"
-            @click="removeAgentOverride(index)"
-          >
-            删除
-          </el-button>
-        </article>
-      </div>
-    </section>
-
-    <section class="panel inheritance-panel">
-      <div class="panel-head">
-        <div><h2>只读继承关系</h2></div>
-      </div>
-      <div class="inheritance-grid">
-        <article v-for="item in DERIVED_BINDINGS" :key="item.feature">
-          <strong>{{ item.feature }}</strong>
-          <el-tag size="small" effect="plain">{{ item.source }}</el-tag>
-          <p>{{ item.detail }}</p>
-        </article>
-      </div>
-    </section>
-
     <section class="panel connections-panel">
       <div class="panel-head">
         <div>
@@ -1285,10 +1181,10 @@ onBeforeUnmount(() => {
                     <el-select
                       :model-value="model.structuredOutputProtocol"
                       clearable
+                      placeholder="无"
                       style="width:100%"
                       @change="setStructuredOutput(model, $event)"
                     >
-                      <el-option :value="null" label="无" />
                       <el-option
                         v-for="protocol in structuredOutputOptions(model)"
                         :key="protocol"
@@ -1340,6 +1236,106 @@ onBeforeUnmount(() => {
             </el-collapse>
           </section>
         </div>
+      </div>
+    </section>
+
+    <section class="panel binding-panel">
+      <div class="panel-head">
+        <div>
+          <h2>用途绑定</h2>
+        </div>
+        <el-button size="small" @click="addAgentOverride">新增 Agent override</el-button>
+      </div>
+      <div class="binding-list">
+        <article
+          v-for="(binding, index) in draft.bindings"
+          :key="binding.workload"
+          class="binding-row"
+        >
+          <div class="binding-purpose">
+            <strong>{{ bindingMeta(binding.workload).label }}</strong>
+            <code>{{ binding.workload }}</code>
+            <small>影响：{{ bindingMeta(binding.workload).services }}</small>
+          </div>
+          <div class="binding-controls">
+            <el-select
+              :model-value="binding.mode"
+              aria-label="绑定模式"
+              @change="setBindingMode(index, $event)"
+            >
+              <el-option
+                v-for="mode in allowedBindingModes(binding.workload)"
+                :key="mode"
+                :value="mode"
+                :label="MODE_LABELS[mode]"
+              />
+            </el-select>
+            <template v-if="binding.mode === 'dedicated'">
+              <el-select
+                :model-value="binding.connectionId"
+                filterable
+                placeholder="选择 connection"
+                aria-label="绑定 connection"
+                @change="setBindingConnection(binding, $event)"
+              >
+                <el-option
+                  v-for="connection in draft.connections"
+                  :key="connection.id"
+                  :value="connection.id"
+                  :label="connection.displayName"
+                />
+              </el-select>
+              <el-select
+                v-model="binding.modelId"
+                filterable
+                placeholder="选择兼容模型"
+                aria-label="绑定 model"
+              >
+                <el-option
+                  v-for="model in compatibleModels(binding)"
+                  :key="model.id"
+                  :value="model.id"
+                  :label="model.displayName"
+                >
+                  <span>{{ model.displayName }}</span>
+                  <small class="option-id">{{ model.id }}</small>
+                </el-option>
+              </el-select>
+            </template>
+          </div>
+          <div class="binding-state">
+            <div>
+              <span>Configured</span>
+              <strong>{{ configuredCanonicalModel(binding) || MODE_LABELS[binding.mode] }}</strong>
+            </div>
+            <div>
+              <span>Live · revision {{ liveBinding(binding.workload)?.revision ?? '—' }}</span>
+              <strong>{{ liveBinding(binding.workload)?.canonicalModel || MODE_LABELS[liveBinding(binding.workload)?.mode ?? binding.mode] }}</strong>
+            </div>
+          </div>
+          <el-button
+            v-if="!WORKLOAD_DETAILS[binding.workload]"
+            class="remove-binding"
+            text
+            type="danger"
+            @click="removeAgentOverride(index)"
+          >
+            删除
+          </el-button>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel inheritance-panel">
+      <div class="panel-head">
+        <div><h2>只读继承关系</h2></div>
+      </div>
+      <div class="inheritance-grid">
+        <article v-for="item in DERIVED_BINDINGS" :key="item.feature">
+          <strong>{{ item.feature }}</strong>
+          <el-tag size="small" effect="plain">{{ item.source }}</el-tag>
+          <p>{{ item.detail }}</p>
+        </article>
       </div>
     </section>
   </template>

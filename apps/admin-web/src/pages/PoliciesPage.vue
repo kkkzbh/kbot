@@ -1,9 +1,23 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import { rawApi, rawJsonBody } from '@/api/client';
+import {
+  buildFeatureOverride,
+  buildToolOverride,
+  canAddFeatureOverride,
+  canAddToolOverride,
+  createPolicyScopeOptions,
+  createFeatureOverrideDraft,
+  createToolOverrideDraft,
+  hasFeatureOverride,
+  hasToolOverride,
+  type FeatureOverrideInput,
+  type PolicyScopeOption,
+  type ToolOverrideInput,
+} from './policy-page-state';
 
 const state = ref<any | null>(null);
 const featureOverrides = ref<any[]>([]);
@@ -12,8 +26,29 @@ const activeTab = ref('features');
 const saving = ref(false);
 const addFeatureOpen = ref(false);
 const addToolOpen = ref(false);
-const featureDraft = reactive<any>({ featureKey: 'QQBOT_REALTIME_MESSAGE_ENABLED', scopeKind: 'private_default', scopeId: 'default', enabled: true });
-const toolDraft = reactive<any>({ toolName: '', routeProfile: 'agent', scopeKind: 'global_default', scopeId: 'global', enabled: true });
+const featureDraft = reactive(createFeatureOverrideDraft());
+const toolDraft = reactive(createToolOverrideDraft());
+const featureScope = ref<PolicyScopeOption | null>(null);
+const toolScope = ref<PolicyScopeOption | null>(null);
+const featureScopeOptions = computed(() => createPolicyScopeOptions(state.value?.featureScopes || []));
+const toolScopeOptions = computed(() => createPolicyScopeOptions(
+  state.value?.tools.defaultScopes || [],
+  state.value?.tools.scopes || [],
+));
+const featureOverrideDuplicate = computed(() => hasFeatureOverride(
+  featureOverrides.value as FeatureOverrideInput[],
+  featureDraft,
+  featureScope.value,
+));
+const toolOverrideDuplicate = computed(() => hasToolOverride(
+  toolOverrides.value as ToolOverrideInput[],
+  toolDraft,
+  toolScope.value,
+));
+const featureOverrideReady = computed(() =>
+  canAddFeatureOverride(featureScope.value) && !featureOverrideDuplicate.value);
+const toolOverrideReady = computed(() =>
+  canAddToolOverride(toolDraft, toolScope.value) && !toolOverrideDuplicate.value);
 const featureKeys = ['QQBOT_REALTIME_MESSAGE_ENABLED','QQ_VOICE_INPUT_ENABLED','QQ_VOICE_OUTPUT_ENABLED','CHAT_NATURAL_TRIGGER_ENABLED','QQBOT_REPLY_INTERRUPT_ENABLED'];
 
 async function load() {
@@ -24,12 +59,24 @@ async function load() {
 }
 
 function addFeature() {
-  featureOverrides.value.push({ ...featureDraft });
+  featureOverrides.value.push(buildFeatureOverride(featureDraft, featureScope.value));
   addFeatureOpen.value = false;
 }
 function addTool() {
-  toolOverrides.value.push({ ...toolDraft });
+  toolOverrides.value.push(buildToolOverride(toolDraft, toolScope.value));
   addToolOpen.value = false;
+}
+
+function openFeatureDialog() {
+  Object.assign(featureDraft, createFeatureOverrideDraft());
+  featureScope.value = null;
+  addFeatureOpen.value = true;
+}
+
+function openToolDialog() {
+  Object.assign(toolDraft, createToolOverrideDraft());
+  toolScope.value = null;
+  addToolOpen.value = true;
 }
 
 async function save() {
@@ -55,8 +102,6 @@ async function conversationAction(target: any, action: 'clear'|'delete') {
   await load();
 }
 
-function selectFeatureScope(scope: any) { featureDraft.scopeKind = scope.scopeKind; featureDraft.scopeId = scope.scopeId; }
-function selectToolScope(scope: any) { toolDraft.scopeKind = scope.scopeKind; toolDraft.scopeId = scope.scopeId; }
 function handleSave() { save(); }
 onMounted(() => { load(); window.addEventListener('admin-save', handleSave); });
 onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
@@ -71,12 +116,12 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <el-tab-pane label="会话数据" name="conversations" />
     </el-tabs>
     <template v-if="activeTab==='features'">
-      <div class="panel-head subhead"><div><h2>功能范围覆盖</h2><p>未列出的范围继承 env 全局配置</p></div><el-button size="small" @click="addFeatureOpen=true">添加覆盖</el-button></div>
+      <div class="panel-head subhead"><div><h2>功能范围覆盖</h2><p>未列出的范围继承 env 全局配置</p></div><el-button size="small" @click="openFeatureDialog">添加覆盖</el-button></div>
       <el-table v-if="featureOverrides.length" :data="featureOverrides" style="width:100%"><el-table-column prop="featureKey" label="功能" min-width="240" /><el-table-column prop="scopeKind" label="范围类型" width="140" /><el-table-column prop="scopeId" label="范围 ID" min-width="160" /><el-table-column label="启用" width="90"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="scope"><el-button text type="danger" @click="featureOverrides.splice(scope.$index,1)">移除</el-button></template></el-table-column></el-table>
       <EmptyState v-else title="没有功能覆盖" description="所有会话当前继承全局功能设置。" />
     </template>
     <template v-else-if="activeTab==='tools'">
-      <div class="panel-head subhead"><div><h2>工具权限覆盖</h2><p>{{ state.tools.catalog.length }} 个工具 · {{ state.tools.routeProfiles.length }} 条 route</p></div><el-button size="small" @click="addToolOpen=true">添加覆盖</el-button></div>
+      <div class="panel-head subhead"><div><h2>工具权限覆盖</h2><p>{{ state.tools.catalog.length }} 个工具 · {{ state.tools.routeProfiles.length }} 条 route</p></div><el-button size="small" @click="openToolDialog">添加覆盖</el-button></div>
       <el-table v-if="toolOverrides.length" :data="toolOverrides" style="width:100%"><el-table-column prop="toolName" label="工具" min-width="190" /><el-table-column prop="routeProfile" label="Route" width="110" /><el-table-column prop="scopeKind" label="范围类型" width="160" /><el-table-column prop="scopeId" label="范围 ID" min-width="150" /><el-table-column label="启用" width="90"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="scope"><el-button text type="danger" @click="toolOverrides.splice(scope.$index,1)">移除</el-button></template></el-table-column></el-table>
       <EmptyState v-else title="没有工具覆盖" description="所有工具当前使用 route 的默认工具集。" />
     </template>
@@ -86,8 +131,8 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
     </template>
   </article>
 
-  <el-dialog v-model="addFeatureOpen" title="添加功能覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="功能"><el-select v-model="featureDraft.featureKey" style="width:100%"><el-option v-for="key in featureKeys" :key="key" :value="key" /></el-select></el-form-item><el-form-item label="范围"><el-select style="width:100%" @change="selectFeatureScope(JSON.parse($event))"><el-option v-for="scope in state?.featureScopes" :key="`${scope.scopeKind}:${scope.scopeId}`" :label="scope.roomName" :value="JSON.stringify(scope)" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="featureDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addFeatureOpen=false">取消</el-button><el-button type="primary" @click="addFeature">添加</el-button></template></el-dialog>
-  <el-dialog v-model="addToolOpen" title="添加工具覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="工具"><el-select v-model="toolDraft.toolName" filterable style="width:100%"><el-option v-for="tool in state?.tools.catalog" :key="tool.toolName" :label="tool.title || tool.toolName" :value="tool.toolName" /></el-select></el-form-item><el-form-item label="Route"><el-select v-model="toolDraft.routeProfile" style="width:100%"><el-option v-for="route in state?.tools.routeProfiles" :key="route" :value="route" /></el-select></el-form-item><el-form-item label="范围"><el-select style="width:100%" @change="selectToolScope(JSON.parse($event))"><el-option v-for="scope in [...(state?.tools.defaultScopes||[]),...(state?.tools.scopes||[])]" :key="`${scope.scopeKind}:${scope.scopeId}`" :label="scope.title || scope.roomName" :value="JSON.stringify(scope)" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="toolDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addToolOpen=false">取消</el-button><el-button type="primary" :disabled="!toolDraft.toolName" @click="addTool">添加</el-button></template></el-dialog>
+  <el-dialog v-model="addFeatureOpen" title="添加功能覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="功能"><el-select v-model="featureDraft.featureKey" style="width:100%"><el-option v-for="key in featureKeys" :key="key" :value="key" /></el-select></el-form-item><el-form-item label="范围" :error="featureOverrideDuplicate ? '该范围已有此功能覆盖' : ''"><el-select v-model="featureScope" value-key="key" placeholder="请选择范围" style="width:100%"><el-option v-for="scope in featureScopeOptions" :key="scope.key" :label="scope.label" :value="scope" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="featureDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addFeatureOpen=false">取消</el-button><el-button type="primary" :disabled="!featureOverrideReady" @click="addFeature">添加</el-button></template></el-dialog>
+  <el-dialog v-model="addToolOpen" title="添加工具覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="工具"><el-select v-model="toolDraft.toolName" filterable style="width:100%"><el-option v-for="tool in state?.tools.catalog" :key="tool.toolName" :label="tool.title || tool.toolName" :value="tool.toolName" /></el-select></el-form-item><el-form-item label="Route"><el-select v-model="toolDraft.routeProfile" style="width:100%"><el-option v-for="route in state?.tools.routeProfiles" :key="route" :value="route" /></el-select></el-form-item><el-form-item label="范围" :error="toolOverrideDuplicate ? '该范围已有此工具与 Route 覆盖' : ''"><el-select v-model="toolScope" value-key="key" placeholder="请选择范围" style="width:100%"><el-option v-for="scope in toolScopeOptions" :key="scope.key" :label="scope.label" :value="scope" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="toolDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addToolOpen=false">取消</el-button><el-button type="primary" :disabled="!toolOverrideReady" @click="addTool">添加</el-button></template></el-dialog>
 </template>
 
 <style scoped>.policy-panel{overflow:hidden}.policy-tabs{padding:0 20px}.policy-tabs :deep(.el-tabs__header){margin:0}.subhead{border-top:0}.policy-panel :deep(.el-table__cell){font-size:11px}</style>

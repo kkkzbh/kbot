@@ -122,13 +122,13 @@ onMounted(() => void loadOverview());
 .summary-refresh { border: 0; color: #52647f; background: #fbfcfe; font-size: 11px; }
 .summary-refresh:hover { color: #315abd; background: #f0f4fc; }
 .summary-refresh:disabled { cursor: wait; opacity: .6; }
-.overview-operations { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(350px, .85fr); align-items: start; gap: 12px; }
+.overview-operations { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.overview-operations > * { min-width: 0; }
 
 @media (max-width: 1100px) {
   .overview-summary { grid-template-columns: repeat(5, minmax(0, 1fr)) 64px; }
   .summary-item { align-items: flex-start; flex-direction: column; gap: 5px; }
   .summary-item div { width: 100%; text-align: left; }
-  .overview-operations { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {

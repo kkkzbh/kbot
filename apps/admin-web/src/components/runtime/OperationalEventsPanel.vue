@@ -43,6 +43,7 @@ function statusLabel(item: OperationalEventItem): string {
     retried: '已重试',
     discarded: '已丢弃',
     completed: '已完成',
+    deduplicated: '已合并',
   } as const;
   return item.resolution ? resolution[item.resolution] : '已解决';
 }
@@ -56,12 +57,20 @@ function statusType(item: OperationalEventItem): 'danger' | 'warning' | 'success
 async function load(silent = false): Promise<void> {
   if (!silent) loading.value = true;
   try {
-    const query = new URLSearchParams({
-      view: view.value,
-      page: String(page.current),
-      pageSize: String(page.pageSize),
-    });
-    const result = await rawApi<OperationalEventPage>(`/events?${query}`);
+    const requestPage = async (): Promise<OperationalEventPage> => {
+      const query = new URLSearchParams({
+        view: view.value,
+        page: String(page.current),
+        pageSize: String(page.pageSize),
+      });
+      return rawApi<OperationalEventPage>(`/events?${query}`);
+    };
+    let result = await requestPage();
+    const lastPage = Math.max(1, Math.ceil(result.total / page.pageSize));
+    if (page.current > lastPage) {
+      page.current = lastPage;
+      result = await requestPage();
+    }
     loadError.value = '';
     items.value = result.items;
     page.total = result.total;
@@ -131,6 +140,15 @@ async function runAction(item: OperationalEventItem, action: OperationalEventAct
 }
 
 async function acknowledgeAll(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认全部 ${runtime.openEventCount} 条待处理事件？事件会保留在历史记录中。`,
+      '确认全部事件',
+      { type: 'warning' },
+    );
+  } catch {
+    return;
+  }
   bulkAcknowledging.value = true;
   try {
     const result = await rawApi<OperationalEventBulkAcknowledgeResult>('/events/acknowledge-all', { method: 'POST' });
@@ -244,7 +262,7 @@ defineExpose({ refresh: load });
         :loading="bulkAcknowledging"
         @click="acknowledgeAll"
       >
-        一键确认
+        全部确认
       </el-button>
     </div>
     <div v-if="items.length" v-loading="loading" class="event-list">
@@ -311,8 +329,11 @@ defineExpose({ refresh: load });
       description="事件采集器每 10 秒同步一次。"
     />
     <div v-if="page.total > page.pageSize" class="event-pagination">
+      <span>共 {{ page.total }} 条</span>
       <el-pagination
-        layout="total, prev, pager, next"
+        size="small"
+        :pager-count="5"
+        layout="prev, pager, next"
         :current-page="page.current"
         :page-size="page.pageSize"
         :total="page.total"
@@ -333,6 +354,7 @@ defineExpose({ refresh: load });
         <dt>首次发生</dt><dd>{{ new Date(detail.occurredAt).toLocaleString() }}</dd>
         <dt>最近发生</dt><dd>{{ new Date(detail.lastOccurredAt).toLocaleString() }}</dd>
         <dt>累计次数</dt><dd>{{ detail.occurrenceCount }}</dd>
+        <dt v-if="detail.occurrences.length">内容类型</dt><dd v-if="detail.occurrences.length">{{ detail.occurrences.length }}</dd>
         <dt v-if="detail.component">组件</dt><dd v-if="detail.component" class="mono">{{ detail.component }}</dd>
         <dt>当前状态</dt><dd>{{ statusLabel(detail) }}</dd>
         <dt v-if="detail.resolvedAt">解决时间</dt><dd v-if="detail.resolvedAt">{{ new Date(detail.resolvedAt).toLocaleString() }}</dd>
@@ -368,9 +390,22 @@ defineExpose({ refresh: load });
           丢弃
         </el-button>
       </div>
-      <section class="cause">
+      <section v-if="!detail.occurrences.length" class="cause">
         <h3>异常原因</h3>
         <pre>{{ detail.details }}</pre>
+      </section>
+      <section v-if="detail.occurrences.length" class="occurrences">
+        <h3>归并内容</h3>
+        <p>按实际内容与来源归并，同一事件的不同原因均保留在这里。</p>
+        <article v-for="occurrence in detail.occurrences" :key="occurrence.id">
+          <header>
+            <strong>{{ occurrence.occurrenceCount }} 次</strong>
+            <span v-if="occurrence.unit" class="mono">{{ occurrence.unit }}</span>
+            <span>{{ new Date(occurrence.firstOccurredAt).toLocaleString() }} – {{ new Date(occurrence.lastOccurredAt).toLocaleString() }}</span>
+          </header>
+          <p>{{ occurrence.summary }}</p>
+          <pre>{{ occurrence.details }}</pre>
+        </article>
       </section>
       <section v-if="detail.journal.length" class="journal">
         <h3>对应 journal</h3>
@@ -381,7 +416,7 @@ defineExpose({ refresh: load });
 </template>
 
 <style scoped>
-.event-panel { min-width: 0; overflow: hidden; }
+.event-panel { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .panel-error { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid #f3c9cf; color: #9b3141; background: #fff4f5; }
 .panel-error strong { font-size: 11px; }
 .panel-error p { margin: 3px 0 0; font-size: 10px; line-height: 1.45; }
@@ -390,8 +425,8 @@ defineExpose({ refresh: load });
 .event-tabs :deep(.el-tabs__header) { margin: 0; }
 .event-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
 .event-count { min-width: 18px; height: 17px; display: inline-flex; align-items: center; justify-content: center; margin-left: 7px; padding: 0 5px; border-radius: 9px; color: #fff; background: var(--danger); font-size: 9px; font-weight: 700; }
-.event-list { max-height: 720px; overflow: auto; }
-.event-row { padding: 11px 14px; border-top: 1px solid var(--line); transition: background .16s ease; }
+.event-list { max-height: 640px; overflow: auto; }
+.event-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); transition: background .16s ease; }
 .event-row:first-child { border-top: 0; }
 .event-row:hover { background: #f7f9fd; }
 .event-open { width: 100%; padding: 0; border: 0; outline: 0; color: inherit; background: transparent; text-align: left; }
@@ -403,9 +438,11 @@ defineExpose({ refresh: load });
 .event-title strong { overflow: hidden; color: #374151; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .event-open p { display: -webkit-box; overflow: hidden; margin: 5px 0 0 15px; color: #7d8797; font-size: 10px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .event-meta { justify-content: space-between; gap: 12px; margin: 6px 0 0 15px; color: #9aa2af; font-size: 9px; }
-.event-actions { justify-content: flex-end; gap: 4px; margin-top: 8px; }
+.event-actions { align-items: stretch; flex-direction: column; justify-content: center; gap: 4px; }
 .event-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.event-pagination { display: flex; justify-content: flex-end; padding: 12px 14px; border-top: 1px solid var(--line); }
+.event-pagination { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); color: #8a94a3; font-size: 10px; }
+.event-pagination > span { flex: none; }
+.event-pagination :deep(.el-pagination) { min-width: 0; overflow: hidden; }
 .event-detail header { display: flex; align-items: center; gap: 10px; color: #7d8797; font-size: 11px; }
 .event-detail h2 { margin: 18px 0 8px; color: #273142; font-size: 20px; }
 .event-detail > p { color: #657084; line-height: 1.65; }
@@ -413,7 +450,21 @@ defineExpose({ refresh: load });
 .event-detail dt { color: #8a94a3; }
 .event-detail dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #4b5565; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.cause, .journal { margin-top: 24px; }
-.cause h3, .journal h3 { color: #3c4658; font-size: 12px; }
+.cause, .occurrences, .journal { margin-top: 24px; }
+.cause h3, .occurrences h3, .journal h3 { color: #3c4658; font-size: 12px; }
+.occurrences > p { margin: -4px 0 12px; color: #8a94a3; font-size: 10px; line-height: 1.5; }
+.occurrences article { padding: 12px 0; border-top: 1px solid var(--line); }
+.occurrences article header { display: flex; flex-wrap: wrap; gap: 7px 12px; color: #8a94a3; font-size: 10px; }
+.occurrences article header strong { color: #53627a; }
+.occurrences article > p { margin: 8px 0; color: #5f6b7d; font-size: 11px; line-height: 1.5; }
 .cause pre, .journal pre { max-height: 420px; overflow: auto; padding: 14px; border-radius: 8px; color: #d9e2ef; background: #18202c; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
+.occurrences pre { max-height: 180px; overflow: auto; margin: 0; padding: 10px; border-radius: 7px; color: #657084; background: #f7f8fa; font-size: 10px; line-height: 1.5; white-space: pre-wrap; }
+
+@media (max-width: 420px) {
+  .event-list { max-height: 68dvh; }
+  .event-tabs-toolbar { gap: 8px; padding-inline: 12px; }
+  .event-row { padding-inline: 12px; }
+  .event-open p, .event-meta { margin-left: 0; }
+  .event-pagination { padding-inline: 10px; }
+}
 </style>

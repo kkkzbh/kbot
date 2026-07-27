@@ -57,10 +57,25 @@ type OperationalEventCursorRecord = {
   updatedAt: number;
 };
 
+type OperationalEventOccurrenceRecord = {
+  id: number;
+  sourceKey: string;
+  eventId: number;
+  summary: string;
+  details: string;
+  occurrenceCount: number;
+  unit: BotServiceUnit | null;
+  invocationId: string | null;
+  firstOccurredAt: number;
+  lastOccurredAt: number;
+  updatedAt: number;
+};
+
 declare module 'koishi' {
   interface Tables {
     admin_operational_event: OperationalEventRecord;
     admin_operational_event_cursor: OperationalEventCursorRecord;
+    admin_operational_event_occurrence: OperationalEventOccurrenceRecord;
   }
 }
 
@@ -87,8 +102,11 @@ type RuntimeIssue = {
 
 const EVENT_TABLE = 'admin_operational_event';
 const CURSOR_TABLE = 'admin_operational_event_cursor';
+const OCCURRENCE_TABLE = 'admin_operational_event_occurrence';
 const SYSTEMD_FAILURE_CURSOR_SOURCE = 'systemd-failure-journal';
 const RUNTIME_ISSUE_CURSOR_SOURCE = 'runtime-issue-journal';
+const RUNTIME_FINGERPRINT_MIGRATION_SOURCE = 'runtime-fingerprint-version';
+const RUNTIME_FINGERPRINT_VERSION = '3';
 const SYSTEMD_JOB_FAILED_MESSAGE_ID = 'be02cf6855d2428ba40df7e9d022f03d';
 const MAX_PENDING_RUNTIME_LOGS = 5_000;
 const MAX_RUNTIME_EVENT_DETAILS = 64_000;
@@ -97,6 +115,7 @@ const KOISHI_LOG_PATTERN = /^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+)?\[([EW])
 const EXTERNAL_LOG_LEVEL_PATTERN = /\[(ERROR|WARN(?:ING)?|FATAL|CRITICAL)\]/iu;
 const RUNTIME_FAILURE_PATTERN = /\b(?:uncaught|unhandled rejection|fatal|panic|traceback|exception|error:|failed(?:\s|:)|failure(?:\s|:))\b/iu;
 const DECORATIVE_ERROR_PATTERN = /^=+[^=].*=+$/u;
+const LEADING_TIMESTAMP_PATTERN = /^(?:\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+Z?\s+)+/u;
 
 export function ensureOperationalEventTables(ctx: Context): void {
   ctx.model.extend(EVENT_TABLE, {
@@ -141,12 +160,34 @@ export function ensureOperationalEventTables(ctx: Context): void {
     autoInc: true,
     unique: ['source'],
   });
+  ctx.model.extend(OCCURRENCE_TABLE, {
+    id: 'unsigned',
+    sourceKey: 'string',
+    eventId: 'unsigned',
+    summary: 'text',
+    details: 'text',
+    occurrenceCount: 'unsigned',
+    unit: { type: 'string', nullable: true },
+    invocationId: { type: 'string', nullable: true },
+    firstOccurredAt: 'double',
+    lastOccurredAt: 'double',
+    updatedAt: 'double',
+  }, {
+    autoInc: true,
+    unique: ['sourceKey'],
+    indexes: [
+      ['eventId', 'lastOccurredAt'],
+    ],
+  });
 }
 
-function normalizeRuntimeFingerprintContent(content: string): string {
+function normalizeRuntimeOccurrenceContent(content: string): string {
   return content
+    .replace(LEADING_TIMESTAMP_PATTERN, '')
     .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/giu, '<uuid>')
     .replace(/\b(?:request|message|conversation|room|job|owner|user)(?:Id)?[=:#]\s*[^\s,;]+/giu, '$1=<id>')
+    .replace(/\b(?:connIndex|event|connection|attempt)[=:#]\s*[^\s,;]+/giu, '$1=<value>')
+    .replace(/\bip=[^\s,;]+/giu, 'ip=<address>')
     .replace(/#\d+\b/gu, '#<id>')
     .replace(/\b\d{10,}\b/gu, '<number>')
     .replace(/\s+/gu, ' ')
@@ -156,7 +197,14 @@ function normalizeRuntimeFingerprintContent(content: string): string {
 
 function runtimeFingerprint(issue: RuntimeIssue): string {
   return createHash('sha256')
-    .update(`${issue.component}\0${issue.severity}\0${normalizeRuntimeFingerprintContent(runtimeSummary(issue.content))}`)
+    .update(`${issue.component.trim().toLowerCase()}\0${issue.severity}`)
+    .digest('hex')
+    .slice(0, 24);
+}
+
+function runtimeOccurrenceFingerprint(issue: RuntimeIssue): string {
+  return createHash('sha256')
+    .update(normalizeRuntimeOccurrenceContent(runtimeSummary(issue.content)))
     .digest('hex')
     .slice(0, 24);
 }
@@ -316,6 +364,7 @@ export class OperationalEventService {
   }
 
   private async performSync(): Promise<void> {
+    await this.runCollector('runtime fingerprint migration', () => this.migrateRuntimeFingerprints());
     await this.collectLiveRuntimeIssues();
     await this.runCollector('runtime journal collection', () => this.collectJournalRuntimeIssues());
     await this.runCollector('systemd failure collection', () => this.collectSystemdFailures());
@@ -356,6 +405,148 @@ export class OperationalEventService {
       return;
     }
     await this.database.create(CURSOR_TABLE, { source, cursor, updatedAt: now });
+  }
+
+  private runtimeIssueFromRecord(record: OperationalEventRecord): RuntimeIssue {
+    return {
+      severity: record.severity,
+      component: record.component ?? record.unit ?? 'runtime',
+      content: record.details ?? record.summary,
+      occurredAt: record.occurredAt,
+      occurrenceId: record.sourceKey,
+      unit: record.unit,
+      invocationId: record.invocationId,
+    };
+  }
+
+  private runtimeOccurrenceSourceKey(eventId: number, issue: RuntimeIssue): string {
+    const scope = issue.unit && issue.unit !== 'qqbot-koishi.service'
+      ? issue.unit
+      : 'koishi-runtime';
+    return `runtime-occurrence:${eventId}:${scope}:${runtimeOccurrenceFingerprint(issue)}`;
+  }
+
+  private async setRuntimeOccurrence(
+    eventId: number,
+    issue: RuntimeIssue,
+    details: string,
+    occurrenceCount: number,
+    firstOccurredAt: number,
+    lastOccurredAt: number,
+  ): Promise<void> {
+    const sourceKey = this.runtimeOccurrenceSourceKey(eventId, issue);
+    const [existing] = await this.database.get(OCCURRENCE_TABLE, { sourceKey }) as OperationalEventOccurrenceRecord[];
+    const row = {
+      eventId,
+      summary: runtimeSummary(details),
+      details,
+      occurrenceCount: Math.max(1, occurrenceCount),
+      unit: issue.unit,
+      invocationId: issue.invocationId,
+      firstOccurredAt,
+      lastOccurredAt,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await this.database.set(OCCURRENCE_TABLE, { id: existing.id }, row);
+      return;
+    }
+    await this.database.create(OCCURRENCE_TABLE, { sourceKey, ...row });
+  }
+
+  private async addRuntimeOccurrence(
+    eventId: number,
+    issue: RuntimeIssue,
+    details: string,
+    increment: number,
+  ): Promise<void> {
+    const sourceKey = this.runtimeOccurrenceSourceKey(eventId, issue);
+    const [existing] = await this.database.get(OCCURRENCE_TABLE, { sourceKey }) as OperationalEventOccurrenceRecord[];
+    if (!existing) {
+      await this.setRuntimeOccurrence(eventId, issue, details, Math.max(1, increment), issue.occurredAt, issue.occurredAt);
+      return;
+    }
+    await this.database.set(OCCURRENCE_TABLE, { id: existing.id }, {
+      summary: runtimeSummary(details),
+      details: details.length >= existing.details.length ? details : existing.details,
+      occurrenceCount: Math.max(1, existing.occurrenceCount) + increment,
+      unit: existing.unit ?? issue.unit,
+      invocationId: existing.invocationId ?? issue.invocationId,
+      firstOccurredAt: Math.min(existing.firstOccurredAt, issue.occurredAt),
+      lastOccurredAt: Math.max(existing.lastOccurredAt, issue.occurredAt),
+      updatedAt: Date.now(),
+    });
+  }
+
+  private async migrateRuntimeFingerprints(): Promise<void> {
+    if (await this.readJournalCursor(RUNTIME_FINGERPRINT_MIGRATION_SOURCE) === RUNTIME_FINGERPRINT_VERSION) return;
+    const records = await this.database.get(EVENT_TABLE, { source: 'runtime' }) as OperationalEventRecord[];
+    const groups = new Map<string, OperationalEventRecord[]>();
+    for (const record of records.filter((item) => item.status === 'open')) {
+      const fingerprint = runtimeFingerprint(this.runtimeIssueFromRecord(record));
+      const group = groups.get(fingerprint) ?? [];
+      group.push(record);
+      groups.set(fingerprint, group);
+    }
+    const now = Date.now();
+    for (const [fingerprint, group] of groups) {
+      const sorted = group.sort((left, right) => (
+        (right.lastOccurredAt ?? right.occurredAt) - (left.lastOccurredAt ?? left.occurredAt)
+      ));
+      const keeper = sorted[0];
+      const occurrenceGroups = new Map<string, {
+        issue: RuntimeIssue;
+        details: string;
+        occurrenceCount: number;
+        firstOccurredAt: number;
+        lastOccurredAt: number;
+      }>();
+      for (const record of sorted) {
+        const issue = this.runtimeIssueFromRecord(record);
+        const key = this.runtimeOccurrenceSourceKey(keeper.id, issue);
+        const previous = occurrenceGroups.get(key);
+        const details = record.details ?? record.summary;
+        occurrenceGroups.set(key, {
+          issue,
+          details: !previous || details.length >= previous.details.length ? details : previous.details,
+          occurrenceCount: (previous?.occurrenceCount ?? 0) + Math.max(1, record.occurrenceCount ?? 1),
+          firstOccurredAt: Math.min(previous?.firstOccurredAt ?? record.occurredAt, record.occurredAt),
+          lastOccurredAt: Math.max(
+            previous?.lastOccurredAt ?? (record.lastOccurredAt ?? record.occurredAt),
+            record.lastOccurredAt ?? record.occurredAt,
+          ),
+        });
+      }
+      for (const occurrence of occurrenceGroups.values()) {
+        await this.setRuntimeOccurrence(
+          keeper.id,
+          occurrence.issue,
+          occurrence.details,
+          occurrence.occurrenceCount,
+          occurrence.firstOccurredAt,
+          occurrence.lastOccurredAt,
+        );
+      }
+      await this.database.set(EVENT_TABLE, { id: keeper.id }, {
+        fingerprint,
+        occurredAt: Math.min(...sorted.map((record) => record.occurredAt)),
+        lastOccurredAt: Math.max(...sorted.map((record) => record.lastOccurredAt ?? record.occurredAt)),
+        occurrenceCount: sorted.reduce(
+          (total, record) => total + Math.max(1, record.occurrenceCount ?? 1),
+          0,
+        ),
+        updatedAt: now,
+      });
+      for (const duplicate of sorted.slice(1)) {
+        await this.database.set(EVENT_TABLE, { id: duplicate.id }, {
+          status: 'resolved',
+          resolution: 'deduplicated',
+          resolvedAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+    await this.writeJournalCursor(RUNTIME_FINGERPRINT_MIGRATION_SOURCE, RUNTIME_FINGERPRINT_VERSION);
   }
 
   private async collectLiveRuntimeIssues(): Promise<void> {
@@ -413,7 +604,9 @@ export class OperationalEventService {
       const existingLastOccurredAt = existing.lastOccurredAt ?? existing.occurredAt;
       const duplicateLiveJournalRecord = existing.unit == null
         && issue.unit != null
-        && Math.abs(existingLastOccurredAt - issue.occurredAt) <= LIVE_JOURNAL_DUPLICATE_WINDOW_MS;
+        && Math.abs(existingLastOccurredAt - issue.occurredAt) <= LIVE_JOURNAL_DUPLICATE_WINDOW_MS
+        && runtimeOccurrenceFingerprint(this.runtimeIssueFromRecord(existing))
+          === runtimeOccurrenceFingerprint(normalizedIssue);
       await this.database.set(EVENT_TABLE, { id: existing.id }, {
         severity: existing.severity === 'error' ? 'error' : issue.severity,
         summary,
@@ -424,10 +617,16 @@ export class OperationalEventService {
         invocationId: existing.invocationId ?? issue.invocationId,
         updatedAt: Date.now(),
       });
+      await this.addRuntimeOccurrence(
+        existing.id,
+        normalizedIssue,
+        redactedContent,
+        duplicateLiveJournalRecord ? 0 : 1,
+      );
       const [updated] = await this.database.get(EVENT_TABLE, { id: existing.id }) as OperationalEventRecord[];
       return updated;
     }
-    return this.openEvent({
+    const created = await this.openEvent({
       sourceKey: `runtime:${fingerprint}:${issue.occurrenceId}`,
       source: 'runtime',
       type: issue.severity === 'error' ? 'runtime_exception' : 'runtime_warning',
@@ -445,6 +644,8 @@ export class OperationalEventService {
       occurredAt: issue.occurredAt,
       lastOccurredAt: issue.occurredAt,
     });
+    await this.addRuntimeOccurrence(created.id, normalizedIssue, redactedContent, 1);
+    return created;
   }
 
   private async collectSystemdFailures(): Promise<void> {
@@ -619,11 +820,23 @@ export class OperationalEventService {
 
   async detail(id: number): Promise<OperationalEventDetail> {
     const record = await this.getRecord(id);
+    const occurrences = (await this.database.get(OCCURRENCE_TABLE, { eventId: id }) as OperationalEventOccurrenceRecord[])
+      .sort((left, right) => right.lastOccurredAt - left.lastOccurredAt)
+      .map((occurrence) => ({
+        id: occurrence.id,
+        summary: occurrence.summary,
+        details: occurrence.details,
+        occurrenceCount: Math.max(1, occurrence.occurrenceCount),
+        unit: occurrence.unit,
+        invocationId: occurrence.invocationId,
+        firstOccurredAt: occurrence.firstOccurredAt,
+        lastOccurredAt: occurrence.lastOccurredAt,
+      }));
     const journal = record.unit && record.invocationId
       ? (await this.manager.readServiceInvocationJournal(record.unit, record.invocationId))
         .map((line) => redactAdminLogContent(line))
       : [];
-    return { ...toItem(record), journal };
+    return { ...toItem(record), occurrences, journal };
   }
 
   async runAction(id: number, action: OperationalEventAction): Promise<OperationalEventItem> {

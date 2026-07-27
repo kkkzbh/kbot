@@ -232,6 +232,141 @@ describe('operational event service', () => {
     expect(event.details).not.toContain('secret-token');
   });
 
+  it('groups different contents under one runtime title and preserves every cause in detail', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
+      getServiceStatuses: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+    service.captureRuntimeLog({
+      id: 111,
+      timestamp: 1_800_000_000_000,
+      level: 'error',
+      namespace: 'chatluna',
+      content: 'Call Embedding Error: code=30001 account balance is insufficient',
+    });
+    service.captureRuntimeLog({
+      id: 112,
+      timestamp: 1_800_000_002_000,
+      level: 'error',
+      namespace: 'chatluna',
+      content: 'ChatLunaError: request failed with code 103',
+    });
+
+    await service.sync();
+    const pending = await service.list({ view: 'pending', page: 1, pageSize: 20 });
+    const detail = await service.detail(pending.items[0].id);
+
+    expect(pending.items).toMatchObject([{
+      title: 'chatluna 运行异常',
+      occurrenceCount: 2,
+    }]);
+    expect(detail.occurrences).toHaveLength(2);
+    expect(detail.occurrences.map((item) => item.summary)).toEqual(expect.arrayContaining([
+      expect.stringContaining('code=30001'),
+      expect.stringContaining('code 103'),
+    ]));
+  });
+
+  it('migrates existing same-title runtime records into one auditable event cluster', async () => {
+    const database = createDatabase();
+    const now = 1_800_000_000_000;
+    for (const [index, details, occurrenceCount] of [
+      [1, 'tunnel connection failed: context canceled', 12],
+      [2, 'tunnel connection failed: application error 0x0 (remote)', 7],
+    ] as const) {
+      await database.create('admin_operational_event', {
+        sourceKey: `runtime:legacy:${index}`,
+        source: 'runtime',
+        type: 'runtime_warning',
+        severity: 'warning',
+        status: 'open',
+        resolution: null,
+        title: 'cloudflared 运行警告',
+        summary: details,
+        component: 'cloudflared',
+        fingerprint: `legacy-${index}`,
+        details,
+        occurrenceCount,
+        unit: 'cloudflared-qqbot-hbu-jw.service',
+        invocationId: `invocation-${index}`,
+        memoryJobId: null,
+        memoryCandidateId: null,
+        occurredAt: now + index,
+        lastOccurredAt: now + index,
+        acknowledgedAt: null,
+        resolvedAt: null,
+        updatedAt: now,
+      });
+    }
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({ entries: [], cursor: 'runtime-cursor-1' })),
+      getServiceStatuses: vi.fn(async () => []),
+      readServiceInvocationJournal: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+
+    await service.sync();
+    const pending = await service.list({ view: 'pending', page: 1, pageSize: 20 });
+    const history = await service.list({ view: 'history', page: 1, pageSize: 20 });
+    const detail = await service.detail(pending.items[0].id);
+
+    expect(pending.items).toMatchObject([{
+      title: 'cloudflared 运行警告',
+      occurrenceCount: 19,
+    }]);
+    expect(history.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resolution: 'deduplicated' }),
+    ]));
+    expect(detail.occurrences).toHaveLength(2);
+    expect(detail.occurrences.reduce((total, item) => total + item.occurrenceCount, 0)).toBe(19);
+  });
+
+  it('normalizes volatile journal metadata inside an occurrence variant', async () => {
+    const database = createDatabase();
+    const manager = {
+      readServiceFailureJournal: vi.fn(async () => ({ entries: [], cursor: 'cursor-1' })),
+      readRuntimeIssueJournal: vi.fn(async () => ({
+        entries: [
+          {
+            cursor: 'runtime-cloudflare-1',
+            unit: 'cloudflared-qqbot-hbu-jw.service',
+            invocationId: 'invocation-1',
+            priority: 4,
+            syslogIdentifier: 'cloudflared',
+            messageId: null,
+            message: '2026-07-27T03:30:07Z ERR failed to serve tunnel connection error="context canceled" connIndex=0 event=0 ip=2606:4700:a0::10',
+            occurredAt: 1_800_000_000_000,
+          },
+          {
+            cursor: 'runtime-cloudflare-2',
+            unit: 'cloudflared-qqbot-hbu-jw.service',
+            invocationId: 'invocation-1',
+            priority: 4,
+            syslogIdentifier: 'cloudflared',
+            messageId: null,
+            message: '2026-07-27T03:31:08Z ERR failed to serve tunnel connection error="context canceled" connIndex=3 event=1 ip=2606:4700:a8::4',
+            occurredAt: 1_800_000_001_000,
+          },
+        ],
+        cursor: 'runtime-cloudflare-2',
+      })),
+      getServiceStatuses: vi.fn(async () => []),
+      readServiceInvocationJournal: vi.fn(async () => []),
+    };
+    const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
+
+    await service.sync();
+    const [event] = (await service.list({ view: 'pending', page: 1, pageSize: 20 })).items;
+    const detail = await service.detail(event.id);
+
+    expect(event).toMatchObject({ title: 'cloudflared 运行警告', occurrenceCount: 2 });
+    expect(detail.occurrences).toMatchObject([{ occurrenceCount: 2 }]);
+  });
+
   it('opens a new pending incident when an acknowledged runtime error recurs', async () => {
     const database = createDatabase();
     const manager = {
