@@ -91,10 +91,6 @@ export function createValidModelConfigDraft(): ModelConfigDraft {
         mode: 'disabled',
       },
       {
-        workload: 'search.summary',
-        mode: 'inheritInvocation',
-      },
-      {
         workload: 'chatluna.defaultEmbedding',
         mode: 'dedicated',
         connectionId: 'primary',

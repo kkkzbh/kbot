@@ -105,7 +105,6 @@ export const LEGACY_MODEL_ENV_KEYS = [
   'CHAT_NATURAL_TRIGGER_DECISION_API_KEY',
   'CHAT_NATURAL_TRIGGER_DECISION_MODEL',
   'CHAT_NATURAL_TRIGGER_DECISION_TIMEOUT_MS',
-  'CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL',
   'STICKER_INDEXER_BASE_URL',
   'STICKER_INDEXER_API_KEY',
   'STICKER_INDEXER_MODEL',
@@ -1979,6 +1978,82 @@ function objectRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+const WEB_RUN_TOOL_NAME = 'web_run';
+const REMOVED_WEB_TOOL_NAMES = new Set([
+  'web_search',
+  'web_browser',
+  'web_fetch',
+  'web_post',
+]);
+
+function removedWebToolName(value: string): boolean {
+  return REMOVED_WEB_TOOL_NAMES.has(value) || value.startsWith('browser_');
+}
+
+function migrateWebToolReferences(value: unknown): void {
+  if (Array.isArray(value)) {
+    let hasWebRun = false;
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (typeof item === 'string' && removedWebToolName(item)) {
+        value[index] = WEB_RUN_TOOL_NAME;
+      } else {
+        migrateWebToolReferences(item);
+      }
+    }
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      if (value[index] !== WEB_RUN_TOOL_NAME) continue;
+      if (hasWebRun) value.splice(index, 1);
+      hasWebRun = true;
+    }
+    return;
+  }
+  if (value == null || typeof value !== 'object') return;
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    migrateWebToolReferences(child);
+  }
+}
+
+function migrateWebRunAgentConfig(config: Record<string, unknown>): void {
+  migrateWebToolReferences(config);
+  if (config.tool == null) return;
+  const tool = objectRecord(config.tool, 'Agent config tool');
+  if (tool.items == null) return;
+  const items = objectRecord(tool.items, 'Agent config tool.items');
+  let migrated: Record<string, unknown> | null = null;
+  for (const [name, rawItem] of Object.entries(items)) {
+    if (!removedWebToolName(name)) continue;
+    migrated ??= {
+      ...objectRecord(rawItem, `Agent config tool.items.${name}`),
+      enabled: true,
+      main: true,
+    };
+    delete items[name];
+  }
+  if (migrated && items[WEB_RUN_TOOL_NAME] == null) {
+    items[WEB_RUN_TOOL_NAME] = migrated;
+  }
+}
+
+function migrateWebRunSkillContent(content: string): string {
+  let migrated = content.replace(
+    /\b(?:web_search|web_browser|web_fetch|web_post|browser_[a-z0-9_]+)\b/gu,
+    WEB_RUN_TOOL_NAME,
+  );
+  let previous: string;
+  do {
+    previous = migrated;
+    migrated = migrated.replace(
+      /`web_run`(?:,\s*(?:and\s+)?|\s+and\s+)`web_run`/gu,
+      '`web_run`',
+    );
+  } while (migrated !== previous);
+  return migrated.replace(
+    /^(\s*(?:allow|deny):\s*)\[(?:\s*web_run\s*,?)+\]\s*$/gmu,
+    '$1[web_run]',
+  );
+}
+
 interface MergedAgentFile {
   relativePath: string;
   content: Buffer;
@@ -2238,6 +2313,26 @@ async function readAgentDataInput(args: {
       }
       throw error;
     }
+    migrateWebRunAgentConfig(config);
+  }
+
+  const webRunSkill = merged.get(
+    join('skills', 'sub-agent-creator', 'SKILL.md'),
+  );
+  const migratedWebRunSkill = webRunSkill == null
+    ? null
+    : migrateWebRunSkillContent(webRunSkill.content.toString('utf8'));
+  if (
+    webRunSkill
+    && migratedWebRunSkill != null
+    && migratedWebRunSkill !== webRunSkill.content.toString('utf8')
+  ) {
+    pending.push({
+      path: resolve(args.agentDataRoot, webRunSkill.relativePath),
+      kind: 'markdown',
+      content: migratedWebRunSkill,
+      entries: [],
+    });
   }
 
   const managedMarkdown = [...merged.values()]
@@ -3168,28 +3263,6 @@ export async function buildModelConfigMigrationPlan(
     profileSourcesByDatabaseRow.set(`${row.table}:${row.rowId}`, profileSourceId);
   }
 
-  let searchProfileSourceId: string | null = null;
-  const searchModel = trim(layeredEnv.effective.CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL);
-  if (!emptyModel(searchModel)) {
-    const searchBase = resolveUnscopedProfile(
-      searchModel,
-      resolvableProfiles,
-      'Search summary',
-      explicitModelMaps,
-    );
-    searchProfileSourceId = registerReferenceProfile({
-      profiles,
-      references,
-      baseProfile: {
-        ...searchBase,
-        capabilities: chatCapabilities({}),
-        structuredOutputProtocol: null,
-      },
-      legacyModel: searchModel,
-      source: 'workload:search.summary',
-    });
-  }
-
   const agentInput = await readAgentDataInput({
     agentDataRoot: options.agentDataRoot,
     legacyAgentRoot: options.legacyAgentRoot,
@@ -3289,15 +3362,6 @@ export async function buildModelConfigMigrationPlan(
           requireBuiltModel(catalog, natural.sourceId),
         )
       : { workload: 'naturalTrigger.decision', mode: 'disabled' },
-  );
-  addBinding(
-    bindings,
-    searchProfileSourceId
-      ? dedicatedBinding(
-          'search.summary',
-          requireBuiltModel(catalog, searchProfileSourceId),
-        )
-      : { workload: 'search.summary', mode: 'inheritInvocation' },
   );
   addBinding(bindings, {
     workload: 'agent.subagent.default',

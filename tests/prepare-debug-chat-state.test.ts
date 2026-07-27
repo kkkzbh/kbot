@@ -164,7 +164,6 @@ function writeCanonicalModelConfig(
         { workload: 'memory.embedding', mode: 'disabled' },
         { workload: 'affinity.analysis', mode: 'inheritMain' },
         { workload: 'naturalTrigger.decision', mode: 'disabled' },
-        { workload: 'search.summary', mode: 'inheritInvocation' },
         { workload: 'chatluna.defaultEmbedding', mode: 'disabled' },
         { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
         { workload: 'sticker.index', mode: 'disabled' },

@@ -3,18 +3,25 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('chatluna search service wiring', () => {
-  it('uses upstream chatluna-search-service with Tavily and canonical model binding', () => {
+  it('configures live web_run with required capabilities and no search LLM', () => {
     const content = readFileSync(resolve(process.cwd(), 'koishi.yml'), 'utf8');
 
-    expect(content).toContain('chatluna-search-service:search:');
+    expect(content).toContain('chatluna-web-run-service:web:');
     expect(content).toContain("enabled: ${{ env.CHATLUNA_SEARCH_SERVICE_ENABLED !== 'false' }}");
-    expect(content).toContain('searchEngine:');
-    expect(content).toContain('        - tavily');
+    expect(content).toContain("mode: ${{ env.CHATLUNA_SEARCH_SERVICE_MODE || 'live' }}");
+    expect(content).toContain('requiredCapabilities:');
+    for (const capability of ['search_query', 'open', 'click', 'find']) {
+      expect(content).toContain(`        - ${capability}`);
+    }
     expect(content).toContain("topK: ${{ +env.CHATLUNA_SEARCH_SERVICE_TOPK || 5 }}");
-    expect(content).toContain("summaryType: ${{ env.CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE || 'balanced' }}");
+    expect(content).toContain("perDomainLimit: ${{ +env.CHATLUNA_SEARCH_SERVICE_PER_DOMAIN_LIMIT || 2 }}");
     expect(content).toContain("tavilyApiKey: ${{ env.CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY || '' }}");
-    expect(content).not.toContain('summaryModel:');
-    expect(content).not.toContain('CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL');
+    expect(content).toContain('request: false');
+    expect(content).toContain('actions: false');
+    expect(content).not.toContain('summaryType:');
+    expect(content).not.toContain('searchEngine:');
+    expect(content).not.toContain('name: weather.geo');
+    expect(content).not.toContain('name: weather.forecast');
 
     expect(content).not.toContain('./dist/plugins/web-search:search:');
     expect(content).not.toContain('WEB_SEARCH_');
@@ -27,10 +34,14 @@ describe('chatluna search service wiring', () => {
       const content = readFileSync(resolve(process.cwd(), file), 'utf8');
 
       expect(content).toContain('CHATLUNA_SEARCH_SERVICE_ENABLED=true');
+      expect(content).toContain('CHATLUNA_SEARCH_SERVICE_MODE=live');
       expect(content).toContain('CHATLUNA_SEARCH_SERVICE_TOPK=5');
-      expect(content).toContain('CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE=balanced');
+      expect(content).toContain('CHATLUNA_SEARCH_SERVICE_PER_DOMAIN_LIMIT=2');
       expect(content).toContain('CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY=');
-      expect(content).not.toContain('CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL');
+      expect(content).toContain('CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=');
+      expect(content).not.toContain('CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE');
+      expect(content).not.toContain('CHATLUNA_COMMON_REQUEST');
+      expect(content).not.toContain('CHATLUNA_COMMON_ACTIONS');
       expect(content).not.toContain('WEB_SEARCH_');
     }
   });
@@ -39,8 +50,9 @@ describe('chatluna search service wiring', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/smoke-koishi-start.sh'), 'utf8');
 
     expect(content).toContain('CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY');
-    expect(content).toContain("'chatluna-search-service:search'");
-    expect(content).toContain('loader apply plugin chatluna-search-service:search');
+    expect(content).toContain('CHATLUNA_SEARCH_SERVICE_MODE');
+    expect(content).toContain("'chatluna-web-run-service:web'");
+    expect(content).toContain('loader apply plugin chatluna-web-run-service:web');
     expect(content).toContain('unexpectedly loaded deleted local web-search plugin');
     expect(content).not.toContain('WEB_SEARCH_LLM_PLANNER_ENABLED');
     expect(content).not.toContain('WEB_SEARCH_LLM_RERANK_ENABLED');
@@ -61,7 +73,7 @@ describe('chatluna search service wiring', () => {
     const content = readFileSync(resolve(process.cwd(), 'data/chathub/role-presets/sakiko.yml'), 'utf8');
 
     expect(content).not.toContain('# 联网搜索与工具规则');
-    expect(content).not.toContain('优先调用 `web_search`');
+    expect(content).not.toContain('优先调用 `web_run`');
     expect(content).not.toContain('遇到“X是谁”“X是什么”这类身份/概念问题时');
     expect(content).not.toContain('先搜索当前主流语境下最常见的所指，再回答');
   });
@@ -69,6 +81,23 @@ describe('chatluna search service wiring', () => {
   it('declares the upstream search service dependency', () => {
     const content = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8');
 
-    expect(content).toContain('"koishi-plugin-chatluna-search-service": "link:../chatluna/packages/service-search"');
+    expect(content).toContain('"koishi-plugin-chatluna-web-run-service": "link:../chatluna/packages/service-web-run"');
+  });
+
+  it('migrates the tool catalog and Sydney instructions to web_run only', () => {
+    const catalog = readFileSync(resolve(process.cwd(), 'src/plugins/tool-policy/catalog.ts'), 'utf8');
+    const sydney = readFileSync(resolve(process.cwd(), 'data/chathub/role-presets/sydney.yml'), 'utf8');
+    const cutover = readFileSync(resolve(process.cwd(), 'src/tools/model-config-cutover.ts'), 'utf8');
+
+    for (const content of [catalog, sydney]) {
+      expect(content).toContain('web_run');
+      expect(content).not.toContain('web_search');
+      expect(content).not.toContain('web_browser');
+      expect(content).not.toContain('web_fetch');
+      expect(content).not.toContain('web_post');
+    }
+    expect(cutover).toContain("const WEB_RUN_TOOL_NAME = 'web_run'");
+    expect(cutover).toContain('migrateWebRunAgentConfig(config)');
+    expect(cutover).toContain('migrateWebRunSkillContent');
   });
 });

@@ -46,8 +46,10 @@ interface Fixture {
   legacyAgentRoot: string;
   agentConfig: string;
   agentMarkdown: string;
+  agentSkill: string;
   legacyAgentConfig: string;
   legacyAgentMarkdown: string;
+  legacyAgentSkill: string;
   archiveRoot: string;
   archiveConversation: string;
   configOut: string;
@@ -67,10 +69,19 @@ function createFixture(): Fixture {
   const agentDataRoot = join(root, 'data/chatluna');
   const legacyAgentRoot = join(root, 'old-app/data/chatluna/agent');
   const legacyAgentDir = join(legacyAgentRoot, 'agents');
+  const legacySkillDir = join(
+    legacyAgentRoot,
+    'skills/sub-agent-creator',
+  );
   const agentConfig = join(agentDataRoot, 'agents/config.json');
   const agentMarkdown = join(agentDataRoot, 'agents/reviewer.md');
+  const agentSkill = join(
+    agentDataRoot,
+    'skills/sub-agent-creator/SKILL.md',
+  );
   const legacyAgentConfig = join(legacyAgentRoot, 'config.json');
   const legacyAgentMarkdown = join(legacyAgentDir, 'reviewer.md');
+  const legacyAgentSkill = join(legacySkillDir, 'SKILL.md');
   const archiveRoot = join(root, 'archives');
   const archivePath = join(archiveRoot, 'archive-one');
   const archiveConversation = join(archivePath, 'conversation.json');
@@ -81,6 +92,7 @@ function createFixture(): Fixture {
   const systemctl = join(root, 'systemctl');
 
   mkdirSync(legacyAgentDir, { recursive: true });
+  mkdirSync(legacySkillDir, { recursive: true });
   mkdirSync(archivePath, { recursive: true });
   writeFileSync(envBase, `
 CHATLUNA_ACTIVE_TAB=openai
@@ -101,7 +113,6 @@ MEMORY_EXTRACT_STRUCTURED_OUTPUT_PROTOCOL=native_chat_json_schema
 MEMORY_EMBED_BASE_URL=https://embedding.example.test/v1
 CHAT_NATURAL_TRIGGER_DECISION_ENABLED=true
 CHAT_NATURAL_TRIGGER_DECISION_BASE_URL=https://decision.example.test/v1
-CHATLUNA_SEARCH_SERVICE_SUMMARY_MODEL=empty
 STICKER_INDEXER_API_KEY=
 TASK_AUTOMATION_CHAT_REPLY_MODEL=openai/gpt-main
 TASK_AUTOMATION_DELIVERY_MODEL=openai/gpt-main
@@ -139,8 +150,35 @@ UNRELATED_OVERRIDE=keep-me-too
           name: 'Research Agent',
           enabled: true,
           model: 'openai/gpt-main',
+          permissions: {
+            tools: {
+              mode: 'allow',
+              allow: ['web_search', 'browser_open', 'file_read'],
+              deny: [],
+            },
+          },
         },
       },
+    },
+    tool: {
+      items: {
+        web_search: {
+          enabled: true,
+          main: true,
+          authority: 0,
+        },
+        browser_open: {
+          enabled: false,
+          main: false,
+          authority: 0,
+        },
+        file_read: {
+          enabled: true,
+          main: true,
+          authority: 0,
+        },
+      },
+      registry: {},
     },
   }, null, 2)}\n`, 'utf8');
   writeFileSync(legacyAgentMarkdown, `---
@@ -149,6 +187,20 @@ description: Reviews changes
 model: openai/gpt-main
 ---
 Review the requested changes.
+`, 'utf8');
+  writeFileSync(legacyAgentSkill, `---
+name: sub-agent-creator
+description: Creates sub-agents
+---
+Web research agents may need \`web_search\`, \`browser_open\`,
+\`browser_read_text\`, and \`browser_summarize\`.
+
+\`\`\`yaml
+permissions:
+  tools:
+    mode: allow
+    allow: [web_search, browser_open, browser_read_text, browser_summarize]
+\`\`\`
 `, 'utf8');
   writeFileSync(archiveConversation, `${JSON.stringify({
     id: 'conversation-archive',
@@ -226,8 +278,10 @@ printf 'inactive\\n'
     legacyAgentRoot,
     agentConfig,
     agentMarkdown,
+    agentSkill,
     legacyAgentConfig,
     legacyAgentMarkdown,
+    legacyAgentSkill,
     archiveRoot,
     archiveConversation,
     configOut,
@@ -312,6 +366,7 @@ describe('model config cutover', () => {
       envOverride: readFileSync(fixture.envOverride, 'utf8'),
       agentConfig: readFileSync(fixture.legacyAgentConfig, 'utf8'),
       agentMarkdown: readFileSync(fixture.legacyAgentMarkdown, 'utf8'),
+      agentSkill: readFileSync(fixture.legacyAgentSkill, 'utf8'),
       archive: readFileSync(fixture.archiveConversation, 'utf8'),
       databaseModel: sqliteValue(
         fixture.database,
@@ -332,7 +387,7 @@ describe('model config cutover', () => {
         databaseChangeCount: 2,
         affinityDeleteCount: 1,
         automationReferenceCount: 1,
-        agentFileChangeCount: 2,
+        agentFileChangeCount: 3,
         archiveChangeCount: 1,
       },
     });
@@ -381,7 +436,6 @@ describe('model config cutover', () => {
     expect(binding(plan.draft.bindings, 'chatluna.defaultEmbedding').mode).toBe('disabled');
     expect(binding(plan.draft.bindings, 'affinity.analysis').mode).toBe('inheritMain');
     expect(binding(plan.draft.bindings, 'naturalTrigger.decision').mode).toBe('disabled');
-    expect(binding(plan.draft.bindings, 'search.summary').mode).toBe('inheritInvocation');
     expect(
       binding(plan.draft.bindings, 'agent.subagent.preset:research-agent').mode,
     ).toBe('dedicated');
@@ -407,8 +461,10 @@ describe('model config cutover', () => {
     expect(readFileSync(fixture.envOverride, 'utf8')).toBe(before.envOverride);
     expect(readFileSync(fixture.legacyAgentConfig, 'utf8')).toBe(before.agentConfig);
     expect(readFileSync(fixture.legacyAgentMarkdown, 'utf8')).toBe(before.agentMarkdown);
+    expect(readFileSync(fixture.legacyAgentSkill, 'utf8')).toBe(before.agentSkill);
     expect(existsSync(fixture.agentConfig)).toBe(false);
     expect(existsSync(fixture.agentMarkdown)).toBe(false);
+    expect(existsSync(fixture.agentSkill)).toBe(false);
     expect(readFileSync(fixture.archiveConversation, 'utf8')).toBe(before.archive);
     expect(sqliteValue(
       fixture.database,
@@ -482,7 +538,16 @@ describe('model config cutover', () => {
     const agentConfig = JSON.parse(readFileSync(fixture.agentConfig, 'utf8')) as {
       subAgent: {
         items: Record<string, Record<string, unknown>>;
-        presetAgents: Record<string, Record<string, unknown>>;
+        presetAgents: Record<string, {
+          permissions?: {
+            tools?: {
+              allow?: string[];
+            };
+          };
+        }>;
+      };
+      tool: {
+        items: Record<string, Record<string, unknown>>;
       };
     };
     expect(Object.keys(agentConfig.subAgent.items)).toEqual([fixture.markdownAgentId]);
@@ -493,6 +558,25 @@ describe('model config cutover', () => {
     expect(
       agentConfig.subAgent.presetAgents['preset:research-agent'],
     ).not.toHaveProperty('model');
+    expect(
+      agentConfig.subAgent.presetAgents['preset:research-agent']
+        .permissions?.tools?.allow,
+    ).toEqual(['web_run', 'file_read']);
+    expect(Object.keys(agentConfig.tool.items)).toEqual([
+      'file_read',
+      'web_run',
+    ]);
+    expect(agentConfig.tool.items.web_run).toMatchObject({
+      enabled: true,
+      main: true,
+      authority: 0,
+    });
+    const agentSkill = readFileSync(fixture.agentSkill, 'utf8');
+    expect(agentSkill).toContain('Web research agents may need `web_run`.');
+    expect(agentSkill).toContain('allow: [web_run]');
+    expect(agentSkill).not.toMatch(
+      /\b(?:web_search|web_browser|web_fetch|web_post|browser_[a-z0-9_]+)\b/u,
+    );
     const markdown = readFileSync(fixture.agentMarkdown, 'utf8');
     const frontmatter = YAML.parse(
       markdown.match(/^---\n([\s\S]*?)\n---/u)?.[1] ?? '',

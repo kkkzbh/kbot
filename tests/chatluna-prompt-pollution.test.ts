@@ -476,7 +476,7 @@ describe('chatluna prompt pollution regression', () => {
         id: 'ai-real-tool-call',
         role: 'ai',
         content: await gzipAsync(JSON.stringify('')),
-        tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_search', args: { input: 'example' } }]),
+        tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_run', args: { search_query: [{ q: 'example' }] } }]),
       },
     ];
     const updates: Array<{ table: string; query: Record<string, unknown>; update: Record<string, unknown> }> = [];
@@ -527,7 +527,7 @@ describe('chatluna prompt pollution regression', () => {
     expect(rows[1]).toEqual(expect.objectContaining({ tool_calls: null }));
     expect(rows[2]).toEqual(expect.objectContaining({ tool_calls: null }));
     expect(rows[3]).toEqual(expect.objectContaining({
-      tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_search', args: { input: 'example' } }]),
+      tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_run', args: { search_query: [{ q: 'example' }] } }]),
     }));
   });
 
@@ -969,9 +969,9 @@ describe('chatluna prompt pollution regression', () => {
         parentId: 'ai-provider-tool-calls',
         name: null,
         content: await gzipAsync(JSON.stringify('')),
-        tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_search', args: { input: 'example' } }]),
+        tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_run', args: { search_query: [{ q: 'example' }] } }]),
         additional_kwargs_binary: await gzipAsync(JSON.stringify({
-          tool_calls: [{ id: 'raw-call-search', function: { name: 'web_search', arguments: '{"input":"example"}' } }],
+          tool_calls: [{ id: 'raw-call-search', function: { name: 'web_run', arguments: '{"search_query":[{"q":"example"}]}' } }],
         })),
       },
     ];
@@ -1015,7 +1015,7 @@ describe('chatluna prompt pollution regression', () => {
     await expect(
       gunzipAsync(messages[2].additional_kwargs_binary as Buffer).then((value) => JSON.parse(value.toString())),
     ).resolves.toEqual({
-      tool_calls: [{ id: 'raw-call-search', function: { name: 'web_search', arguments: '{"input":"example"}' } }],
+      tool_calls: [{ id: 'raw-call-search', function: { name: 'web_run', arguments: '{"search_query":[{"q":"example"}]}' } }],
     });
   });
 
@@ -1156,9 +1156,9 @@ describe('chatluna prompt pollution regression', () => {
         tool_calls: JSON.stringify([
           {
             id: 'call-search',
-            name: 'web_search',
+            name: 'web_run',
             args: {
-              input: 'example',
+              search_query: [{ q: 'example' }],
             },
           },
         ]),
@@ -1167,7 +1167,7 @@ describe('chatluna prompt pollution regression', () => {
         id: 'tool-error',
         role: 'tool',
         parentId: 'ai-search',
-        name: 'web_search',
+        name: 'web_run',
         tool_call_id: 'call-search',
         content: await gzipAsync(JSON.stringify(
           'Something went wrong. Please Try Again. 使用 ChatLuna 时出现错误，错误码为 103。请联系开发者以解决此问题。',
@@ -1256,9 +1256,9 @@ describe('chatluna prompt pollution regression', () => {
         tool_calls: JSON.stringify([
           {
             id: 'call-search',
-            name: 'web_search',
+            name: 'web_run',
             args: {
-              input: 'example',
+              search_query: [{ q: 'example' }],
             },
           },
         ]),
@@ -1267,9 +1267,9 @@ describe('chatluna prompt pollution regression', () => {
         id: 'tool-result',
         role: 'tool',
         parentId: 'ai-tool-call',
-        name: 'web_search',
+        name: 'web_run',
         tool_call_id: 'call-search',
-        content: await gzipAsync(JSON.stringify('[{"title":"结果","url":"https://example.com"}]')),
+        content: await gzipAsync(JSON.stringify('[turn0search0]\nTitle: 结果\nURL: https://example.com/\nSnippet: 示例')),
       },
     ];
     const conversations = [
@@ -1441,15 +1441,15 @@ describe('chatluna prompt pollution regression', () => {
         parentId: 'human-1',
         name: null,
         content: await gzipAsync(JSON.stringify('')),
-        tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_search', args: { input: 'example' } }]),
+        tool_calls: JSON.stringify([{ id: 'call-search', name: 'web_run', args: { search_query: [{ q: 'example' }] } }]),
       },
       {
         id: 'tool-search',
         role: 'tool',
         parentId: 'ai-search',
-        name: 'web_search',
+        name: 'web_run',
         tool_call_id: 'call-search',
-        content: await gzipAsync(JSON.stringify('[{"title":"结果","url":"https://example.com"}]')),
+        content: await gzipAsync(JSON.stringify('[turn0search0]\nTitle: 结果\nURL: https://example.com/\nSnippet: 示例')),
       },
       {
         id: 'ai-answer',
@@ -1617,15 +1617,15 @@ describe('chatluna prompt pollution regression', () => {
         parentId: 'human-1',
         name: null,
         content: await gzipAsync(JSON.stringify('')),
-        tool_calls: JSON.stringify([{ id: 'call-fetch', name: 'web_fetch', args: { url: 'https://example.com' } }]),
+        tool_calls: JSON.stringify([{ id: 'call-fetch', name: 'web_run', args: { open: [{ ref_id: 'https://example.com' }] } }]),
       },
       {
         id: 'tool-fetch',
         role: 'tool',
         parentId: 'ai-fetch',
-        name: 'web_fetch',
+        name: 'web_run',
         tool_call_id: 'call-fetch',
-        content: await gzipAsync(JSON.stringify('<html>large page</html>')),
+        content: await gzipAsync(JSON.stringify('[turn0view0]\nTitle: Example Domain\nURL: https://example.com/\nContent:\n1: Example Domain')),
       },
       {
         id: 'human-2',

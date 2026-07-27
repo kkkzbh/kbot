@@ -227,21 +227,6 @@ describe('CanonicalModelBindingResolver', () => {
       mode: 'inheritMain',
       model: 'qqbot-primary/primary-chat',
     });
-    expect(() => resolver.resolve('search.summary')).toThrowError(
-      expect.objectContaining({
-        code: 'binding_invalid',
-        workload: 'search.summary',
-      }),
-    );
-    expect(resolver.resolve('search.summary', {
-      invocationTarget: {
-        connectionId: 'primary',
-        modelId: 'primary-chat',
-      },
-    })).toMatchObject({
-      mode: 'inheritInvocation',
-      model: 'qqbot-primary/primary-chat',
-    });
     expect(resolver.resolveAgent('researcher', {
       invocationTarget: {
         connectionId: 'primary',
@@ -310,30 +295,12 @@ describe('CanonicalModelBindingResolver', () => {
     const snapshot = createRuntimeSnapshot();
     const redacted = redactStaticBindings(snapshot);
     expect(JSON.stringify(redacted)).not.toContain('test-api-key');
-    expect(
-      redacted.find((binding) => binding.workload === 'search.summary'),
-    ).toMatchObject({
-      mode: 'inheritInvocation',
-      canonicalModel: null,
-      connectionId: null,
-      modelId: null,
-    });
+    expect(redacted).toHaveLength(snapshot.bindings.length);
   });
 
   it('checks invocation-derived capabilities at request resolution time', () => {
     const snapshot = createRuntimeSnapshot();
     const resolver = new CanonicalModelBindingResolver(snapshot);
-    expect(() => resolver.resolve('search.summary', {
-      invocationTarget: {
-        connectionId: 'primary',
-        modelId: 'primary-embedding',
-      },
-    })).toThrowError(expect.objectContaining({
-      code: 'binding_invalid',
-      workload: 'search.summary',
-      modelId: 'primary-embedding',
-    }));
-
     const noToolsSnapshot = structuredClone(snapshot);
     const chat = noToolsSnapshot.models.find((model) => model.id === 'primary-chat');
     if (!chat) throw new Error('fixture is missing primary-chat');

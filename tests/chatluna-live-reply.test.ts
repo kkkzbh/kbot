@@ -324,7 +324,7 @@ describe('research reply history compatibility', () => {
           parentId: 'msg-human-1',
           conversationId: 'conv-2',
           content: encodeStoredContent(''),
-          tool_calls: [{ id: 'tool-search', name: 'web_search' }],
+          tool_calls: [{ id: 'tool-search', name: 'web_run' }],
         },
         {
           id: 'msg-tool-1',

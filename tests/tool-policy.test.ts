@@ -89,9 +89,7 @@ function createHarness(
           grep: { name: 'grep' },
           glob: { name: 'glob' },
           bash: { name: 'bash' },
-          web_search: { name: 'web_search' },
-          web_fetch: { name: 'web_fetch' },
-          web_post: { name: 'web_post' },
+          web_run: { name: 'web_run' },
           unknown_runtime_tool: { name: 'unknown_runtime_tool' },
         }),
       },
@@ -199,21 +197,21 @@ describe('tool policy service', () => {
 
     await service.saveToolOverrides([
       {
-        toolName: 'web_search',
+        toolName: 'web_run',
         routeProfile: 'agent',
         scopeKind: 'global_default',
         scopeId: GLOBAL_DEFAULT_SCOPE_ID,
         enabled: false,
       },
       {
-        toolName: 'web_search',
+        toolName: 'web_run',
         routeProfile: 'agent',
         scopeKind: 'private_default',
         scopeId: PRIVATE_DEFAULT_SCOPE_ID,
         enabled: true,
       },
       {
-        toolName: 'web_fetch',
+        toolName: 'web_run',
         routeProfile: 'agent',
         scopeKind: 'group',
         scopeId: '1091078473',
@@ -225,11 +223,11 @@ describe('tool policy service', () => {
       service.resolveAllowedTools({
         session: { isDirect: true, userId: 'u1', channelId: 'private-1' },
         routeProfile: 'agent',
-        toolNames: ['web_search', 'web_fetch'],
+        toolNames: ['web_run'],
         room: { roomId: 7, conversationId: 'conv-private' },
       }),
     ).resolves.toEqual({
-      allowed: ['web_search', 'web_fetch'],
+      allowed: ['web_run'],
       unknown: [],
     });
 
@@ -237,7 +235,7 @@ describe('tool policy service', () => {
       service.resolveAllowedTools({
         session: { isDirect: false, userId: 'u1', guildId: '1091078473', channelId: '1091078473' },
         routeProfile: 'agent',
-        toolNames: ['web_search', 'web_fetch'],
+        toolNames: ['web_run'],
         room: { roomId: 101, conversationId: 'conv-group' },
       }),
     ).resolves.toEqual({
@@ -252,7 +250,7 @@ describe('tool policy service', () => {
 
     const state = await service.getToolPolicyState();
     expect(state.catalog.length).toBe(TOOL_CATALOG.length);
-    expect(state.catalog.find((tool: ToolCatalogEntry) => tool.toolName === 'web_search')).toEqual(
+    expect(state.catalog.find((tool: ToolCatalogEntry) => tool.toolName === 'web_run')).toEqual(
       expect.objectContaining({ registered: true }),
     );
     expect(state.catalog.find((tool: ToolCatalogEntry) => tool.toolName === 'file_read')).toEqual(
@@ -286,10 +284,10 @@ describe('tool policy service', () => {
       service.resolveAllowedTools({
         session: { isDirect: false, userId: 'u1', guildId: '1', channelId: '1' },
         routeProfile: 'agent',
-        toolNames: ['web_search', 'unknown_runtime_tool'],
+        toolNames: ['web_run', 'unknown_runtime_tool'],
       }),
     ).resolves.toEqual({
-      allowed: ['web_search'],
+      allowed: ['web_run'],
       unknown: ['unknown_runtime_tool'],
     });
   });
@@ -298,17 +296,6 @@ describe('tool policy service', () => {
     const { ctx, registerToolMaskResolver, runReady } = createHarness({}, {
       fileToolAllowedGroups: '1091330365',
     });
-    const service = ctx.toolPolicy!;
-    await service.saveToolOverrides([
-      {
-        toolName: 'web_post',
-        routeProfile: 'agent',
-        scopeKind: 'group',
-        scopeId: '1091330365',
-        enabled: false,
-      },
-    ]);
-
     await runReady();
     expect(registerToolMaskResolver).toHaveBeenCalledTimes(1);
     const resolver = registerToolMaskResolver.mock.calls[0]?.[1] as
@@ -329,11 +316,11 @@ describe('tool policy service', () => {
       }),
     ).resolves.toEqual({
       mode: 'allow',
-      allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_fetch', 'web_search'],
+      allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_run'],
       deny: [],
       toolCallMask: {
         mode: 'allow',
-        allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_fetch', 'web_search'],
+        allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_run'],
         deny: [],
       },
     });
@@ -345,11 +332,11 @@ describe('tool policy service', () => {
       }),
     ).resolves.toEqual({
       mode: 'allow',
-      allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_fetch', 'web_search'],
+      allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_run'],
       deny: [],
       toolCallMask: {
         mode: 'allow',
-        allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_fetch', 'web_search'],
+        allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep', 'web_run'],
         deny: [],
       },
     });
@@ -375,9 +362,7 @@ describe('tool policy service', () => {
       'file_write',
       'glob',
       'grep',
-      'web_fetch',
-      'web_post',
-      'web_search',
+      'web_run',
     ]);
     expect(allowedGroupMask.toolCallMask?.allow).toEqual(allowedGroupMask.allow);
 
@@ -386,7 +371,7 @@ describe('tool policy service', () => {
       'agent',
       { roomId: 115, conversationId: 'conv-blocked' },
     );
-    expect(blockedGroupMask.allow).toEqual(['web_fetch', 'web_post', 'web_search']);
+    expect(blockedGroupMask.allow).toEqual(['web_run']);
     for (const toolName of restrictedTools) {
       expect(blockedGroupMask.allow).not.toContain(toolName);
       expect(blockedGroupMask.toolCallMask?.allow).not.toContain(toolName);
@@ -416,7 +401,7 @@ describe('tool policy service', () => {
     expect(registerToolMaskResolver).toHaveBeenCalledTimes(1);
   });
 
-  it('migrates legacy override ids to canonical runtime ids and drops ghost tools', async () => {
+  it('drops removed web overrides and migrates current file aliases', async () => {
     const { ctx, database } = createHarness({
       tool_scope_override: [
         {
@@ -468,23 +453,7 @@ describe('tool policy service', () => {
     });
     const service = ctx.toolPolicy!;
 
-    await expect(service.getToolOverrides()).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: 1,
-        toolName: 'web_fetch',
-        routeProfile: 'agent',
-        scopeKind: 'global_default',
-        scopeId: GLOBAL_DEFAULT_SCOPE_ID,
-        enabled: 1,
-      }),
-      expect.objectContaining({
-        id: 4,
-        toolName: 'web_post',
-        routeProfile: 'agent',
-        scopeKind: 'group',
-        scopeId: '1002',
-        enabled: 1,
-      }),
+    await expect(service.getToolOverrides()).resolves.toEqual([
       expect.objectContaining({
         id: 5,
         toolName: 'file_edit',
@@ -493,23 +462,9 @@ describe('tool policy service', () => {
         scopeId: '1003',
         enabled: 1,
       }),
-    ]));
+    ]);
 
     await expect(database.get('tool_scope_override', {})).resolves.toEqual([
-      expect.objectContaining({
-        id: 1,
-        toolName: 'web_fetch',
-        routeProfile: 'agent',
-        scopeKind: 'global_default',
-        scopeId: GLOBAL_DEFAULT_SCOPE_ID,
-      }),
-      expect.objectContaining({
-        id: 4,
-        toolName: 'web_post',
-        routeProfile: 'agent',
-        scopeKind: 'group',
-        scopeId: '1002',
-      }),
       expect.objectContaining({
         id: 5,
         toolName: 'file_edit',

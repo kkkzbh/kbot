@@ -80,7 +80,6 @@ function aggregate(): ModelConfigAdminAggregate {
       { workload: 'memory.embedding', mode: 'dedicated', connectionId: 'provider', modelId: 'embedding' },
       { workload: 'affinity.analysis', mode: 'inheritMain' },
       { workload: 'naturalTrigger.decision', mode: 'disabled' },
-      { workload: 'search.summary', mode: 'inheritInvocation' },
       { workload: 'chatluna.defaultEmbedding', mode: 'dedicated', connectionId: 'provider', modelId: 'embedding' },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
       { workload: 'sticker.index', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },

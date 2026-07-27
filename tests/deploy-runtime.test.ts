@@ -60,8 +60,14 @@ describe('server runtime artifact rendering', () => {
     expect(koishi).toContain(`Environment=CHATLUNA_BUNDLED_ROLE_PRESET_DIR=${appDir}/data/chathub/role-presets`);
     expect(koishi).toContain(`Environment=CHATLUNA_RUNTIME_ROLE_PRESET_DIR=${dataDir}/chathub/role-presets`);
     expect(koishi).toContain(`Environment=CHATLUNA_ARCHIVE_DIR=${dataDir}/chatluna/archive`);
+    expect(koishi).toContain(
+      `Environment=CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=${dataDir}/chatluna/web-artifacts`,
+    );
     expect(koishi).toContain(`Environment=CHATLUNA_AGENT_DATA_DIR=${dataDir}/chatluna`);
     expect(koishi).toContain(`ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/archive`);
+    expect(koishi).toContain(
+      `ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/web-artifacts`,
+    );
     expect(koishi).toContain(`ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/agents`);
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
@@ -87,6 +93,9 @@ describe('server runtime artifact rendering', () => {
     );
     expect(readFileSync(join(process.cwd(), '.env.server.example'), 'utf8')).toContain(
       'CHATLUNA_ARCHIVE_DIR=/opt/qqbot/data/chatluna/archive',
+    );
+    expect(readFileSync(join(process.cwd(), '.env.server.example'), 'utf8')).toContain(
+      'CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=/opt/qqbot/data/chatluna/web-artifacts',
     );
 
     const installer = readFileSync(join(process.cwd(), 'deploy/installer.sh'), 'utf8');
@@ -117,14 +126,16 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('recovery material: ${TRANSACTION_BACKUP_DIR}');
     expect(installer).toContain('start|keep-stopped');
     expect(installer).toContain('"${DATA_DIR}/chatluna/archive"');
-    expect(installer).toContain(
-      'chmod 700 "${DATA_DIR}" "${SHARED_DIR}" "${DATA_DIR}/chatluna/archive"',
-    );
+    expect(installer).toContain('chmod 700 \\\n  "${DATA_DIR}"');
+    expect(installer).toContain('"${DATA_DIR}/chatluna/web-artifacts"');
     expect(installer).toContain(
       '"CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${APP_DIR}/data/chathub/context-presets"',
     );
     expect(installer).toContain(
       '"CHATLUNA_ARCHIVE_DIR=${DATA_DIR}/chatluna/archive"',
+    );
+    expect(installer).toContain(
+      '"CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=${DATA_DIR}/chatluna/web-artifacts"',
     );
     expect(installer).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');

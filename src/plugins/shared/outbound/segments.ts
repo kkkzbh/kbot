@@ -11,7 +11,7 @@ const LEAKED_REASONING_MARKER_PATTERN =
   /(用户让我搜索|根据我的身份设定|我应该以角色身份|我需要确认|搜索工具似乎不可用|不应该有特殊的技术能力|工具好像又出问题了)/g;
 const LEAKED_REASONING_START_PATTERN =
   /^(?:用户(?:让我|要我|叫我|希望我)|根据(?:之前|以上|当前)?的?对话|根据我的身份设定|我(?:需要|得|要|应该))/;
-const SEARCH_INTENT_HINT_PATTERN = /(搜|搜索|web_search|联网|查一下|查一查)/i;
+const SEARCH_INTENT_HINT_PATTERN = /(搜|搜索|web_run|联网|查一下|查一查)/i;
 const META_LEAK_SELF_REFERENCE_PATTERN =
   /(?:^|[\s，。！？!?])(?:我(?:是|作为|不是|并非|需要|得|要|必须|不能|不会|没法)|根据(?:我的)?(?:身份|系统)?设定|按照(?:系统)?(?:提示词|规则|设定|指令)|提示词(?:要求|规定|写着)|系统(?:提示词|消息|规则|指令)(?:要求|规定)|(?:扮演|身份)设定(?:要求|规定))/i;
 const META_LEAK_KEYWORD_PATTERN =

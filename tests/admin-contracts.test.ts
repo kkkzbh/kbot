@@ -77,7 +77,6 @@ const modelDraft = {
     { workload: 'memory.embedding', mode: 'disabled' as const },
     { workload: 'affinity.analysis', mode: 'inheritMain' as const },
     { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
-    { workload: 'search.summary', mode: 'inheritInvocation' as const },
     { workload: 'chatluna.defaultEmbedding', mode: 'disabled' as const },
     { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
     { workload: 'sticker.index', mode: 'disabled' as const },

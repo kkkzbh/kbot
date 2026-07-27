@@ -178,12 +178,23 @@ plugins:
       maxStorageCount: ${{ +env.CHATLUNA_STORAGE_MAX_FILES || 2000 }}
     puppeteer:0vx5c7:
       executablePath: ${{ env.PUPPETEER_EXECUTABLE_PATH || '' }}
-    chatluna-search-service:search:
+    chatluna-web-run-service:web:
       enabled: ${{ env.CHATLUNA_SEARCH_SERVICE_ENABLED !== 'false' }}
-      searchEngine:
-        - tavily
+      mode: ${{ env.CHATLUNA_SEARCH_SERVICE_MODE || 'live' }}
+      requiredCapabilities:
+        - search_query
+        - open
+        - click
+        - find
       topK: ${{ +env.CHATLUNA_SEARCH_SERVICE_TOPK || 5 }}
-      summaryType: ${{ env.CHATLUNA_SEARCH_SERVICE_SUMMARY_TYPE || 'balanced' }}
+      perDomainLimit: ${{ +env.CHATLUNA_SEARCH_SERVICE_PER_DOMAIN_LIMIT || 2 }}
+      maxOperationsPerCall: 8
+      maxConcurrency: 4
+      fetchTimeout: 30000
+      maxHtmlBytes: 8388608
+      maxPdfBytes: 33554432
+      maxPageCharacters: 100000
+      artifactDir: ${{ env.CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR || './data/chatluna/web-artifacts' }}
       tavilyApiKey: ${{ env.CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY || '' }}
     ./dist/plugins/sticker:sticker:
       stickerDir: ${{ env.CHATLUNA_STICKER_DIR || './data/chathub/stickers' }}
@@ -202,115 +213,14 @@ plugins:
       send: ${{ env.CHATLUNA_COMMON_SEND === 'true' }}
       todos: ${{ env.CHATLUNA_COMMON_TODOS === 'true' }}
       chat: ${{ env.CHATLUNA_COMMON_CHAT === 'true' }}
-      request: ${{ env.CHATLUNA_COMMON_REQUEST !== 'false' }}
-      requestMaxOutputLength: ${{ +env.CHATLUNA_COMMON_REQUEST_MAX_OUTPUT_LENGTH || 58600 }}
+      request: false
       fs: ${{ env.CHATLUNA_COMMON_FS === 'true' }}
       fsScopePath: ${{ env.CHATLUNA_COMMON_FS_SCOPE_PATH || '' }}
       command: ${{ env.CHATLUNA_COMMON_COMMAND === 'true' }}
       commandAutoExecute: ${{ env.CHATLUNA_COMMON_COMMAND_AUTO_EXECUTE === 'true' }}
       cron: ${{ env.CHATLUNA_COMMON_CRON === 'true' }}
       group: ${{ env.CHATLUNA_COMMON_GROUP === 'true' }}
-      actions: ${{ env.CHATLUNA_COMMON_ACTIONS === 'true' }}
-      actionsList:
-        - name: weather.geo
-          description: 根据城市名称查询经纬度，用于后续天气/未来预报查询。
-          headers: {}
-          selector:
-            - 天气
-            - 预报
-            - 城市
-            - weather
-            - forecast
-          openAPISpec: |-
-            openapi: 3.0.3
-            info:
-              title: Open-Meteo Geocoding API
-              version: 1.0.0
-            servers:
-              - url: https://geocoding-api.open-meteo.com
-            paths:
-              /v1/search:
-                get:
-                  summary: Search city coordinates
-                  parameters:
-                    - in: query
-                      name: name
-                      required: true
-                      schema:
-                        type: string
-                    - in: query
-                      name: count
-                      required: false
-                      schema:
-                        type: integer
-                        default: 1
-                    - in: query
-                      name: language
-                      required: false
-                      schema:
-                        type: string
-                        default: zh
-                    - in: query
-                      name: format
-                      required: false
-                      schema:
-                        type: string
-                        default: json
-                  responses:
-                    "200":
-                      description: OK
-        - name: weather.forecast
-          description: 根据经纬度查询未来天气预报（按天）。
-          headers: {}
-          selector:
-            - 天气
-            - 未来
-            - 预报
-            - weather
-            - forecast
-          openAPISpec: |-
-            openapi: 3.0.3
-            info:
-              title: Open-Meteo Forecast API
-              version: 1.0.0
-            servers:
-              - url: https://api.open-meteo.com
-            paths:
-              /v1/forecast:
-                get:
-                  summary: Get daily weather forecast
-                  parameters:
-                    - in: query
-                      name: latitude
-                      required: true
-                      schema:
-                        type: number
-                    - in: query
-                      name: longitude
-                      required: true
-                      schema:
-                        type: number
-                    - in: query
-                      name: daily
-                      required: false
-                      schema:
-                        type: string
-                        default: weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max
-                    - in: query
-                      name: forecast_days
-                      required: false
-                      schema:
-                        type: integer
-                        default: 7
-                    - in: query
-                      name: timezone
-                      required: false
-                      schema:
-                        type: string
-                        default: Asia/Shanghai
-                  responses:
-                    "200":
-                      description: OK
+      actions: false
       draw: false
       music: false
     chatluna-agent:computer-agent: {}

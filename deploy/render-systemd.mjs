@@ -139,10 +139,12 @@ Environment=CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR=${data}/chathub/context-presets
 Environment=CHATLUNA_BUNDLED_ROLE_PRESET_DIR=${app}/data/chathub/role-presets
 Environment=CHATLUNA_RUNTIME_ROLE_PRESET_DIR=${data}/chathub/role-presets
 Environment=CHATLUNA_ARCHIVE_DIR=${data}/chatluna/archive
+Environment=CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=${data}/chatluna/web-artifacts
 Environment=CHATLUNA_AGENT_DATA_DIR=${data}/chatluna
 LoadCredentialEncrypted=hbu-webvpn-broker:${hbuBrokerCredential}
 Environment=HBU_JW_WEBVPN_BROKER_TOKEN_FILE=%d/hbu-webvpn-broker
 ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/archive
+ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/web-artifacts
 ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/agents
 ExecStart=/usr/bin/env bash -lc 'cd "${app}" && exec pnpm start:server'
 Restart=always

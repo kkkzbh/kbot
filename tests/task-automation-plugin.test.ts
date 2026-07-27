@@ -218,9 +218,9 @@ function createHarness(
     toolPolicy: {
       resolveToolMask: vi.fn(async () => ({
         mode: 'allow',
-        allow: ['web_search'],
+        allow: ['web_run'],
         deny: [],
-        toolCallMask: { mode: 'allow', allow: ['web_search'], deny: [] },
+        toolCallMask: { mode: 'allow', allow: ['web_run'], deny: [] },
       })),
     },
     on: vi.fn((event: string, listener: () => Promise<void> | void) => {
@@ -504,9 +504,9 @@ describe('task automation tools and execution', () => {
   it('executes due once jobs via independent agent run and uses shared structured reply schema', async () => {
     const automationMask = {
       mode: 'allow',
-      allow: ['web_search'],
+      allow: ['web_run'],
       deny: [],
-      toolCallMask: { mode: 'allow', allow: ['web_search'], deny: [] },
+      toolCallMask: { mode: 'allow', allow: ['web_run'], deny: [] },
     };
     const harness = createHarness({
       chathub_room: [createRoom({ roomName: '当前群房间' })],

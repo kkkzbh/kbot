@@ -261,6 +261,7 @@ mkdir -p \
   "${DATA_DIR}/llbot-runtime" \
   "${DATA_DIR}/chatluna-storage" \
   "${DATA_DIR}/chatluna/archive" \
+  "${DATA_DIR}/chatluna/web-artifacts" \
   "${PERSISTENT_AGENT_DIR}" \
   "${DATA_DIR}/chathub/context-presets" \
   "${DATA_DIR}/chathub/role-presets" \
@@ -270,7 +271,11 @@ mkdir -p \
   "${SHARED_DIR}" \
   "${INCOMING_DIR}" \
   "${STAGING_DIR}"
-chmod 700 "${DATA_DIR}" "${SHARED_DIR}" "${DATA_DIR}/chatluna/archive"
+chmod 700 \
+  "${DATA_DIR}" \
+  "${SHARED_DIR}" \
+  "${DATA_DIR}/chatluna/archive" \
+  "${DATA_DIR}/chatluna/web-artifacts"
 
 if [[ ! -f "${ENV_SERVER}" ]]; then
   echo "[installer] missing server env: ${ENV_SERVER}" >&2
@@ -430,6 +435,7 @@ write_runtime_env() {
     CHATLUNA_BUNDLED_ROLE_PRESET_DIR
     CHATLUNA_RUNTIME_ROLE_PRESET_DIR
     CHATLUNA_ARCHIVE_DIR
+    CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR
     CHATLUNA_STICKER_DIR
     PUPPETEER_EXECUTABLE_PATH
   )
@@ -479,6 +485,7 @@ write_runtime_env() {
   printf '%s\n' "CHATLUNA_BUNDLED_ROLE_PRESET_DIR=${APP_DIR}/data/chathub/role-presets" >> "${tmp}"
   printf '%s\n' "CHATLUNA_RUNTIME_ROLE_PRESET_DIR=${DATA_DIR}/chathub/role-presets" >> "${tmp}"
   printf '%s\n' "CHATLUNA_ARCHIVE_DIR=${DATA_DIR}/chatluna/archive" >> "${tmp}"
+  printf '%s\n' "CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=${DATA_DIR}/chatluna/web-artifacts" >> "${tmp}"
   printf '%s\n' "CHATLUNA_STICKER_DIR=${DATA_DIR}/chathub/stickers" >> "${tmp}"
   printf '%s\n' "PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell" >> "${tmp}"
   chmod 600 "${tmp}"

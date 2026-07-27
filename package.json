@@ -54,7 +54,7 @@
     "koishi-plugin-chatluna-agent": "link:../chatluna/packages/extension-agent",
     "koishi-plugin-chatluna-openai-like-adapter": "link:../chatluna/packages/adapter-openai-like",
     "koishi-plugin-chatluna-plugin-common": "link:../chatluna/packages/extension-tools",
-    "koishi-plugin-chatluna-search-service": "link:../chatluna/packages/service-search",
+    "koishi-plugin-chatluna-web-run-service": "link:../chatluna/packages/service-web-run",
     "koishi-plugin-chatluna-storage-service": "1.0.7",
     "koishi-plugin-cron": "3.1.0",
     "koishi-plugin-downloads": "0.1.3",

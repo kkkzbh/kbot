@@ -101,6 +101,10 @@ The installer performs these boundaries:
 6. atomically swaps the application, starts the target, and runs full
    verification.
 
+The Agent-data migration also replaces retired Web tool names in persisted
+allowlists with `web_run` and updates the persisted `sub-agent-creator` skill.
+The source ChatLuna catalogs remain intact for future upstream updates.
+
 `CHATLUNA_MAX_CONTEXT_RATIO` is validated in `(0, 1]` and folded into each
 canonical chat model `contextSize`. The old default and current production
 value `0.35` therefore produce an effective budget of `44,800` from the legacy
@@ -131,7 +135,6 @@ Confirm:
 - no report contains an API key or encrypted secret payload;
 - persisted conversation, room, Agent, and archive references use canonical
   IDs;
-- Search inherits the invocation model when its legacy value was empty;
 - blank Affinity inherits main chat;
 - incomplete Memory and Natural Trigger model triples are disabled;
 - Automation inherits the invocation/room model;
