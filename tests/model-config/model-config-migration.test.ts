@@ -356,7 +356,9 @@ describe('model config cutover', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(join(output, 'context-preset-cutover.mjs'))).toBe(true);
     expect(existsSync(join(output, 'model-config-cutover.mjs'))).toBe(true);
+    expect(existsSync(join(output, 'model-auth-connection-cutover.mjs'))).toBe(true);
     expect(statSync(join(output, 'model-config-cutover.mjs')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(output, 'model-auth-connection-cutover.mjs')).mode & 0o777).toBe(0o700);
   });
 
   it('preflights all legacy owners without writing or exposing credentials', async () => {
@@ -473,6 +475,51 @@ describe('model config cutover', () => {
     expect(existsSync(fixture.configOut)).toBe(false);
     expect(existsSync(fixture.kekOut)).toBe(false);
     expect(existsSync(fixture.backupDir)).toBe(false);
+  });
+
+  it('names migrated connections by provider authentication instead of workload', async () => {
+    const fixture = createFixture();
+    writeFileSync(
+      fixture.envOverride,
+      `${readFileSync(fixture.envOverride, 'utf8')}
+MEMORY_EXTRACT_BASE_URL=https://api.siliconflow.cn/v1
+MEMORY_EXTRACT_API_KEY=extract-credential
+MEMORY_EXTRACT_MODEL=Qwen/Qwen3.5-35B-A3B
+MEMORY_EMBED_BASE_URL=https://api.siliconflow.cn/v1
+MEMORY_EMBED_API_KEY=embedding-credential
+MEMORY_EMBED_MODEL=Qwen/Qwen3-Embedding-8B
+STICKER_INDEXER_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+STICKER_INDEXER_API_KEY=sticker-credential
+STICKER_INDEXER_MODEL=doubao-vision
+`,
+      'utf8',
+    );
+
+    const plan = await buildModelConfigMigrationPlan(options(fixture, 'preflight'));
+    const connectionNames = plan.draft.connections.map((connection) => connection.displayName);
+
+    expect(connectionNames).toEqual(expect.arrayContaining([
+      'SiliconFlow API Key',
+      'SiliconFlow API Key 2',
+      'Volcengine Ark API Key',
+    ]));
+    expect(connectionNames).not.toEqual(expect.arrayContaining([
+      'Memory extraction',
+      'Memory embedding',
+      'Sticker indexer',
+    ]));
+    expect(binding(plan.draft.bindings, 'memory.extract')).toEqual(expect.objectContaining({
+      mode: 'dedicated',
+      connectionId: 'siliconflow-api-key',
+    }));
+    expect(binding(plan.draft.bindings, 'memory.embedding')).toEqual(expect.objectContaining({
+      mode: 'dedicated',
+      connectionId: 'siliconflow-api-key-2',
+    }));
+    expect(binding(plan.draft.bindings, 'sticker.index')).toEqual(expect.objectContaining({
+      mode: 'dedicated',
+      connectionId: 'volcengine-ark-api-key',
+    }));
   });
 
   it('applies staged artifacts and all SQLite changes through the canonical contract', async () => {
@@ -645,7 +692,7 @@ OPENAI_MODEL=deepseek/deepseek-chat
     const plan = await buildModelConfigMigrationPlan(opts);
     expect(plan.report.modelMappings).toContainEqual({
       legacyModel: 'deepseek/deepseek-chat',
-      canonicalModel: 'qqbot-legacy-generic-openai-deepseek/deepseek-chat',
+      canonicalModel: 'qqbot-deepseek-api-key/deepseek-chat',
       sources: expect.arrayContaining([
         'chatluna_conversation:conversation-deepseek',
         'profile:legacy:openai-generic',

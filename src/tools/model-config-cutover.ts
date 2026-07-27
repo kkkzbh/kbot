@@ -35,6 +35,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import YAML from 'yaml';
 import {
   canonicalModelName,
+  describeConnectionIdentity,
   modelConfigDraftSchema,
   modelConfigDocumentSchema,
   ModelConfigService,
@@ -987,7 +988,11 @@ function buildMainProfiles(env: Record<string, string>): {
       baseUrl,
       apiKey,
       auth,
-      connectionLabel: definition.label,
+      connectionLabel: describeConnectionIdentity({
+        adapter: definition.adapter,
+        baseUrl,
+        auth,
+      }).displayNameBase,
       model,
       transportModel: normalizeLegacyTransportModel(model, sourceId),
       modelType: 'chat',
@@ -1013,7 +1018,6 @@ function buildMainProfiles(env: Record<string, string>): {
 function buildOpenAiProfile(args: {
   sourceId: string;
   kind: LegacyProfileKind;
-  label: string;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -1024,18 +1028,24 @@ function buildOpenAiProfile(args: {
   capabilities: ModelDefinition['capabilities'];
 }): LegacyProfile {
   const modelType = args.modelType ?? 'chat';
+  const baseUrl = normalizeEndpoint(args.baseUrl, `${args.sourceId} endpoint`);
+  const auth = {
+    kind: 'apiKey' as const,
+    secretRef: `connection:${slug(args.sourceId)}:api-key`,
+  };
   return {
     sourceId: args.sourceId,
     kind: args.kind,
     adapter: 'openaiCompatible',
     catalogDriver: 'static',
-    baseUrl: normalizeEndpoint(args.baseUrl, `${args.sourceId} endpoint`),
+    baseUrl,
     apiKey: args.apiKey,
-    auth: {
-      kind: 'apiKey',
-      secretRef: `connection:${slug(args.sourceId)}:api-key`,
-    },
-    connectionLabel: args.label,
+    auth,
+    connectionLabel: describeConnectionIdentity({
+      adapter: 'openaiCompatible',
+      baseUrl,
+      auth,
+    }).displayNameBase,
     model: args.model,
     transportModel: normalizeLegacyTransportModel(args.model, args.sourceId),
     modelType,
@@ -1093,7 +1103,6 @@ function buildMemoryExtractProfile(env: Record<string, string>): LegacyProfile |
   return buildOpenAiProfile({
     sourceId: 'memory:extract',
     kind: 'memory-extract',
-    label: 'Memory extraction',
     ...fields,
     requestMode,
     structuredOutputProtocol: protocol,
@@ -1112,7 +1121,6 @@ function buildMemoryEmbeddingProfile(env: Record<string, string>): LegacyProfile
   return buildOpenAiProfile({
     sourceId: 'memory:embedding',
     kind: 'memory-embedding',
-    label: 'Memory embedding',
     ...fields,
     modelType: 'embedding',
     requestMode: null,
@@ -1144,7 +1152,6 @@ function buildNaturalProfile(env: Record<string, string>): LegacyProfile | null 
   return buildOpenAiProfile({
     sourceId: 'natural-trigger:decision',
     kind: 'natural-trigger',
-    label: 'Natural trigger decision',
     ...fields,
     timeoutMs: parsePositiveInteger(
       env.CHAT_NATURAL_TRIGGER_DECISION_TIMEOUT_MS,
@@ -1165,7 +1172,6 @@ function buildStickerProfile(env: Record<string, string>): LegacyProfile | null 
   return buildOpenAiProfile({
     sourceId: 'sticker:index',
     kind: 'sticker',
-    label: 'Sticker indexer',
     baseUrl,
     apiKey,
     model,
@@ -1194,7 +1200,6 @@ function buildGenericOpenAiProfile(env: Record<string, string>): LegacyProfile |
   return buildOpenAiProfile({
     sourceId: 'legacy:openai-generic',
     kind: 'generic-openai',
-    label: isDeepSeek ? 'Legacy generic OpenAI (DeepSeek)' : 'Legacy generic OpenAI',
     ...fields,
     requestMode: 'chat_completions',
     structuredOutputProtocol: isDeepSeek
@@ -1222,7 +1227,6 @@ function buildAutomationIntentProfile(
   return buildOpenAiProfile({
     sourceId: 'automation:intent',
     kind: 'automation-intent',
-    label: 'Legacy automation intent',
     ...fields,
     requestMode: 'chat_completions',
     structuredOutputProtocol: 'native_chat_json_schema',
@@ -1368,7 +1372,6 @@ function parseAffinityProfile(value: string | null): LegacyProfile | null {
   return buildOpenAiProfile({
     sourceId: 'affinity:analysis',
     kind: 'affinity',
-    label: 'Affinity analysis',
     baseUrl,
     apiKey,
     model,
@@ -1663,6 +1666,7 @@ function buildCanonicalCatalog(profiles: LegacyProfile[]): {
 } {
   const connectionsByKey = new Map<string, ConnectionBuildRecord>();
   const usedConnectionIds = new Set<string>();
+  const connectionLabelCounts = new Map<string, number>();
   for (const profile of profiles) {
     const key = connectionIdentity(profile);
     let record = connectionsByKey.get(key);
@@ -1681,6 +1685,8 @@ function buildCanonicalCatalog(profiles: LegacyProfile[]): {
         suffix += 1;
       }
       usedConnectionIds.add(id);
+      const labelIndex = (connectionLabelCounts.get(profile.connectionLabel) ?? 0) + 1;
+      connectionLabelCounts.set(profile.connectionLabel, labelIndex);
       const auth: ConnectionAuth = profile.auth.kind === 'apiKey'
         ? {
             kind: 'apiKey',
@@ -1692,7 +1698,9 @@ function buildCanonicalCatalog(profiles: LegacyProfile[]): {
         candidateId: id,
         definition: {
           id,
-          displayName: profile.connectionLabel,
+          displayName: labelIndex === 1
+            ? profile.connectionLabel
+            : `${profile.connectionLabel} ${labelIndex}`,
           adapter: profile.adapter,
           baseUrl: profile.baseUrl,
           auth,

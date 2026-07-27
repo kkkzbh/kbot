@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type {
@@ -195,12 +195,21 @@ async function changePage(current: number): Promise<void> {
 
 watch(view, async () => {
   if (!mounted) return;
+  const viewport = {
+    left: window.scrollX,
+    top: window.scrollY,
+  };
   page.current = 1;
   const query = { ...route.query };
   query.eventView = view.value;
   delete query.event;
   await router.replace({ query });
   await load();
+  await nextTick();
+  window.scrollTo({
+    ...viewport,
+    behavior: 'instant',
+  });
 });
 
 watch(() => route.query.event, (value) => {
@@ -270,6 +279,7 @@ defineExpose({ refresh: load });
         v-for="item in items"
         :key="item.id"
         class="event-row"
+        :class="{ 'has-actions': view === 'pending' }"
       >
         <button type="button" class="event-open" @click="openDetail(item)">
           <div class="event-row-head">
@@ -280,7 +290,6 @@ defineExpose({ refresh: load });
                 {{ item.occurrenceCount }} 次
               </el-tag>
             </div>
-            <el-tag size="small" :type="statusType(item)" effect="light">{{ statusLabel(item) }}</el-tag>
           </div>
           <p>{{ item.summary }}</p>
           <div class="event-meta">
@@ -288,6 +297,9 @@ defineExpose({ refresh: load });
             <span>{{ new Date(item.lastOccurredAt).toLocaleString() }}</span>
           </div>
         </button>
+        <el-tag class="event-status" size="small" :type="statusType(item)" effect="light">
+          {{ statusLabel(item) }}
+        </el-tag>
         <div v-if="view === 'pending'" class="event-actions" @click.stop>
           <el-button
             v-if="item.availableActions.includes('acknowledge')"
@@ -426,19 +438,21 @@ defineExpose({ refresh: load });
 .event-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
 .event-count { min-width: 18px; height: 17px; display: inline-flex; align-items: center; justify-content: center; margin-left: 7px; padding: 0 5px; border-radius: 9px; color: #fff; background: var(--danger); font-size: 9px; font-weight: 700; }
 .event-list { max-height: 640px; overflow: auto; }
-.event-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); transition: background .16s ease; }
+.event-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 58px; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); transition: background .16s ease; }
+.event-row.has-actions { grid-template-columns: minmax(0, 1fr) 58px 52px; }
 .event-row:first-child { border-top: 0; }
 .event-row:hover { background: #f7f9fd; }
-.event-open { width: 100%; padding: 0; border: 0; outline: 0; color: inherit; background: transparent; text-align: left; }
+.event-open { min-width: 0; width: 100%; padding: 0; border: 0; outline: 0; color: inherit; background: transparent; text-align: left; }
 .event-open:focus-visible { border-radius: 5px; box-shadow: 0 0 0 2px rgba(60, 103, 227, .22); }
 .event-row-head, .event-title, .event-meta, .event-actions { display: flex; align-items: center; }
-.event-row-head { justify-content: space-between; gap: 10px; }
+.event-row-head { gap: 10px; }
 .event-title { min-width: 0; gap: 8px; }
 .event-title .status-dot { flex: none; }
 .event-title strong { overflow: hidden; color: #374151; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .event-open p { display: -webkit-box; overflow: hidden; margin: 5px 0 0 15px; color: #7d8797; font-size: 10px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .event-meta { justify-content: space-between; gap: 12px; margin: 6px 0 0 15px; color: #9aa2af; font-size: 9px; }
-.event-actions { align-items: stretch; flex-direction: column; justify-content: center; gap: 4px; }
+.event-status { justify-self: center; }
+.event-actions { width: 52px; align-items: stretch; flex-direction: column; justify-content: center; gap: 4px; }
 .event-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .event-pagination { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); color: #8a94a3; font-size: 10px; }
 .event-pagination > span { flex: none; }

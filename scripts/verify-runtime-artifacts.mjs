@@ -152,6 +152,7 @@ function main() {
     join(distDir, 'tools/context-preset-cutover.mjs'),
     join(distDir, 'tools/context-preset-sqlite.py'),
     join(distDir, 'tools/model-config-cutover.mjs'),
+    join(distDir, 'tools/model-auth-connection-cutover.mjs'),
   ]) {
     if (!fileExists(toolPath)) missing.push(toolPath);
   }

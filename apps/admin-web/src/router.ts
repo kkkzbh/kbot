@@ -1,18 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router';
+import { resolveAdminScroll } from './router-scroll';
 
 export const router = createRouter({
   history: createWebHistory('/'),
-  scrollBehavior(to, _from, savedPosition) {
-    if (savedPosition) return savedPosition;
-    if (to.hash) {
-      return {
-        el: to.hash,
-        top: 72,
-        behavior: 'smooth',
-      };
-    }
-    return { top: 0 };
-  },
+  scrollBehavior: resolveAdminScroll,
   routes: [
     { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '运行总览', description: '服务管理、异常处置、模型与运行状态' } },
     { path: '/runtime/logs', name: 'logs', component: () => import('@/pages/LogsPage.vue'), meta: { title: '运行日志', description: 'Koishi 进程实时日志' } },

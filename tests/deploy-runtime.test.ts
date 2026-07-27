@@ -159,6 +159,9 @@ describe('server runtime artifact rendering', () => {
       'require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"',
     );
     expect(deploy).toContain(
+      'require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"',
+    );
+    expect(deploy).toContain(
       'require_bundle_entry "qqbot/deploy/model-config-contract.mjs"',
     );
   });

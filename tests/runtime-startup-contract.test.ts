@@ -153,6 +153,7 @@ describe('runtime startup contract', () => {
     writeFileSync(join(distDir, 'tools/context-preset-cutover.mjs'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'tools/context-preset-sqlite.py'), 'raise SystemExit(0)\n', 'utf8');
     writeFileSync(join(distDir, 'tools/model-config-cutover.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/model-auth-connection-cutover.mjs'), 'export {}\n', 'utf8');
 
     const ok = spawnSync(process.execPath, [scriptPath, '--config', configPath, '--dist', distDir], {
       cwd: dir,

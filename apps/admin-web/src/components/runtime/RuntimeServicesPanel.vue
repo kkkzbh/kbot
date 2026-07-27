@@ -224,7 +224,7 @@ defineExpose({ refresh: load });
 .service-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(145px, .75fr) minmax(180px, 1.25fr) auto;
+  grid-template-columns: minmax(145px, .75fr) minmax(180px, 1.25fr) 204px;
   align-items: center;
   gap: 16px;
   padding: 12px 14px;
@@ -240,12 +240,12 @@ defineExpose({ refresh: load });
 .service-state { display: inline-flex; align-items: center; gap: 8px; color: #364152; font-size: 11px; font-weight: 650; }
 .service-health p { margin: 5px 0 0; color: #7d8797; font-size: 10px; line-height: 1.45; }
 .service-health small { display: block; margin-top: 4px; color: #9aa2af; font-size: 9px; line-height: 1.45; }
-.service-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.service-actions { width: 204px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .service-actions :deep(.el-button + .el-button) { margin-left: 0; }
 
 @media (max-width: 900px) {
   .service-row { grid-template-columns: minmax(150px, .7fr) minmax(230px, 1.3fr); }
-  .service-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .service-actions { grid-column: 1 / -1; width: auto; justify-content: flex-start; }
 }
 
 @media (max-width: 620px) {

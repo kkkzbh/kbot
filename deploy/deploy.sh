@@ -127,6 +127,7 @@ verify_bundle() {
   require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
   require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
   require_bundle_entry "qqbot/data/chathub/context-presets"
   require_bundle_entry "qqbot/data/chathub/role-presets"
   require_bundle_catalog "qqbot/data/chathub/context-presets"

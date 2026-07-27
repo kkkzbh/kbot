@@ -25,8 +25,16 @@ import { build } from 'vite';
 process.umask(0o077);
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const ENTRY = resolve(ROOT_DIR, 'src/tools/model-config-cutover.ts');
-const OUTPUT_NAME = 'model-config-cutover.mjs';
+const TOOLS = [
+  {
+    entry: resolve(ROOT_DIR, 'src/tools/model-config-cutover.ts'),
+    outputName: 'model-config-cutover.mjs',
+  },
+  {
+    entry: resolve(ROOT_DIR, 'src/tools/model-auth-connection-cutover.ts'),
+    outputName: 'model-auth-connection-cutover.mjs',
+  },
+];
 const OWNER_MARKER = '.model-config-cutover-tool-output.json';
 const OWNER_MARKER_CONTENT = `${JSON.stringify({
   owner: 'qqbot-model-config-cutover-tool',
@@ -94,7 +102,7 @@ async function assertOwnedOutput(outDir) {
   }
 
   const markerPath = join(outDir, OWNER_MARKER);
-  const outputPath = join(outDir, OUTPUT_NAME);
+  const outputPaths = TOOLS.map((tool) => join(outDir, tool.outputName));
   if (await pathExists(markerPath)) {
     const markerInfo = await lstat(markerPath);
     const marker = markerInfo.isFile() && !markerInfo.isSymbolicLink()
@@ -104,8 +112,10 @@ async function assertOwnedOutput(outDir) {
       throw new Error(`Output ownership marker is invalid: ${markerPath}`);
     }
   } else {
-    if (await pathExists(outputPath)) {
-      throw new Error(`Refusing to replace an unowned output file: ${outputPath}`);
+    for (const outputPath of outputPaths) {
+      if (await pathExists(outputPath)) {
+        throw new Error(`Refusing to replace an unowned output file: ${outputPath}`);
+      }
     }
     await writeFile(markerPath, OWNER_MARKER_CONTENT, {
       encoding: 'utf8',
@@ -114,10 +124,12 @@ async function assertOwnedOutput(outDir) {
     });
   }
 
-  if (await pathExists(outputPath)) {
-    const outputInfo = await lstat(outputPath);
-    if (outputInfo.isSymbolicLink() || !outputInfo.isFile()) {
-      throw new Error(`Owned output must be a regular file: ${outputPath}`);
+  for (const outputPath of outputPaths) {
+    if (await pathExists(outputPath)) {
+      const outputInfo = await lstat(outputPath);
+      if (outputInfo.isSymbolicLink() || !outputInfo.isFile()) {
+        throw new Error(`Owned output must be a regular file: ${outputPath}`);
+      }
     }
   }
 }
@@ -130,38 +142,42 @@ async function main() {
     resolve(dirname(outDir), '.model-config-cutover-build-'),
   );
   try {
-    await build({
-      configFile: false,
-      root: ROOT_DIR,
-      publicDir: false,
-      logLevel: 'warn',
-      ssr: {
-        noExternal: true,
-      },
-      build: {
-        ssr: ENTRY,
-        target: 'node22',
-        outDir: temporaryDir,
-        emptyOutDir: true,
-        minify: false,
-        sourcemap: false,
-        rollupOptions: {
-          external: [/^node:/],
-          output: {
-            format: 'es',
-            entryFileNames: OUTPUT_NAME,
+    for (const [index, tool] of TOOLS.entries()) {
+      await build({
+        configFile: false,
+        root: ROOT_DIR,
+        publicDir: false,
+        logLevel: 'warn',
+        ssr: {
+          noExternal: true,
+        },
+        build: {
+          ssr: tool.entry,
+          target: 'node22',
+          outDir: temporaryDir,
+          emptyOutDir: index === 0,
+          minify: false,
+          sourcemap: false,
+          rollupOptions: {
+            external: [/^node:/],
+            output: {
+              format: 'es',
+              entryFileNames: tool.outputName,
+            },
           },
         },
-      },
-    });
-
-    const stagedOutput = resolve(temporaryDir, OUTPUT_NAME);
-    const stagedInfo = await lstat(stagedOutput);
-    if (!stagedInfo.isFile() || stagedInfo.isSymbolicLink()) {
-      throw new Error(`Built model config cutover artifact is invalid: ${stagedOutput}`);
+      });
     }
-    await chmod(stagedOutput, 0o700);
-    await rename(stagedOutput, resolve(outDir, OUTPUT_NAME));
+
+    for (const tool of TOOLS) {
+      const stagedOutput = resolve(temporaryDir, tool.outputName);
+      const stagedInfo = await lstat(stagedOutput);
+      if (!stagedInfo.isFile() || stagedInfo.isSymbolicLink()) {
+        throw new Error(`Built model config cutover artifact is invalid: ${stagedOutput}`);
+      }
+      await chmod(stagedOutput, 0o700);
+      await rename(stagedOutput, resolve(outDir, tool.outputName));
+    }
     await chmod(outDir, 0o700);
   } finally {
     await rm(temporaryDir, { recursive: true, force: true });

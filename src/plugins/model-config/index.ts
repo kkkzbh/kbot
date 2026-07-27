@@ -1,3 +1,4 @@
+export * from './connection-identity.js';
 export * from './errors.js';
 export * from './resolver.js';
 export * from './runtime-client.js';
