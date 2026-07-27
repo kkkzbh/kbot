@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="QQBot">
+  <defs>
+    <linearGradient id="background" x1="68" y1="40" x2="444" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5b7cf0"/>
+      <stop offset="1" stop-color="#3157cf"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="126" y1="122" x2="378" y2="370" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#edf2ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#background)"/>
+  <circle cx="112" cy="92" r="118" fill="#ffffff" opacity=".08"/>
+  <circle cx="438" cy="438" r="154" fill="#172f91" opacity=".12"/>
+  <path d="M256 77v47" fill="none" stroke="#dce5ff" stroke-linecap="round" stroke-width="20"/>
+  <circle cx="256" cy="68" r="19" fill="#ffffff"/>
+  <path d="M114 142c0-25 20-45 45-45h194c25 0 45 20 45 45v166c0 25-20 45-45 45H233l-79 67c-13 11-33 2-33-15v-58a45 45 0 0 1-7-24V142Z" fill="url(#shine)"/>
+  <circle cx="204" cy="226" r="29" fill="#3c67e3"/>
+  <circle cx="308" cy="226" r="29" fill="#3c67e3"/>
+  <circle cx="194" cy="216" r="8" fill="#ffffff" opacity=".9"/>
+  <circle cx="298" cy="216" r="8" fill="#ffffff" opacity=".9"/>
+  <path d="M204 294c27 21 77 21 104 0" fill="none" stroke="#3c67e3" stroke-linecap="round" stroke-width="17"/>
+</svg>
