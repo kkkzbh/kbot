@@ -6,15 +6,15 @@ import RuntimeServicesPanel, {
 } from '@/components/runtime/RuntimeServicesPanel.vue';
 import OperationalEventsPanel from '@/components/runtime/OperationalEventsPanel.vue';
 import { rawApi } from '@/api/client';
-import { useRuntimeStore } from '@/stores/runtime';
+import {
+  useRuntimeStore,
+  type RuntimeOverviewState,
+} from '@/stores/runtime';
 
-type Overview = {
+type Overview = RuntimeOverviewState & {
   serviceSummary: ServiceSummary;
-  currentModel: { model: string; title: string } | null;
   globalDefaultPresetId: string;
   memory: { summary: { factCount: number; episodeCount: number; pendingReviewCount: number } };
-  events: { openCount: number };
-  apply: { restartRequired: boolean; reasons: string[] };
 };
 type RefreshablePanel = { refresh: (silent?: boolean) => Promise<void> };
 
@@ -31,11 +31,7 @@ async function loadOverview(silent = false): Promise<void> {
     const next = await rawApi<Overview>('/overview');
     loadError.value = '';
     state.value = next;
-    runtime.currentModel = next.currentModel?.model || '未配置模型';
-    runtime.running = next.serviceSummary.running;
-    runtime.total = next.serviceSummary.total;
-    runtime.openEventCount = next.events.openCount;
-    runtime.updateApply(next.apply);
+    runtime.updateOverview(next);
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '总览加载失败';
     if (!silent) ElMessage.error(loadError.value);

@@ -26,7 +26,11 @@ import {
   Volume2,
 } from '@lucide/vue';
 import type { BotServiceStatus, BotServiceUnit } from '@contracts';
-import { useRuntimeStore, type ApplyState } from '@/stores/runtime';
+import {
+  useRuntimeStore,
+  type ApplyState,
+  type RuntimeOverviewState,
+} from '@/stores/runtime';
 import { rawApi, rawJsonBody } from '@/api/client';
 
 type NavItem = {
@@ -109,14 +113,15 @@ const restartUnitLabels: Partial<Record<BotServiceUnit, string>> = {
   'qqbot-koishi.service': 'Koishi',
   'qqbot-voice-tts.service': '语音服务',
 };
-let eventTimer: number | undefined;
+let runtimeTimer: number | undefined;
 
-async function loadEventSummary(): Promise<void> {
+async function loadRuntimeSummary(): Promise<void> {
   try {
-    const summary = await rawApi<{ openCount: number }>('/events/summary');
-    runtime.openEventCount = summary.openCount;
-  } catch {
-    // The page-level API error UI remains the owner of visible fetch failures.
+    runtime.updateOverview(await rawApi<RuntimeOverviewState>('/overview'));
+  } catch (error) {
+    runtime.markOverviewFailed(
+      error instanceof Error ? error.message : '运行摘要加载失败',
+    );
   }
 }
 
@@ -213,12 +218,12 @@ function handleKeyboard(event: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeyboard);
-  void loadEventSummary();
-  eventTimer = window.setInterval(loadEventSummary, 10_000);
+  void loadRuntimeSummary();
+  runtimeTimer = window.setInterval(loadRuntimeSummary, 10_000);
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyboard);
-  window.clearInterval(eventTimer);
+  window.clearInterval(runtimeTimer);
 });
 watch(() => route.path, activateRouteBranch, { immediate: true });
 </script>
@@ -258,8 +263,10 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
         </section>
       </nav>
       <div class="sidebar-footer">
-        <span class="status-dot" :class="runtime.running === runtime.total && runtime.total > 0 ? 'ok' : 'warn'" />
-        {{ runtime.running }}/{{ runtime.total }} 服务运行中
+        <span class="status-dot" :class="runtime.shellState === 'ready' && runtime.running === runtime.total && runtime.total > 0 ? 'ok' : 'warn'" />
+        <template v-if="runtime.shellState === 'loading'">服务状态加载中</template>
+        <template v-else-if="runtime.shellState === 'error'">服务状态不可用</template>
+        <template v-else>{{ runtime.running }}/{{ runtime.total }} 服务运行中</template>
       </div>
     </aside>
     <div v-if="mobileOpen" class="sidebar-backdrop" @click="mobileOpen = false" />
@@ -271,7 +278,9 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
           <span>搜索页面和操作</span><kbd>⌘ K</kbd>
         </button>
         <div class="topbar-state">
-          <span class="model-chip">{{ runtime.currentModel }}</span>
+          <span class="model-chip" :title="runtime.shellError || undefined">
+            {{ runtime.shellState === 'loading' ? '加载中' : runtime.shellState === 'error' ? '状态不可用' : runtime.currentModel }}
+          </span>
           <button
             v-if="runtime.restartRequired || restartBusy"
             class="restart-chip"
