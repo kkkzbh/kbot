@@ -109,9 +109,10 @@ LLONEBOT_DATA_DIR=./.runtime/llonebot
 
 ```dotenv
 QQBOT_ADMIN_ORIGIN=https://实际管理端域名
+QQBOT_ADMIN_SSH_ORIGIN=http://127.0.0.1:5140
 ```
 
-`QQBOT_ADMIN_ORIGIN` 必须是浏览器实际使用的完整 Origin。Admin API 会校验 Host；所有变更请求还会校验 Origin。生产环境中的 Koishi 只监听 loopback，管理台通过 Tailnet-only Tailscale Serve 入口发布。Secret 字段只返回是否已配置。
+`QQBOT_ADMIN_ORIGIN` 必须匹配 Tailnet 浏览器 Origin，`QQBOT_ADMIN_SSH_ORIGIN` 必须匹配 SSH 本地转发产生的浏览器 Origin。Admin API 会校验两个 Host；所有变更请求还会校验两个 Origin。生产环境中的 Koishi 只监听 loopback，管理台通过 Tailnet-only Tailscale Serve 入口发布。Secret 字段只返回是否已配置。
 
 ## 运行辅助脚本
 

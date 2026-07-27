@@ -43,6 +43,7 @@ export CHATLUNA_SEARCH_SERVICE_TAVILY_API_KEY="${CHATLUNA_SEARCH_SERVICE_TAVILY_
 export QQ_VOICE_INPUT_ENABLED="${QQ_VOICE_INPUT_ENABLED:-false}"
 export QQ_VOICE_OUTPUT_ENABLED="${QQ_VOICE_OUTPUT_ENABLED:-false}"
 export QQBOT_ADMIN_ORIGIN="${QQBOT_ADMIN_ORIGIN:-http://127.0.0.1:${KOISHI_PORT}}"
+export QQBOT_ADMIN_SSH_ORIGIN="${QQBOT_ADMIN_SSH_ORIGIN:-http://127.0.0.1:${KOISHI_PORT}}"
 
 node --input-type=module <<'NODE'
 import { ModelConfigService } from './dist/plugins/model-config/index.js';

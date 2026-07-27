@@ -31,9 +31,10 @@ The independent admin workspace requires its browser-facing Origin before deploy
 
 ```dotenv
 QQBOT_ADMIN_ORIGIN=https://admin.example.com
+QQBOT_ADMIN_SSH_ORIGIN=http://127.0.0.1:5140
 ```
 
-`QQBOT_ADMIN_ORIGIN` must exactly match the browser-facing origin and must not include a path. The installer validates this value before replacing the active application. Production binds Koishi to loopback; Tailscale Serve owns Tailnet access to the admin workspace.
+`QQBOT_ADMIN_ORIGIN` must exactly match the Tailnet browser origin. `QQBOT_ADMIN_SSH_ORIGIN` must match the browser origin created by the SSH local forward. Neither value may include a path. The installer validates both values before replacing the active application. Production binds Koishi to loopback; Tailscale Serve and SSH local forwarding own the two admin access paths.
 
 Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
 

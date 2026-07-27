@@ -42,6 +42,7 @@ plugins:
       apiPath: /api/admin/v1
       allowedOrigins:
         - ${{ env.QQBOT_ADMIN_ORIGIN }}
+        - ${{ env.QQBOT_ADMIN_SSH_ORIGIN }}
     cron:task: {}
     ./dist/plugins/automation:automation:
       pollIntervalMs: ${{ +env.TASK_AUTOMATION_POLL_MS || 30000 }}

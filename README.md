@@ -109,9 +109,10 @@ Configure the browser-facing origin explicitly before startup:
 
 ```dotenv
 QQBOT_ADMIN_ORIGIN=https://actual-admin-origin.example
+QQBOT_ADMIN_SSH_ORIGIN=http://127.0.0.1:5140
 ```
 
-`QQBOT_ADMIN_ORIGIN` must match the browser's complete Origin. The API validates Host on every request and Origin on every mutation. Production binds Koishi to loopback and publishes the admin workspace through its Tailnet-only Tailscale Serve endpoint. Secret fields only expose whether a value is configured.
+`QQBOT_ADMIN_ORIGIN` must match the Tailnet browser Origin. `QQBOT_ADMIN_SSH_ORIGIN` must match the browser Origin produced by the SSH local forward. The API validates both Hosts on every request and both Origins on every mutation. Production binds Koishi to loopback and publishes the admin workspace through its Tailnet-only Tailscale Serve endpoint. Secret fields only expose whether a value is configured.
 
 ## Runtime Helpers
 

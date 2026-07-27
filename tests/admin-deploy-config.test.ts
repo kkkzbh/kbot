@@ -10,17 +10,18 @@ function validate(overrides: NodeJS.ProcessEnv = {}) {
     env: {
       ...process.env,
       QQBOT_ADMIN_ORIGIN: 'https://admin.qqbot.example',
+      QQBOT_ADMIN_SSH_ORIGIN: 'http://127.0.0.1:5140',
       ...overrides,
     },
   });
 }
 
 describe('admin deployment configuration', () => {
-  it('accepts an exact origin', () => {
+  it('accepts exact browser and SSH origins', () => {
     const result = validate();
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('origin verified');
+    expect(result.stdout).toContain('browser and SSH origins verified');
   });
 
   it('rejects origins with paths', () => {
@@ -30,5 +31,14 @@ describe('admin deployment configuration', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('must contain only scheme, host, and optional port');
+  });
+
+  it('rejects a non-loopback SSH origin', () => {
+    const result = validate({
+      QQBOT_ADMIN_SSH_ORIGIN: 'https://admin.qqbot.example',
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('must use http://127.0.0.1');
   });
 });
