@@ -439,9 +439,14 @@ function createChatLunaService() {
   };
 }
 
-function createKoaCtx(options: { body?: unknown; host?: string; origin?: string; authorization?: string; params?: Record<string,string>; cookie?: string; path?: string; method?: string } = {}) {
+function createKoaCtx(options: { body?: unknown; host?: string; origin?: string; authorization?: string; params?: Record<string,string>; cookie?: string; path?: string; method?: string; secure?: boolean } = {}) {
   const cookies = new Map<string, string>();
   if (options.cookie) cookies.set('qqbot_admin_session', options.cookie);
+  const cookieJar = {
+    secure: options.secure ?? true,
+    get: vi.fn((name: string) => cookies.get(name)),
+    set: vi.fn((name: string, value: string) => cookies.set(name, value)),
+  };
   return {
     status: 404,
     body: undefined as unknown,
@@ -449,7 +454,7 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
     path: options.path ?? '/',
     method: options.method ?? 'GET',
     host: options.host ?? 'admin.example.com',
-    secure: true,
+    secure: options.secure ?? true,
     params: options.params ?? {},
     query: {},
     request: { body: options.body },
@@ -460,10 +465,7 @@ function createKoaCtx(options: { body?: unknown; host?: string; origin?: string;
       if (name.toLowerCase() === 'authorization') return options.authorization ?? '';
       return '';
     }),
-    cookies: {
-      get: vi.fn((name: string) => cookies.get(name)),
-      set: vi.fn((name: string, value: string) => cookies.set(name, value)),
-    },
+    cookies: cookieJar,
     cookieValues: cookies,
   };
 }
@@ -854,11 +856,21 @@ describe('independent admin API plugin', () => {
     await login(badOrigin);
     expect(badOrigin.status).toBe(403);
 
-    const good = createKoaCtx({ origin: 'https://admin.example.com', body: { accessToken: config.accessToken } });
+    const good = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: { accessToken: config.accessToken },
+      secure: false,
+    });
     await login(good);
     expect(good.status).toBe(200);
     expect(good.body).toMatchObject({ authenticated: true, expiresAt: expect.any(Number) });
     expect(good.cookieValues.get('qqbot_admin_session')).toMatch(/^v1\./);
+    expect(good.cookies.secure).toBe(true);
+    expect(good.cookies.set).toHaveBeenCalledWith(
+      'qqbot_admin_session',
+      expect.stringMatching(/^v1\./),
+      expect.objectContaining({ httpOnly: true, sameSite: 'strict', secure: true, path: '/' }),
+    );
   });
 
   it('renews an authenticated persistent session when the workspace opens', async () => {

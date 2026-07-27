@@ -494,10 +494,12 @@ function getCookie(koaCtx: KoaContext): string | undefined {
 }
 
 function setSessionCookie(koaCtx: KoaContext, session: AdminSessionService, token: string, expiresAt: number): void {
+  const secure = session.shouldUseSecureCookie(requestHost(koaCtx));
+  if (secure) koaCtx.cookies.secure = true;
   koaCtx.cookies.set(ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'strict',
-    secure: session.shouldUseSecureCookie(requestHost(koaCtx)),
+    secure,
     overwrite: true,
     path: '/',
     expires: new Date(expiresAt),
@@ -505,10 +507,12 @@ function setSessionCookie(koaCtx: KoaContext, session: AdminSessionService, toke
 }
 
 function clearSessionCookie(koaCtx: KoaContext, session: AdminSessionService): void {
+  const secure = session.shouldUseSecureCookie(requestHost(koaCtx));
+  if (secure) koaCtx.cookies.secure = true;
   koaCtx.cookies.set(ADMIN_SESSION_COOKIE, '', {
     httpOnly: true,
     sameSite: 'strict',
-    secure: session.shouldUseSecureCookie(requestHost(koaCtx)),
+    secure,
     overwrite: true,
     path: '/',
     expires: new Date(0),
