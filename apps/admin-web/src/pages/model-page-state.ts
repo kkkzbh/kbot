@@ -1,4 +1,5 @@
 import type {
+  ModelCatalogEntry,
   ModelConfigAdminAggregate,
   ModelConfigDraft,
   ModelConfigPutInput,
@@ -27,6 +28,110 @@ export type StructuredOutputProtocol = NonNullable<ModelDefinition['structuredOu
 export interface ModelPageConfigurationLoadResult {
   modelState: ModelConfigAdminAggregate | null;
   requiredError: string | null;
+}
+
+export const MODEL_SETTING_WORKLOAD_ORDER = [
+  'main.chat',
+  'naturalTrigger.decision',
+  'affinity.analysis',
+  'memory.extract',
+  'memory.embedding',
+  'chatluna.defaultEmbedding',
+  'agent.subagent.default',
+  'sticker.index',
+] as const satisfies readonly FixedModelWorkload[];
+
+export function orderModelSettingBindings<T extends ModelBinding>(
+  bindings: readonly T[],
+): Array<{ binding: T; sourceIndex: number }> {
+  const fixedRanks = new Map<string, number>(
+    MODEL_SETTING_WORKLOAD_ORDER.map((workload, index) => [workload, index * 2]),
+  );
+  const agentDefaultRank = fixedRanks.get('agent.subagent.default');
+  if (agentDefaultRank === undefined) {
+    throw new Error('Missing agent.subagent.default model-setting order.');
+  }
+  return bindings
+    .map((binding, sourceIndex) => ({ binding, sourceIndex }))
+    .sort((left, right) => {
+      const rank = (workload: string): number => {
+        const fixed = fixedRanks.get(workload);
+        if (fixed !== undefined) return fixed;
+        if (workload.startsWith('agent.subagent.')) return agentDefaultRank + 1;
+        return MODEL_SETTING_WORKLOAD_ORDER.length * 2;
+      };
+      return rank(left.binding.workload) - rank(right.binding.workload)
+        || left.binding.workload.localeCompare(right.binding.workload);
+    });
+}
+
+export function nextCatalogModelId(
+  transportModel: string,
+  existingIds: readonly string[],
+): string {
+  const base = transportModel
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^\x00-\x7F]/gu, '-')
+    .replace(/[^a-z0-9._-]+/gu, '-')
+    .replace(/^[._-]+|[._-]+$/gu, '')
+    .slice(0, 88)
+    .replace(/[._-]+$/gu, '') || 'model';
+  const occupied = new Set(existingIds);
+  if (!occupied.has(base)) return base;
+  for (let ordinal = 2; ordinal <= occupied.size + 2; ordinal += 1) {
+    const suffix = `-${ordinal}`;
+    const candidate = `${base.slice(0, 96 - suffix.length).replace(/[._-]+$/gu, '')}${suffix}`;
+    if (!occupied.has(candidate)) return candidate;
+  }
+  throw new Error(`无法为 Provider 模型 ${transportModel} 分配 canonical ID。`);
+}
+
+export function createCatalogModelProfile(args: {
+  connection: ModelConfigDraft['connections'][number];
+  entry: ModelCatalogEntry;
+  modelType: ModelDefinition['modelType'];
+  contextSize: number;
+  existingIds: readonly string[];
+}): ModelDefinition {
+  const { connection, entry, modelType } = args;
+  const requestMode = modelType === 'embedding'
+    ? null
+    : entry.requestMode
+      ?? (connection.adapter === 'codexBridge' ? 'responses' : 'chat_completions');
+  const structuredOutputProtocol = modelType === 'chat'
+    ? entry.structuredOutputProtocol
+    : null;
+  if (
+    structuredOutputProtocol
+    && requestMode
+    && !structuredOutputProtocolsForRequestMode(requestMode)
+      .includes(structuredOutputProtocol)
+  ) {
+    throw new Error(
+      `Provider 目录返回的 ${structuredOutputProtocol} 不适用于 ${requestMode}。`,
+    );
+  }
+  const tags = new Set(entry.metadataTags.map((tag) => tag.toLowerCase()));
+  return {
+    id: nextCatalogModelId(entry.transportModel, args.existingIds),
+    connectionId: connection.id,
+    displayName: entry.displayName,
+    transportModel: entry.transportModel,
+    modelType,
+    contextSize: args.contextSize,
+    requestMode,
+    structuredOutputProtocol,
+    capabilities: {
+      chat: modelType === 'chat',
+      embedding: modelType === 'embedding',
+      vision: modelType === 'chat' && tags.has('vision'),
+      tools: modelType === 'chat' && tags.has('tools'),
+      structuredOutput: modelType === 'chat' && structuredOutputProtocol !== null,
+    },
+    timeoutMs: 180_000,
+    requestDefaults: {},
+  };
 }
 
 function cloneJson<T>(value: T): T {

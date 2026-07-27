@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
   ModelConfigAdminAggregate,
+  ModelConfigDraft,
 } from '../src/admin/contracts/index.js';
 import {
   allowedBindingModes,
   buildModelConfigPutInput,
+  createCatalogModelProfile,
   createModelConfigDraft,
   createSecretDrafts,
   incompatibleWorkloadsForModel,
@@ -12,6 +14,8 @@ import {
   isModelDraftDirty,
   isSavedConnectionOperationTarget,
   loadModelPageConfiguration,
+  nextCatalogModelId,
+  orderModelSettingBindings,
   replaceBindingMode,
   structuredOutputProtocolsForRequestMode,
   withModelRequestMode,
@@ -105,6 +109,74 @@ function aggregate(): ModelConfigAdminAggregate {
 }
 
 describe('admin unified model page state', () => {
+  it('creates canonical model profiles from dynamic provider catalog entries', () => {
+    const connection = createModelConfigDraft(aggregate()).connections[0]!;
+    const entry = {
+      transportModel: 'openai/gpt-5.6-luna',
+      displayName: 'GPT 5.6 Luna',
+      requestMode: 'responses' as const,
+      structuredOutputProtocol: 'native_responses_json_schema' as const,
+      metadataTags: ['vision', 'tools'],
+    };
+
+    expect(nextCatalogModelId(entry.transportModel, [])).toBe('openai-gpt-5.6-luna');
+    expect(nextCatalogModelId(entry.transportModel, ['openai-gpt-5.6-luna']))
+      .toBe('openai-gpt-5.6-luna-2');
+    expect(createCatalogModelProfile({
+      connection,
+      entry,
+      modelType: 'chat',
+      contextSize: 200_000,
+      existingIds: [],
+    })).toMatchObject({
+      id: 'openai-gpt-5.6-luna',
+      connectionId: 'provider',
+      displayName: 'GPT 5.6 Luna',
+      transportModel: 'openai/gpt-5.6-luna',
+      modelType: 'chat',
+      contextSize: 200_000,
+      requestMode: 'responses',
+      structuredOutputProtocol: 'native_responses_json_schema',
+      capabilities: {
+        chat: true,
+        embedding: false,
+        vision: true,
+        tools: true,
+        structuredOutput: true,
+      },
+    });
+  });
+
+  it('orders model settings by operator workflow without changing source indexes', () => {
+    const bindings = [
+      { workload: 'sticker.index', mode: 'disabled' },
+      { workload: 'agent.subagent.preset:research', mode: 'inheritInvocation' },
+      { workload: 'memory.embedding', mode: 'disabled' },
+      { workload: 'main.chat', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
+      { workload: 'affinity.analysis', mode: 'inheritMain' },
+      { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
+      { workload: 'chatluna.defaultEmbedding', mode: 'disabled' },
+      { workload: 'memory.extract', mode: 'disabled' },
+      { workload: 'naturalTrigger.decision', mode: 'disabled' },
+    ] satisfies ModelConfigDraft['bindings'];
+
+    const ordered = orderModelSettingBindings(bindings);
+
+    expect(ordered.map(({ binding }) => binding.workload)).toEqual([
+      'main.chat',
+      'naturalTrigger.decision',
+      'affinity.analysis',
+      'memory.extract',
+      'memory.embedding',
+      'chatluna.defaultEmbedding',
+      'agent.subagent.default',
+      'agent.subagent.preset:research',
+      'sticker.index',
+    ]);
+    expect(ordered.find(({ binding }) => binding.workload === 'main.chat')?.sourceIndex)
+      .toBe(3);
+  });
+
   it('loads the required aggregate through a retryable boundary', async () => {
     const configuration = aggregate();
     const hydrate = vi.fn();
