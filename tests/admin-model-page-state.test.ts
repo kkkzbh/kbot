@@ -20,7 +20,7 @@ import {
 
 function aggregate(): ModelConfigAdminAggregate {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     savedRevision: 7,
     appliedRevision: 6,
     pending: true,

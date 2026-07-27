@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const MODEL_CONFIG_SCHEMA_VERSION = 1 as const;
+export const MODEL_CONFIG_SCHEMA_VERSION = 2 as const;
 
 export const adapterTypeSchema = z.enum([
   'openaiCompatible',
@@ -519,6 +519,7 @@ export const modelConfigDraftSchema = z.object({
       && binding.workload !== 'agent.subagent.default'
       ? AGENT_OVERRIDE_ALLOWED_MODES
       : WORKLOAD_ALLOWED_MODES[binding.workload as FixedModelWorkload];
+    if (!allowedModes) continue;
     if (!(allowedModes as readonly string[]).includes(binding.mode)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

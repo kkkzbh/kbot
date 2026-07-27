@@ -132,6 +132,7 @@ verify_bundle() {
   require_bundle_catalog "qqbot/data/chathub/context-presets"
   require_bundle_catalog "qqbot/data/chathub/role-presets"
   require_bundle_entry "qqbot/deploy/installer.sh"
+  require_bundle_entry "qqbot/deploy/model-config-contract.mjs"
   require_bundle_entry "qqbot/deploy/render-systemd.mjs"
   require_bundle_entry "chatluna/packages/core/package.json"
 }

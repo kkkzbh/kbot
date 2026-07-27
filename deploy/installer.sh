@@ -376,6 +376,7 @@ require_bundle_entry "qqbot/data/chathub/context-presets"
 require_bundle_entry "qqbot/data/chathub/role-presets"
 require_bundle_catalog "qqbot/data/chathub/context-presets"
 require_bundle_catalog "qqbot/data/chathub/role-presets"
+require_bundle_entry "qqbot/deploy/model-config-contract.mjs"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "chatluna/packages/core/package.json"
@@ -565,6 +566,7 @@ if [[ -d "${APP_DIR}/data/chathub/presets" ]]; then
 fi
 
 MODEL_CONFIG_CUTOVER_REQUIRED=0
+MODEL_CONFIG_CONTRACT_REQUIRED=0
 MODEL_CONFIG_BACKUP_DIR=""
 MODEL_CONFIG_MAPPING_ARGS=()
 if [[ -e "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
@@ -576,7 +578,10 @@ if [[ -e "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
   MODEL_CONFIG_MAPPING_ARGS=(--model-map-file "${MODEL_CONFIG_MAPPING_FILE}")
 fi
 if [[ -f "${DATA_DIR}/model-config.json" && -f "${SHARED_DIR}/model-config.kek" ]]; then
-  :
+  MODEL_CONFIG_CONTRACT_REQUIRED=1
+  node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" preflight \
+    --config "${DATA_DIR}/model-config.json" \
+    --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
 elif [[ -e "${DATA_DIR}/model-config.json" || -e "${SHARED_DIR}/model-config.kek" ]]; then
   echo "[installer] canonical model config and KEK must either both exist or both be absent" >&2
   exit 2
@@ -674,6 +679,13 @@ if [[ "${MODEL_CONFIG_CUTOVER_REQUIRED}" == "1" ]]; then
     "${MODEL_CONFIG_MAPPING_ARGS[@]}" \
     --backup-dir "${MODEL_CONFIG_BACKUP_DIR}" \
     --report "${MODEL_CONFIG_BACKUP_DIR}/applied.json" \
+    --confirm-service-stopped
+fi
+if [[ "${MODEL_CONFIG_CONTRACT_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" apply \
+    --config "${DATA_DIR}/model-config.json" \
+    --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js" \
+    --report "${TRANSACTION_BACKUP_DIR}/model-config-contract.json" \
     --confirm-service-stopped
 fi
 if [[ -e "${APP_ROOT}" || -L "${APP_ROOT}" ]]; then

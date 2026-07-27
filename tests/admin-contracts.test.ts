@@ -123,7 +123,7 @@ describe('admin shared contracts', () => {
 
   it('shares strict aggregate, CAS mutation, and OAuth poll contracts', () => {
     const aggregate = modelAdminAggregateSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       savedRevision: 2,
       appliedRevision: 1,
       pending: true,

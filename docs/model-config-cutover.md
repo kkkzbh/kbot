@@ -101,6 +101,12 @@ The installer performs these boundaries:
 6. atomically swaps the application, starts the target, and runs full
    verification.
 
+For an existing canonical document, every ordinary deployment also runs the
+zero-write `model-config-contract.mjs` preflight. The v1-to-v2 migration runs
+only while `qqbot.target` is stopped, removes the retired `search.summary`
+binding, increments `savedRevision`, preserves `appliedRevision` until startup,
+and records its report in the deployment transaction backup.
+
 The Agent-data migration also replaces retired Web tool names in persisted
 allowlists with `web_run` and updates the persisted `sub-agent-creator` skill.
 The source ChatLuna catalogs remain intact for future upstream updates.

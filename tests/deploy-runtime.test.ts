@@ -107,6 +107,8 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('context-preset-cutover.mjs" apply');
     expect(installer).toContain('model-config-cutover.mjs" preflight');
     expect(installer).toContain('model-config-cutover.mjs" apply');
+    expect(installer).toContain('model-config-contract.mjs" preflight');
+    expect(installer).toContain('model-config-contract.mjs" apply');
     expect(installer).toContain('MODEL_CONFIG_MAPPING_FILE="${SHARED_DIR}/model-config-mapping.json"');
     expect(installer).toContain('--model-map-file "${MODEL_CONFIG_MAPPING_FILE}"');
     expect(installer).toContain('AGENT_DATA_ROOT="${DATA_DIR}/chatluna"');
@@ -155,6 +157,9 @@ describe('server runtime artifact rendering', () => {
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
     expect(deploy).toContain(
       'require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"',
+    );
+    expect(deploy).toContain(
+      'require_bundle_entry "qqbot/deploy/model-config-contract.mjs"',
     );
   });
 });

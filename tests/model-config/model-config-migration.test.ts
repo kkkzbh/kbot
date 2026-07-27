@@ -492,7 +492,7 @@ describe('model config cutover', () => {
     const documentText = readFileSync(fixture.configOut, 'utf8');
     const document = modelConfigDocumentSchema.parse(JSON.parse(documentText));
     expect(document).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       savedRevision: 1,
       appliedRevision: 0,
       migration: {

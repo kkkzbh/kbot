@@ -125,7 +125,7 @@ function createModelConfigService() {
   let draft = createModelDraft();
   let savedRevision = 2;
   const aggregate = () => ({
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     savedRevision,
     appliedRevision: 1,
     pending: true,
@@ -827,7 +827,7 @@ describe('independent admin API plugin', () => {
 
     expect(request.status).toBe(200);
     expect(request.body).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       savedRevision: 2,
       appliedRevision: 1,
       pending: true,

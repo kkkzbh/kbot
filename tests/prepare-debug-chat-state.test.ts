@@ -122,7 +122,7 @@ function writeCanonicalModelConfig(
   writeFileSync(
     path,
     `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       savedRevision: 1,
       appliedRevision: 1,
       updatedAt: '2026-07-26T00:00:00.000Z',
