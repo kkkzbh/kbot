@@ -79,9 +79,9 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <div class="model-owner">
         <div>
           <h2 class="section-title">分析模型</h2>
-          <p>关系分析统一使用“模型接口”中的 <code>affinity.analysis</code> 用途绑定；主动事件沿用触发会话的模型。</p>
+          <p>关系分析统一使用“模型配置”中的 <code>affinity.analysis</code> 模型设置；主动事件沿用触发会话的模型。</p>
         </div>
-        <el-button tag="a" href="/intelligence/models">前往模型接口</el-button>
+        <el-button tag="a" href="/intelligence/models">前往模型配置</el-button>
       </div>
     </section>
     <article class="panel data-panel">

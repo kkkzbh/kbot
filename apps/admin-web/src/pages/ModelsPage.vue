@@ -8,6 +8,12 @@ import {
 } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import openAiIcon from '@lobehub/icons-static-svg/icons/openai.svg?url';
+import githubCopilotIcon from '@lobehub/icons-static-svg/icons/githubcopilot.svg?url';
+import deepSeekIcon from '@lobehub/icons-static-svg/icons/deepseek-color.svg?url';
+import siliconFlowIcon from '@lobehub/icons-static-svg/icons/siliconcloud-color.svg?url';
+import volcengineIcon from '@lobehub/icons-static-svg/icons/volcengine-color.svg?url';
+import xiaomiMimoIcon from '@lobehub/icons-static-svg/icons/xiaomimimo.svg?url';
 import {
   connectionIdSchema,
   emptyRequestSchema,
@@ -52,6 +58,11 @@ type BindingDraft = ModelConfigDraft['bindings'][number];
 type BindingMode = BindingDraft['mode'];
 type AdapterType = ConnectionDraft['adapter'];
 type ManualAuthKind = Extract<ConnectionDraft['auth'], { kind: 'none' | 'apiKey' }>['kind'];
+
+type ConnectionBrand = {
+  icon: string;
+  tone: 'openai' | 'copilot' | 'deepseek' | 'siliconflow' | 'volcengine' | 'xiaomi';
+};
 
 const WORKLOAD_DETAILS: Record<string, {
   label: string;
@@ -167,6 +178,43 @@ const canOperateSelectedConnection = computed(() => Boolean(
   ),
 ));
 const selectedAuthState = computed(() => connectionAuthState(selectedConnectionId.value));
+
+function connectionConfigured(connectionId: string): boolean {
+  const status = connectionAuthState(connectionId)?.status;
+  return status === 'ready' || status === 'not_required';
+}
+
+function connectionBrand(connection: ConnectionDraft): ConnectionBrand {
+  if (connection.adapter === 'codexBridge') {
+    return { icon: openAiIcon, tone: 'openai' };
+  }
+  if (connection.adapter === 'copilotBridge') {
+    return { icon: githubCopilotIcon, tone: 'copilot' };
+  }
+  let hostname = '';
+  try {
+    hostname = new URL(connection.baseUrl ?? '').hostname.toLocaleLowerCase();
+  } catch {
+    return { icon: openAiIcon, tone: 'openai' };
+  }
+  if (hostname === 'api.siliconflow.cn') {
+    return { icon: siliconFlowIcon, tone: 'siliconflow' };
+  }
+  if (hostname === 'api.deepseek.com') {
+    return { icon: deepSeekIcon, tone: 'deepseek' };
+  }
+  if (hostname.endsWith('.volces.com')) {
+    return { icon: volcengineIcon, tone: 'volcengine' };
+  }
+  if (hostname.endsWith('.xiaomimimo.com')) {
+    return { icon: xiaomiMimoIcon, tone: 'xiaomi' };
+  }
+  return { icon: openAiIcon, tone: 'openai' };
+}
+
+function modelTypeLabel(model: ModelProfileDraft): string {
+  return model.modelType === 'embedding' ? '向量' : '对话';
+}
 
 function hydrate(aggregate: ModelConfigAdminAggregate): void {
   const previousSelection = selectedConnectionId.value;
@@ -817,7 +865,7 @@ onBeforeRouteLeave(async () => {
   try {
     await ElMessageBox.confirm(
       '当前模型配置草稿尚未保存，离开页面会丢失这些修改。',
-      '离开模型接口？',
+      '离开模型配置？',
       { type: 'warning', confirmButtonText: '放弃并离开', cancelButtonText: '继续编辑' },
     );
     return true;
@@ -888,28 +936,28 @@ onBeforeUnmount(() => {
   <template v-if="saved && draft">
     <section class="revision-bar panel">
       <div>
-        <span>Saved revision</span>
+        <span>已保存版本</span>
         <strong>{{ saved.savedRevision }}</strong>
       </div>
       <div>
-        <span>Applied revision</span>
+        <span>运行版本</span>
         <strong>{{ saved.appliedRevision }}</strong>
       </div>
       <div>
-        <span>Draft</span>
+        <span>草稿</span>
         <el-tag :type="hasUnsavedChanges ? 'warning' : 'success'" effect="light">
           {{ hasUnsavedChanges ? '有未保存修改' : '与 saved 同步' }}
         </el-tag>
       </div>
       <div class="revision-state">
-        <span>Runtime state</span>
+        <span>运行状态</span>
         <el-tag :type="saved.pending ? 'warning' : 'success'" effect="dark">
-          {{ saved.pending ? 'Pending · 等待重启' : 'Live · 已应用' }}
+          {{ saved.pending ? '等待重启' : '已应用' }}
         </el-tag>
         <small v-if="saved.pendingReason">{{ saved.pendingReason }}</small>
       </div>
       <div class="revision-time">
-        <span>Updated</span>
+        <span>更新时间</span>
         <strong>{{ new Date(saved.updatedAt).toLocaleString() }}</strong>
       </div>
     </section>
@@ -917,35 +965,41 @@ onBeforeUnmount(() => {
     <section class="panel connections-panel">
       <div class="panel-head">
         <div>
-          <h2>接口连接与模型档案</h2>
+          <h2>认证与模型列表</h2>
         </div>
-        <el-button type="primary" plain size="small" @click="createConnectionOpen = true">新增连接</el-button>
+        <el-button type="primary" plain size="small" @click="createConnectionOpen = true">新增认证</el-button>
       </div>
       <div class="connections-layout">
         <aside class="connection-list">
           <el-input
             v-model="connectionQuery"
             clearable
-            placeholder="搜索名称、ID 或 adapter"
-            aria-label="搜索接口连接"
+            placeholder="搜索认证配置"
+            aria-label="搜索认证配置"
           />
           <button
             v-for="connection in filteredConnections"
             :key="connection.id"
-            :class="{ active: connection.id === selectedConnectionId }"
+            :class="[
+              {
+                active: connection.id === selectedConnectionId,
+                'is-configured': connectionConfigured(connection.id),
+                'needs-configuration': !connectionConfigured(connection.id),
+              },
+            ]"
+            :aria-label="`${connection.displayName}，${connectionConfigured(connection.id) ? '配置良好' : '需要配置'}`"
             @click="selectedConnectionId = connection.id"
           >
-            <span>
-              <strong>{{ connection.displayName }}</strong>
-              <small>{{ connection.id }}</small>
-            </span>
-            <el-tag
-              size="small"
-              :type="connectionAuthState(connection.id)?.status === 'ready' || connectionAuthState(connection.id)?.status === 'not_required' ? 'success' : 'warning'"
-              effect="light"
+            <span
+              class="provider-mark"
+              :class="`provider-${connectionBrand(connection).tone}`"
+              aria-hidden="true"
             >
-              {{ connectionAuthState(connection.id)?.status ?? 'draft' }}
-            </el-tag>
+              <img :src="connectionBrand(connection).icon" alt="" />
+            </span>
+            <span class="connection-name">
+              <strong>{{ connection.displayName }}</strong>
+            </span>
           </button>
         </aside>
 
@@ -970,7 +1024,7 @@ onBeforeUnmount(() => {
               >
                 刷新目录
               </el-button>
-              <el-button type="danger" plain @click="removeSelectedConnection">删除连接</el-button>
+              <el-button type="danger" plain @click="removeSelectedConnection">删除认证</el-button>
             </div>
           </div>
 
@@ -988,9 +1042,9 @@ onBeforeUnmount(() => {
           />
 
           <el-form label-position="top" class="connection-form">
-            <el-form-item label="Canonical ID">
+            <el-form-item label="配置 ID">
               <el-input :model-value="selectedConnection.id" disabled />
-              <small>ID 创建后不可修改，所有模型和用途绑定都引用它。</small>
+              <small>ID 创建后不可修改，模型设置通过它引用认证。</small>
             </el-form-item>
             <el-form-item label="显示名称">
               <el-input v-model="selectedConnection.displayName" />
@@ -1096,7 +1150,7 @@ onBeforeUnmount(() => {
           <section v-if="catalogByConnection[selectedConnection.id]" class="catalog-card">
             <div class="subsection-title">
               <div>
-                <h4>Provider catalog</h4>
+                <h4>Provider 模型目录</h4>
               </div>
               <el-tag effect="plain">{{ catalogByConnection[selectedConnection.id]?.models.length }} models</el-tag>
             </div>
@@ -1114,9 +1168,9 @@ onBeforeUnmount(() => {
           <section class="models-section">
             <div class="subsection-title">
               <div>
-                <h4>Model profiles</h4>
+                <h4>已登记模型</h4>
               </div>
-              <el-button size="small" @click="addModelProfile">新增模型档案</el-button>
+              <el-button size="small" @click="addModelProfile">新增模型</el-button>
             </div>
             <el-collapse>
               <el-collapse-item
@@ -1127,21 +1181,20 @@ onBeforeUnmount(() => {
                 <template #title>
                   <div class="model-title">
                     <strong>{{ model.displayName }}</strong>
-                    <code>qqbot-{{ model.connectionId }}/{{ model.id }}</code>
-                    <el-tag size="small" effect="plain">{{ model.modelType }}</el-tag>
+                    <el-tag size="small" effect="plain">{{ modelTypeLabel(model) }}</el-tag>
                   </div>
                 </template>
                 <el-form label-position="top" class="model-form">
-                  <el-form-item label="Canonical model ID">
+                  <el-form-item label="模型 ID">
                     <el-input :model-value="model.id" disabled />
                   </el-form-item>
                   <el-form-item label="显示名称">
                     <el-input v-model="model.displayName" />
                   </el-form-item>
-                  <el-form-item label="Transport model">
+                  <el-form-item label="Provider 模型名">
                     <el-input v-model="model.transportModel" />
                   </el-form-item>
-                  <el-form-item label="Model type">
+                  <el-form-item label="类型">
                     <el-segmented
                       :model-value="model.modelType"
                       :disabled="isSavedModel(model) || modelConnectionAdapter(model) !== 'openaiCompatible'"
@@ -1156,13 +1209,13 @@ onBeforeUnmount(() => {
                       @change="setModelType(model, $event)"
                     />
                   </el-form-item>
-                  <el-form-item label="Context size">
+                  <el-form-item label="上下文长度">
                     <el-input-number v-model="model.contextSize" :min="1" :controls="false" style="width:100%" />
                   </el-form-item>
-                  <el-form-item label="Timeout (ms)">
+                  <el-form-item label="超时（ms）">
                     <el-input-number v-model="model.timeoutMs" :min="1000" :max="600000" :controls="false" style="width:100%" />
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="Request mode">
+                  <el-form-item v-if="model.modelType === 'chat'" label="请求模式">
                     <el-select
                       :model-value="model.requestMode"
                       :disabled="modelConnectionAdapter(model) === 'codexBridge'"
@@ -1177,7 +1230,7 @@ onBeforeUnmount(() => {
                       <el-option value="responses" label="responses" />
                     </el-select>
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="Structured output protocol">
+                  <el-form-item v-if="model.modelType === 'chat'" label="结构化输出">
                     <el-select
                       :model-value="model.structuredOutputProtocol"
                       clearable
@@ -1193,7 +1246,7 @@ onBeforeUnmount(() => {
                       />
                     </el-select>
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="Capabilities" class="span-2">
+                  <el-form-item v-if="model.modelType === 'chat'" label="能力" class="span-2">
                     <el-checkbox
                       :model-value="model.capabilities.vision"
                       @change="setModelCapability(model, 'vision', $event)"
@@ -1242,9 +1295,9 @@ onBeforeUnmount(() => {
     <section class="panel binding-panel">
       <div class="panel-head">
         <div>
-          <h2>用途绑定</h2>
+          <h2>模型设置</h2>
         </div>
-        <el-button size="small" @click="addAgentOverride">新增 Agent override</el-button>
+        <el-button size="small" @click="addAgentOverride">新增 Agent 设置</el-button>
       </div>
       <div class="binding-list">
         <article
@@ -1258,58 +1311,67 @@ onBeforeUnmount(() => {
             <small>影响：{{ bindingMeta(binding.workload).services }}</small>
           </div>
           <div class="binding-controls">
-            <el-select
-              :model-value="binding.mode"
-              aria-label="绑定模式"
-              @change="setBindingMode(index, $event)"
-            >
-              <el-option
-                v-for="mode in allowedBindingModes(binding.workload)"
-                :key="mode"
-                :value="mode"
-                :label="MODE_LABELS[mode]"
-              />
-            </el-select>
-            <template v-if="binding.mode === 'dedicated'">
+            <div class="binding-control">
+              <span>使用方式</span>
               <el-select
-                :model-value="binding.connectionId"
-                filterable
-                placeholder="选择 connection"
-                aria-label="绑定 connection"
-                @change="setBindingConnection(binding, $event)"
+                :model-value="binding.mode"
+                aria-label="使用方式"
+                @change="setBindingMode(index, $event)"
               >
                 <el-option
-                  v-for="connection in draft.connections"
-                  :key="connection.id"
-                  :value="connection.id"
-                  :label="connection.displayName"
+                  v-for="mode in allowedBindingModes(binding.workload)"
+                  :key="mode"
+                  :value="mode"
+                  :label="MODE_LABELS[mode]"
                 />
               </el-select>
-              <el-select
-                v-model="binding.modelId"
-                filterable
-                placeholder="选择兼容模型"
-                aria-label="绑定 model"
-              >
-                <el-option
-                  v-for="model in compatibleModels(binding)"
-                  :key="model.id"
-                  :value="model.id"
-                  :label="model.displayName"
+            </div>
+            <template v-if="binding.mode === 'dedicated'">
+              <div class="binding-control">
+                <span>认证配置</span>
+                <el-select
+                  :model-value="binding.connectionId"
+                  filterable
+                  placeholder="选择认证配置"
+                  aria-label="认证配置"
+                  @change="setBindingConnection(binding, $event)"
                 >
-                  <span>{{ model.displayName }}</span>
-                  <small class="option-id">{{ model.id }}</small>
-                </el-option>
-              </el-select>
+                  <el-option
+                    v-for="connection in draft.connections"
+                    :key="connection.id"
+                    :value="connection.id"
+                    :label="connection.displayName"
+                  />
+                </el-select>
+              </div>
+              <div class="binding-control">
+                <span>模型</span>
+                <el-select
+                  v-model="binding.modelId"
+                  filterable
+                  placeholder="选择兼容模型"
+                  aria-label="模型"
+                >
+                  <el-option
+                    v-for="model in compatibleModels(binding)"
+                    :key="model.id"
+                    :value="model.id"
+                    :label="model.displayName"
+                  >
+                    <span>{{ model.displayName }}</span>
+                    <small class="option-id">{{ model.id }}</small>
+                  </el-option>
+                </el-select>
+              </div>
             </template>
           </div>
           <div class="binding-state">
             <div>
-              <span>Configured</span>
+              <span>当前草稿</span>
               <strong>{{ configuredCanonicalModel(binding) || MODE_LABELS[binding.mode] }}</strong>
             </div>
             <div>
-              <span>Live · revision {{ liveBinding(binding.workload)?.revision ?? '—' }}</span>
+              <span>运行中 · revision {{ liveBinding(binding.workload)?.revision ?? '—' }}</span>
               <strong>{{ liveBinding(binding.workload)?.canonicalModel || MODE_LABELS[liveBinding(binding.workload)?.mode ?? binding.mode] }}</strong>
             </div>
           </div>
@@ -1340,9 +1402,9 @@ onBeforeUnmount(() => {
     </section>
   </template>
 
-  <el-dialog v-model="createConnectionOpen" title="新增接口连接" width="min(520px, 92vw)">
+  <el-dialog v-model="createConnectionOpen" title="新增认证配置" width="min(520px, 92vw)">
     <el-form label-position="top">
-      <el-form-item label="Canonical ID">
+      <el-form-item label="配置 ID">
         <el-input v-model="createConnection.id" placeholder="provider-cn" />
       </el-form-item>
       <el-form-item label="显示名称">
@@ -1361,13 +1423,13 @@ onBeforeUnmount(() => {
     </el-form>
     <template #footer>
       <el-button @click="createConnectionOpen = false">取消</el-button>
-      <el-button type="primary" @click="createConnectionDraft">创建连接草稿</el-button>
+      <el-button type="primary" @click="createConnectionDraft">创建认证草稿</el-button>
     </template>
   </el-dialog>
 </template>
 
 <style scoped>
 .apply-lock{position:fixed;inset:0;z-index:3000;display:grid;place-items:center;padding:24px;background:rgba(246,248,252,.82);backdrop-filter:blur(3px)}.apply-lock>div{display:grid;gap:7px;max-width:420px;padding:20px 24px;border:1px solid #d7dfec;border-radius:12px;background:#fff;box-shadow:0 16px 50px rgba(43,58,86,.16);text-align:center}.apply-lock strong{color:#344056;font-size:14px}.apply-lock span{color:#768196;font-size:10px;line-height:1.6}
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.revision-bar{display:grid;grid-template-columns:repeat(3,minmax(120px,.7fr)) minmax(220px,1.2fr) minmax(180px,1fr);align-items:center;margin-bottom:16px;overflow:hidden}.revision-bar>div{min-width:0;min-height:64px;display:flex;align-items:flex-start;justify-content:center;flex-direction:column;gap:5px;padding:12px 16px;border-right:1px solid var(--line)}.revision-bar>div:last-child{border-right:0}.revision-bar span{color:#8590a2;font-size:9px;text-transform:uppercase}.revision-bar strong{overflow:hidden;max-width:100%;color:#2f3b50;font-family:"SFMono-Regular",Consolas,monospace;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.revision-state{align-items:flex-start!important}.revision-state small{color:#956b26;font-family:monospace;font-size:9px}.binding-panel,.inheritance-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,1.1fr) minmax(260px,1.3fr) minmax(230px,1fr);gap:18px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong,.binding-purpose code{display:block}.binding-purpose strong{color:#344056;font-size:12px}.binding-purpose code{margin-top:2px;color:#7d8797;font-size:9px}.binding-purpose small{color:#98a1af;font-size:9px}.binding-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.binding-controls>.el-select:first-child:last-child{grid-column:1/-1}.binding-state{display:grid;grid-template-columns:1fr;gap:7px}.binding-state>div{min-width:0;padding:7px 10px;border:1px solid #e7ebf2;border-radius:7px;background:#fafbfd}.binding-state span,.binding-state strong{display:block}.binding-state span{color:#9099a8;font-size:8px;text-transform:uppercase}.binding-state strong{overflow:hidden;margin-top:2px;color:#445066;font-family:"SFMono-Regular",Consolas,monospace;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.remove-binding{position:absolute;right:8px;top:4px}.option-id{float:right;margin-left:20px;color:#929baa;font-family:monospace;font-size:9px}.inheritance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:16px 18px}.inheritance-grid article{padding:13px;border:1px solid #e4e9f1;border-radius:9px;background:#fafbfd}.inheritance-grid strong{margin-right:8px;color:#354157;font-size:11px}.inheritance-grid p{margin:7px 0 0;color:#748095;font-size:10px;line-height:1.5}.connections-layout{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:560px}.connection-list{padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;border:0;border-radius:8px;background:transparent;text-align:left}.connection-list>button:hover,.connection-list>button.active{background:#eef3ff}.connection-list>button.active{box-shadow:inset 3px 0 #416de0}.connection-list span{min-width:0}.connection-list strong,.connection-list small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.connection-list strong{color:#3b4659;font-size:11px}.connection-list small{margin-top:3px;color:#929aa8;font-family:monospace;font-size:9px}.connection-editor{min-width:0;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title code{color:#7b879b;font-size:10px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.connection-form small{display:block;margin-top:4px;color:#8c96a6;font-size:9px}.secret-card,.oauth-card,.catalog-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-card p,.oauth-card p{margin:3px 0 0;color:#7d8798;font-size:9px}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.catalog-card{background:#fbfcfe}.subsection-title h4{margin:0;color:#354156;font-size:13px}.catalog-list{display:flex;gap:7px;flex-wrap:wrap;max-height:150px;overflow:auto;margin-top:12px}.catalog-list>span{display:inline-flex;gap:6px;padding:6px 8px;border:1px solid #e3e8f0;border-radius:6px;background:#fff}.catalog-list strong{color:#48546a;font-size:9px}.catalog-list code{color:#8b94a4;font-size:8px}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px}.model-title strong{color:#374357;font-size:11px}.model-title code{overflow:hidden;color:#8490a3;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.revision-bar{display:grid;grid-template-columns:repeat(3,minmax(120px,.7fr)) minmax(220px,1.2fr) minmax(180px,1fr);align-items:center;margin-bottom:16px;overflow:hidden}.revision-bar>div{min-width:0;min-height:64px;display:flex;align-items:flex-start;justify-content:center;flex-direction:column;gap:5px;padding:12px 16px;border-right:1px solid var(--line)}.revision-bar>div:last-child{border-right:0}.revision-bar span{color:#8590a2;font-size:9px;text-transform:uppercase}.revision-bar strong{overflow:hidden;max-width:100%;color:#2f3b50;font-family:"SFMono-Regular",Consolas,monospace;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.revision-state{align-items:flex-start!important}.revision-state small{color:#956b26;font-family:monospace;font-size:9px}.binding-panel,.inheritance-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,1.1fr) minmax(310px,1.5fr) minmax(230px,1fr);gap:18px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong,.binding-purpose code{display:block}.binding-purpose strong{color:#344056;font-size:12px}.binding-purpose code{margin-top:2px;color:#7d8797;font-size:9px}.binding-purpose small{color:#98a1af;font-size:9px}.binding-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.binding-state{display:grid;grid-template-columns:1fr;gap:7px}.binding-state>div{min-width:0;padding:7px 10px;border:1px solid #e7ebf2;border-radius:7px;background:#fafbfd}.binding-state span,.binding-state strong{display:block}.binding-state span{color:#9099a8;font-size:8px}.binding-state strong{overflow:hidden;margin-top:2px;color:#445066;font-family:"SFMono-Regular",Consolas,monospace;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.remove-binding{position:absolute;right:8px;top:4px}.option-id{float:right;margin-left:20px;color:#929baa;font-family:monospace;font-size:9px}.inheritance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:16px 18px}.inheritance-grid article{padding:13px;border:1px solid #e4e9f1;border-radius:9px;background:#fafbfd}.inheritance-grid strong{margin-right:8px;color:#354157;font-size:11px}.inheritance-grid p{margin:7px 0 0;color:#748095;font-size:10px;line-height:1.5}.connections-layout{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:560px}.connection-list{padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title code{color:#7b879b;font-size:10px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.connection-form small{display:block;margin-top:4px;color:#8c96a6;font-size:9px}.secret-card,.oauth-card,.catalog-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-card p,.oauth-card p{margin:3px 0 0;color:#7d8798;font-size:9px}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.catalog-card{background:#fbfcfe}.subsection-title h4{margin:0;color:#354156;font-size:13px}.catalog-list{display:flex;gap:7px;flex-wrap:wrap;max-height:150px;overflow:auto;margin-top:12px}.catalog-list>span{display:inline-flex;gap:6px;padding:6px 8px;border:1px solid #e3e8f0;border-radius:6px;background:#fff}.catalog-list strong{color:#48546a;font-size:9px}.catalog-list code{color:#8b94a4;font-size:8px}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px}.model-title strong{color:#374357;font-size:11px}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
 @media(max-width:1100px){.revision-bar{grid-template-columns:repeat(3,1fr)}.revision-bar>div:nth-child(3){border-right:0}.revision-bar>div:nth-child(n+4){border-top:1px solid var(--line)}.revision-state{grid-column:span 2}.binding-row{grid-template-columns:minmax(220px,1fr) minmax(300px,1.5fr)}.binding-state{grid-column:1/-1;grid-template-columns:repeat(2,minmax(0,1fr))}.inheritance-grid{grid-template-columns:1fr}}@media(max-width:760px){.load-error{align-items:flex-start;flex-direction:column}.revision-bar{grid-template-columns:repeat(2,minmax(0,1fr))}.revision-bar>div{border-top:1px solid var(--line)}.revision-bar>div:nth-child(odd){border-right:1px solid var(--line)}.revision-bar>div:nth-child(even){border-right:0}.revision-state,.revision-time{grid-column:1/-1}.binding-row{grid-template-columns:1fr;padding:14px}.binding-controls{grid-template-columns:1fr}.binding-state{grid-template-columns:1fr}.connections-layout{grid-template-columns:1fr}.connection-list{max-height:280px;overflow:auto;border-right:0;border-bottom:1px solid var(--line)}.connection-editor{padding:18px 14px}.editor-title,.subsection-title{flex-direction:column}.editor-title>div:last-child{justify-content:flex-start}.connection-form,.model-form{grid-template-columns:1fr}.connection-form .span-2,.model-form .span-2{grid-column:auto}.secret-card,.oauth-card{grid-template-columns:1fr}.secret-card>.el-input,.oauth-attempt{grid-column:auto}.oauth-actions{justify-content:flex-start}.oauth-attempt{align-items:flex-start;flex-wrap:wrap}}
 </style>

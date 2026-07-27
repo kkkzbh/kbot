@@ -52,7 +52,7 @@ const groups: NavGroup[] = [
     { key: 'logs', label: '运行日志', path: '/runtime/logs', icon: ScrollText },
   ] },
   { label: '对话智能', items: [
-    { key: 'models', label: '模型接口', path: '/intelligence/models', icon: Cpu },
+    { key: 'models', label: '模型配置', path: '/intelligence/models', icon: Cpu },
     { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
     { key: 'affinity', label: '关系事件', path: '/intelligence/affinity', icon: HeartHandshake },
@@ -98,7 +98,7 @@ const filteredCommands = computed(() => {
 const restartReasonLabels: Record<string, string> = {
   basic: '基础设置',
   features: '功能设置',
-  model: '模型接口',
+  model: '模型配置',
   preset: '上下文预设',
   tts: '语音服务',
 };

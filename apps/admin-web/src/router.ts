@@ -7,7 +7,7 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '运行总览', description: '服务管理、异常处置、模型与运行状态' } },
     { path: '/runtime/logs', name: 'logs', component: () => import('@/pages/LogsPage.vue'), meta: { title: '运行日志', description: 'Koishi 进程实时日志' } },
-    { path: '/intelligence/models', name: 'models', component: () => import('@/pages/ModelsPage.vue'), meta: { title: '模型接口', description: '统一管理连接、模型档案与全部大模型用途绑定' } },
+    { path: '/intelligence/models', name: 'models', component: () => import('@/pages/ModelsPage.vue'), meta: { title: '模型配置', description: '统一管理认证连接、模型目录与全部大模型设置' } },
     { path: '/intelligence/context-presets', name: 'context-presets', component: () => import('@/pages/PresetsPage.vue'), meta: { title: '上下文预设', description: '编排角色、记忆、知识与模型输入输出结构' } },
     { path: '/intelligence/memory', name: 'memory', component: () => import('@/pages/MemoryPage.vue'), meta: { title: '长期记忆', description: '分页查看、审核与清理记忆' } },
     { path: '/intelligence/affinity', name: 'affinity', component: () => import('@/pages/AffinityPage.vue'), meta: { title: '关系事件', description: '关系状态、主动事件与白名单' } },

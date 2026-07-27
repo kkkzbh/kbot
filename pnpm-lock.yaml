@@ -23,6 +23,9 @@ importers:
       '@langchain/core':
         specifier: ^0.3.80
         version: 0.3.80(openai@5.23.2(ws@8.21.1)(zod@3.25.76))
+      '@lobehub/icons-static-svg':
+        specifier: 1.94.0
+        version: 1.94.0
       '@lucide/vue':
         specifier: 1.24.0
         version: 1.24.0(vue@3.5.39(typescript@5.9.3))
@@ -729,6 +732,9 @@ packages:
   '@langchain/core@0.3.80':
     resolution: {integrity: sha512-vcJDV2vk1AlCwSh3aBm/urQ1ZrlXFFBocv11bz/NBUfLWD5/UDNMzwPdaAd2dKvNmTWa9FM2lirLU3+JCf4cRA==}
     engines: {node: '>=18'}
+
+  '@lobehub/icons-static-svg@1.94.0':
+    resolution: {integrity: sha512-Inx1TYkjLH6YeHOIHeVW9+OM/xxRnk8TmcQVKquFUDBmE3X9sUuRGt7kALrrDBNNAbrWz7Qq6fAiFj9E9Mmw9Q==}
 
   '@lucide/vue@1.24.0':
     resolution: {integrity: sha512-5bNPX0G2YEWdUlBYk7pE8SgDg/f1mkIFpJ9vtE44pW/cwRz7Ioc0tOTESoVJAPvxIELSmYekX+XXIJMjsswNIg==}
@@ -3886,6 +3892,8 @@ snapshots:
       - '@opentelemetry/exporter-trace-otlp-proto'
       - '@opentelemetry/sdk-trace-base'
       - openai
+
+  '@lobehub/icons-static-svg@1.94.0': {}
 
   '@lucide/vue@1.24.0(vue@3.5.39(typescript@5.9.3))':
     dependencies:

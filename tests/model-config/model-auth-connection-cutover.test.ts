@@ -39,11 +39,11 @@ function createDraft(): ModelConfigDraft {
         catalogDriver: 'codexBridge',
       },
       {
-        id: 'siliconflow',
-        displayName: 'SiliconFlow',
+        id: 'siliconflow-api-key',
+        displayName: 'SiliconFlow API Key',
         adapter: 'openaiCompatible',
         baseUrl: 'https://api.siliconflow.cn/v1',
-        auth: { kind: 'apiKey', secretRef: 'connection:siliconflow:api-key' },
+        auth: { kind: 'apiKey', secretRef: 'connection:siliconflow-api-key:api-key' },
         catalogDriver: 'openaiModels',
       },
       {
@@ -212,7 +212,7 @@ describe('model auth connection cutover', () => {
     await service.createInitial({
       draft: createDraft(),
       apiKeys: {
-        siliconflow: 'siliconflow-main-secret',
+        'siliconflow-api-key': 'siliconflow-main-secret',
         'memory-embedding': 'embedding-secret',
         'memory-extraction': 'extraction-secret',
         'sticker-indexer': 'sticker-secret',
@@ -235,13 +235,20 @@ describe('model auth connection cutover', () => {
     expect(preflight.connections).toEqual(expect.arrayContaining([
       expect.objectContaining({
         oldId: 'memory-embedding',
-        newId: 'siliconflow-api-key-2',
-        newDisplayName: 'SiliconFlow API Key 2',
+        newId: 'siliconflow',
+        newDisplayName: 'SiliconFlow',
+        credentialDisposition: 'discarded',
       }),
       expect.objectContaining({
         oldId: 'memory-extraction',
-        newId: 'siliconflow-api-key-3',
-        newDisplayName: 'SiliconFlow API Key 3',
+        newId: 'siliconflow',
+        newDisplayName: 'SiliconFlow',
+        credentialDisposition: 'discarded',
+      }),
+      expect.objectContaining({
+        oldId: 'siliconflow-api-key',
+        newId: 'siliconflow',
+        credentialDisposition: 'retained',
       }),
       expect.objectContaining({
         oldId: 'sticker-indexer',
@@ -272,18 +279,23 @@ describe('model auth connection cutover', () => {
     );
     expect(document.bindings).toContainEqual(expect.objectContaining({
       workload: 'memory.embedding',
-      connectionId: 'siliconflow-api-key-2',
+      connectionId: 'siliconflow',
       modelId: 'qwen-embedding',
     }));
+    expect(document.bindings).toContainEqual(expect.objectContaining({
+      workload: 'memory.extract',
+      connectionId: 'siliconflow',
+      modelId: 'qwen-extract',
+    }));
+    expect(document.connections.filter((connection) => (
+      connection.baseUrl === 'https://api.siliconflow.cn/v1'
+    ))).toHaveLength(1);
 
     const reloaded = new ModelConfigService({ configPath, kekPath });
     await reloaded.loadAndApply(() => undefined);
     expect(
-      reloaded.getConnectionRuntime('siliconflow-api-key-2').connection.apiKey,
-    ).toBe('embedding-secret');
-    expect(
-      reloaded.getConnectionRuntime('siliconflow-api-key-3').connection.apiKey,
-    ).toBe('extraction-secret');
+      reloaded.getConnectionRuntime('siliconflow').connection.apiKey,
+    ).toBe('siliconflow-main-secret');
     expect(
       reloaded.getConnectionRuntime('volcengine-ark-api-key').connection.apiKey,
     ).toBe('sticker-secret');

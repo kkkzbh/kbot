@@ -418,6 +418,7 @@ interface ConnectionBuildRecord {
   candidateId: string;
   definition: ConnectionDefinition;
   apiKey: string | null;
+  credentialSourceId: string | null;
   sources: Set<string>;
 }
 
@@ -1570,12 +1571,28 @@ function readDatabaseSnapshot(path: string): DatabaseSnapshot {
 function connectionIdentity(profile: LegacyProfile): string {
   if (profile.adapter === 'codexBridge') return 'codexBridge';
   if (profile.adapter === 'copilotBridge') return 'copilotBridge';
+  const descriptor = describeConnectionIdentity(profile);
+  if (descriptor.providerId === 'siliconflow') {
+    return JSON.stringify([
+      'openaiCompatible',
+      descriptor.providerId,
+      profile.baseUrl,
+      profile.auth.kind,
+    ]);
+  }
   return JSON.stringify([
     'openaiCompatible',
     profile.baseUrl,
     profile.auth.kind,
     profile.apiKey,
   ]);
+}
+
+function credentialPriority(sourceId: string): number {
+  if (sourceId === 'main:siliconflow') return 0;
+  if (sourceId === 'memory:embedding') return 1;
+  if (sourceId === 'memory:extract') return 2;
+  return 3;
 }
 
 function slug(value: string): string {
@@ -1707,6 +1724,7 @@ function buildCanonicalCatalog(profiles: LegacyProfile[]): {
           catalogDriver: profile.catalogDriver,
         },
         apiKey: profile.apiKey,
+        credentialSourceId: profile.apiKey ? profile.sourceId : null,
         sources: new Set(),
       };
       connectionsByKey.set(key, record);
@@ -1715,6 +1733,18 @@ function buildCanonicalCatalog(profiles: LegacyProfile[]): {
       && profile.catalogDriver === 'openaiModels'
     ) {
       record.definition.catalogDriver = 'openaiModels';
+    }
+    if (
+      profile.apiKey
+      && describeConnectionIdentity(profile).providerId === 'siliconflow'
+      && (
+        record.apiKey === null
+        || credentialPriority(profile.sourceId)
+          < credentialPriority(record.credentialSourceId ?? '')
+      )
+    ) {
+      record.apiKey = profile.apiKey;
+      record.credentialSourceId = profile.sourceId;
     }
     record.sources.add(profile.sourceId);
   }

@@ -51,11 +51,12 @@ type ConnectionMapping = {
   adapter: ConnectionDefinition['adapter'];
   authKind: ConnectionDefinition['auth']['kind'];
   baseUrl: string | null;
+  credentialDisposition: 'external' | 'notRequired' | 'retained' | 'discarded';
 };
 
 export type ModelAuthConnectionCutoverReport = {
   schemaVersion: 1;
-  operation: 'model-auth-connection-boundary-v1';
+  operation: 'model-auth-connection-boundary-v2';
   command: CutoverCommand;
   dryRun: boolean;
   applied: boolean;
@@ -76,6 +77,7 @@ type PlannedIdentity = {
   descriptor: ReturnType<typeof describeConnectionIdentity>;
   newId: string;
   newDisplayName: string;
+  primaryOldId: string;
 };
 
 function secretAad(connectionId: string, secretRef: string): string {
@@ -87,10 +89,18 @@ function priorityForIdentity(
   descriptor: ReturnType<typeof describeConnectionIdentity>,
 ): number {
   if (connection.id === descriptor.idBase) return 0;
-  if (connection.id === descriptor.providerId) return 1;
-  if (connection.displayName === descriptor.displayNameBase) return 2;
-  if (connection.displayName === descriptor.providerName) return 3;
-  return 4;
+  if (
+    descriptor.providerId === 'siliconflow'
+    && connection.id === 'siliconflow-api-key'
+  ) return 1;
+  if (connection.id === descriptor.providerId) return 2;
+  if (connection.displayName === descriptor.displayNameBase) return 3;
+  if (
+    descriptor.providerId === 'siliconflow'
+    && connection.displayName === 'SiliconFlow API Key'
+  ) return 4;
+  if (connection.displayName === descriptor.providerName) return 5;
+  return 6;
 }
 
 function planIdentities(
@@ -114,8 +124,18 @@ function planIdentities(
       - priorityForIdentity(right.connection, right.descriptor)
       || left.connection.id.localeCompare(right.connection.id)
     ));
+    const primaryOldId = group[0]?.connection.id;
+    if (!primaryOldId) throw new Error('Connection identity group is empty.');
+    const singletonProvider = group[0]?.descriptor.providerId === 'siliconflow';
+    if (singletonProvider) {
+      const baseUrls = new Set(group.map((entry) => entry.connection.baseUrl));
+      const authKinds = new Set(group.map((entry) => entry.connection.auth.kind));
+      if (baseUrls.size !== 1 || authKinds.size !== 1 || !authKinds.has('apiKey')) {
+        throw new Error('SiliconFlow connections must share one API-key endpoint.');
+      }
+    }
     for (const [index, entry] of group.entries()) {
-      const ordinal = index + 1;
+      const ordinal = singletonProvider ? 1 : index + 1;
       const suffix = ordinal === 1 ? '' : `-${ordinal}`;
       const displaySuffix = ordinal === 1 ? '' : ` ${ordinal}`;
       result.set(entry.connection.id, {
@@ -123,6 +143,7 @@ function planIdentities(
         descriptor: entry.descriptor,
         newId: `${entry.descriptor.idBase.slice(0, 64 - suffix.length)}${suffix}`,
         newDisplayName: `${entry.descriptor.displayNameBase}${displaySuffix}`,
+        primaryOldId: singletonProvider ? primaryOldId : entry.connection.id,
       });
     }
   }
@@ -148,32 +169,50 @@ export function buildModelAuthConnectionCutoverPlan(
   }
 
   const identities = planIdentities(current.connections);
-  const connections = current.connections.map((connection) => {
+  const connections = current.connections.flatMap((connection) => {
     const identity = identities.get(connection.id);
     if (!identity) throw new Error(`Missing connection identity plan for ${connection.id}.`);
-    return {
+    if (identity.primaryOldId !== connection.id) return [];
+    const groupedConnections = current.connections.filter((candidate) => (
+      identities.get(candidate.id)?.newId === identity.newId
+    ));
+    return [{
       ...connection,
       id: identity.newId,
       displayName: identity.newDisplayName,
+      catalogDriver: groupedConnections.some(
+        (candidate) => candidate.catalogDriver === 'openaiModels',
+      )
+        ? 'openaiModels' as const
+        : connection.catalogDriver,
       auth: connection.auth.kind === 'apiKey'
         ? {
             kind: 'apiKey' as const,
             secretRef: `connection:${identity.newId}:api-key`,
           }
         : connection.auth,
-    };
+    }];
   });
 
   const connectionIdMap = new Map(
     [...identities.values()].map((identity) => [identity.old.id, identity.newId]),
   );
-  const models = current.models.map((model) => ({
-    ...model,
-    connectionId: connectionIdMap.get(model.connectionId)
+  const modelKeys = new Set<string>();
+  const models = current.models.map((model) => {
+    const connectionId = connectionIdMap.get(model.connectionId)
       ?? (() => {
         throw new Error(`Missing connection mapping for model ${model.connectionId}/${model.id}.`);
-      })(),
-  }));
+      })();
+    const key = `${connectionId}/${model.id}`;
+    if (modelKeys.has(key)) {
+      throw new Error(`Merged connection has duplicate canonical model ID: ${key}.`);
+    }
+    modelKeys.add(key);
+    return {
+      ...model,
+      connectionId,
+    };
+  });
   const bindings = current.bindings.map((binding) => (
     binding.mode === 'dedicated'
       ? {
@@ -195,6 +234,7 @@ export function buildModelAuthConnectionCutoverPlan(
     if (!oldConnection || oldConnection.auth.kind !== 'apiKey' || !identity) {
       throw new Error(`Encrypted secret has no API-key connection owner: ${secret.connectionId}.`);
     }
+    if (identity.primaryOldId !== secret.connectionId) return null;
     const newSecretRef = `connection:${identity.newId}:api-key`;
     if (
       identity.newId === secret.connectionId
@@ -219,9 +259,9 @@ export function buildModelAuthConnectionCutoverPlan(
       cipherText: encrypted.cipherText,
       meta: encrypted.meta,
     };
-  });
+  }).filter((secret) => secret !== null);
 
-  const mappings = current.connections.map((connection) => {
+  const mappings: ConnectionMapping[] = current.connections.map((connection) => {
     const identity = identities.get(connection.id);
     if (!identity) throw new Error(`Missing report identity for ${connection.id}.`);
     return {
@@ -232,6 +272,13 @@ export function buildModelAuthConnectionCutoverPlan(
       adapter: connection.adapter,
       authKind: connection.auth.kind,
       baseUrl: connection.baseUrl,
+      credentialDisposition: connection.auth.kind === 'oauth'
+        ? 'external'
+        : connection.auth.kind === 'none'
+          ? 'notRequired'
+          : identity.primaryOldId === connection.id
+            ? 'retained'
+            : 'discarded',
     };
   });
   const changed = mappings.some((mapping) => (
@@ -252,7 +299,7 @@ export function buildModelAuthConnectionCutoverPlan(
     : current);
   const reportWithoutHash: Omit<ModelAuthConnectionCutoverReport, 'reportHash'> = {
     schemaVersion: 1,
-    operation: 'model-auth-connection-boundary-v1',
+    operation: 'model-auth-connection-boundary-v2',
     command: options.command,
     dryRun: options.command === 'preflight',
     applied: false,

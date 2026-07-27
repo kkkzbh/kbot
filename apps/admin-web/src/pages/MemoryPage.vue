@@ -172,7 +172,7 @@ onMounted(() => void refreshPage());
   </article>
   <section class="model-owner">
     <div>
-      <strong>记忆模型由模型接口统一管理</strong>
+      <strong>记忆模型由模型配置统一管理</strong>
       <p><code>memory.extract</code> 控制提炼模型，<code>memory.embedding</code> 控制向量模型；本页只管理记忆数据、队列和探测。</p>
     </div>
     <el-button tag="a" href="/intelligence/models">查看用途绑定</el-button>

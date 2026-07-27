@@ -499,8 +499,7 @@ STICKER_INDEXER_MODEL=doubao-vision
     const connectionNames = plan.draft.connections.map((connection) => connection.displayName);
 
     expect(connectionNames).toEqual(expect.arrayContaining([
-      'SiliconFlow API Key',
-      'SiliconFlow API Key 2',
+      'SiliconFlow',
       'Volcengine Ark API Key',
     ]));
     expect(connectionNames).not.toEqual(expect.arrayContaining([
@@ -510,11 +509,11 @@ STICKER_INDEXER_MODEL=doubao-vision
     ]));
     expect(binding(plan.draft.bindings, 'memory.extract')).toEqual(expect.objectContaining({
       mode: 'dedicated',
-      connectionId: 'siliconflow-api-key',
+      connectionId: 'siliconflow',
     }));
     expect(binding(plan.draft.bindings, 'memory.embedding')).toEqual(expect.objectContaining({
       mode: 'dedicated',
-      connectionId: 'siliconflow-api-key-2',
+      connectionId: 'siliconflow',
     }));
     expect(binding(plan.draft.bindings, 'sticker.index')).toEqual(expect.objectContaining({
       mode: 'dedicated',

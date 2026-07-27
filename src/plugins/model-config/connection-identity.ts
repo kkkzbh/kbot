@@ -73,6 +73,14 @@ export function describeConnectionIdentity(
     name: 'OpenAI Compatible',
   };
   if (input.auth.kind === 'apiKey') {
+    if (provider.id === 'siliconflow') {
+      return {
+        idBase: provider.id,
+        displayNameBase: provider.name,
+        providerId: provider.id,
+        providerName: provider.name,
+      };
+    }
     return {
       idBase: `${provider.id}-api-key`,
       displayNameBase: `${provider.name} API Key`,
