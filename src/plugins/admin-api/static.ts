@@ -13,12 +13,17 @@ const MIME_TYPES: Record<string, string> = {
   '.map': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.woff2': 'font/woff2',
 };
 
 const ADMIN_ROUTES = [
   '/',
   '/index.html',
+  '/manifest.webmanifest',
+  '/icon-180.png',
+  '/icon-512.png',
+  '/icon.svg',
   '/login',
   '/policies',
   '/assets/(.*)',
@@ -81,7 +86,14 @@ export function registerAdminStatic(options: {
       koaCtx.set('x-content-type-options', 'nosniff');
       koaCtx.set('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
       koaCtx.set('referrer-policy', 'no-referrer');
-      koaCtx.set('cache-control', target === indexPath ? 'no-store' : 'public, max-age=31536000, immutable');
+      koaCtx.set(
+        'cache-control',
+        target === indexPath
+          ? 'no-store'
+          : requested.startsWith('assets/')
+            ? 'public, max-age=31536000, immutable'
+            : 'no-cache',
+      );
       koaCtx.body = koaCtx.method === 'HEAD' ? null : createReadStream(target);
     } catch (error) {
       const adminError = error instanceof AdminHttpError

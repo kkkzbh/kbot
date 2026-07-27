@@ -489,6 +489,10 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/model-context/snapshots/:conversationId');
     expect(getPaths).toContain('/');
     expect(getPaths).toContain('/assets/(.*)');
+    expect(getPaths).toContain('/manifest.webmanifest');
+    expect(getPaths).toContain('/icon-180.png');
+    expect(getPaths).toContain('/icon-512.png');
+    expect(getPaths).toContain('/icon.svg');
     expect(getPaths).toContain('/extensions/(.*)');
     expect(postPaths).toContain('/api/admin/v1/session');
     expect(postPaths).toContain('/api/admin/v1/events/acknowledge-all');
@@ -804,6 +808,38 @@ describe('independent admin API plugin', () => {
     for (const path of ['/admin', '/api/(.*)', '/campus/(.*)', '/chatluna-storage/(.*)']) {
       expect(routes.has(path)).toBe(false);
     }
+  });
+
+  it('serves installable PWA resources with their public cache contracts', async () => {
+    const dir = createTempDir();
+    const assetDir = join(dir, 'dist/admin-web');
+    mkdirSync(join(assetDir, 'assets'), { recursive: true });
+    writeFileSync(join(assetDir, 'index.html'), '<div id="app"></div>\n', 'utf8');
+    writeFileSync(join(assetDir, 'manifest.webmanifest'), '{"display":"standalone"}\n', 'utf8');
+    writeFileSync(join(assetDir, 'icon-180.png'), 'png', 'utf8');
+    writeFileSync(join(assetDir, 'assets/app.js'), 'export {}\n', 'utf8');
+    const { server } = createRuntime(dir);
+    const routes = new Map(server.get.mock.calls.map((call) => [call[0], call[1]]));
+
+    const manifest = createKoaCtx({ path: '/manifest.webmanifest' });
+    await routes.get('/manifest.webmanifest')?.(manifest);
+    expect(manifest.status).toBe(200);
+    expect(manifest.type).toBe('application/manifest+json; charset=utf-8');
+    expect(manifest.set).toHaveBeenCalledWith('cache-control', 'no-cache');
+    (manifest.body as { destroy: () => void }).destroy();
+
+    const icon = createKoaCtx({ path: '/icon-180.png' });
+    await routes.get('/icon-180.png')?.(icon);
+    expect(icon.status).toBe(200);
+    expect(icon.type).toBe('image/png');
+    expect(icon.set).toHaveBeenCalledWith('cache-control', 'no-cache');
+    (icon.body as { destroy: () => void }).destroy();
+
+    const hashedAsset = createKoaCtx({ path: '/assets/app.js' });
+    await routes.get('/assets/(.*)')?.(hashedAsset);
+    expect(hashedAsset.status).toBe(200);
+    expect(hashedAsset.set).toHaveBeenCalledWith('cache-control', 'public, max-age=31536000, immutable');
+    (hashedAsset.body as { destroy: () => void }).destroy();
   });
 
   it('enforces Host and Origin before issuing a session', async () => {
