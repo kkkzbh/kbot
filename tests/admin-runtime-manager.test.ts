@@ -15,6 +15,7 @@ import {
   resolveApplyRestartUnits,
   resolveManagedServiceUnits,
   readManagedEnvPatchFromContent,
+  readProcessLines,
   writeFileAtomicWithBackup,
   type ScheduledRestartHandle,
 } from '../src/plugins/admin-api/server.js';
@@ -306,6 +307,20 @@ describe('admin env helpers', () => {
 });
 
 describe('admin systemd helpers', () => {
+  it('streams process output beyond the child_process exec buffer limit', async () => {
+    const payloadBytes = 2_048;
+    const lineCount = 1_024;
+    const result = await readProcessLines(process.execPath, [
+      '-e',
+      `for (let index = 0; index < ${lineCount}; index += 1) console.log(String(index).padStart(4, '0') + ':' + 'x'.repeat(${payloadBytes}))`,
+    ], { timeout: 15_000 });
+
+    expect(result.lines).toHaveLength(lineCount);
+    expect(result.lines[0]).toMatch(/^0000:x+$/);
+    expect(result.lines.at(-1)).toMatch(/^1023:x+$/);
+    expect(result.stderr).toBe('');
+  });
+
   it('parses systemctl show output into service status flags', () => {
     const status = parseSystemdShowOutput(
       [
@@ -1123,8 +1138,8 @@ describe('admin manager', () => {
     const dir = createTempDir();
     const envFilePath = join(dir, '.env.server');
     writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
-    const execFile = vi.fn().mockResolvedValue({
-      stdout: [
+    const readProcessLines = vi.fn().mockResolvedValue({
+      lines: [
         JSON.stringify({
           __CURSOR: 'runtime-cursor-2',
           __REALTIME_TIMESTAMP: '1800000000000000',
@@ -1135,10 +1150,10 @@ describe('admin manager', () => {
           MESSAGE: '2026-07-27 11:29:49 [E] chatluna Error: Call Embedding Error',
         }),
         '-- cursor: runtime-cursor-2',
-      ].join('\n'),
+      ],
       stderr: '',
     });
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, execFile });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, readProcessLines });
 
     await expect(manager.readRuntimeIssueJournal('runtime-cursor-1')).resolves.toEqual({
       entries: [{
@@ -1153,10 +1168,13 @@ describe('admin manager', () => {
       }],
       cursor: 'runtime-cursor-2',
     });
-    const [, args] = execFile.mock.calls[0];
+    const [, args] = readProcessLines.mock.calls[0];
     expect(args).toContain('--after-cursor=runtime-cursor-1');
     expect(args).toContain('qqbot-koishi.service');
     expect(args).not.toContain('qqbot-voice-tts.service');
+    expect(args.some((arg: unknown) => (
+      typeof arg === 'string' && arg.startsWith('--output-fields=MESSAGE')
+    ))).toBe(true);
   });
 
 });

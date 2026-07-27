@@ -11,9 +11,10 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { execFile as execFileCallback } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline';
 import type {
   AdminApplyReason,
   AdminApplyRestartTarget,
@@ -53,6 +54,16 @@ export type ManagedEnvField = {
 
 type ExecResult = {
   stdout: string;
+  stderr: string;
+};
+
+type ProcessOptions = {
+  cwd?: string;
+  timeout?: number;
+};
+
+type ProcessLinesResult = {
+  lines: string[];
   stderr: string;
 };
 
@@ -148,7 +159,8 @@ export type AdminRuntimeManagerOptions = {
   envOverrideFilePath?: string;
   ttsEnvFilePath?: string;
   fs?: FsLike;
-  execFile?: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
+  execFile?: (file: string, args: string[], options?: ProcessOptions) => Promise<ExecResult>;
+  readProcessLines?: (file: string, args: string[], options?: ProcessOptions) => Promise<ProcessLinesResult>;
   fetchFn?: typeof fetch;
 };
 
@@ -315,8 +327,65 @@ function defaultFs(): FsLike {
   };
 }
 
-function defaultExec(file: string, args: string[], options?: { cwd?: string; timeout?: number }): Promise<ExecResult> {
+function defaultExec(file: string, args: string[], options?: ProcessOptions): Promise<ExecResult> {
   return execFile(file, args, options) as Promise<ExecResult>;
+}
+
+export function readProcessLines(
+  file: string,
+  args: string[],
+  options: ProcessOptions = {},
+): Promise<ProcessLinesResult> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(file, args, {
+      cwd: options.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const lines: string[] = [];
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    const output = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    const timer = options.timeout == null
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          child.kill('SIGKILL');
+        }, options.timeout);
+
+    output.on('line', (line) => lines.push(line));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      output.close();
+      if (error) {
+        rejectPromise(error);
+        return;
+      }
+      resolvePromise({ lines, stderr });
+    };
+
+    child.once('error', (error) => finish(error));
+    child.once('close', (code, signal) => {
+      if (timedOut) {
+        finish(new Error(`${file} timed out after ${options.timeout}ms`));
+        return;
+      }
+      if (code !== 0) {
+        const exit = signal ? `signal ${signal}` : `exit code ${code}`;
+        const detail = stderr.trim();
+        finish(new Error(`${file} failed with ${exit}${detail ? `: ${detail}` : ''}`));
+        return;
+      }
+      finish();
+    });
+  });
 }
 
 function ensureManagedKey(key: string): void {
@@ -822,7 +891,8 @@ export class AdminRuntimeManager {
   readonly envFiles: ResolvedEnvFiles;
   readonly ttsEnvFilePath: string;
   readonly fs: FsLike;
-  readonly execFile: (file: string, args: string[], options?: { cwd?: string; timeout?: number }) => Promise<ExecResult>;
+  readonly execFile: (file: string, args: string[], options?: ProcessOptions) => Promise<ExecResult>;
+  readonly readProcessLines: (file: string, args: string[], options?: ProcessOptions) => Promise<ProcessLinesResult>;
   readonly fetchFn: typeof fetch;
   private ttsHealth: AdminTtsHealthSnapshot | null = null;
 
@@ -853,6 +923,7 @@ export class AdminRuntimeManager {
       : resolveTtsEnvFilePath(this.rootDir);
     this.fs = options.fs ?? defaultFs();
     this.execFile = options.execFile ?? defaultExec;
+    this.readProcessLines = options.readProcessLines ?? readProcessLines;
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
@@ -1493,12 +1564,13 @@ export class AdminRuntimeManager {
       ...(this.systemdScope === 'user' ? ['--user'] : []),
       '--no-pager',
       '--output=json',
+      '--output-fields=MESSAGE,MESSAGE_ID,UNIT,INVOCATION_ID,JOB_RESULT',
       '--show-cursor',
       ...(afterCursor ? [`--after-cursor=${afterCursor}`] : ['--boot']),
       'MESSAGE_ID=be02cf6855d2428ba40df7e9d022f03d',
     ];
-    const { stdout } = await this.execFile('journalctl', args, { cwd: this.rootDir, timeout: 15_000 });
-    const lines = stdout.split(/\r?\n/).filter(Boolean);
+    const result = await this.readProcessLines('journalctl', args, { cwd: this.rootDir, timeout: 15_000 });
+    const lines = result.lines.filter(Boolean);
     const cursorLine = lines.filter((line) => line.startsWith('-- cursor: ')).at(-1);
     const entries = lines.flatMap((line) => {
       if (!line.startsWith('{')) return [];
@@ -1548,12 +1620,13 @@ export class AdminRuntimeManager {
       ...(this.systemdScope === 'user' ? ['--user'] : []),
       '--no-pager',
       '--output=json',
+      '--output-fields=MESSAGE,_SYSTEMD_USER_UNIT,_SYSTEMD_UNIT,UNIT,_SYSTEMD_INVOCATION_ID,INVOCATION_ID,PRIORITY,SYSLOG_IDENTIFIER,MESSAGE_ID',
       '--show-cursor',
       ...(afterCursor ? [`--after-cursor=${afterCursor}`] : ['--boot', '--lines=5000']),
       ...this.managedServiceUnits.flatMap((unit) => ['--unit', unit]),
     ];
-    const { stdout } = await this.execFile('journalctl', args, { cwd: this.rootDir, timeout: 15_000 });
-    const lines = stdout.split(/\r?\n/).filter(Boolean);
+    const result = await this.readProcessLines('journalctl', args, { cwd: this.rootDir, timeout: 15_000 });
+    const lines = result.lines.filter(Boolean);
     const cursorLine = lines.filter((line) => line.startsWith('-- cursor: ')).at(-1);
     const entries = lines.flatMap((line) => {
       if (!line.startsWith('{')) return [];
@@ -1593,7 +1666,7 @@ export class AdminRuntimeManager {
     validateServiceAction(unit, 'start');
     if (!this.managedServiceUnits.includes(unit)) throw new Error(`当前运行角色不支持这个服务：${unit}`);
     if (!/^[a-f0-9]{32}$/i.test(invocationId)) throw new Error('systemd invocation id 格式无效');
-    const { stdout } = await this.execFile('journalctl', [
+    const result = await this.readProcessLines('journalctl', [
       ...(this.systemdScope === 'user' ? ['--user'] : []),
       '--no-pager',
       '--output=short-iso',
@@ -1602,7 +1675,7 @@ export class AdminRuntimeManager {
       '+',
       `INVOCATION_ID=${invocationId}`,
     ], { cwd: this.rootDir, timeout: 15_000 });
-    return stdout.split(/\r?\n/).filter(Boolean);
+    return result.lines.filter(Boolean);
   }
 
 
