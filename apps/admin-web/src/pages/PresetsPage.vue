@@ -47,6 +47,9 @@ import {
 import {
   chatHistoryExample,
   contextBlockGuides,
+  requestAttachmentExamples,
+  requestAttachmentGuides,
+  requestDocumentExample,
   type GuidedContextBlockType,
 } from './context-preset-guides';
 
@@ -1063,6 +1066,67 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </template>
+            <template v-else-if="selectedBlockType === 'requestDocuments'">
+              <div class="document-wire-example">
+                <strong>文本 Document 在模型请求中的实际形态</strong>
+                <div class="history-message">
+                  <span class="history-role">{{ requestDocumentExample.role }}</span>
+                  <code>{{ requestDocumentExample.content }}</code>
+                </div>
+              </div>
+
+              <div class="attachment-guide">
+                <div class="attachment-guide-intro">
+                  <strong>QQ群附件进入模型的方式</strong>
+                  <p>附件会按类型进入当前输入、历史附件引用或回放工具。下面列出的形态是模型实际接收的内容。</p>
+                </div>
+                <div class="attachment-wire-examples">
+                  <div
+                    v-for="example in requestAttachmentExamples"
+                    :key="example.label"
+                    class="attachment-wire-example"
+                  >
+                    <strong>{{ example.label }}</strong>
+                    <div class="history-message">
+                      <span :class="['history-role', `is-${example.role}`]">{{ example.role }}</span>
+                      <code>{{ example.content }}</code>
+                    </div>
+                  </div>
+                </div>
+                <div class="attachment-guide-list">
+                  <article
+                    v-for="item in requestAttachmentGuides"
+                    :key="item.kind"
+                    class="attachment-guide-row"
+                  >
+                    <strong>{{ item.label }}</strong>
+                    <dl>
+                      <div>
+                        <dt>进入路径</dt>
+                        <dd>{{ item.route }}</dd>
+                      </div>
+                      <div>
+                        <dt>模型看到</dt>
+                        <dd>{{ item.modelView }}</dd>
+                      </div>
+                      <div>
+                        <dt>模型可用</dt>
+                        <dd>{{ item.usage }}</dd>
+                      </div>
+                      <div>
+                        <dt>能力边界</dt>
+                        <dd>{{ item.boundary }}</dd>
+                      </div>
+                    </dl>
+                  </article>
+                </div>
+              </div>
+
+              <div class="document-scope-note">
+                <strong>本块控制范围</strong>
+                <p>“文档 Token 上限”只裁剪上面的文本 Document。当前消息里的图片或文件属于“当前输入”，历史附件引用和回放结果属于运行时注入；它们分别由自己的上下文阶段和模型能力约束。</p>
+              </div>
+            </template>
           </section>
 
           <template v-if="selectedResolvedBlock?.source === 'runtime'">
@@ -1649,6 +1713,124 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
+.document-wire-example {
+  max-width: 800px;
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid #dce3ee;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.document-wire-example > strong {
+  display: block;
+  padding: 11px 12px;
+  border-bottom: 1px solid #e4e9f1;
+  color: #263248;
+  font-size: 12px;
+}
+
+.attachment-guide {
+  max-width: 800px;
+  margin-top: 22px;
+}
+
+.attachment-guide-intro {
+  margin-bottom: 8px;
+}
+
+.attachment-guide-intro strong,
+.document-scope-note strong {
+  color: #263248;
+  font-size: 13px;
+}
+
+.attachment-guide-intro p,
+.document-scope-note p {
+  margin: 5px 0 0;
+  color: #59657a;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.attachment-wire-examples {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 20px;
+}
+
+.attachment-wire-example {
+  overflow: hidden;
+  border: 1px solid #dce3ee;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.attachment-wire-example > strong {
+  display: block;
+  padding: 9px 12px;
+  border-bottom: 1px solid #e4e9f1;
+  color: #344158;
+  font-size: 12px;
+}
+
+.history-role.is-system {
+  color: #7650a4;
+  background: #f0e9f8;
+}
+
+.attachment-guide-list {
+  border-top: 1px solid #dfe5ee;
+}
+
+.attachment-guide-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 18px;
+  padding: 15px 0;
+  border-bottom: 1px solid #e4e9f1;
+}
+
+.attachment-guide-row > strong {
+  color: #24324a;
+  font-size: 12px;
+}
+
+.attachment-guide-row dl {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.attachment-guide-row dl > div {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.attachment-guide-row dt {
+  color: #68758a;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.attachment-guide-row dd {
+  min-width: 0;
+  margin: 0;
+  color: #344158;
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.document-scope-note {
+  max-width: 800px;
+  margin-top: 18px;
+  padding-left: 12px;
+  border-left: 3px solid #9db2e9;
+}
+
 .runtime-actions {
   display: flex;
   align-items: center;
@@ -1869,6 +2051,15 @@ onBeforeUnmount(() => {
   .history-message {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  .attachment-guide-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .attachment-guide-row dl > div {
+    grid-template-columns: 62px minmax(0, 1fr);
   }
 
   .token-limit-control .el-segmented {
