@@ -48,6 +48,7 @@ import {
   AdminRuntimeManager,
   type ScheduledRestartHandle,
 } from '../src/plugins/admin-api/server.js';
+import { voiceFeatureSettingKeys } from '../src/admin/contracts/index.js';
 import { ModelConfigError } from '../src/plugins/model-config/index.js';
 import type { RedactedResolvedBinding } from '../src/plugins/model-config/types.js';
 import { MemoryRuntimeError } from '../src/plugins/memory/errors.js';
@@ -1307,8 +1308,36 @@ describe('independent admin API plugin', () => {
 
     expect(ttsCtx.status).toBe(200);
     expect((ttsCtx.body as any).localGateway.secretState.VOICE_TTS_API_KEY).toEqual({ configured: true, value: null });
+    expect((ttsCtx.body as any).botFields.map((field: any) => field.key))
+      .toEqual([...voiceFeatureSettingKeys]);
     expect(JSON.stringify(ttsCtx.body)).not.toContain('tts-secret-value');
     expect(JSON.stringify(ttsCtx.body)).not.toContain('local-tts-secret');
+  });
+
+  it('updates voice interaction settings through the voice service endpoint', async () => {
+    const dir = createTempDir();
+    const { server } = createRuntime(dir);
+    const patchTts = server.patch.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/tts',
+    )?.[1];
+    const request = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: {
+        botChanges: [
+          { key: 'QQ_VOICE_INPUT_ENABLED', value: 'true' },
+          { key: 'QQ_VOICE_OUTPUT_MAX_WORDS', value: '96' },
+        ],
+        localChanges: [],
+      },
+    });
+
+    await patchTts(request);
+
+    expect(request.status).toBe(200);
+    expect((request.body as any).tts.botFields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'QQ_VOICE_INPUT_ENABLED', value: 'true' }),
+      expect.objectContaining({ key: 'QQ_VOICE_OUTPUT_MAX_WORDS', value: '96' }),
+    ]));
   });
 
   it('rejects model and cross-domain keys on the TTS mutation endpoint', async () => {

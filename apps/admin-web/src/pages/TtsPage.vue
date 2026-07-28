@@ -2,15 +2,16 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
+import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
 import { apiAudio, rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
 const state = ref<any | null>(null);
-const botDraft = reactive<Record<string, string>>({});
-const botOriginal = reactive<Record<string, string>>({});
+const botDraft = ref<Record<string, string>>({});
+const botOriginal = ref<Record<string, string>>({});
+const clearBotSecrets = ref<Record<string, boolean>>({});
 const localDraft = reactive<Record<string, string>>({});
 const localOriginal = reactive<Record<string, string>>({});
-const clearBotSecret = ref(false);
 const clearLocalSecret = ref(false);
 const sampleText = ref('下午好。系统运行正常，需要我继续处理什么吗？');
 const sampleStyle = ref('white');
@@ -28,15 +29,19 @@ function labelFor(key: string) {
 
 function hydrate(result: any) {
   state.value = result;
+  const nextBotDraft: Record<string, string> = {};
+  const nextClearBotSecrets: Record<string, boolean> = {};
   for (const field of result.botFields || []) {
-    botDraft[field.key] = field.value ?? '';
-    botOriginal[field.key] = field.value ?? '';
+    nextBotDraft[field.key] = field.value ?? '';
+    nextClearBotSecrets[field.key] = false;
   }
+  botDraft.value = nextBotDraft;
+  botOriginal.value = { ...nextBotDraft };
+  clearBotSecrets.value = nextClearBotSecrets;
   for (const [key, value] of Object.entries(result.localGateway.env)) {
     localDraft[key] = typeof value === 'string' ? value : '';
     localOriginal[key] = typeof value === 'string' ? value : '';
   }
-  clearBotSecret.value = false;
   clearLocalSecret.value = false;
 }
 
@@ -49,11 +54,14 @@ async function load() {
 async function save() {
   const botChanges: any[] = [];
   const localChanges: any[] = [];
-  for (const [key, value] of Object.entries(botDraft)) {
-    if (key === 'QQ_VOICE_TTS_API_KEY') {
-      if (clearBotSecret.value) botChanges.push({ key, clear: true });
-      else if (value) botChanges.push({ key, value });
-    } else if (value !== botOriginal[key]) botChanges.push({ key, value });
+  for (const field of state.value?.botFields ?? []) {
+    const value = botDraft.value[field.key] ?? '';
+    if (field.type === 'secret') {
+      if (clearBotSecrets.value[field.key]) botChanges.push({ key: field.key, clear: true });
+      else if (value) botChanges.push({ key: field.key, value });
+    } else if (value !== botOriginal.value[field.key]) {
+      botChanges.push({ key: field.key, value });
+    }
   }
   if (clearLocalSecret.value) localChanges.push({ key: 'VOICE_TTS_API_KEY', clear: true });
   else if (localDraft.VOICE_TTS_API_KEY) localChanges.push({ key: 'VOICE_TTS_API_KEY', value: localDraft.VOICE_TTS_API_KEY });
@@ -105,13 +113,13 @@ onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if
       <dl><div><dt>Latency</dt><dd>{{ state.health.latencyMs == null ? '—' : `${state.health.latencyMs} ms` }}</dd></div><div><dt>Device</dt><dd>{{ state.health.device || state.localGateway.resolved.device }}</dd></div><div><dt>Upstream</dt><dd>{{ state.health.running == null ? 'unknown' : state.health.running ? 'running' : 'stopped' }}</dd></div></dl>
     </section>
     <section class="form-section">
-      <h2 class="section-title">机器人连接</h2>
-      <el-form label-position="top" class="settings-grid">
-        <el-form-item v-for="field in state.botFields" :key="field.key" :label="field.label">
-          <template v-if="field.type==='secret'"><el-input v-model="botDraft[field.key]" type="password" show-password :disabled="clearBotSecret" :placeholder="field.configured ? '已配置，留空保持原值' : '输入新的 Secret'" /><el-checkbox v-if="field.configured" v-model="clearBotSecret">显式清空</el-checkbox></template>
-          <el-input v-else v-model="botDraft[field.key]" />
-        </el-form-item>
-      </el-form>
+      <h2 class="section-title">语音交互</h2>
+      <p class="field-help">统一管理语音识别、语音回复和机器人到 TTS 服务的连接参数。</p>
+      <ManagedSettingsGrid
+        v-model="botDraft"
+        v-model:clear-secrets="clearBotSecrets"
+        :fields="state.botFields"
+      />
     </section>
     <section class="form-section">
       <div class="section-head"><div><h2 class="section-title">本机 GPT-SoVITS 网关</h2><p>配置文件：<span class="mono">{{ state.localGateway.envFile }}</span></p></div><el-tag :type="state.localGateway.manageable ? 'success' : 'info'">{{ state.localGateway.manageable ? '可管理' : '只读角色' }}</el-tag></div>

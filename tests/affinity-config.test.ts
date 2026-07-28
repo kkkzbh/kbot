@@ -18,7 +18,7 @@ describe('affinity configuration', () => {
     const router = readFileSync(resolve(process.cwd(), 'apps/admin-web/src/router.ts'), 'utf8');
     const page = readFileSync(resolve(process.cwd(), 'apps/admin-web/src/pages/AffinityPage.vue'), 'utf8');
 
-    expect(router).toContain("path: '/intelligence/affinity'");
+    expect(router).toContain("path: '/extensions/affinity'");
     expect(router).toContain("title: '关系事件'");
     expect(page).toContain("rawApi('/affinity')");
     expect(page).toContain('affinity.analysis');

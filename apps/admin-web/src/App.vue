@@ -59,10 +59,10 @@ const groups: NavGroup[] = [
     { key: 'models', label: '模型配置', path: '/intelligence/models', icon: Cpu },
     { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
-    { key: 'affinity', label: '关系事件', path: '/intelligence/affinity', icon: HeartHandshake },
   ] },
   { label: '策略与权限', items: [{ key: 'policies', label: '功能与工具策略', path: '/policies', icon: ShieldCheck }] },
   { label: '扩展服务', items: [
+    { key: 'affinity', label: '关系事件', path: '/extensions/affinity', icon: HeartHandshake },
     {
       key: 'campus',
       label: '校园扩展',

@@ -4,7 +4,11 @@ import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import { rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
-import type { SettingsField, SettingsSection } from '@contracts';
+import {
+  dedicatedFeatureSettingKeys,
+  type SettingsField,
+  type SettingsSection,
+} from '@contracts';
 
 type SettingsMode = 'all' | 'system' | 'campus-auth' | 'hbu-jw' | 'zyh' | 'second-class' | 'chaoxing' | 'genshin';
 
@@ -18,6 +22,7 @@ const saving = ref(false);
 const runtime = useRuntimeStore();
 
 const extensionPrefixes = ['HBU_', 'CAMPUS_', 'ZYH_', 'CHAOXING_', 'GENSHIN_'];
+const dedicatedFeatureKeys = new Set<string>(dedicatedFeatureSettingKeys);
 const modePrefixes: Partial<Record<SettingsMode, string[]>> = {
   'campus-auth': ['CAMPUS_AUTH_'],
   'hbu-jw': ['HBU_JW_'],
@@ -30,7 +35,7 @@ const visibleFields = computed(() => fields.value.filter((field) => {
   const prefixes = modePrefixes[props.mode];
   if (prefixes) return prefixes.some((prefix) => field.key.startsWith(prefix));
   const extension = extensionPrefixes.some((prefix) => field.key.startsWith(prefix));
-  if (props.mode === 'system') return !extension && !field.key.startsWith('QQ_VOICE_TTS_');
+  if (props.mode === 'system') return !extension && !dedicatedFeatureKeys.has(field.key);
   return true;
 }));
 const grouped = computed(() => {
@@ -49,10 +54,7 @@ function groupName(key: string) {
   if (key.startsWith('ZYH_')) return '志愿汇';
   if (key.startsWith('CHAOXING_')) return '学习通';
   if (key.startsWith('GENSHIN_')) return '原神服务';
-  if (key.startsWith('MEMORY_')) return '长期记忆';
-  if (key.startsWith('QQ_VOICE_')) return '语音交互';
   if (key.startsWith('CHAT_NATURAL_')) return '自然触发';
-  if (key.startsWith('CHATLUNA_COMMON_FS')) return '文件系统工具';
   if (key.startsWith('QQBOT_')) return '运行体验';
   return '基础参数';
 }

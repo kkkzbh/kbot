@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import {
@@ -13,13 +13,16 @@ import {
   memoryReviewRequestSchema,
   memoryReviewResponseSchema,
   memoryReviewsResponseSchema,
+  memoryFeatureSettingKeys,
   type MemoryAssertionItem,
   type MemoryOverviewResponse,
 } from '@contracts';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
+import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
 import { api, jsonBody } from '@/api/client';
 import { isMemoryDialogCancellation } from './memory-page-state';
+import { useManagedFeatureSettings } from './managed-settings';
 
 type ViewId = 'assertions' | 'reviews';
 type MemoryBinding = MemoryOverviewResponse['bindings']['extraction'];
@@ -30,6 +33,7 @@ const activeView = ref<ViewId>(route.query.tab === 'reviews' ? 'reviews' : 'asse
 const overview = ref<MemoryOverviewResponse | null>(null);
 const rows = ref<MemoryAssertionItem[]>([]);
 const loading = ref(false);
+const saving = ref(false);
 const activeOperation = ref('');
 const loadError = ref('');
 const page = reactive({ current: 1, pageSize: 20, total: 0 });
@@ -39,6 +43,13 @@ const filters = reactive({
   state: '',
   assertionType: '',
 });
+const {
+  fields: memorySettingsFields,
+  draft: memorySettingsDraft,
+  clearSecrets: memorySettingsClearSecrets,
+  load: loadMemorySettings,
+  save: saveMemorySettings,
+} = useManagedFeatureSettings(memoryFeatureSettingKeys);
 
 const runtimeLabel = computed(() => {
   const status = overview.value?.status;
@@ -99,13 +110,33 @@ async function loadRows(): Promise<void> {
 async function refresh(): Promise<void> {
   loading.value = true;
   try {
-    await Promise.all([loadOverview(), loadRows()]);
+    await Promise.all([loadOverview(), loadRows(), loadMemorySettings()]);
     loadError.value = '';
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '记忆数据加载失败';
   } finally {
     loading.value = false;
   }
+}
+
+async function save(): Promise<void> {
+  saving.value = true;
+  try {
+    const changed = await saveMemorySettings();
+    if (!changed) {
+      ElMessage.info('当前页面没有变更');
+      return;
+    }
+    ElMessage.success('长期记忆配置已保存，重启后生效');
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '长期记忆配置保存失败');
+  } finally {
+    saving.value = false;
+  }
+}
+
+function handleSave(): void {
+  void save();
 }
 
 async function applyFilters(): Promise<void> {
@@ -269,11 +300,15 @@ watch(activeView, async () => {
   await loadRows();
 });
 
-onMounted(() => void refresh());
+onMounted(() => {
+  void refresh();
+  window.addEventListener('admin-save', handleSave);
+});
+onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 </script>
 
 <template>
-  <PageHeader hide-save>
+  <PageHeader :saving="saving" @save="save">
     <template #actions>
       <el-button @click="router.push('/intelligence/models')">模型配置</el-button>
       <el-button
@@ -322,6 +357,16 @@ onMounted(() => void refresh());
           {{ queueTotal }} / {{ overview.status.counts.stranded }}
         </strong>
       </div>
+    </section>
+
+    <section class="form-section memory-settings">
+      <h2 class="section-title">长期记忆配置</h2>
+      <p class="field-help">管理记忆召回、写入、提炼队列和自动归档参数。</p>
+      <ManagedSettingsGrid
+        v-model="memorySettingsDraft"
+        v-model:clear-secrets="memorySettingsClearSecrets"
+        :fields="memorySettingsFields"
+      />
     </section>
 
     <el-alert
@@ -465,7 +510,7 @@ onMounted(() => void refresh());
 </template>
 
 <style scoped>
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0c7c7;border-radius:10px;background:#fff6f6;color:#a53a3a;font-size:11px}.runtime-strip{display:grid;grid-template-columns:.9fr 1.7fr .9fr 1fr 1.3fr 1fr;margin-bottom:14px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.runtime-strip>div{display:flex;min-width:0;min-height:62px;align-items:center;justify-content:space-between;gap:10px;padding:0 14px;border-right:1px solid var(--line)}.runtime-strip>div:last-child{border-right:0}.runtime-strip span{flex:none;color:var(--muted);font-size:9px}.runtime-strip strong{overflow:hidden;color:#24324a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.runtime-strip strong.danger{color:#d44b58}.records-panel{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line)}.filters{display:flex;min-width:0;align-items:center;gap:8px}.filters .el-input{width:150px}.filters .el-select{width:130px}.review-rule{border-radius:0}.record-list{min-height:180px}.record-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(280px,2fr) minmax(190px,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.record-identity,.record-content,.record-scope{min-width:0}.record-identity{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center}.record-identity code,.record-identity small{grid-column:1/-1}.record-row strong{color:#344057;font-size:11px}.record-row code,.record-row small{display:block;overflow:hidden;color:var(--muted);font:9px/1.45 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.record-content p{display:-webkit-box;overflow:hidden;margin:0 0 6px;color:#48556b;font-size:11px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:3}.record-content .content-cleared{color:#a56b6b;font-style:italic}.record-scope{display:flex;flex-direction:column;gap:4px}.record-actions{display:flex;justify-content:flex-end;gap:6px}.record-actions :deep(.el-button+.el-button){margin-left:0}.pagination{justify-content:flex-end;padding:12px 14px}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0c7c7;border-radius:10px;background:#fff6f6;color:#a53a3a;font-size:11px}.runtime-strip{display:grid;grid-template-columns:.9fr 1.7fr .9fr 1fr 1.3fr 1fr;margin-bottom:14px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.runtime-strip>div{display:flex;min-width:0;min-height:62px;align-items:center;justify-content:space-between;gap:10px;padding:0 14px;border-right:1px solid var(--line)}.runtime-strip>div:last-child{border-right:0}.runtime-strip span{flex:none;color:var(--muted);font-size:9px}.runtime-strip strong{overflow:hidden;color:#24324a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.runtime-strip strong.danger{color:#d44b58}.memory-settings{margin-bottom:14px}.records-panel{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line)}.filters{display:flex;min-width:0;align-items:center;gap:8px}.filters .el-input{width:150px}.filters .el-select{width:130px}.review-rule{border-radius:0}.record-list{min-height:180px}.record-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(280px,2fr) minmax(190px,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.record-identity,.record-content,.record-scope{min-width:0}.record-identity{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center}.record-identity code,.record-identity small{grid-column:1/-1}.record-row strong{color:#344057;font-size:11px}.record-row code,.record-row small{display:block;overflow:hidden;color:var(--muted);font:9px/1.45 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.record-content p{display:-webkit-box;overflow:hidden;margin:0 0 6px;color:#48556b;font-size:11px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:3}.record-content .content-cleared{color:#a56b6b;font-style:italic}.record-scope{display:flex;flex-direction:column;gap:4px}.record-actions{display:flex;justify-content:flex-end;gap:6px}.record-actions :deep(.el-button+.el-button){margin-left:0}.pagination{justify-content:flex-end;padding:12px 14px}
 @media(max-width:1050px){.runtime-strip{grid-template-columns:repeat(3,1fr)}.runtime-strip>div:nth-child(3){border-right:0}.runtime-strip>div:nth-child(-n+3){border-bottom:1px solid var(--line)}.records-toolbar{align-items:stretch;flex-direction:column}.filters{flex-wrap:wrap}.filters .el-input,.filters .el-select{flex:1 1 150px;width:auto}.record-row{grid-template-columns:minmax(135px,.8fr) minmax(240px,2fr) auto}.record-scope{grid-column:1/3;grid-row:2}.record-actions{grid-column:3;grid-row:1/3}}
 @media(max-width:720px){.runtime-strip{grid-template-columns:1fr 1fr}.runtime-strip>div{min-height:54px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.runtime-strip>div:nth-child(2n){border-right:0}.runtime-strip>div:nth-last-child(-n+2){border-bottom:0}.record-row{grid-template-columns:1fr auto;gap:12px}.record-content,.record-scope{grid-column:1/-1}.record-scope{grid-row:auto}.record-actions{grid-column:2;grid-row:1}.pagination{overflow:auto;justify-content:flex-start}}
 </style>

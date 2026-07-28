@@ -61,6 +61,7 @@ import {
   stickerIndexMaintenanceResponseSchema,
   toolOverridesRequestSchema,
   ttsSampleRequestSchema,
+  voiceFeatureSettingKeys,
   type SettingsSection,
 } from '../../admin/contracts/index.js';
 import type { AffinityServiceLike } from '../../types/affinity.js';
@@ -156,11 +157,7 @@ const ttsChangesRequestSchema = z.object({
   localChanges: z.array(settingsChangeSchema).default([]),
 }).refine((input) => input.botChanges.length + input.localChanges.length > 0, '至少需要提交一个 TTS 配置项。');
 
-const TTS_BOT_ENV_KEYS = new Set([
-  'QQ_VOICE_TTS_BASE_URL',
-  'QQ_VOICE_TTS_API_KEY',
-  'QQ_VOICE_SYNTH_TIMEOUT_MS',
-]);
+const TTS_BOT_ENV_KEYS = new Set<string>(voiceFeatureSettingKeys);
 
 class AdminApplyState {
   private readonly reasons = new Set<AdminApplyReason>();
@@ -290,8 +287,7 @@ function redactTtsState(state: Awaited<ReturnType<AdminRuntimeManager['getTtsSta
 }
 
 function ttsBotFields(env: Record<string, string>) {
-  const keys = new Set(['QQ_VOICE_TTS_BASE_URL', 'QQ_VOICE_TTS_API_KEY', 'QQ_VOICE_SYNTH_TIMEOUT_MS']);
-  return settingsFields('features', env).filter((field) => keys.has(field.key));
+  return settingsFields('features', env).filter((field) => TTS_BOT_ENV_KEYS.has(field.key));
 }
 
 function redactAffinityState(state: Awaited<ReturnType<AffinityServiceLike['getAdminState']>>) {

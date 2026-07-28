@@ -107,6 +107,40 @@ export const operationalEventActionRequestSchema = z.object({
 
 export const settingsSectionSchema = z.enum(['basic', 'features']);
 
+export const voiceFeatureSettingKeys = [
+  'QQ_VOICE_INPUT_ENABLED',
+  'QQ_VOICE_OUTPUT_ENABLED',
+  'QQ_VOICE_TTS_BASE_URL',
+  'QQ_VOICE_TTS_API_KEY',
+  'QQ_VOICE_OUTPUT_LANGUAGE',
+  'QQ_VOICE_OUTPUT_MAX_WORDS',
+  'QQ_VOICE_OUTPUT_MAX_SECONDS',
+  'QQ_VOICE_SYNTH_TIMEOUT_MS',
+] as const;
+
+export const fileSystemToolSettingKeys = [
+  'CHATLUNA_COMMON_FS_ALLOWED_GROUPS',
+  'CHATLUNA_COMMON_FS',
+  'CHATLUNA_COMMON_FS_SCOPE_PATH',
+] as const;
+
+export const memoryFeatureSettingKeys = [
+  'MEMORY_ENABLED',
+  'MEMORY_READ_ENABLED',
+  'MEMORY_WRITE_ENABLED',
+  'MEMORY_EXTRACT_IDLE_MS',
+  'MEMORY_EXTRACT_MESSAGE_BATCH',
+  'MEMORY_ARCHIVE_DAYS',
+  'MEMORY_MAX_JOB_RETRIES',
+  'MEMORY_JOB_LOCK_TIMEOUT_MS',
+] as const;
+
+export const dedicatedFeatureSettingKeys = [
+  ...voiceFeatureSettingKeys,
+  ...fileSystemToolSettingKeys,
+  ...memoryFeatureSettingKeys,
+] as const;
+
 export const settingsChangeSchema = z.object({
   key: z.string().min(1),
   value: z.string().optional(),

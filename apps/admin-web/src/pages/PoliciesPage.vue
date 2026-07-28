@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { fileSystemToolSettingKeys } from '@contracts';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
+import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
 import { rawApi, rawJsonBody } from '@/api/client';
+import { useManagedFeatureSettings } from './managed-settings';
 import {
   buildFeatureOverride,
   buildToolOverride,
@@ -35,6 +38,15 @@ const toolScopeOptions = computed(() => createPolicyScopeOptions(
   state.value?.tools.defaultScopes || [],
   state.value?.tools.scopes || [],
 ));
+const {
+  fields: fileSystemFields,
+  draft: fileSystemDraft,
+  clearSecrets: fileSystemClearSecrets,
+  loading: fileSystemLoading,
+  hasChanges: hasFileSystemChanges,
+  load: loadFileSystemSettings,
+  save: saveFileSystemSettings,
+} = useManagedFeatureSettings(fileSystemToolSettingKeys);
 const memorySearchPolicy = computed(() =>
   state.value?.tools.catalog.find((tool: any) => tool.toolName === 'memory_search') ?? null);
 const featureOverrideDuplicate = computed(() => hasFeatureOverride(
@@ -54,7 +66,10 @@ const toolOverrideReady = computed(() =>
 const featureKeys = ['QQBOT_REALTIME_MESSAGE_ENABLED','QQ_VOICE_INPUT_ENABLED','QQ_VOICE_OUTPUT_ENABLED','CHAT_NATURAL_TRIGGER_ENABLED','QQBOT_REPLY_INTERRUPT_ENABLED'];
 
 async function load() {
-  const result = await rawApi<any>('/policies');
+  const [result] = await Promise.all([
+    rawApi<any>('/policies'),
+    loadFileSystemSettings(),
+  ]);
   state.value = result;
   featureOverrides.value = result.featureOverrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
   toolOverrides.value = result.tools.overrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
@@ -87,6 +102,7 @@ async function save() {
     await Promise.all([
       rawApi('/policies/features', { method: 'PATCH', body: rawJsonBody({ overrides: featureOverrides.value.map(({ featureKey,scopeKind,scopeId,enabled }) => ({ featureKey,scopeKind,scopeId,enabled })) }) }),
       rawApi('/policies/tools', { method: 'PATCH', body: rawJsonBody({ overrides: toolOverrides.value.map(({ toolName,routeProfile,scopeKind,scopeId,enabled }) => ({ toolName,routeProfile,scopeKind,scopeId,enabled })) }) }),
+      hasFileSystemChanges.value ? saveFileSystemSettings() : Promise.resolve(false),
     ]);
     ElMessage.success('功能与工具策略已保存');
     await load();
@@ -110,7 +126,7 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="!state" @click="load">重新载入</el-button></template></PageHeader>
+  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="!state || fileSystemLoading" @click="load">重新载入</el-button></template></PageHeader>
   <article v-if="state" class="panel policy-panel">
     <el-tabs v-model="activeTab" class="policy-tabs">
       <el-tab-pane label="功能策略" name="features" />
@@ -123,6 +139,19 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <EmptyState v-else title="没有功能覆盖" description="所有会话当前继承全局功能设置。" />
     </template>
     <template v-else-if="activeTab==='tools'">
+      <section class="file-system-settings">
+        <div class="panel-head subhead">
+          <div>
+            <h2>文件系统工具</h2>
+            <p>设置全局开关、可访问目录和允许使用工具的群聊。</p>
+          </div>
+        </div>
+        <ManagedSettingsGrid
+          v-model="fileSystemDraft"
+          v-model:clear-secrets="fileSystemClearSecrets"
+          :fields="fileSystemFields"
+        />
+      </section>
       <div v-if="memorySearchPolicy" class="core-tool-row">
         <div class="core-tool-copy">
           <strong>{{ memorySearchPolicy.title }}</strong>
@@ -154,6 +183,8 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 .policy-tabs :deep(.el-tabs__header){margin:0}
 .subhead{border-top:0}
 .policy-panel :deep(.el-table__cell){font-size:11px}
+.file-system-settings{padding:0 20px 18px;border-bottom:1px solid var(--line)}
+.file-system-settings .panel-head{padding-right:0;padding-left:0}
 .core-tool-row{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:16px 20px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#f8fafc}
 .core-tool-copy{display:grid;gap:3px;min-width:0}
 .core-tool-copy strong{font-size:14px;color:var(--ink)}
