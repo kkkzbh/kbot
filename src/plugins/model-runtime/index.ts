@@ -1,8 +1,5 @@
 import { isAbsolute, resolve } from 'node:path';
 import { Context, Logger, Schema } from 'koishi';
-import type {
-  ModelBindingResolver as ChatLunaModelBindingResolver,
-} from 'koishi-plugin-chatluna/llm-core/platform/binding';
 import {
   registerManagedOpenAIConnection,
   type ManagedOpenAIRegistration,
@@ -14,16 +11,16 @@ import {
   CopilotOAuthBridgeService,
 } from '../copilot-oauth/index.js';
 import {
-  CanonicalModelBindingResolver,
   ModelConfigService,
   ModelRuntimeClient,
   OpenAiConnectionExecutor,
-  type ModelBinding,
   type ModelConnectionExecutor,
   type ModelRuntimeSnapshot,
-  type ModelWorkload,
 } from '../model-config/index.js';
+import { createChatLunaResolver } from './binding-resolver.js';
 import { toManagedOpenAIModel } from './managed-model.js';
+
+export { createChatLunaResolver } from './binding-resolver.js';
 
 export const name = 'model-runtime';
 export const inject = { required: ['chatluna'] } as const;
@@ -40,7 +37,7 @@ export const Config: Schema<Config> = Schema.object({
 
 type ChatLunaService = {
   registerModelBindingResolver: (
-    resolver: ChatLunaModelBindingResolver,
+    resolver: ReturnType<typeof createChatLunaResolver>,
   ) => () => void;
 };
 
@@ -169,58 +166,6 @@ async function publishRuntime(
     }
     throw error;
   }
-}
-
-function createChatLunaResolver(
-  snapshot: ModelRuntimeSnapshot,
-): ChatLunaModelBindingResolver {
-  const resolver = new CanonicalModelBindingResolver(snapshot);
-  const bindings = new Map(
-    snapshot.bindings.map((binding) => [binding.workload, binding]),
-  );
-  return (request) => {
-    if (request.workload === 'agent.subagent.default' && request.agentId) {
-      const overrideWorkload = `agent.subagent.${request.agentId}` as ModelWorkload;
-      const binding = bindings.get(overrideWorkload)
-        ?? requireBinding(bindings, 'agent.subagent.default');
-      return toChatLunaBinding(snapshot.revision, resolver, binding);
-    }
-    return toChatLunaBinding(
-      snapshot.revision,
-      resolver,
-      requireBinding(bindings, request.workload),
-    );
-  };
-}
-
-function toChatLunaBinding(
-  revision: number,
-  resolver: CanonicalModelBindingResolver,
-  binding: ModelBinding,
-):
-  | { mode: 'dedicated'; model: string; revision: number }
-  | { mode: 'disabled' | 'inheritMain' | 'inheritInvocation'; revision: number } {
-  if (binding.mode !== 'dedicated') {
-    return { mode: binding.mode, revision };
-  }
-  const resolved = resolver.resolve(binding.workload);
-  if (!resolved.model) {
-    throw new Error(`dedicated binding ${binding.workload} has no model.`);
-  }
-  return {
-    mode: 'dedicated',
-    model: resolved.model,
-    revision,
-  };
-}
-
-function requireBinding(
-  bindings: ReadonlyMap<ModelWorkload, ModelBinding>,
-  workload: ModelWorkload,
-): ModelBinding {
-  const binding = bindings.get(workload);
-  if (!binding) throw new Error(`missing model binding: ${workload}`);
-  return binding;
 }
 
 async function resolveConnectionTransport(
