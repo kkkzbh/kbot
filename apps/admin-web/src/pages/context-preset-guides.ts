@@ -14,9 +14,29 @@ export interface ContextBlockGuide {
   summary: string;
 }
 
+export interface ChatHistoryExampleMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export const chatHistoryExample = {
+  messages: [
+    {
+      role: 'user',
+      content: '[speaker_id=10001 speaker_name="小明"] 今晚几点开黑？',
+    },
+    {
+      role: 'assistant',
+      content: '八点，可以。',
+    },
+  ] satisfies ChatHistoryExampleMessage[],
+  historyBudgetTokens: 23,
+  finalCropTokens: 38,
+} as const;
+
 export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuide> = {
   chatHistory: {
-    summary: '让模型看到当前会话最近发生的对话，接住参与者、话题和前文中的工具过程。',
+    summary: '读取当前会话已保存的消息。每条用户消息开启一个完整轮次，后续回复和工具结果归入该轮；系统从最新轮次向前保留，放不下的整轮舍弃。',
   },
   requestDocuments: {
     summary: '把本次请求携带的文件、附件解析结果或其他临时文档作为参考材料交给模型。',
@@ -46,11 +66,3 @@ export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuid
     summary: '告诉模型当前请求允许调用哪些工具，以及每个工具接受什么参数。',
   },
 };
-
-export function supportsBudgetOrder(type: string): boolean {
-  return type === 'chatHistory'
-    || type === 'requestDocuments'
-    || type === 'lore'
-    || type === 'authorsNote'
-    || type === 'knowledge';
-}

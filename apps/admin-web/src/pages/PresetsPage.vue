@@ -45,8 +45,8 @@ import {
   type StoredContextBlockType,
 } from '@/api/context-presets';
 import {
+  chatHistoryExample,
   contextBlockGuides,
-  supportsBudgetOrder,
   type GuidedContextBlockType,
 } from './context-preset-guides';
 
@@ -56,10 +56,6 @@ type BlockAnchor = Extract<Anchor, { type: 'block' }>;
 type HistoryAnchor = Extract<Anchor, { type: 'chatHistory' }>;
 type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemory'>;
 type EditableContextPresetBlock = Exclude<ContextPresetBlock, { type: 'longMemory' }>;
-type BudgetOrderBlock = Extract<
-  ContextPresetBlock,
-  { type: 'chatHistory' | 'requestDocuments' | 'lore' | 'authorsNote' | 'knowledge' }
->;
 
 const router = useRouter();
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
@@ -132,23 +128,17 @@ const selectedBlockGuide = computed(() => {
   if (!type || type === 'role') return null;
   return contextBlockGuides[type as GuidedContextBlockType];
 });
-const budgetOrderBlocks = computed<BudgetOrderBlock[]>(() => (
-  contextDraft.value?.blocks
-    .filter(isBudgetOrderBlock)
-    .sort((left, right) => (
-      left.budgetPriority - right.budgetPriority
-      || (contextDraft.value?.blocks.indexOf(left) ?? 0) - (contextDraft.value?.blocks.indexOf(right) ?? 0)
-    )) ?? []
-));
-const selectedBudgetRank = computed(() => {
+const selectedBudgetLimitLabel = computed(() => {
   const block = selectedBudgetBlock.value;
-  if (!block || !isBudgetOrderBlock(block)) return 0;
-  return budgetOrderBlocks.value.findIndex((candidate) => candidate.id === block.id) + 1;
+  if (!block) return '';
+  if (block.type === 'chatHistory') return '历史 Token 上限';
+  if (block.type === 'requestDocuments') return '文档 Token 上限';
+  if (block.type === 'lore') return 'Lore Token 上限';
+  if (block.type === 'authorsNote') return '作者注 Token 上限';
+  if (block.type === 'knowledge') return '知识 Token 上限';
+  return 'Scratchpad Token 上限';
 });
 
-function isBudgetOrderBlock(block: ContextPresetBlock): block is BudgetOrderBlock {
-  return supportsBudgetOrder(block.type);
-}
 const selectedRoleBlock = computed<RoleContextBlock | null>(() => (
   selectedStoredBlock.value?.type === 'role' ? selectedStoredBlock.value : null
 ));
@@ -763,17 +753,6 @@ function setBlockMaxTokens(value: number | undefined): void {
   selectedBudgetBlock.value.maxTokens = typeof value === 'number' && value > 0 ? value : null;
 }
 
-function setSelectedBudgetRank(value: number): void {
-  const selected = selectedBudgetBlock.value;
-  if (!selected || !isBudgetOrderBlock(selected)) return;
-  const ordered = budgetOrderBlocks.value.filter((block) => block.id !== selected.id);
-  const target = Math.max(0, Math.min(ordered.length, value - 1));
-  ordered.splice(target, 0, selected);
-  ordered.forEach((block, index) => {
-    block.budgetPriority = (index + 1) * 100;
-  });
-}
-
 function setAnchorType(type: Anchor['type']): void {
   const block = selectedAnchorBlock.value;
   if (!block) return;
@@ -1032,6 +1011,28 @@ onBeforeUnmount(() => {
         <div v-if="selectedResolvedBlock" class="editor-body">
           <section v-if="selectedBlockGuide" class="block-guide">
             <p class="guide-summary">{{ selectedBlockGuide.summary }}</p>
+            <template v-if="selectedResolvedBlock.type === 'chatHistory'">
+              <p class="history-mechanism">
+                历史消息按原顺序作为独立 role/content 进入模型请求。当前输入由“当前输入”区块单独加入；群聊用户消息带参与者标记，私聊不带。
+              </p>
+              <div class="history-example">
+                <div
+                  v-for="message in chatHistoryExample.messages"
+                  :key="message.role"
+                  class="history-message"
+                >
+                  <span :class="['history-role', `is-${message.role}`]">{{ message.role }}</span>
+                  <code>{{ message.content }}</code>
+                </div>
+                <div class="history-token-line">
+                  <span>历史区块计数约 {{ chatHistoryExample.historyBudgetTokens }} token</span>
+                  <span>最终裁剪计数约 {{ chatHistoryExample.finalCropTokens }} token</span>
+                </div>
+              </div>
+              <p class="history-token-note">
+                这里只计算两条无 name、工具和媒体的示例消息，不含其他区块。最终裁剪计数包含 ChatLuna 当前的 message framing 与 reply priming；具体 tokenizer 与 Provider 最终 usage 可能不同。
+              </p>
+            </template>
           </section>
 
           <template v-if="selectedResolvedBlock.source === 'runtime'">
@@ -1052,26 +1053,11 @@ onBeforeUnmount(() => {
                 <el-form-item label="启用">
                   <el-switch v-model="selectedBudgetBlock.enabled" />
                 </el-form-item>
-                <el-form-item v-if="selectedBudgetRank > 0" label="预算分配顺序">
-                  <el-select
-                    :model-value="selectedBudgetRank"
-                    @change="setSelectedBudgetRank(Number($event))"
-                  >
-                    <el-option
-                      v-for="(block, index) in budgetOrderBlocks"
-                      :key="block.id"
-                      :value="index + 1"
-                      :label="`第 ${index + 1} 位 · ${blockLabels[block.type]}`"
-                    />
-                  </el-select>
-                </el-form-item>
-                <el-form-item
-                  :label="selectedBudgetBlock.type === 'agentScratchpad' ? 'Scratchpad 上限' : '最大占用'"
-                >
+                <el-form-item :label="selectedBudgetLimitLabel">
                   <div class="inline-field">
                     <template v-if="selectedBudgetBlock.maxTokens === null">
                       <span class="budget-mode">
-                        {{ selectedBudgetBlock.type === 'agentScratchpad' ? '不设上限' : '自动使用分到的预算' }}
+                        {{ selectedBudgetBlock.type === 'agentScratchpad' ? '不设上限' : '使用可用空间' }}
                       </span>
                       <el-button @click="setBlockMaxTokens(1024)">设置上限</el-button>
                     </template>
@@ -1085,11 +1071,11 @@ onBeforeUnmount(() => {
                     </template>
                   </div>
                 </el-form-item>
-                <p v-if="selectedBudgetRank > 0" class="field-note wide">
-                  固定边界先占用空间，其余预算按这里的顺序分给启用的弹性区块。
+                <p v-if="selectedBudgetBlock.type === 'chatHistory'" class="field-note wide">
+                  只限制聊天历史。系统从最新完整轮次向前取，达到上限后停止；最终仍可能被模型整体上下文裁剪。
                 </p>
                 <p v-else-if="selectedBudgetBlock.type === 'agentScratchpad'" class="field-note wide">
-                  Scratchpad 不参与弹性预算排序；设置上限后，超限会直接结束本次请求。
+                  只限制本次 Agent 的中间步骤和工具结果；设置上限后，超限会直接结束本次请求。
                 </p>
               </div>
 
@@ -1595,6 +1581,80 @@ onBeforeUnmount(() => {
   line-height: 1.7;
 }
 
+.history-mechanism {
+  max-width: 800px;
+  margin: 7px 0 0;
+  color: #59657a;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.history-example {
+  max-width: 800px;
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid #dce3ee;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.history-message {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.history-message + .history-message {
+  border-top: 1px solid #e4e9f1;
+}
+
+.history-role {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #3159a7;
+  background: #e9f0ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.history-role.is-assistant {
+  color: #397357;
+  background: #e7f5ed;
+}
+
+.history-message code {
+  min-width: 0;
+  color: #253148;
+  font-size: 11px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.history-token-line {
+  display: flex;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border-top: 1px solid #dce3ee;
+  color: #45536a;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.history-token-note {
+  max-width: 800px;
+  margin: 7px 0 0;
+  color: #7d8798;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
 .runtime-actions {
   display: flex;
   align-items: center;
@@ -1627,7 +1687,7 @@ onBeforeUnmount(() => {
 
 .budget-settings {
   display: grid;
-  grid-template-columns: 86px minmax(180px, .8fr) minmax(230px, 1.2fr);
+  grid-template-columns: 90px minmax(260px, 1fr);
   gap: 0 14px;
   align-items: start;
   margin-bottom: 8px;
@@ -1741,9 +1801,6 @@ onBeforeUnmount(() => {
     grid-template-columns: 204px minmax(0, 1fr);
   }
 
-  .budget-settings {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 820px) {
@@ -1806,6 +1863,11 @@ onBeforeUnmount(() => {
 
   .budget-settings {
     grid-template-columns: 1fr;
+  }
+
+  .history-message {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .editor-body {

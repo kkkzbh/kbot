@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chatHistoryExample,
   contextBlockGuides,
-  supportsBudgetOrder,
   type GuidedContextBlockType,
 } from '../apps/admin-web/src/pages/context-preset-guides';
 
@@ -26,14 +26,18 @@ describe('context preset block guides', () => {
     }
   });
 
-  it('only offers budget ordering for blocks consumed by the allocator', () => {
-    expect(supportsBudgetOrder('chatHistory')).toBe(true);
-    expect(supportsBudgetOrder('requestDocuments')).toBe(true);
-    expect(supportsBudgetOrder('lore')).toBe(true);
-    expect(supportsBudgetOrder('authorsNote')).toBe(true);
-    expect(supportsBudgetOrder('knowledge')).toBe(true);
-    expect(supportsBudgetOrder('agentScratchpad')).toBe(false);
-    expect(supportsBudgetOrder('currentInput')).toBe(false);
-    expect(supportsBudgetOrder('modelOutput')).toBe(false);
+  it('shows the provider message shape and both token accounting stages', () => {
+    expect(chatHistoryExample.messages).toEqual([
+      {
+        role: 'user',
+        content: '[speaker_id=10001 speaker_name="小明"] 今晚几点开黑？',
+      },
+      {
+        role: 'assistant',
+        content: '八点，可以。',
+      },
+    ]);
+    expect(chatHistoryExample.historyBudgetTokens).toBe(23);
+    expect(chatHistoryExample.finalCropTokens).toBe(38);
   });
 });
