@@ -35,6 +35,8 @@ const toolScopeOptions = computed(() => createPolicyScopeOptions(
   state.value?.tools.defaultScopes || [],
   state.value?.tools.scopes || [],
 ));
+const memorySearchPolicy = computed(() =>
+  state.value?.tools.catalog.find((tool: any) => tool.toolName === 'memory_search') ?? null);
 const featureOverrideDuplicate = computed(() => hasFeatureOverride(
   featureOverrides.value as FeatureOverrideInput[],
   featureDraft,
@@ -121,6 +123,17 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <EmptyState v-else title="没有功能覆盖" description="所有会话当前继承全局功能设置。" />
     </template>
     <template v-else-if="activeTab==='tools'">
+      <div v-if="memorySearchPolicy" class="core-tool-row">
+        <div class="core-tool-copy">
+          <strong>{{ memorySearchPolicy.title }}</strong>
+          <span>{{ memorySearchPolicy.description }}</span>
+        </div>
+        <div class="core-tool-access" aria-label="记忆检索可用范围">
+          <span class="allowed">主 Agent</span>
+          <span class="allowed">Automation</span>
+          <span class="blocked">Sub-Agent 禁止</span>
+        </div>
+      </div>
       <div class="panel-head subhead"><div><h2>工具权限覆盖</h2><p>{{ state.tools.catalog.length }} 个工具 · {{ state.tools.routeProfiles.length }} 条 route</p></div><el-button size="small" @click="openToolDialog">添加覆盖</el-button></div>
       <el-table v-if="toolOverrides.length" :data="toolOverrides" style="width:100%"><el-table-column prop="toolName" label="工具" min-width="190" /><el-table-column prop="routeProfile" label="Route" width="110" /><el-table-column prop="scopeKind" label="范围类型" width="160" /><el-table-column prop="scopeId" label="范围 ID" min-width="150" /><el-table-column label="启用" width="90"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="scope"><el-button text type="danger" @click="toolOverrides.splice(scope.$index,1)">移除</el-button></template></el-table-column></el-table>
       <EmptyState v-else title="没有工具覆盖" description="所有工具当前使用 route 的默认工具集。" />
@@ -135,4 +148,22 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
   <el-dialog v-model="addToolOpen" title="添加工具覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="工具"><el-select v-model="toolDraft.toolName" filterable style="width:100%"><el-option v-for="tool in state?.tools.catalog" :key="tool.toolName" :label="tool.title || tool.toolName" :value="tool.toolName" /></el-select></el-form-item><el-form-item label="Route"><el-select v-model="toolDraft.routeProfile" style="width:100%"><el-option v-for="route in state?.tools.routeProfiles" :key="route" :value="route" /></el-select></el-form-item><el-form-item label="范围" :error="toolOverrideDuplicate ? '该范围已有此工具与 Route 覆盖' : ''"><el-select v-model="toolScope" value-key="key" placeholder="请选择范围" style="width:100%"><el-option v-for="scope in toolScopeOptions" :key="scope.key" :label="scope.label" :value="scope" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="toolDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addToolOpen=false">取消</el-button><el-button type="primary" :disabled="!toolOverrideReady" @click="addTool">添加</el-button></template></el-dialog>
 </template>
 
-<style scoped>.policy-panel{overflow:hidden}.policy-tabs{padding:0 20px}.policy-tabs :deep(.el-tabs__header){margin:0}.subhead{border-top:0}.policy-panel :deep(.el-table__cell){font-size:11px}</style>
+<style scoped>
+.policy-panel{overflow:hidden}
+.policy-tabs{padding:0 20px}
+.policy-tabs :deep(.el-tabs__header){margin:0}
+.subhead{border-top:0}
+.policy-panel :deep(.el-table__cell){font-size:11px}
+.core-tool-row{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:16px 20px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#f8fafc}
+.core-tool-copy{display:grid;gap:3px;min-width:0}
+.core-tool-copy strong{font-size:14px;color:var(--ink)}
+.core-tool-copy span{font-size:12px;color:var(--muted)}
+.core-tool-access{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.core-tool-access span{padding:3px 8px;border-radius:999px;font-size:11px;line-height:1.4}
+.core-tool-access .allowed{color:#287659;background:#eaf7f0}
+.core-tool-access .blocked{color:#a64c4c;background:#fff0f0}
+@media(max-width:720px){
+  .core-tool-row{align-items:flex-start;flex-direction:column;gap:10px}
+  .core-tool-access{flex-wrap:wrap}
+}
+</style>
