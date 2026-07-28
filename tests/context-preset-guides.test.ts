@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   chatHistoryExample,
   contextBlockGuides,
-  requestAttachmentExamples,
+  requestAttachmentHistory,
   requestAttachmentGuides,
   requestDocumentExample,
   type GuidedContextBlockType,
@@ -61,21 +61,19 @@ describe('context preset block guides', () => {
       'file',
     ]);
     for (const item of requestAttachmentGuides) {
-      expect(item.route.trim().length).toBeGreaterThan(10);
-      expect(item.modelView.trim().length).toBeGreaterThan(10);
-      expect(item.usage.trim().length).toBeGreaterThan(10);
-      expect(item.boundary.trim().length).toBeGreaterThan(10);
+      expect(item.description.trim().length).toBeGreaterThan(30);
     }
   });
 
-  it('shows current and historical attachment message shapes', () => {
-    expect(requestAttachmentExamples.map((example) => example.role)).toEqual([
-      'user',
-      'system',
-    ]);
-    expect(requestAttachmentExamples[0]?.content).toContain('"type": "image_url"');
-    expect(requestAttachmentExamples[0]?.content).toContain('"type": "file_url"');
-    expect(requestAttachmentExamples[1]?.content).toContain('qqbot_attachment_replay');
-    expect(requestAttachmentExamples[1]?.content).toContain('可回放=file_url');
+  it('explains where historical attachment context appears and how replay works', () => {
+    expect(requestAttachmentHistory).toMatchObject({
+      injectionName: 'read_files_context',
+      stage: 'after_scratchpad',
+      role: 'system',
+    });
+    expect(requestAttachmentHistory.projection).toContain('att_pdf01');
+    expect(requestAttachmentHistory.projection).toContain('处理结果');
+    expect(requestAttachmentHistory.replayCall).toContain('qqbot_attachment_replay');
+    expect(requestAttachmentHistory.readCall).toContain('read_files');
   });
 });

@@ -30,10 +30,7 @@ export type SupportedRequestAttachmentKind =
 export interface RequestAttachmentGuide {
   kind: SupportedRequestAttachmentKind;
   label: string;
-  route: string;
-  modelView: string;
-  usage: string;
-  boundary: string;
+  description: string;
 }
 
 export const chatHistoryExample = {
@@ -59,77 +56,49 @@ export const requestDocumentExample = {
   ].join('\n'),
 } as const;
 
-export const requestAttachmentExamples = [
-  {
-    label: '当前消息',
-    role: 'user',
-    content: [
-      '[',
-      '  { "type": "text", "text": "[speaker_id=10001 speaker_name=\\"小明\\"] 看图并核对 PDF" },',
-      '  { "type": "image_url", "image_url": { "url": "https://…/screen.png" } },',
-      '  { "type": "file_url", "file_url": { "url": "https://…/需求说明.pdf", "mimeType": "application/pdf" } }',
-      ']',
-    ].join('\n'),
-  },
-  {
-    label: '再次提到历史附件',
-    role: 'system',
-    content: [
-      '历史附件引用上下文：默认只保留引用、元数据和处理后文本；除非显式调用 qqbot_attachment_replay，否则不要假定已经看到原件。',
-      '- att_pdf01 | PDF | 需求说明.pdf | 820.0 KiB | 发送者=小明 | 可回放=file_url',
-      '  处理结果：这是 PDF 中已经提取并截断到本轮上限的正文……',
-    ].join('\n'),
-  },
-] as const;
+export const requestAttachmentHistory = {
+  injectionName: 'read_files_context',
+  stage: 'after_scratchpad',
+  role: 'system',
+  projection: [
+    '历史附件引用上下文：默认只保留引用、元数据和处理后文本；除非显式调用 qqbot_attachment_replay，否则不要假定已经看到原件。',
+    '- att_pdf01 | PDF | 需求说明.pdf | 820.0 KiB | 发送者=小明 | 可回放=file_url',
+    '  处理结果：这是 PDF 已提取并截断的正文……',
+  ].join('\n'),
+  replayCall: 'qqbot_attachment_replay({ refs: ["att_pdf01"], purpose: "查看 PDF 原件中的图表" })',
+  readCall: 'read_files({ files: [{ url: "<回放返回的 file_url>" }] })',
+} as const;
 
 export const requestAttachmentGuides: RequestAttachmentGuide[] = [
   {
     kind: 'image',
     label: '图片',
-    route: '当前消息进入“当前输入”；历史图片先进入附件引用，按需回放原图。',
-    modelView: '当前轮是 user content 中的 image_url；Responses 模式会转换为 input_image。历史轮默认只有附件 ref、文件名、大小和发送者。',
-    usage: '支持视觉的模型可以识别画面、文字、界面布局、物体与相互关系；需要重新查看历史原图时可调用 qqbot_attachment_replay。',
-    boundary: '模型档案未通过视觉能力探测时图像会被丢弃；历史引用本身不等于模型已经看到原图。',
+    description: '本轮图片作为 image_url 放在“当前输入”，视觉模型可直接识别画面和文字。归档后不提取图片内容；历史引用只给出文件信息，模型需要原图时按引用 ID 回放，再用 read_files 读取。',
   },
   {
     kind: 'pdf',
     label: 'PDF',
-    route: '当前消息作为文件输入；归档时同时提取 PDF 文本，历史引用优先提供文本摘录。',
-    modelView: '当前轮在 Responses 模式中是 input_file(file_url, filename)。历史轮显示附件 ref、元数据和可用的 PDF 提取文本。',
-    usage: '模型可以阅读支持的原始 PDF，或依据提取文本进行总结、问答、引用和内容核对；需要原件时可按 ref 回放 file_url。',
-    boundary: '扫描版 PDF 没有可提取文本时只能依赖 Provider 的文件读取能力；本块不会自动执行 OCR。',
+    description: '本轮 PDF 作为 file_url 进入“当前输入”，Provider 会转换为文件输入。归档时提取正文，历史引用直接附带文本摘录；需要版式、图片或更完整内容时再回放原件。扫描版 PDF 当前不自动 OCR。',
   },
   {
     kind: 'text',
     label: '文本与 JSON',
-    route: '当前消息作为文件输入；归档时保存 UTF-8 文本摘录。',
-    modelView: '当前轮是 input_file 或 file_url；历史轮的附件引用会附带截断后的 text excerpt。',
-    usage: '模型可以阅读、检索、概括、比对和引用文本内容，也能按文本理解 JSON 等结构化数据。',
-    boundary: '只按 UTF-8 文本处理并限制摘录长度；二进制内容或错误编码不会被可靠解释。',
+    description: '本轮文件作为 file_url 进入“当前输入”。归档时保存 UTF-8 文本摘录，历史引用和回放直接返回这段文本，模型可据此检索、总结和比较；超长内容会截断。',
   },
   {
     kind: 'audio',
     label: '语音与音频',
-    route: '归档后优先通过 ASR 转成文本，再替换当前消息中的音频部分。',
-    modelView: '有转写时是 text: “音频附件 att_… 转写：…”；无转写时只有 [attachment ref=… kind=audio]。',
-    usage: '模型依据转写内容回答、总结和提取信息；历史引用与回放也优先返回转写文本。',
-    boundary: '当前链路不向模型承诺原始声学信息，语气、音色、背景声和说话人分离可能不可见。',
+    description: '先用 ASR 转写，本轮“当前输入”、历史引用和回放都给模型转写文本。没有转写时只保留附件引用；当前回放不会把原始音频交给模型，因此音色、语气和背景声不可用。',
   },
   {
     kind: 'video',
     label: '视频',
-    route: '保存为视频附件；当前输入保留 video_url，历史需要原件时回放为 file_url。',
-    modelView: '模型得到视频或文件句柄，以及附件 ref、文件名、MIME、大小和发送者等元数据。',
-    usage: '只有 Provider 与模型支持对应视频/文件输入时才能直接读取原件。',
-    boundary: '当前系统不自动抽帧、不自动提取字幕，也不保证所选模型能够理解视频内容。',
+    description: '本轮保留 video_url。归档后不抽帧、不提取字幕，历史引用只有文件信息；回放可取回 file_url，再由 read_files 尝试读取，能否理解取决于 Provider 与模型的视频能力。',
   },
   {
     kind: 'file',
     label: '其他文件',
-    route: '保存为通用文件附件；当前输入和历史回放使用 file_url。',
-    modelView: '模型得到文件句柄和元数据；没有通用二进制内容转文本。',
-    usage: 'Provider 支持该文件类型时，模型可以直接读取；否则只能根据文件名、类型、大小和用户说明判断下一步。',
-    boundary: '压缩包、Office 文件和未知 MIME 当前没有统一解析器，文件已被保存不代表模型已经理解内容。',
+    description: '本轮和回放都使用 file_url。系统没有通用二进制解析器；归档后的历史引用只有文件名、类型、大小和发送者，只有 read_files 与所选模型支持该格式时才能读取原件。',
   },
 ];
 
@@ -138,7 +107,7 @@ export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuid
     summary: '读取当前会话已保存的消息。每条用户消息开启一个完整轮次，后续回复和工具结果归入该轮；系统从最新轮次向前保留，放不下的整轮舍弃。',
   },
   requestDocuments: {
-    summary: '把运行时提供的文本 Document 放在聊天历史之后，作为本次回答的低权限参考材料。每份文档会携带 id、metadata 和正文；空文档跳过，达到本块上限后停止加入后续文档。',
+    summary: '这里说明两条独立路径：文本 Document 由本块加入聊天历史之后；QQ群附件属于当前输入或一次性运行时注入，不受本块的 Token 上限控制。',
   },
   lore: {
     summary: '扫描最近对话中的关键词，只在命中时加入对应的世界观、设定或背景资料。',

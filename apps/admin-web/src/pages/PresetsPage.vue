@@ -47,7 +47,7 @@ import {
 import {
   chatHistoryExample,
   contextBlockGuides,
-  requestAttachmentExamples,
+  requestAttachmentHistory,
   requestAttachmentGuides,
   requestDocumentExample,
   type GuidedContextBlockType,
@@ -1067,65 +1067,41 @@ onBeforeUnmount(() => {
               </div>
             </template>
             <template v-else-if="selectedBlockType === 'requestDocuments'">
-              <div class="document-wire-example">
-                <strong>文本 Document 在模型请求中的实际形态</strong>
+              <section class="document-guide-section">
+                <h3>文本 Document</h3>
+                <p>运行时检索到的文本资料会作为一条 user message 放在聊天历史之后。每份资料包含 id、metadata 和正文；空文档跳过，达到“文档 Token 上限”后停止加入后续文档。</p>
                 <div class="history-message">
                   <span class="history-role">{{ requestDocumentExample.role }}</span>
                   <code>{{ requestDocumentExample.content }}</code>
                 </div>
-              </div>
+              </section>
 
-              <div class="attachment-guide">
-                <div class="attachment-guide-intro">
-                  <strong>QQ群附件进入模型的方式</strong>
-                  <p>附件会按类型进入当前输入、历史附件引用或回放工具。下面列出的形态是模型实际接收的内容。</p>
+              <section class="document-guide-section">
+                <h3>历史附件如何出现和回放</h3>
+                <p>附件发送时会被归档并获得引用 ID。用户后来提到该 ID、文件名或“刚才那张图”时，QQBot 在当前会话内定位附件，并生成一条只对本次请求有效的 system message。</p>
+                <p>这条消息名为 <code>{{ requestAttachmentHistory.injectionName }}</code>，位于 <code>{{ requestAttachmentHistory.stage }}</code>：在 Agent Scratchpad 之后、模型请求发出之前。它不属于聊天历史，也不写回聊天记录。</p>
+                <div class="history-message">
+                  <span class="history-role is-system">{{ requestAttachmentHistory.role }}</span>
+                  <code>{{ requestAttachmentHistory.projection }}</code>
                 </div>
-                <div class="attachment-wire-examples">
-                  <div
-                    v-for="example in requestAttachmentExamples"
-                    :key="example.label"
-                    class="attachment-wire-example"
-                  >
-                    <strong>{{ example.label }}</strong>
-                    <div class="history-message">
-                      <span :class="['history-role', `is-${example.role}`]">{{ example.role }}</span>
-                      <code>{{ example.content }}</code>
-                    </div>
-                  </div>
-                </div>
-                <div class="attachment-guide-list">
-                  <article
-                    v-for="item in requestAttachmentGuides"
-                    :key="item.kind"
-                    class="attachment-guide-row"
-                  >
-                    <strong>{{ item.label }}</strong>
-                    <dl>
-                      <div>
-                        <dt>进入路径</dt>
-                        <dd>{{ item.route }}</dd>
-                      </div>
-                      <div>
-                        <dt>模型看到</dt>
-                        <dd>{{ item.modelView }}</dd>
-                      </div>
-                      <div>
-                        <dt>模型可用</dt>
-                        <dd>{{ item.usage }}</dd>
-                      </div>
-                      <div>
-                        <dt>能力边界</dt>
-                        <dd>{{ item.boundary }}</dd>
-                      </div>
-                    </dl>
-                  </article>
-                </div>
-              </div>
+                <p>这一步只让模型看到引用信息，以及 PDF、文本或音频已经提取的文字。需要查看图片、PDF 版式、视频或其他原件时，模型先调用：</p>
+                <code class="tool-call">{{ requestAttachmentHistory.replayCall }}</code>
+                <p>该工具返回归档文件的 URL 和更长的提取文本；文件原件还需再调用：</p>
+                <code class="tool-call">{{ requestAttachmentHistory.readCall }}</code>
+                <p><code>read_files</code> 读取成功后，原件作为新的多模态消息加入下一次 Agent 推理。单独调用回放工具只取得句柄，不代表模型已经读取文件。</p>
+              </section>
 
-              <div class="document-scope-note">
-                <strong>本块控制范围</strong>
-                <p>“文档 Token 上限”只裁剪上面的文本 Document。当前消息里的图片或文件属于“当前输入”，历史附件引用和回放结果属于运行时注入；它们分别由自己的上下文阶段和模型能力约束。</p>
-              </div>
+              <section class="document-guide-section attachment-types">
+                <h3>支持的附件</h3>
+                <div
+                  v-for="item in requestAttachmentGuides"
+                  :key="item.kind"
+                  class="attachment-type"
+                >
+                  <strong>{{ item.label }}</strong>
+                  <p>{{ item.description }}</p>
+                </div>
+              </section>
             </template>
           </section>
 
@@ -1713,65 +1689,59 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
-.document-wire-example {
-  max-width: 800px;
-  margin-top: 18px;
-  overflow: hidden;
-  border: 1px solid #dce3ee;
-  border-radius: 9px;
-  background: #f8fafc;
-}
-
-.document-wire-example > strong {
-  display: block;
-  padding: 11px 12px;
-  border-bottom: 1px solid #e4e9f1;
-  color: #263248;
-  font-size: 12px;
-}
-
-.attachment-guide {
+.document-guide-section {
   max-width: 800px;
   margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid #e2e7ef;
 }
 
-.attachment-guide-intro {
-  margin-bottom: 8px;
+.document-guide-section:first-of-type {
+  margin-top: 16px;
+  padding-top: 0;
+  border-top: 0;
 }
 
-.attachment-guide-intro strong,
-.document-scope-note strong {
+.document-guide-section h3 {
+  margin: 0 0 8px;
   color: #263248;
-  font-size: 13px;
+  font-size: 14px;
 }
 
-.attachment-guide-intro p,
-.document-scope-note p {
-  margin: 5px 0 0;
-  color: #59657a;
+.document-guide-section p {
+  margin: 7px 0;
+  color: #4d5a70;
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
-.attachment-wire-examples {
-  display: grid;
-  gap: 10px;
-  margin: 14px 0 20px;
-}
-
-.attachment-wire-example {
-  overflow: hidden;
+.document-guide-section > .history-message {
+  margin-top: 12px;
   border: 1px solid #dce3ee;
-  border-radius: 9px;
+  border-radius: 8px;
   background: #f8fafc;
 }
 
-.attachment-wire-example > strong {
-  display: block;
-  padding: 9px 12px;
-  border-bottom: 1px solid #e4e9f1;
-  color: #344158;
+.document-guide-section p code,
+.tool-call {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.document-guide-section p code {
+  color: #37517e;
   font-size: 12px;
+}
+
+.tool-call {
+  display: block;
+  margin: 9px 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  color: #263651;
+  background: #f8fafc;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .history-role.is-system {
@@ -1779,56 +1749,26 @@ onBeforeUnmount(() => {
   background: #f0e9f8;
 }
 
-.attachment-guide-list {
-  border-top: 1px solid #dfe5ee;
-}
-
-.attachment-guide-row {
+.attachment-type {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 18px;
-  padding: 15px 0;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 0;
   border-bottom: 1px solid #e4e9f1;
 }
 
-.attachment-guide-row > strong {
+.attachment-type > strong {
   color: #24324a;
   font-size: 12px;
 }
 
-.attachment-guide-row dl {
-  min-width: 0;
-  display: grid;
-  gap: 7px;
-  margin: 0;
-}
-
-.attachment-guide-row dl > div {
-  display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  gap: 10px;
-}
-
-.attachment-guide-row dt {
-  color: #68758a;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.attachment-guide-row dd {
+.attachment-type > p {
   min-width: 0;
   margin: 0;
   color: #344158;
   font-size: 12px;
   line-height: 1.65;
   overflow-wrap: anywhere;
-}
-
-.document-scope-note {
-  max-width: 800px;
-  margin-top: 18px;
-  padding-left: 12px;
-  border-left: 3px solid #9db2e9;
 }
 
 .runtime-actions {
@@ -2053,13 +1993,9 @@ onBeforeUnmount(() => {
     gap: 6px;
   }
 
-  .attachment-guide-row {
+  .attachment-type {
     grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .attachment-guide-row dl > div {
-    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 5px;
   }
 
   .token-limit-control .el-segmented {
