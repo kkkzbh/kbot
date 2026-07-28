@@ -5135,8 +5135,11 @@ export async function verifyMemoryV2Cutover(
     ) {
       throw new Error('Memory Ledger cutover provenance does not match the preflight report.');
     }
-    if (tableExists(database, 'chatluna_docstore')) {
-      throw new Error('ChatLuna long-memory namespace still exists after cutover.');
+    if (
+      tableExists(database, 'chatluna_docstore')
+      && tableCount(database, 'chatluna_docstore') !== 0
+    ) {
+      throw new Error('ChatLuna docstore must be empty after cutover.');
     }
     const operationalColumns = new Set(
       (database.prepare(

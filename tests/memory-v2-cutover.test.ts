@@ -1850,6 +1850,49 @@ describe('Memory Ledger V2 one-shot cutover', () => {
     });
   });
 
+  it('allows ChatLuna core to recreate an empty shared docstore after cutover', async () => {
+    const fixture = createFixture();
+    await preflight(fixture);
+    await applyMemoryV2Cutover(options(fixture, 'apply'));
+    markModelRevisionApplied(fixture.modelConfig);
+    const database = new DatabaseSync(fixture.database);
+    try {
+      database.exec(`
+        CREATE TABLE "chatluna_docstore" (
+          "key" TEXT,
+          "id" TEXT,
+          "pageContent" TEXT DEFAULT '',
+          "metadata" TEXT DEFAULT '{}',
+          "createdAt" INTEGER,
+          PRIMARY KEY ("key", "id")
+        )
+      `);
+    } finally {
+      database.close();
+    }
+
+    await expect(
+      verifyMemoryV2Cutover(options(fixture, 'bootstrap-verify')),
+    ).resolves.toMatchObject({
+      active: 59,
+      backfillPending: 59,
+    });
+
+    const populated = new DatabaseSync(fixture.database);
+    try {
+      populated.prepare(`
+        INSERT INTO "chatluna_docstore" (
+          "key", "id", "pageContent", "metadata", "createdAt"
+        ) VALUES (?, ?, ?, ?, ?)
+      `).run('long-memory', 'legacy', 'legacy memory', '{}', 1);
+    } finally {
+      populated.close();
+    }
+    await expect(
+      verifyMemoryV2Cutover(options(fixture, 'bootstrap-verify')),
+    ).rejects.toThrow('ChatLuna docstore must be empty after cutover');
+  });
+
   it('allows runtime operational event create, update, and resolve across both verification phases', async () => {
     const fixture = createFixture();
     await preflight(fixture);
