@@ -105,6 +105,12 @@ const restartReasonLabels: Record<string, string> = {
 const restartTitle = computed(() => runtime.restartReasons.length
   ? `点击应用：${runtime.restartReasons.map((reason) => restartReasonLabels[reason] ?? reason).join(' · ')}`
   : '配置等待重启');
+const currentModelLabel = computed(() => {
+  const separatorIndex = runtime.currentModel.lastIndexOf('/');
+  return separatorIndex >= 0
+    ? runtime.currentModel.slice(separatorIndex + 1)
+    : runtime.currentModel;
+});
 const restartUnitLabels: Partial<Record<BotServiceUnit, string>> = {
   'qqbot-koishi.service': 'Koishi',
   'qqbot-voice-tts.service': '语音服务',
@@ -268,8 +274,8 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
           <span>搜索页面和操作</span><kbd>⌘ K</kbd>
         </button>
         <div class="topbar-state">
-          <span v-if="route.name !== 'overview'" class="model-chip" :title="runtime.shellError || undefined">
-            {{ runtime.shellState === 'loading' ? '加载中' : runtime.shellState === 'error' ? '状态不可用' : runtime.currentModel }}
+          <span class="model-chip" :title="runtime.shellError || undefined">
+            {{ runtime.shellState === 'loading' ? '加载中' : runtime.shellState === 'error' ? '状态不可用' : currentModelLabel }}
           </span>
           <button
             v-if="runtime.restartRequired || restartBusy"
