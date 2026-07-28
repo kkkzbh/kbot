@@ -19,6 +19,7 @@ import {
   orderModelSettingBindings,
   replaceBindingMode,
   structuredOutputProtocolsForRequestMode,
+  trimUnreferencedCatalogModels,
   withModelRequestMode,
   withStructuredOutputProtocol,
 } from '../apps/admin-web/src/pages/model-page-state.js';
@@ -115,6 +116,39 @@ describe('admin unified model page state', () => {
       structuredOutputProtocol: 'native_responses_json_schema',
       capabilities: {
         vision: true,
+        tools: true,
+        structuredOutput: true,
+      },
+    });
+  });
+
+  it('derives a directly usable runtime contract from bridge catalogs', () => {
+    const connection = {
+      id: 'codex',
+      displayName: 'Codex OAuth',
+      adapter: 'codexBridge' as const,
+      baseUrl: null,
+      auth: { kind: 'oauth' as const, provider: 'codex' as const },
+      catalogDriver: 'codexBridge' as const,
+    };
+
+    expect(createCatalogModelProfile({
+      connection,
+      entry: {
+        transportModel: 'gpt-5.6-luna',
+        displayName: 'GPT-5.6 Luna',
+        requestMode: 'responses',
+        structuredOutputProtocol: 'native_responses_json_schema',
+        metadataTags: [],
+      },
+      existingIds: [],
+    })).toMatchObject({
+      id: 'gpt-5.6-luna',
+      contextSize: 44_800,
+      requestMode: 'responses',
+      structuredOutputProtocol: 'native_responses_json_schema',
+      capabilities: {
+        vision: false,
         tools: true,
         structuredOutput: true,
       },
@@ -256,6 +290,51 @@ describe('admin unified model page state', () => {
     });
   });
 
+  it('persists catalog models only while a workload uses them', () => {
+    const configuration = aggregate();
+    configuration.connections.push(
+      {
+        id: 'catalog',
+        displayName: 'Catalog',
+        adapter: 'openaiCompatible',
+        baseUrl: 'https://catalog.example.com/v1',
+        auth: { kind: 'none' },
+        catalogDriver: 'openaiModels',
+        credentialState: 'external',
+        hasSecret: false,
+      },
+      {
+        id: 'manual',
+        displayName: 'Manual',
+        adapter: 'openaiCompatible',
+        baseUrl: 'https://manual.example.com/v1',
+        auth: { kind: 'none' },
+        catalogDriver: 'static',
+        credentialState: 'external',
+        hasSecret: false,
+      },
+    );
+    configuration.models.push(
+      {
+        ...structuredClone(configuration.models[0]),
+        id: 'unused-catalog',
+        connectionId: 'catalog',
+      },
+      {
+        ...structuredClone(configuration.models[0]),
+        id: 'manual-model',
+        connectionId: 'manual',
+      },
+    );
+
+    const trimmed = trimUnreferencedCatalogModels(createModelConfigDraft(configuration));
+
+    expect(trimmed.models.map((model) => `${model.connectionId}/${model.id}`)).toEqual([
+      'provider/chat',
+      'manual/manual-model',
+    ]);
+  });
+
   it('only enables connection operations for the exact saved connection and credentials', () => {
     const configuration = aggregate();
     const draft = createModelConfigDraft(configuration);
@@ -331,7 +410,7 @@ describe('admin unified model page state', () => {
     })).toBe(false);
   });
 
-  it('only exposes authentication configurations with a compatible registered model', () => {
+  it('filters manual authentication configurations by compatible models', () => {
     const configuration = aggregate();
     configuration.connections.push({
       id: 'chat-only',

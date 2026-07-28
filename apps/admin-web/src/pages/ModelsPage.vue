@@ -6,6 +6,7 @@ import {
   onMounted,
   reactive,
   ref,
+  watch,
 } from 'vue';
 import { onBeforeRouteLeave, useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -27,6 +28,7 @@ import {
   modelConnectionProbeResponseSchema,
   modelIdSchema,
   modelOAuthPollRequestSchema,
+  type ModelCatalogEntry,
   type ModelCatalogResponse,
   type ModelConfigAdminAggregate,
   type ModelConfigDraft,
@@ -47,10 +49,10 @@ import {
   isModelDraftDirty,
   isSavedConnectionOperationTarget,
   loadModelPageConfiguration,
-  nextCatalogModelId,
   orderModelSettingBindings,
   replaceBindingMode,
   structuredOutputProtocolsForRequestMode,
+  trimUnreferencedCatalogModels,
   withModelRequestMode,
   withStructuredOutputProtocol,
   type SecretDraft,
@@ -63,6 +65,11 @@ type BindingDraft = ModelConfigDraft['bindings'][number];
 type BindingMode = BindingDraft['mode'];
 type AdapterType = ConnectionDraft['adapter'];
 type ManualAuthKind = Extract<ConnectionDraft['auth'], { kind: 'none' | 'apiKey' }>['kind'];
+type ModelChoice = {
+  key: string;
+  value: string;
+  label: string;
+};
 
 type ConnectionBrand = {
   icon: string;
@@ -119,14 +126,6 @@ const probeByConnection = reactive<Record<string, {
   latencyMs: number;
 } | undefined>>({});
 const createConnectionOpen = ref(false);
-const addCatalogModelOpen = ref(false);
-const addCatalogModel = reactive<{
-  transportModel: string;
-  contextSize: number;
-}>({
-  transportModel: '',
-  contextSize: 128_000,
-});
 const createConnection = reactive<{
   id: string;
   displayName: string;
@@ -177,23 +176,6 @@ const selectedAuthState = computed(() => connectionAuthState(selectedConnectionI
 const orderedBindings = computed(() => orderModelSettingBindings(
   draft.value?.bindings ?? [],
 ));
-const availableCatalogModels = computed(() => {
-  if (!selectedConnection.value) return [];
-  const registered = new Set(selectedConnectionModels.value.map(
-    (model) => model.transportModel,
-  ));
-  return (catalogByConnection[selectedConnection.value.id]?.models ?? [])
-    .filter((entry) => !registered.has(entry.transportModel));
-});
-const selectedCatalogModel = computed(() => availableCatalogModels.value.find(
-  (entry) => entry.transportModel === addCatalogModel.transportModel,
-) ?? null);
-const catalogModelIdPreview = computed(() => selectedCatalogModel.value
-  ? nextCatalogModelId(
-      selectedCatalogModel.value.transportModel,
-      selectedConnectionModels.value.map((model) => model.id),
-    )
-  : '');
 
 function connectionConfigured(connectionId: string): boolean {
   const status = connectionAuthState(connectionId)?.status;
@@ -503,8 +485,15 @@ function createConnectionDraft(): void {
 async function removeSelectedConnection(): Promise<void> {
   const connection = selectedConnection.value;
   if (!connection || !draft.value) return;
+  const bindings = draft.value.bindings.filter(
+    (binding) => binding.mode === 'dedicated' && binding.connectionId === connection.id,
+  );
+  if (bindings.length > 0) {
+    ElMessage.error(`请先调整 ${bindings.length} 个正在使用 ${connection.displayName} 的模型设置。`);
+    return;
+  }
   const models = draft.value.models.filter((model) => model.connectionId === connection.id);
-  if (models.length > 0) {
+  if (connection.catalogDriver === 'static' && models.length > 0) {
     ElMessage.error(`请先删除 ${models.length} 个属于 ${connection.displayName} 的模型档案。`);
     return;
   }
@@ -518,7 +507,9 @@ async function removeSelectedConnection(): Promise<void> {
     return;
   }
   draft.value.connections = draft.value.connections.filter((item) => item.id !== connection.id);
+  draft.value.models = draft.value.models.filter((model) => model.connectionId !== connection.id);
   delete secretDrafts[connection.id];
+  delete catalogByConnection[connection.id];
   selectedConnectionId.value = draft.value.connections[0]?.id ?? '';
 }
 
@@ -570,48 +561,33 @@ async function addStaticModelProfile(): Promise<void> {
   }
 }
 
-async function openAddModel(): Promise<void> {
-  const connection = selectedConnection.value;
-  if (!draft.value || !connection) return;
-  if (connection.catalogDriver === 'static') {
-    await addStaticModelProfile();
-    return;
-  }
-  if (!canOperateSelectedConnection.value) {
-    ElMessage.warning('请先保存当前认证配置，再读取 Provider 模型目录。');
-    return;
-  }
-  const catalog = await refreshCatalog(connection.id);
-  if (!catalog) return;
-  if (availableCatalogModels.value.length === 0) {
-    ElMessage.info('Provider 目录中的模型均已登记。');
-    return;
-  }
-  Object.assign(addCatalogModel, {
-    transportModel: '',
-    contextSize: 128_000,
-  });
-  addCatalogModelOpen.value = true;
+const CATALOG_CHOICE_PREFIX = '__catalog__:';
+
+function catalogChoiceValue(transportModel: string): string {
+  return `${CATALOG_CHOICE_PREFIX}${transportModel}`;
 }
 
-function addSelectedCatalogModel(): void {
-  const connection = selectedConnection.value;
-  const entry = selectedCatalogModel.value;
-  if (!draft.value || !connection || !entry) {
-    ElMessage.error('请选择一个 Provider 模型。');
-    return;
-  }
-  try {
-    draft.value.models.push(createCatalogModelProfile({
-      connection,
-      entry,
-      contextSize: addCatalogModel.contextSize,
-      existingIds: selectedConnectionModels.value.map((model) => model.id),
-    }));
-    addCatalogModelOpen.value = false;
-  } catch (error) {
-    ElMessage.error(errorMessage(error, '模型档案创建失败'));
-  }
+function pruneUnusedCatalogModels(): void {
+  if (!draft.value) return;
+  draft.value.models = trimUnreferencedCatalogModels(draft.value).models;
+}
+
+function catalogProfile(
+  connection: ConnectionDraft,
+  entry: ModelCatalogEntry,
+): ModelProfileDraft {
+  const existing = draft.value?.models.find((model) => (
+    model.connectionId === connection.id
+    && model.transportModel === entry.transportModel
+  ));
+  if (existing) return existing;
+  return createCatalogModelProfile({
+    connection,
+    entry,
+    existingIds: draft.value?.models
+      .filter((model) => model.connectionId === connection.id)
+      .map((model) => model.id) ?? [],
+  });
 }
 
 function modelConnectionAdapter(model: ModelProfileDraft): AdapterType | null {
@@ -715,6 +691,7 @@ function setBindingMode(index: number, value: unknown): void {
   if (!binding || !['dedicated', 'disabled', 'inheritMain', 'inheritInvocation'].includes(String(value))) return;
   try {
     draft.value.bindings[index] = replaceBindingMode(binding, value as BindingMode);
+    pruneUnusedCatalogModels();
   } catch (error) {
     ElMessage.error(errorMessage(error, '绑定模式无效'));
   }
@@ -724,23 +701,97 @@ function setBindingConnection(binding: BindingDraft, value: unknown): void {
   if (binding.mode !== 'dedicated') return;
   binding.connectionId = String(value);
   binding.modelId = '';
+  pruneUnusedCatalogModels();
+  void ensureCatalog(binding.connectionId, false);
 }
 
 function compatibleConnections(binding: BindingDraft): ConnectionDraft[] {
   if (!draft.value || binding.mode !== 'dedicated') return [];
   const compatibleIds = compatibleConnectionIds(draft.value, binding.workload);
   return draft.value.connections.filter((connection) => (
-    compatibleIds.has(connection.id)
-    && connectionConfigured(connection.id)
+    connectionConfigured(connection.id)
+    && (
+      connection.catalogDriver !== 'static'
+      || compatibleIds.has(connection.id)
+    )
   ));
 }
 
-function compatibleModels(binding: BindingDraft): ModelProfileDraft[] {
+function compatibleModelChoices(binding: BindingDraft): ModelChoice[] {
   if (!draft.value || binding.mode !== 'dedicated' || !binding.connectionId) return [];
-  return draft.value.models.filter((model) => (
+  const connection = draft.value.connections.find(
+    (item) => item.id === binding.connectionId,
+  );
+  if (!connection) return [];
+  const existing = draft.value.models.filter((model) => (
     model.connectionId === binding.connectionId
     && isModelCompatible(binding.workload, model)
   ));
+  const choices = new Map<string, ModelChoice>();
+  for (const model of existing) {
+    choices.set(model.transportModel, {
+      key: `model:${model.id}`,
+      value: model.id,
+      label: model.displayName,
+    });
+  }
+  if (connection.catalogDriver === 'static') return [...choices.values()];
+  for (const entry of catalogByConnection[connection.id]?.models ?? []) {
+    const profile = catalogProfile(connection, entry);
+    if (!isModelCompatible(binding.workload, profile)) continue;
+    const savedProfile = existing.find(
+      (model) => model.transportModel === entry.transportModel,
+    );
+    choices.set(entry.transportModel, {
+      key: `catalog:${entry.transportModel}`,
+      value: savedProfile?.id ?? catalogChoiceValue(entry.transportModel),
+      label: entry.displayName,
+    });
+  }
+  return [...choices.values()];
+}
+
+function setBindingModel(binding: BindingDraft, value: unknown): void {
+  if (!draft.value || binding.mode !== 'dedicated') return;
+  const selection = String(value);
+  if (!selection.startsWith(CATALOG_CHOICE_PREFIX)) {
+    binding.modelId = selection;
+    pruneUnusedCatalogModels();
+    return;
+  }
+  const connection = draft.value.connections.find(
+    (item) => item.id === binding.connectionId,
+  );
+  const transportModel = selection.slice(CATALOG_CHOICE_PREFIX.length);
+  const entry = catalogByConnection[binding.connectionId]?.models.find(
+    (item) => item.transportModel === transportModel,
+  );
+  if (!connection || !entry) {
+    ElMessage.error('模型目录已变化，请重新打开模型选择。');
+    return;
+  }
+  try {
+    const profile = catalogProfile(connection, entry);
+    if (!isModelCompatible(binding.workload, profile)) {
+      ElMessage.error('该模型不满足当前用途。');
+      return;
+    }
+    if (!draft.value.models.some((model) => (
+      model.connectionId === profile.connectionId
+      && model.id === profile.id
+    ))) {
+      draft.value.models.push(profile);
+    }
+    binding.modelId = profile.id;
+    pruneUnusedCatalogModels();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '模型选择失败'));
+  }
+}
+
+function handleModelSelectVisibility(binding: BindingDraft, visible: boolean): void {
+  if (!visible || binding.mode !== 'dedicated') return;
+  void ensureCatalog(binding.connectionId, false);
 }
 
 async function addAgentOverride(): Promise<void> {
@@ -782,6 +833,7 @@ async function removeAgentOverride(index: number): Promise<void> {
     return;
   }
   draft.value?.bindings.splice(index, 1);
+  pruneUnusedCatalogModels();
 }
 
 async function probeConnection(connectionId: string): Promise<void> {
@@ -805,7 +857,10 @@ async function probeConnection(connectionId: string): Promise<void> {
   }
 }
 
-async function refreshCatalog(connectionId: string): Promise<ModelCatalogResponse | null> {
+async function refreshCatalog(
+  connectionId: string,
+  notify = true,
+): Promise<ModelCatalogResponse | null> {
   if (operationBusy.value) return null;
   operationBusy.value = `catalog:${connectionId}`;
   try {
@@ -815,14 +870,33 @@ async function refreshCatalog(connectionId: string): Promise<ModelCatalogRespons
       { method: 'POST', body: jsonBody(emptyRequestSchema, {}) },
     );
     catalogByConnection[connectionId] = result;
-    ElMessage.success(`目录已刷新，共 ${result.models.length} 个 transport models。`);
+    if (notify) ElMessage.success('模型目录已刷新');
     return result;
   } catch (error) {
-    ElMessage.error(errorMessage(error, '模型目录刷新失败'));
+    if (notify) ElMessage.error(errorMessage(error, '模型目录刷新失败'));
     return null;
   } finally {
     operationBusy.value = null;
   }
+}
+
+async function ensureCatalog(connectionId: string, notify: boolean): Promise<void> {
+  if (!draft.value || catalogByConnection[connectionId]) return;
+  const connection = draft.value.connections.find((item) => item.id === connectionId);
+  if (
+    !connection
+    || !saved.value
+    || connection.catalogDriver === 'static'
+    || !isSavedConnectionOperationTarget(
+      saved.value,
+      draft.value,
+      secretDrafts,
+      connectionId,
+    )
+  ) {
+    return;
+  }
+  await refreshCatalog(connectionId, notify);
 }
 
 async function oauth(connectionId: string, action: 'start' | 'poll' | 'logout'): Promise<void> {
@@ -891,6 +965,14 @@ onBeforeRouteLeave(async () => {
 function handleSave(): void {
   void save();
 }
+
+watch(
+  [selectedConnectionId, canOperateSelectedConnection],
+  ([connectionId, canOperate]) => {
+    if (connectionId && canOperate) void ensureCatalog(connectionId, false);
+  },
+  { flush: 'post' },
+);
 
 onMounted(() => {
   void load();
@@ -1030,6 +1112,7 @@ onBeforeUnmount(() => {
                 探测连接
               </el-button>
               <el-button
+                v-if="selectedConnection.catalogDriver !== 'static'"
                 :loading="operationBusy === `catalog:${selectedConnection.id}`"
                 :disabled="!canOperateSelectedConnection"
                 @click="refreshCatalog(selectedConnection.id)"
@@ -1158,35 +1241,19 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <section v-if="catalogByConnection[selectedConnection.id]" class="catalog-card">
+          <section
+            v-if="selectedConnection.catalogDriver === 'static'"
+            class="models-section"
+          >
             <div class="subsection-title">
               <div>
-                <h4>Provider 模型目录</h4>
-              </div>
-              <el-tag effect="plain">{{ catalogByConnection[selectedConnection.id]?.models.length }} models</el-tag>
-            </div>
-            <div class="catalog-list">
-              <span
-                v-for="entry in catalogByConnection[selectedConnection.id]?.models"
-                :key="entry.transportModel"
-                :title="entry.transportModel"
-              >
-                <strong>{{ entry.displayName }}</strong>
-              </span>
-            </div>
-          </section>
-
-          <section class="models-section">
-            <div class="subsection-title">
-              <div>
-                <h4>已登记模型</h4>
+                <h4>手动模型</h4>
               </div>
               <el-button
                 size="small"
-                :loading="operationBusy === `catalog:${selectedConnection.id}`"
-                @click="openAddModel"
+                @click="addStaticModelProfile"
               >
-                {{ selectedConnection.catalogDriver === 'static' ? '新增静态模型' : '从目录添加' }}
+                新增模型
               </el-button>
             </div>
             <el-collapse>
@@ -1348,19 +1415,20 @@ onBeforeUnmount(() => {
               <div class="binding-control">
                 <span>模型</span>
                 <el-select
-                  v-model="binding.modelId"
+                  :model-value="binding.modelId"
                   filterable
                   placeholder="选择兼容模型"
                   aria-label="模型"
+                  :loading="operationBusy === `catalog:${binding.connectionId}`"
+                  @change="setBindingModel(binding, $event)"
+                  @visible-change="handleModelSelectVisibility(binding, $event)"
                 >
                   <el-option
-                    v-for="model in compatibleModels(binding)"
-                    :key="model.id"
-                    :value="model.id"
-                    :label="model.displayName"
-                  >
-                    <span>{{ model.displayName }}</span>
-                  </el-option>
+                    v-for="choice in compatibleModelChoices(binding)"
+                    :key="choice.key"
+                    :value="choice.value"
+                    :label="choice.label"
+                  />
                 </el-select>
               </div>
             </template>
@@ -1405,53 +1473,11 @@ onBeforeUnmount(() => {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="addCatalogModelOpen" title="从 Provider 目录添加" width="min(560px, 92vw)">
-    <el-form label-position="top">
-      <el-form-item label="Provider 模型">
-        <el-select
-          v-model="addCatalogModel.transportModel"
-          filterable
-          placeholder="搜索并选择模型"
-          style="width:100%"
-        >
-          <el-option
-            v-for="entry in availableCatalogModels"
-            :key="entry.transportModel"
-            :value="entry.transportModel"
-            :label="entry.displayName"
-          >
-            <span>{{ entry.displayName }}</span>
-          </el-option>
-        </el-select>
-      </el-form-item>
-      <el-form-item label="上下文长度">
-        <el-input-number
-          v-model="addCatalogModel.contextSize"
-          :min="1"
-          :controls="false"
-          style="width:100%"
-        />
-      </el-form-item>
-      <el-form-item label="模型 ID">
-        <el-input :model-value="catalogModelIdPreview" disabled />
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="addCatalogModelOpen = false">取消</el-button>
-      <el-button
-        type="primary"
-        :disabled="!selectedCatalogModel"
-        @click="addSelectedCatalogModel"
-      >
-        添加模型
-      </el-button>
-    </template>
-  </el-dialog>
 </template>
 
 <style scoped>
 .apply-lock{position:fixed;inset:0;z-index:3000;display:grid;place-items:center;padding:24px;background:rgba(246,248,252,.82);backdrop-filter:blur(3px)}.apply-lock>div{display:grid;gap:7px;max-width:420px;padding:20px 24px;border:1px solid #d7dfec;border-radius:12px;background:#fff;box-shadow:0 16px 50px rgba(43,58,86,.16);text-align:center}.apply-lock strong{color:#344056;font-size:14px}.apply-lock span{color:#768196;font-size:10px;line-height:1.6}
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.revision-bar{display:grid;grid-template-columns:repeat(3,minmax(120px,.7fr)) minmax(220px,1.2fr) minmax(180px,1fr);align-items:center;margin-bottom:16px;overflow:hidden}.revision-bar>div{min-width:0;min-height:64px;display:flex;align-items:flex-start;justify-content:center;flex-direction:column;gap:5px;padding:12px 16px;border-right:1px solid var(--line)}.revision-bar>div:last-child{border-right:0}.revision-bar span{color:#8590a2;font-size:9px;text-transform:uppercase}.revision-bar strong{overflow:hidden;max-width:100%;color:#2f3b50;font-family:"SFMono-Regular",Consolas,monospace;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.revision-state{align-items:flex-start!important}.binding-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,2fr);gap:24px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row.binding-target{background:#f2f6ff;box-shadow:inset 3px 0 #416de0}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong{display:block;color:#344056;font-size:12px}.binding-controls{display:grid;grid-template-columns:minmax(130px,.75fr) minmax(160px,1fr) minmax(180px,1.3fr);gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.remove-binding{position:absolute;right:8px;top:4px}.connections-layout{height:500px;display:grid;grid-template-columns:260px minmax(0,1fr)}.connection-list{min-height:0;overflow-y:auto;padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:nowrap}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.secret-card,.oauth-card,.catalog-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-title,.oauth-title{display:flex;align-items:center;gap:8px;min-width:0}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.catalog-card{background:#fbfcfe}.subsection-title h4{min-width:0;margin:0;color:#354156;font-size:13px;white-space:nowrap}.catalog-list{display:flex;gap:7px;flex-wrap:wrap;max-height:150px;overflow:auto;margin-top:12px}.catalog-list>span{display:inline-flex;padding:6px 8px;border:1px solid #e3e8f0;border-radius:6px;background:#fff}.catalog-list strong{color:#48546a;font-size:9px}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__header){display:flex;align-items:center;min-height:40px;height:auto;line-height:1.2}.models-section :deep(.el-collapse-item__title){min-width:0;display:block;flex:1}.models-section :deep(.el-collapse-item__arrow){flex:none;margin-left:8px;transition:transform .18s ease}.models-section :deep(.el-collapse-item__arrow.is-active){transform:rotate(90deg)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden}.model-title strong{min-width:0;overflow:hidden;color:#374357;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.model-title .el-tag{flex:none}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.revision-bar{display:grid;grid-template-columns:repeat(3,minmax(120px,.7fr)) minmax(220px,1.2fr) minmax(180px,1fr);align-items:center;margin-bottom:16px;overflow:hidden}.revision-bar>div{min-width:0;min-height:64px;display:flex;align-items:flex-start;justify-content:center;flex-direction:column;gap:5px;padding:12px 16px;border-right:1px solid var(--line)}.revision-bar>div:last-child{border-right:0}.revision-bar span{color:#8590a2;font-size:9px;text-transform:uppercase}.revision-bar strong{overflow:hidden;max-width:100%;color:#2f3b50;font-family:"SFMono-Regular",Consolas,monospace;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.revision-state{align-items:flex-start!important}.binding-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,2fr);gap:24px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row.binding-target{background:#f2f6ff;box-shadow:inset 3px 0 #416de0}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong{display:block;color:#344056;font-size:12px}.binding-controls{display:grid;grid-template-columns:minmax(130px,.75fr) minmax(160px,1fr) minmax(180px,1.3fr);gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.remove-binding{position:absolute;right:8px;top:4px}.connections-layout{height:500px;display:grid;grid-template-columns:260px minmax(0,1fr)}.connection-list{min-height:0;overflow-y:auto;padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:nowrap}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.secret-card,.oauth-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-title,.oauth-title{display:flex;align-items:center;gap:8px;min-width:0}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.subsection-title h4{min-width:0;margin:0;color:#354156;font-size:13px;white-space:nowrap}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__header){display:flex;align-items:center;min-height:40px;height:auto;line-height:1.2}.models-section :deep(.el-collapse-item__title){min-width:0;display:block;flex:1}.models-section :deep(.el-collapse-item__arrow){flex:none;margin-left:8px;transition:transform .18s ease}.models-section :deep(.el-collapse-item__arrow.is-active){transform:rotate(90deg)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden}.model-title strong{min-width:0;overflow:hidden;color:#374357;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.model-title .el-tag{flex:none}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
 @media(prefers-reduced-motion:reduce){.models-section :deep(.el-collapse-item__arrow){transition:none}}
 @media(max-width:1100px){.revision-bar{grid-template-columns:repeat(3,1fr)}.revision-bar>div:nth-child(3){border-right:0}.revision-bar>div:nth-child(n+4){border-top:1px solid var(--line)}.revision-state{grid-column:span 2}.binding-row{grid-template-columns:minmax(180px,.7fr) minmax(0,2fr)}}@media(max-width:760px){.load-error{align-items:flex-start;flex-direction:column}.revision-bar{grid-template-columns:repeat(2,minmax(0,1fr))}.revision-bar>div{border-top:1px solid var(--line)}.revision-bar>div:nth-child(odd){border-right:1px solid var(--line)}.revision-bar>div:nth-child(even){border-right:0}.revision-state,.revision-time{grid-column:1/-1}.binding-row{grid-template-columns:1fr;padding:14px}.binding-controls{grid-template-columns:1fr}.connections-layout{height:auto;grid-template-columns:1fr}.connection-list{max-height:280px;overflow:auto;border-right:0;border-bottom:1px solid var(--line)}.connection-editor{overflow:visible;scrollbar-gutter:auto;padding:18px 14px}.editor-title,.subsection-title{flex-direction:column}.editor-title>div:last-child{justify-content:flex-start}.connection-form,.model-form{grid-template-columns:1fr}.connection-form .span-2,.model-form .span-2{grid-column:auto}.secret-card,.oauth-card{grid-template-columns:1fr}.secret-card>.el-input,.oauth-attempt{grid-column:auto}.oauth-actions{justify-content:flex-start}.oauth-attempt{align-items:flex-start;flex-wrap:wrap}}
 </style>

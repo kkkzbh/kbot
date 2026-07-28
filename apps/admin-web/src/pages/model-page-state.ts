@@ -88,13 +88,18 @@ export function nextCatalogModelId(
 export function createCatalogModelProfile(args: {
   connection: ModelConfigDraft['connections'][number];
   entry: ModelCatalogEntry;
-  contextSize: number;
+  contextSize?: number;
   existingIds: readonly string[];
 }): ModelDefinition {
   const { connection, entry } = args;
   const requestMode = entry.requestMode
-    ?? (connection.adapter === 'codexBridge' ? 'responses' : 'chat_completions');
-  const structuredOutputProtocol = entry.structuredOutputProtocol;
+    ?? (connection.adapter === 'codexBridge' || connection.adapter === 'copilotBridge'
+      ? 'responses'
+      : 'chat_completions');
+  const structuredOutputProtocol = entry.structuredOutputProtocol
+    ?? (requestMode === 'responses'
+      ? 'native_responses_json_schema'
+      : 'native_chat_json_schema');
   if (
     structuredOutputProtocol
     && requestMode
@@ -111,12 +116,12 @@ export function createCatalogModelProfile(args: {
     connectionId: connection.id,
     displayName: entry.displayName,
     transportModel: entry.transportModel,
-    contextSize: args.contextSize,
+    contextSize: args.contextSize ?? 44_800,
     requestMode,
     structuredOutputProtocol,
     capabilities: {
       vision: tags.has('vision'),
-      tools: tags.has('tools'),
+      tools: true,
       structuredOutput: structuredOutputProtocol !== null,
     },
     timeoutMs: 180_000,
@@ -187,8 +192,31 @@ export function isModelDraftDirty(
   draft: ModelConfigDraft,
   secrets: SecretDrafts,
 ): boolean {
-  return comparableValue(createModelConfigDraft(aggregate)) !== comparableValue(draft)
+  const savedDraft = trimUnreferencedCatalogModels(createModelConfigDraft(aggregate));
+  const currentDraft = trimUnreferencedCatalogModels(draft);
+  return comparableValue(savedDraft) !== comparableValue(currentDraft)
     || hasSecretChanges(secrets);
+}
+
+export function trimUnreferencedCatalogModels(
+  draft: ModelConfigDraft,
+): ModelConfigDraft {
+  const catalogDrivers = new Map(
+    draft.connections.map((connection) => [connection.id, connection.catalogDriver]),
+  );
+  const referenced = new Set(draft.bindings.flatMap((binding) => (
+    binding.mode === 'dedicated'
+      ? [`${binding.connectionId}\u0000${binding.modelId}`]
+      : []
+  )));
+  return {
+    connections: draft.connections,
+    bindings: draft.bindings,
+    models: draft.models.filter((model) => (
+      catalogDrivers.get(model.connectionId) === 'static'
+      || referenced.has(`${model.connectionId}\u0000${model.id}`)
+    )),
+  };
 }
 
 export function isSavedConnectionOperationTarget(
@@ -233,7 +261,7 @@ export function buildModelConfigPutInput(
 ): ModelConfigPutInput {
   return {
     expectedRevision: aggregate.savedRevision,
-    draft: cloneJson(draft),
+    draft: cloneJson(trimUnreferencedCatalogModels(draft)),
     secretOperations: draft.connections
       .filter((connection) => connection.auth.kind === 'apiKey')
       .map((connection) => secretOperation(connection.id, secrets[connection.id])),
