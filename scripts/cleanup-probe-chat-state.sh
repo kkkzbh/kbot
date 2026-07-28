@@ -19,7 +19,8 @@ Usage:
 
 Description:
   Remove temporary probe chat state for a non-default probe group, including the
-  cloned room, conversation messages, room membership, and the chathub_user mapping.
+  cloned room, conversation messages, room membership, chathub_user mapping, and
+  isolated memory user/context identities.
 EOF
 }
 
@@ -52,27 +53,58 @@ room_id="$(
     | tr -d '\n'
 )"
 
-if [[ -z "$room_id" ]]; then
-  exit 0
+chat_cleanup_sql=""
+conversation_cleanup_sql=""
+if [[ -n "$room_id" ]]; then
+  conversation_id="$(
+    sqlite3 "$db_path" "select conversationId from chathub_room where roomId=${room_id} and roomMasterId='${fake_user_id}' limit 1;" \
+      | tr -d '\n'
+  )"
+  if [[ -n "$conversation_id" ]]; then
+    conversation_cleanup_sql=$'delete from chatluna_message where conversationId='"'${conversation_id}'"$';\n'"delete from chatluna_conversation where id='${conversation_id}';"
+  fi
+  chat_cleanup_sql=$'delete from chathub_room_member where roomId='"${room_id}"$';\n'"delete from chathub_user where userId='${fake_user_id}' and groupId='${group_id}';"$'\n'"delete from chathub_room where roomId=${room_id} and roomMasterId='${fake_user_id}';"$'\n'"${conversation_cleanup_sql}"
 fi
 
-conversation_id="$(
-  sqlite3 "$db_path" "select conversationId from chathub_room where roomId=${room_id} and roomMasterId='${fake_user_id}' limit 1;" \
-    | tr -d '\n'
+memory_schema="$(
+  sqlite3 "$db_path" "
+    select group_concat(name, ',')
+    from (
+      select name
+      from sqlite_schema
+      where type = 'table'
+        and name in (
+          'memory_user',
+          'memory_context',
+          'memory_v2_principal',
+          'memory_v2_context'
+        )
+      order by name
+    );
+  " | tr -d '\n'
 )"
 
-conversation_cleanup_sql=""
-if [[ -n "$conversation_id" ]]; then
-  conversation_cleanup_sql=$'delete from chatluna_message where conversationId='"'${conversation_id}'"$';\n'"delete from chatluna_conversation where id='${conversation_id}';"
-fi
+memory_cleanup_sql=""
+case "$memory_schema" in
+  "")
+    ;;
+  "memory_context,memory_user")
+    memory_cleanup_sql=$'delete from memory_user where userKey='"'onebot:user:${fake_user_id}'"$' and platform='"'onebot'"' and userId='"'${fake_user_id}'"$';\n'"delete from memory_context where platform='onebot' and channelType='group' and groupId='${group_id}';"
+    ;;
+  "memory_v2_context,memory_v2_principal")
+    memory_cleanup_sql=$'delete from memory_v2_principal where userKey='"'onebot:user:${fake_user_id}'"$' and platform='"'onebot'"' and userId='"'${fake_user_id}'"$';\n'"delete from memory_v2_context where platform='onebot' and channelType='group' and groupId='${group_id}';"
+    ;;
+  *)
+    echo "[error] unsupported probe memory schema: ${memory_schema}" >&2
+    exit 2
+    ;;
+esac
 
 sqlite3 "$db_path" <<SQL
 begin immediate;
-delete from chathub_room_member where roomId=${room_id};
-delete from chathub_user where userId='${fake_user_id}' and groupId='${group_id}';
-delete from chathub_room where roomId=${room_id} and roomMasterId='${fake_user_id}';
-${conversation_cleanup_sql}
+${chat_cleanup_sql}
+${memory_cleanup_sql}
 commit;
 SQL
 
-echo "[info] cleaned probe state: user=${fake_user_id} group=${group_id} room=${room_id}" >&2
+echo "[info] cleaned probe state: user=${fake_user_id} group=${group_id} room=${room_id:-none}" >&2
