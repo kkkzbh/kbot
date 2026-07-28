@@ -976,6 +976,7 @@ function buildAutomationRecentContextFragment(
     'Automation Recent Conversation Window',
     'reference',
     'turn',
+    'required',
     lines.join('\n'),
   );
 }

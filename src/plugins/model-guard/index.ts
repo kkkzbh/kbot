@@ -11,6 +11,7 @@ import {
   type ResolvedModelBinding,
   type ModelConfigService,
 } from '../model-config/index.js';
+import type { PromptFragmentPolicyServiceLike } from '../prompt-fragment-policy/index.js';
 import {
   resolveChatLunaRoomLike,
   type QqbotChatLunaRoomLike,
@@ -26,7 +27,7 @@ const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
 };
 
 export const name = 'chatluna-model-guard';
-export const inject = ['chatluna', 'database', 'modelConfig'];
+export const inject = ['chatluna', 'database', 'modelConfig', 'promptFragmentPolicy'];
 
 export interface Config {}
 
@@ -58,6 +59,7 @@ type ChatLunaLike = {
 type ContextServices = {
   chatluna?: ChatLunaLike;
   modelConfig?: ModelConfigService;
+  promptFragmentPolicy?: PromptFragmentPolicyServiceLike;
 };
 
 type MiddlewareContextLike = {
@@ -151,8 +153,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (modelGuardRegistered) return true;
     const chatluna = services.chatluna;
     const modelConfig = services.modelConfig;
+    const promptFragmentPolicy = services.promptFragmentPolicy;
     const chain = chatluna?.chatChain;
-    if (!chatluna || !chain || !modelConfig) return false;
+    if (!chatluna || !chain || !modelConfig || !promptFragmentPolicy) return false;
 
     chain
       .middleware('qqbot_turn_context', async (rawSession, rawContext) => {
@@ -160,9 +163,18 @@ export function apply(ctx: Context, config: Config = {}): void {
         const context = rawContext as MiddlewareContextLike;
         const inputMessage = context.options?.inputMessage;
         if (!inputMessage) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
-        const conversationId = resolveChatLunaRoomLike(context.options)?.conversationId?.trim();
+        const room = resolveChatLunaRoomLike(context.options);
+        const conversationId = room?.conversationId?.trim();
         if (conversationId) {
-          beginPromptAssemblyTurn(conversationId, { turnId: context.options?.messageId });
+          const contextPresetId = room?.preset?.trim();
+          if (!contextPresetId) {
+            throw new Error(`conversation ${conversationId} has no canonical context preset id.`);
+          }
+          const fragmentPolicy = await promptFragmentPolicy.get(contextPresetId);
+          beginPromptAssemblyTurn(conversationId, {
+            turnId: context.options?.messageId,
+            selection: fragmentPolicy.config,
+          });
         }
         const turnIntent = resolveUserTurnIntentState(session.stripped?.content, inputMessage.content);
         const userName = resolveSessionDisplayName(session);
@@ -175,6 +187,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             authority: 'reference',
             trust: 'trusted',
             ttl: 'turn',
+            channel: 'required',
             payload: {
               kind: 'json',
               value: contextReference,
@@ -187,6 +200,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               authority: 'assistant_state',
               trust: 'trusted',
               ttl: 'turn',
+              channel: 'required',
               payload: {
                 kind: 'json',
                 value: buildProactiveOpeningState(turnIntent),
@@ -200,6 +214,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               authority: 'reference',
               trust: 'trusted',
               ttl: 'turn',
+              channel: 'required',
               payload: {
                 kind: 'json',
                 value: buildNaturalTriggerReference(naturalTrigger),

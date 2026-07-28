@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   chatHistoryExample,
+  configurableQqbotFragmentChannels,
   contextBlockGuides,
+  qqbotFragmentRules,
   requestAttachmentHistory,
   requestAttachmentGuides,
   requestDocumentExample,
@@ -75,5 +77,19 @@ describe('context preset block guides', () => {
     expect(requestAttachmentHistory.projection).toContain('处理结果');
     expect(requestAttachmentHistory.replayCall).toContain('qqbot_attachment_replay');
     expect(requestAttachmentHistory.readCall).toContain('read_files');
+  });
+
+  it('separates mandatory QQBot fragment rules from the configurable channels', () => {
+    expect(qqbotFragmentRules.map((rule) => rule.label)).toEqual([
+      '生成',
+      '放置',
+      '排序',
+      '消费',
+    ]);
+    expect(configurableQqbotFragmentChannels.map((channel) => channel.key)).toEqual([
+      'relationshipState',
+      'attachmentReferences',
+      'nativeCapabilities',
+    ]);
   });
 });

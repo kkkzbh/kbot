@@ -349,6 +349,26 @@ export const contextPresetDefaultResponseSchema = z.object({
   globalDefaultContextPresetId: presetIdSchema,
 }).strict();
 
+export const promptFragmentPolicyConfigSchema = z.object({
+  relationshipState: z.boolean(),
+  attachmentReferences: z.boolean(),
+  nativeCapabilities: z.boolean(),
+}).strict();
+export const promptFragmentPolicyStateSchema = z.object({
+  contextPresetId: presetIdSchema,
+  revision: z.number().int().nonnegative(),
+  source: z.enum(['default', 'override']),
+  updatedAt: z.string().datetime().nullable(),
+  config: promptFragmentPolicyConfigSchema,
+}).strict();
+export const promptFragmentPolicyPutRequestSchema = z.object({
+  expectedRevision: z.number().int().nonnegative(),
+  config: promptFragmentPolicyConfigSchema,
+}).strict();
+export const promptFragmentPolicyResetRequestSchema = z.object({
+  expectedRevision: z.number().int().nonnegative(),
+}).strict();
+
 export const contextPresetDraftDefinitionV1Schema = z.object({
   schemaVersion: z.literal(1),
   id: presetIdSchema,
@@ -580,6 +600,10 @@ export type ContextPresetUpdateRequest = z.infer<typeof contextPresetUpdateReque
 export type PresetRevisionRequest = z.infer<typeof presetRevisionRequestSchema>;
 export type ContextPresetDefaultRequest = z.infer<typeof contextPresetDefaultRequestSchema>;
 export type ContextPresetDefaultResponse = z.infer<typeof contextPresetDefaultResponseSchema>;
+export type PromptFragmentPolicyConfig = z.infer<typeof promptFragmentPolicyConfigSchema>;
+export type PromptFragmentPolicyState = z.infer<typeof promptFragmentPolicyStateSchema>;
+export type PromptFragmentPolicyPutRequest = z.infer<typeof promptFragmentPolicyPutRequestSchema>;
+export type PromptFragmentPolicyResetRequest = z.infer<typeof promptFragmentPolicyResetRequestSchema>;
 export type RolePresetSummary = z.infer<typeof rolePresetSummarySchema>;
 export type RolePresetCatalogResponse = z.infer<typeof rolePresetCatalogResponseSchema>;
 export type RolePresetDetailResponse = z.infer<typeof rolePresetDetailResponseSchema>;

@@ -17,6 +17,7 @@ plugins:
       kekPath: ${{ env.QQBOT_MODEL_CONFIG_KEK_PATH || './.runtime/model-config.kek' }}
     ./dist/plugins/natural-trigger-config:natural-trigger-config:
       configPath: ${{ env.QQBOT_NATURAL_TRIGGER_CONFIG_PATH || './.runtime/natural-trigger.json' }}
+    ./dist/plugins/prompt-fragment-policy:prompt-fragment-policy: {}
     ./dist/plugins/genshin:genshin:
       bindPagePath: ${{ env.GENSHIN_BIND_PAGE_PATH || '/genshin/bind' }}
       publicBaseUrl: >-

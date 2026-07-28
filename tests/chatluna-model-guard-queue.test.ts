@@ -117,6 +117,19 @@ function createHarness(options: { chatChainAvailableInitially?: boolean } = {}) 
   const ctx = {
     chatluna,
     modelConfig,
+    promptFragmentPolicy: {
+      get: vi.fn(async (contextPresetId: string) => ({
+        contextPresetId,
+        revision: 0,
+        source: 'default' as const,
+        updatedAt: null,
+        config: {
+          relationshipState: true,
+          attachmentReferences: true,
+          nativeCapabilities: true,
+        },
+      })),
+    },
     database: {
       set: vi.fn(async () => undefined),
     },
@@ -220,7 +233,14 @@ describe('chatluna model guard runtime shape', () => {
 
     expect(promptAssemblyMocks.beginPromptAssemblyTurn).toHaveBeenCalledWith(
       'conv-1',
-      { turnId: 'qqreply:run-1' },
+      {
+        turnId: 'qqreply:run-1',
+        selection: {
+          relationshipState: true,
+          attachmentReferences: true,
+          nativeCapabilities: true,
+        },
+      },
     );
   });
 

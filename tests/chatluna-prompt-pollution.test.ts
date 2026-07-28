@@ -29,6 +29,7 @@ describe('chatluna prompt pollution regression', () => {
       authority: 'reference',
       trust: 'trusted',
       ttl: 'turn',
+      channel: 'required',
       payload: {
         kind: 'json',
         value: {
@@ -69,6 +70,7 @@ describe('chatluna prompt pollution regression', () => {
             authority: 'reference',
             trust: 'trusted',
             ttl: 'turn',
+      channel: 'required',
             payload: {
               kind: 'text',
               value: '现在是晚上',

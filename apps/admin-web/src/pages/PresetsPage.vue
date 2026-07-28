@@ -18,12 +18,15 @@ import {
   deleteRolePreset,
   deleteRolePresetOverride,
   getContextPreset,
+  getPromptFragmentPolicy,
   getRolePreset,
   listContextPresets,
   listRolePresets,
   previewContextPreset,
+  resetPromptFragmentPolicy,
   setDefaultContextPreset,
   updateContextPreset,
+  updatePromptFragmentPolicy,
   updateRolePreset,
   type AuthorsNoteContextBlock,
   type BudgetedContextBlock,
@@ -35,6 +38,8 @@ import {
   type KnowledgeContextBlock,
   type LoreContextBlock,
   type ModelOutputContextBlock,
+  type PromptFragmentPolicyConfig,
+  type PromptFragmentPolicyState,
   type RepeatableContextBlockType,
   type ResolvedContextBlock,
   type RoleContextBlock,
@@ -50,6 +55,8 @@ import {
   requestAttachmentHistory,
   requestAttachmentGuides,
   requestDocumentExample,
+  configurableQqbotFragmentChannels,
+  qqbotFragmentRules,
   type GuidedContextBlockType,
 } from './context-preset-guides';
 
@@ -71,12 +78,16 @@ const savedContextText = ref('');
 const roleDetail = ref<RolePresetDetailResponse | null>(null);
 const roleDraft = ref<RolePresetDefinitionV1 | null>(null);
 const savedRoleText = ref('');
+const fragmentPolicyState = ref<PromptFragmentPolicyState | null>(null);
+const fragmentPolicyDraft = ref<PromptFragmentPolicyConfig | null>(null);
+const savedFragmentPolicyText = ref('');
 const selectedBlockId = ref('');
 const preview = ref<ContextPresetPreviewResponse | null>(null);
 const previewError = ref<{ message: string; details: Record<string, unknown> | null } | null>(null);
 const loading = ref(false);
 const savingContext = ref(false);
 const savingRole = ref(false);
+const savingFragmentPolicy = ref(false);
 const mutating = ref(false);
 const draggingBlockId = ref<string | null>(null);
 const customTokenLimitBlockId = ref('');
@@ -123,7 +134,13 @@ const roleDirty = computed(() => (
   roleDraft.value !== null
   && JSON.stringify(roleDraft.value) !== savedRoleText.value
 ));
-const hasDirtyResources = computed(() => contextDirty.value || roleDirty.value);
+const fragmentPolicyDirty = computed(() => (
+  fragmentPolicyDraft.value !== null
+  && JSON.stringify(fragmentPolicyDraft.value) !== savedFragmentPolicyText.value
+));
+const hasDirtyResources = computed(() => (
+  contextDirty.value || roleDirty.value || fragmentPolicyDirty.value
+));
 const contextSummaries = computed(() => contextCatalog.value?.contextPresets ?? []);
 const roleSummaries = computed(() => roleCatalog.value?.rolePresets ?? []);
 const selectedResolvedBlock = computed(() => (
@@ -279,10 +296,16 @@ async function loadContext(id: string): Promise<void> {
   preview.value = null;
   previewError.value = null;
   try {
-    const detail = await getContextPreset(id);
+    const [detail, policy] = await Promise.all([
+      getContextPreset(id),
+      getPromptFragmentPolicy(id),
+    ]);
     contextDetail.value = detail;
     contextDraft.value = clone(detail.contextPreset);
     savedContextText.value = JSON.stringify(detail.contextPreset);
+    fragmentPolicyState.value = policy;
+    fragmentPolicyDraft.value = clone(policy.config);
+    savedFragmentPolicyText.value = JSON.stringify(policy.config);
     selectedContextId.value = id;
     selectedBlockId.value = detail.contextPreset.blocks[0]?.id ?? '';
     const roleId = currentRolePresetId(detail.contextPreset);
@@ -311,7 +334,7 @@ async function confirmDiscard(): Promise<boolean> {
   if (!hasDirtyResources.value) return true;
   try {
     await ElMessageBox.confirm(
-      '当前上下文或共享角色仍有未保存更改，继续会丢弃这些草稿。',
+      '当前上下文、共享角色或 QQBot 片段仍有未保存更改，继续会丢弃这些草稿。',
       '未保存的资源',
       { type: 'warning', confirmButtonText: '丢弃并继续', cancelButtonText: '留在当前页' },
     );
@@ -415,9 +438,60 @@ async function saveRole(): Promise<boolean> {
   }
 }
 
+async function saveFragmentPolicy(): Promise<boolean> {
+  const state = fragmentPolicyState.value;
+  const draft = fragmentPolicyDraft.value;
+  if (!state || !draft) return false;
+  savingFragmentPolicy.value = true;
+  try {
+    const saved = await updatePromptFragmentPolicy(
+      state.contextPresetId,
+      state.revision,
+      clone(draft),
+    );
+    fragmentPolicyState.value = saved;
+    fragmentPolicyDraft.value = clone(saved.config);
+    savedFragmentPolicyText.value = JSON.stringify(saved.config);
+    ElMessage.success('QQBot 片段设置已保存');
+    return true;
+  } catch (error) {
+    ElMessage.error(errorText(error));
+    return false;
+  } finally {
+    savingFragmentPolicy.value = false;
+  }
+}
+
+async function resetFragmentPolicy(): Promise<void> {
+  const state = fragmentPolicyState.value;
+  if (!state) return;
+  try {
+    await ElMessageBox.confirm(
+      '恢复三个可选片段的默认开启状态？',
+      '恢复默认设置',
+      { confirmButtonText: '恢复默认', cancelButtonText: '取消' },
+    );
+    savingFragmentPolicy.value = true;
+    const reset = await resetPromptFragmentPolicy(
+      state.contextPresetId,
+      state.revision,
+    );
+    fragmentPolicyState.value = reset;
+    fragmentPolicyDraft.value = clone(reset.config);
+    savedFragmentPolicyText.value = JSON.stringify(reset.config);
+    ElMessage.success('已恢复默认设置');
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return;
+    ElMessage.error(errorText(error));
+  } finally {
+    savingFragmentPolicy.value = false;
+  }
+}
+
 async function saveDirtyResources(): Promise<void> {
   if (roleDirty.value && !await saveRole()) return;
-  if (contextDirty.value) await saveContext();
+  if (contextDirty.value && !await saveContext()) return;
+  if (fragmentPolicyDirty.value) await saveFragmentPolicy();
 }
 
 async function createContext(): Promise<void> {
@@ -1106,8 +1180,54 @@ onBeforeUnmount(() => {
           </section>
 
           <template v-if="selectedResolvedBlock?.source === 'runtime'">
-            <div class="runtime-actions">
-              <span>此区块由运行时生成，没有预设配置项。</span>
+            <template v-if="selectedResolvedBlock.type === 'qqbotFragments'">
+              <section class="fragment-rules" aria-label="QQBot 片段规则">
+                <div
+                  v-for="rule in qqbotFragmentRules"
+                  :key="rule.label"
+                  class="fragment-rule"
+                >
+                  <strong>{{ rule.label }}</strong>
+                  <p>{{ rule.description }}</p>
+                </div>
+              </section>
+
+              <section v-if="fragmentPolicyDraft" class="fragment-policy">
+                <div
+                  v-for="channel in configurableQqbotFragmentChannels"
+                  :key="channel.key"
+                  class="fragment-policy-row"
+                >
+                  <div>
+                    <strong>{{ channel.label }}</strong>
+                    <p>{{ channel.description }}</p>
+                  </div>
+                  <el-switch
+                    v-model="fragmentPolicyDraft[channel.key]"
+                    :disabled="savingFragmentPolicy"
+                    :aria-label="channel.label"
+                  />
+                </div>
+                <div class="fragment-policy-actions">
+                  <el-button
+                    :disabled="!fragmentPolicyDirty"
+                    :loading="savingFragmentPolicy"
+                    type="primary"
+                    @click="saveFragmentPolicy"
+                  >
+                    保存片段设置
+                  </el-button>
+                  <el-button
+                    :disabled="fragmentPolicyState?.source === 'default'"
+                    :loading="savingFragmentPolicy"
+                    @click="resetFragmentPolicy"
+                  >
+                    恢复默认
+                  </el-button>
+                </div>
+              </section>
+            </template>
+            <div v-else class="runtime-actions">
               <el-button
                 v-if="selectedResolvedBlock.type === 'toolDefinitions'"
                 @click="router.push('/policies')"
@@ -1778,6 +1898,58 @@ onBeforeUnmount(() => {
   gap: 16px;
   color: #6f7a8d;
   font-size: 11px;
+}
+
+.fragment-rules {
+  max-width: 820px;
+  margin-bottom: 24px;
+  border-top: 1px solid #e2e7ef;
+}
+
+.fragment-rule {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 16px;
+  padding: 13px 0;
+  border-bottom: 1px solid #e2e7ef;
+}
+
+.fragment-rule strong,
+.fragment-policy-row strong {
+  color: #24324a;
+  font-size: 13px;
+}
+
+.fragment-rule p,
+.fragment-policy-row p {
+  margin: 0;
+  color: #46536a;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.fragment-policy {
+  max-width: 820px;
+  border-top: 1px solid #d8e0eb;
+}
+
+.fragment-policy-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid #e2e7ef;
+}
+
+.fragment-policy-row p {
+  margin-top: 4px;
+}
+
+.fragment-policy-actions {
+  display: flex;
+  gap: 10px;
+  padding-top: 18px;
 }
 
 .advanced-settings {

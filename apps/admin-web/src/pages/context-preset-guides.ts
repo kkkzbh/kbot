@@ -33,6 +33,43 @@ export interface RequestAttachmentGuide {
   description: string;
 }
 
+export const qqbotFragmentRules = [
+  {
+    label: '生成',
+    description: '每次模型请求都重新读取当前会话状态并生成，保存上下文预设时不会把动态内容写进 YAML。',
+  },
+  {
+    label: '放置',
+    description: '身份与回复协议作为 system 指令接在角色提示之后；本轮参考和助手状态放在当前输入之前，保持低权限。',
+  },
+  {
+    label: '排序',
+    description: '身份协议、运行协议、参考信息、助手状态按固定次序排列；完全相同的片段只保留一次。',
+  },
+  {
+    label: '消费',
+    description: '片段只供当前请求使用，注入后立即清除。下一次请求重新计算，不会混入上一轮的临时状态。',
+  },
+] as const;
+
+export const configurableQqbotFragmentChannels = [
+  {
+    key: 'relationshipState',
+    label: '关系状态',
+    description: '向模型提供当前角色与发言者的关系进度、最近关系事件和仍在进行的主动话题。',
+  },
+  {
+    key: 'attachmentReferences',
+    label: '附件定位参考',
+    description: '用户提到“刚才的文件”或附件引用时，向模型提供候选附件及定位结果。',
+  },
+  {
+    key: 'nativeCapabilities',
+    label: 'QQ 功能能力',
+    description: '向模型说明本轮能够使用的 QQ 原生功能，例如回复、提及、表情和媒体发送能力。',
+  },
+] as const;
+
 export const chatHistoryExample = {
   messages: [
     {
@@ -128,7 +165,7 @@ export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuid
     summary: '为模型回复预留输出空间，并决定回复生成后的处理方式。',
   },
   qqbotFragments: {
-    summary: 'QQBot 在每次请求时生成的身份、回复协议和功能上下文片段。',
+    summary: 'QQBot 在请求发出前补入身份、回复协议和实时状态，让模型知道当前是谁、如何回复，以及本轮有哪些可用信息。',
   },
   toolDefinitions: {
     summary: '告诉模型当前请求允许调用哪些工具，以及每个工具接受什么参数。',

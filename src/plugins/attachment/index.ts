@@ -1146,6 +1146,7 @@ function applyPromptFragments(
       authority: 'reference',
       trust: 'trusted',
       ttl: 'turn',
+      channel: 'attachmentReferences',
       payload: {
         kind: 'text',
         value: createAttachmentCatalogText(recent),
@@ -1161,6 +1162,7 @@ function applyPromptFragments(
       authority: 'reference',
       trust: 'trusted',
       ttl: 'turn',
+      channel: 'attachmentReferences',
       payload: {
         kind: 'text',
         value: ambiguousText,

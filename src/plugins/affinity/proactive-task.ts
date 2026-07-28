@@ -649,6 +649,7 @@ export function buildProactiveTaskFragment(input: AffinityRandomGenerationInput)
     'Affinity Proactive Task',
     'assistant_state',
     'turn',
+    'relationshipState',
     buildProactiveTaskMarkdown(input),
   );
 }

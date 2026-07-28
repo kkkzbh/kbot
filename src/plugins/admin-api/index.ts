@@ -7,6 +7,7 @@ import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
 import type { CodexOAuthBridgeService } from '../codex-oauth/index.js';
 import type { ModelConfigService } from '../model-config/index.js';
 import type { NaturalTriggerConfigService } from '../natural-trigger-config/index.js';
+import type { PromptFragmentPolicyServiceLike } from '../prompt-fragment-policy/index.js';
 import type { AffinityServiceLike } from '../../types/affinity.js';
 import type { FeaturePolicyServiceLike } from '../../types/feature-policy.js';
 import type { MemoryStatusServiceLike } from '../../types/memory.js';
@@ -33,6 +34,7 @@ export const inject = {
     'chatluna',
     'modelConfig',
     'naturalTriggerConfig',
+    'promptFragmentPolicy',
     'codexBridge',
     'copilotBridge',
   ],
@@ -63,6 +65,7 @@ type RuntimeContext = Context & {
   };
   modelConfig: ModelConfigService;
   naturalTriggerConfig: NaturalTriggerConfigService;
+  promptFragmentPolicy: PromptFragmentPolicyServiceLike;
   codexBridge: CodexOAuthBridgeService;
   copilotBridge: CopilotOAuthBridgeService;
   memoryStatus?: MemoryStatusServiceLike;
@@ -130,6 +133,7 @@ export function apply(ctx: Context, config: Config): void {
     contextSnapshots,
     modelConfig: runtimeCtx.modelConfig,
     naturalTriggerConfig: runtimeCtx.naturalTriggerConfig,
+    promptFragmentPolicy: runtimeCtx.promptFragmentPolicy,
   });
   registerAdminStatic({
     ctx,

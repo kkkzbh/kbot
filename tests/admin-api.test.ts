@@ -246,6 +246,63 @@ function createNaturalTriggerConfigService() {
   };
 }
 
+function createPromptFragmentPolicyService() {
+  const states = new Map<string, {
+    revision: number;
+    config: {
+      relationshipState: boolean;
+      attachmentReferences: boolean;
+      nativeCapabilities: boolean;
+    };
+  }>();
+  const read = (contextPresetId: string) => {
+    const state = states.get(contextPresetId);
+    return {
+      contextPresetId,
+      revision: state?.revision ?? 0,
+      source: state ? 'override' as const : 'default' as const,
+      updatedAt: state ? '2026-07-29T00:00:00.000Z' : null,
+      config: structuredClone(state?.config ?? {
+        relationshipState: true,
+        attachmentReferences: true,
+        nativeCapabilities: true,
+      }),
+    };
+  };
+  return {
+    get: vi.fn(async (contextPresetId: string) => read(contextPresetId)),
+    put: vi.fn(async (
+      contextPresetId: string,
+      input: {
+        expectedRevision: number;
+        config: {
+          relationshipState: boolean;
+          attachmentReferences: boolean;
+          nativeCapabilities: boolean;
+        };
+      },
+    ) => {
+      const current = read(contextPresetId);
+      if (current.revision !== input.expectedRevision) {
+        throw new Error('revision conflict');
+      }
+      states.set(contextPresetId, {
+        revision: current.revision + 1,
+        config: structuredClone(input.config),
+      });
+      return read(contextPresetId);
+    }),
+    reset: vi.fn(async (contextPresetId: string, expectedRevision: number) => {
+      const current = read(contextPresetId);
+      if (current.revision !== expectedRevision) {
+        throw new Error('revision conflict');
+      }
+      states.delete(contextPresetId);
+      return read(contextPresetId);
+    }),
+  };
+}
+
 function createOAuthBridge(authKind: 'codex_oauth' | 'oauth_device') {
   const status = {
     authKind,
@@ -282,6 +339,7 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
   };
   const modelConfig = createModelConfigService();
   const naturalTriggerConfig = createNaturalTriggerConfigService();
+  const promptFragmentPolicy = createPromptFragmentPolicyService();
   const codexBridge = createOAuthBridge('codex_oauth');
   const copilotBridge = createOAuthBridge('oauth_device');
   const ctx = {
@@ -296,6 +354,7 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
     chatluna: createChatLunaService(),
     modelConfig,
     naturalTriggerConfig,
+    promptFragmentPolicy,
     codexBridge,
     copilotBridge,
     ...extra,
@@ -308,6 +367,7 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
     preset: ctx.chatluna.preset,
     modelConfig: ctx.modelConfig,
     naturalTriggerConfig: ctx.naturalTriggerConfig,
+    promptFragmentPolicy: ctx.promptFragmentPolicy,
     codexBridge: ctx.codexBridge,
     copilotBridge: ctx.copilotBridge,
   };
@@ -544,6 +604,7 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/natural-trigger');
     expect(getPaths).toContain('/api/admin/v1/context-presets');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id');
+    expect(getPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
     expect(getPaths).toContain('/api/admin/v1/role-presets');
     expect(getPaths).toContain('/api/admin/v1/role-presets/:id');
     expect(getPaths).toContain('/api/admin/v1/model-context/targets');
@@ -580,12 +641,78 @@ describe('independent admin API plugin', () => {
     expect(postPaths).not.toContain('/api/admin/v1/memory/mutations');
     expect(putPaths).toContain('/api/admin/v1/models');
     expect(putPaths).toContain('/api/admin/v1/natural-trigger');
+    expect(putPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();
     expect(getPaths).not.toContain('/api/admin/v1/model-context/blueprint');
     expect(getPaths).not.toContain('/api/admin/v1/models/runtime');
     expect(postPaths).not.toContain('/api/admin/v1/models/:provider/list');
+  });
+
+  it('reads, updates and resets QQBot fragment policy for an existing context preset', async () => {
+    const { server, promptFragmentPolicy } = createRuntime(createTempDir());
+    const getPolicy = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/context-presets/:id/qqbot-fragments',
+    )?.[1];
+    const putPolicy = server.put.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/context-presets/:id/qqbot-fragments',
+    )?.[1];
+    const resetPolicy = server.delete.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/context-presets/:id/qqbot-fragments',
+    )?.[1];
+
+    const readRequest = createKoaCtx({ params: { id: 'sakiko' } });
+    await getPolicy(readRequest);
+    expect(readRequest.status).toBe(200);
+    expect(readRequest.body).toMatchObject({
+      contextPresetId: 'sakiko',
+      revision: 0,
+      source: 'default',
+      config: {
+        relationshipState: true,
+        attachmentReferences: true,
+        nativeCapabilities: true,
+      },
+    });
+
+    const updateRequest = createKoaCtx({
+      origin: 'https://admin.example.com',
+      params: { id: 'sakiko' },
+      body: {
+        expectedRevision: 0,
+        config: {
+          relationshipState: false,
+          attachmentReferences: true,
+          nativeCapabilities: false,
+        },
+      },
+    });
+    await putPolicy(updateRequest);
+    expect(updateRequest.status).toBe(200);
+    expect(updateRequest.body).toMatchObject({
+      revision: 1,
+      source: 'override',
+      config: {
+        relationshipState: false,
+        attachmentReferences: true,
+        nativeCapabilities: false,
+      },
+    });
+
+    const resetRequest = createKoaCtx({
+      origin: 'https://admin.example.com',
+      params: { id: 'sakiko' },
+      body: { expectedRevision: 1 },
+    });
+    await resetPolicy(resetRequest);
+    expect(resetRequest.status).toBe(200);
+    expect(resetRequest.body).toMatchObject({
+      revision: 0,
+      source: 'default',
+    });
+    expect(promptFragmentPolicy.put).toHaveBeenCalledTimes(1);
+    expect(promptFragmentPolicy.reset).toHaveBeenCalledWith('sakiko', 1);
   });
 
   it('serves the typed Memory Ledger V3 API without embedding or backfill routes', async () => {

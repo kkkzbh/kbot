@@ -2,7 +2,24 @@ export type PromptFragmentAuthority = 'persona_core' | 'runtime_contract' | 'ref
 export type PromptFragmentTrust = 'trusted' | 'untrusted';
 export type PromptFragmentTtl = 'sticky' | 'turn';
 export type PromptFragmentPayloadKind = 'text' | 'json';
+export type PromptFragmentChannel =
+  | 'required'
+  | 'relationshipState'
+  | 'attachmentReferences'
+  | 'nativeCapabilities';
 export type PromptEnvelopeMessageRole = 'system' | 'human' | 'ai';
+
+export interface PromptFragmentSelection {
+  relationshipState: boolean;
+  attachmentReferences: boolean;
+  nativeCapabilities: boolean;
+}
+
+export const DEFAULT_PROMPT_FRAGMENT_SELECTION = Object.freeze({
+  relationshipState: true,
+  attachmentReferences: true,
+  nativeCapabilities: true,
+} satisfies PromptFragmentSelection);
 
 export interface PromptEnvelopeMessage {
   role: PromptEnvelopeMessageRole;
@@ -21,6 +38,7 @@ export interface PromptFragment {
   authority: PromptFragmentAuthority;
   trust: PromptFragmentTrust;
   ttl: PromptFragmentTtl;
+  channel: PromptFragmentChannel;
   payload: PromptFragmentPayload;
 }
 
@@ -54,6 +72,7 @@ interface PromptTurnDraft {
   nextOrder: number;
   started: boolean;
   turnId: string | null;
+  selection: PromptFragmentSelection;
 }
 
 const turnDrafts = new Map<string, PromptTurnDraft>();
@@ -68,6 +87,12 @@ const AUTHORITIES = new Set<PromptFragmentAuthority>([
 const TRUST_LEVELS = new Set<PromptFragmentTrust>(['trusted', 'untrusted']);
 const TTL_VALUES = new Set<PromptFragmentTtl>(['sticky', 'turn']);
 const PAYLOAD_KINDS = new Set<PromptFragmentPayloadKind>(['text', 'json']);
+const CHANNELS = new Set<PromptFragmentChannel>([
+  'required',
+  'relationshipState',
+  'attachmentReferences',
+  'nativeCapabilities',
+]);
 
 function normalizeConversationId(conversationId: string): string {
   return conversationId.trim();
@@ -82,6 +107,7 @@ function ensureDraft(conversationId: string): PromptTurnDraft {
       nextOrder: 0,
       started: false,
       turnId: null,
+      selection: cloneDefaultSelection(),
     };
     turnDrafts.set(normalized, draft);
   }
@@ -92,13 +118,21 @@ function normalizeTurnId(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function createStartedDraft(turnId: string | null): PromptTurnDraft {
+function createStartedDraft(
+  turnId: string | null,
+  selection: PromptFragmentSelection,
+): PromptTurnDraft {
   return {
     fragments: [],
     nextOrder: 0,
     started: true,
     turnId,
+    selection,
   };
+}
+
+function cloneDefaultSelection(): PromptFragmentSelection {
+  return { ...DEFAULT_PROMPT_FRAGMENT_SELECTION };
 }
 
 function normalizeSource(source: unknown): string {
@@ -147,6 +181,21 @@ function normalizeTtl(ttl: unknown, source: string): PromptFragmentTtl {
   return ttl as PromptFragmentTtl;
 }
 
+function normalizeChannel(channel: unknown, source: string): PromptFragmentChannel {
+  if (!CHANNELS.has(channel as PromptFragmentChannel)) {
+    throw new Error(`prompt fragment ${source} channel is invalid.`);
+  }
+  return channel as PromptFragmentChannel;
+}
+
+function normalizeSelection(selection: PromptFragmentSelection): PromptFragmentSelection {
+  return {
+    relationshipState: selection.relationshipState,
+    attachmentReferences: selection.attachmentReferences,
+    nativeCapabilities: selection.nativeCapabilities,
+  };
+}
+
 function normalizePayload(payload: unknown, source: string): PromptFragmentPayload {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new Error(`prompt fragment ${source} payload must be an object.`);
@@ -179,12 +228,21 @@ function normalizePayload(payload: unknown, source: string): PromptFragmentPaylo
 
 function normalizeFragment(fragment: PromptFragment, registeredOrder: number): RegisteredPromptFragment {
   const source = normalizeSource(fragment.source);
+  const authority = normalizeAuthority(fragment.authority, source);
+  const channel = normalizeChannel(fragment.channel, source);
+  if (
+    channel !== 'required'
+    && (authority === 'persona_core' || authority === 'runtime_contract')
+  ) {
+    throw new Error(`prompt fragment ${source} cannot make ${authority} configurable.`);
+  }
   return {
     source,
     title: normalizeTitle(fragment.title, source),
-    authority: normalizeAuthority(fragment.authority, source),
+    authority,
     trust: normalizeTrust(fragment.trust, source),
     ttl: normalizeTtl(fragment.ttl, source),
+    channel,
     payload: normalizePayload(fragment.payload, source),
     registeredOrder,
   };
@@ -268,14 +326,21 @@ function fragmentIdentityKey(fragment: PromptFragment, payloadContent: string): 
     fragment.authority,
     fragment.trust,
     fragment.ttl,
+    fragment.channel,
     fragment.payload.kind,
     payloadContent,
   ]);
 }
 
-function compileRegisteredFragments(fragments: RegisteredPromptFragment[]): PromptEnvelope | null {
+function compileRegisteredFragments(
+  fragments: RegisteredPromptFragment[],
+  selection: PromptFragmentSelection,
+): PromptEnvelope | null {
   const seenFragmentKeys = new Set<string>();
   const allFragments = fragments
+    .filter((fragment) => (
+      fragment.channel === 'required' || selection[fragment.channel]
+    ))
     .map((fragment) => ({
       fragment,
       payloadContent: payloadToContent(fragment.payload, fragment.source),
@@ -314,6 +379,7 @@ function compileRegisteredFragments(fragments: RegisteredPromptFragment[]): Prom
             authority: fragment.authority,
             trust: fragment.trust,
             ttl: fragment.ttl,
+            channel: fragment.channel,
             payload_kind: fragment.payload.kind,
           },
         },
@@ -329,26 +395,39 @@ function compileRegisteredFragments(fragments: RegisteredPromptFragment[]): Prom
   };
 }
 
-export function compilePromptEnvelopeFromFragments(fragments: PromptFragment[]): PromptEnvelope | null {
+export function compilePromptEnvelopeFromFragments(
+  fragments: PromptFragment[],
+  selection: PromptFragmentSelection = DEFAULT_PROMPT_FRAGMENT_SELECTION,
+): PromptEnvelope | null {
   const normalized = fragments.map((fragment, index) => normalizeFragment(fragment, index));
-  return compileRegisteredFragments(normalized);
+  return compileRegisteredFragments(normalized, normalizeSelection(selection));
 }
 
-export function beginPromptAssemblyTurn(conversationId: string, options: { turnId?: string } = {}): void {
+export function beginPromptAssemblyTurn(
+  conversationId: string,
+  options: {
+    turnId?: string;
+    selection?: PromptFragmentSelection;
+  } = {},
+): void {
   const normalized = normalizeConversationId(conversationId);
   if (!normalized) return;
   const turnId = normalizeTurnId(options.turnId);
+  const selection = options.selection
+    ? normalizeSelection(options.selection)
+    : cloneDefaultSelection();
   const existing = turnDrafts.get(normalized);
   if (!existing) {
-    turnDrafts.set(normalized, createStartedDraft(turnId));
+    turnDrafts.set(normalized, createStartedDraft(turnId, selection));
     return;
   }
 
   if (existing.started && turnId && existing.turnId === turnId) {
+    if (options.selection) existing.selection = selection;
     return;
   }
 
-  turnDrafts.set(normalized, createStartedDraft(turnId));
+  turnDrafts.set(normalized, createStartedDraft(turnId, selection));
 }
 
 export function clearPromptAssemblyTurn(conversationId: string): void {
@@ -387,7 +466,7 @@ export function compilePromptEnvelope(conversationId: string): PromptEnvelope | 
 
   const draft = turnDrafts.get(normalized);
   if (!draft) return null;
-  return compileRegisteredFragments(draft.fragments);
+  return compileRegisteredFragments(draft.fragments, draft.selection);
 }
 
 export function consumePromptEnvelope(conversationId: string): PromptEnvelope | null {

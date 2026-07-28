@@ -300,6 +300,7 @@ describe('Memory Ledger V3 ChatLuna lifecycle', () => {
       authority: 'reference',
       trust: 'untrusted',
       ttl: 'turn',
+      channel: 'required',
       payload: {
         kind: 'text',
         value: '当前回合上下文。',

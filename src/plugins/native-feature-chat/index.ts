@@ -340,6 +340,7 @@ export function apply(ctx: Context, _config: Config = {}): void {
           authority: 'reference',
           trust: 'trusted',
           ttl: 'turn',
+          channel: 'nativeCapabilities',
           payload: {
             kind: 'text',
             value: reference,

@@ -48,6 +48,9 @@ import {
   contextPresetPreviewRequestSchema,
   contextPresetPreviewResponseSchema,
   contextPresetUpdateRequestSchema,
+  promptFragmentPolicyPutRequestSchema,
+  promptFragmentPolicyResetRequestSchema,
+  promptFragmentPolicyStateSchema,
   contextSnapshotResponseSchema,
   contextTargetsResponseSchema,
   presetIdSchema,
@@ -86,6 +89,10 @@ import {
   NaturalTriggerConfigError,
   type NaturalTriggerConfigService,
 } from '../natural-trigger-config/index.js';
+import {
+  PromptFragmentPolicyError,
+  type PromptFragmentPolicyServiceLike,
+} from '../prompt-fragment-policy/index.js';
 import { createUnavailableMemoryStatusSnapshot } from '../shared/memory-status.js';
 import {
   MemoryRuntimeError,
@@ -150,6 +157,7 @@ export type RegisterAdminApiOptions = {
   contextSnapshots: ModelContextSnapshotStore;
   modelConfig: ModelConfigService;
   naturalTriggerConfig: NaturalTriggerConfigService;
+  promptFragmentPolicy: PromptFragmentPolicyServiceLike;
 };
 
 type KoaContext = any;
@@ -529,6 +537,40 @@ async function naturalTriggerConfigDomain<T>(
         expectedRevision: error.details.expectedRevision ?? null,
         actualRevision: error.details.actualRevision ?? null,
       });
+    }
+    throw error;
+  }
+}
+
+async function promptFragmentPolicyDomain<T>(
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof PromptFragmentPolicyError) {
+      const status = error.code === 'revision_conflict'
+        ? 409
+        : error.code === 'invalid_preset_id'
+          ? 400
+          : 503;
+      throw new AdminHttpError(
+        status,
+        status === 409
+          ? 'conflict'
+          : status === 400
+            ? 'bad_request'
+            : 'service_unavailable',
+        error.message,
+        {
+          promptFragmentPolicyErrorCode: error.code,
+          operation: error.details.operation,
+          stage: error.details.stage,
+          contextPresetId: error.details.contextPresetId,
+          expectedRevision: error.details.expectedRevision ?? null,
+          actualRevision: error.details.actualRevision ?? null,
+        },
+      );
     }
     throw error;
   }
@@ -978,6 +1020,32 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     options.ctx.chatluna.preset,
     parseInput(presetIdSchema, koaCtx.params.id),
   )));
+  register('get', '/context-presets/:id/qqbot-fragments', async (koaCtx) => {
+    const id = parseInput(presetIdSchema, koaCtx.params.id);
+    await presetDomain(() => readContextPresetDetail(options.ctx.chatluna.preset, id));
+    return promptFragmentPolicyStateSchema.parse(
+      await promptFragmentPolicyDomain(() => options.promptFragmentPolicy.get(id)),
+    );
+  });
+  register('put', '/context-presets/:id/qqbot-fragments', async (koaCtx) => {
+    const id = parseInput(presetIdSchema, koaCtx.params.id);
+    const input = parseInput(promptFragmentPolicyPutRequestSchema, koaCtx.request.body);
+    await presetDomain(() => readContextPresetDetail(options.ctx.chatluna.preset, id));
+    return promptFragmentPolicyStateSchema.parse(
+      await promptFragmentPolicyDomain(() => options.promptFragmentPolicy.put(id, input)),
+    );
+  }, { mutation: true });
+  register('delete', '/context-presets/:id/qqbot-fragments', async (koaCtx) => {
+    const id = parseInput(presetIdSchema, koaCtx.params.id);
+    const input = parseInput(promptFragmentPolicyResetRequestSchema, koaCtx.request.body);
+    await presetDomain(() => readContextPresetDetail(options.ctx.chatluna.preset, id));
+    return promptFragmentPolicyStateSchema.parse(
+      await promptFragmentPolicyDomain(() => options.promptFragmentPolicy.reset(
+        id,
+        input.expectedRevision,
+      )),
+    );
+  }, { mutation: true });
   register('post', '/context-presets', async (koaCtx) => {
     const input = parseInput(contextPresetCreateRequestSchema, koaCtx.request.body);
     const preset = await presetDomain(() => options.ctx.chatluna.preset

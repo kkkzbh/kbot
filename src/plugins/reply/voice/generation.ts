@@ -1273,6 +1273,7 @@ function registerReplyTurnStateFragment(
     authority: 'assistant_state',
     trust: 'trusted',
     ttl: 'turn',
+    channel: 'required',
     payload: {
       kind: 'text',
       value: buildReplyTurnStateText(continuationContext),

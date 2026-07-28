@@ -1661,6 +1661,7 @@ export class AffinityService implements AffinityServiceLike {
       authority: 'assistant_state',
       trust: 'trusted',
       ttl: 'turn',
+      channel: 'relationshipState',
       payload: {
         kind: 'json',
         value: {

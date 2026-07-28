@@ -8,6 +8,9 @@ import {
   contextPresetPreviewResponseSchema,
   contextPresetUpdateRequestSchema,
   emptyResponseSchema,
+  promptFragmentPolicyPutRequestSchema,
+  promptFragmentPolicyResetRequestSchema,
+  promptFragmentPolicyStateSchema,
   presetRevisionRequestSchema,
   rolePresetCatalogResponseSchema,
   rolePresetCreateRequestSchema,
@@ -19,6 +22,8 @@ import {
   type ContextPresetDetailResponse,
   type ContextPresetPreviewResponse,
   type ResolvedContextBlock,
+  type PromptFragmentPolicyConfig,
+  type PromptFragmentPolicyState,
   type RolePresetCatalogResponse,
   type RolePresetDefinitionV1,
   type RolePresetDetailResponse,
@@ -32,6 +37,8 @@ export type {
   ContextPresetDetailResponse,
   ContextPresetPreviewResponse,
   ResolvedContextBlock,
+  PromptFragmentPolicyConfig,
+  PromptFragmentPolicyState,
   RolePresetCatalogResponse,
   RolePresetDefinitionV1,
   RolePresetDetailResponse,
@@ -115,6 +122,47 @@ export async function previewContextPreset(
     method: 'POST',
     body: jsonBody(contextPresetPreviewRequestSchema, { contextPreset }),
   });
+}
+
+export async function getPromptFragmentPolicy(
+  contextPresetId: string,
+): Promise<PromptFragmentPolicyState> {
+  return api(
+    `/context-presets/${encodeURIComponent(contextPresetId)}/qqbot-fragments`,
+    promptFragmentPolicyStateSchema,
+  );
+}
+
+export async function updatePromptFragmentPolicy(
+  contextPresetId: string,
+  expectedRevision: number,
+  config: PromptFragmentPolicyConfig,
+): Promise<PromptFragmentPolicyState> {
+  return api(
+    `/context-presets/${encodeURIComponent(contextPresetId)}/qqbot-fragments`,
+    promptFragmentPolicyStateSchema,
+    {
+      method: 'PUT',
+      body: jsonBody(promptFragmentPolicyPutRequestSchema, {
+        expectedRevision,
+        config,
+      }),
+    },
+  );
+}
+
+export async function resetPromptFragmentPolicy(
+  contextPresetId: string,
+  expectedRevision: number,
+): Promise<PromptFragmentPolicyState> {
+  return api(
+    `/context-presets/${encodeURIComponent(contextPresetId)}/qqbot-fragments`,
+    promptFragmentPolicyStateSchema,
+    {
+      method: 'DELETE',
+      body: jsonBody(promptFragmentPolicyResetRequestSchema, { expectedRevision }),
+    },
+  );
 }
 
 export async function listRolePresets(): Promise<RolePresetCatalogResponse> {
