@@ -441,10 +441,16 @@ describe('deployment transaction ownership', () => {
 });
 
 describe('Memory V2 process readiness contract', () => {
-  it('accepts only a private marker bound to the current service PID', () => {
+  it('accepts only a private marker bound to the current service cgroup', () => {
     const root = createTempDir();
     const marker = join(root, 'memory-v2-ready.json');
+    const procRoot = join(root, 'proc');
     const script = join(process.cwd(), 'scripts/verify-memory-v2-readiness.mjs');
+    mkdirSync(join(procRoot, '4242'), { recursive: true });
+    writeFileSync(
+      join(procRoot, '4242/cgroup'),
+      '0::/system.slice/qqbot-koishi.service\n',
+    );
     writeFileSync(marker, JSON.stringify({
       pid: 4242,
       schemaVersion: 2,
@@ -459,26 +465,40 @@ describe('Memory V2 process readiness contract', () => {
       script,
       '--marker',
       marker,
-      '--pid',
-      '4242',
+      '--cgroup',
+      '/system.slice/qqbot-koishi.service',
+      '--proc-root',
+      procRoot,
     ], { encoding: 'utf8' });
     expect(valid).toContain('pid=4242 schema=2 modelRevision=7');
 
+    writeFileSync(
+      join(procRoot, '4242/cgroup'),
+      '0::/system.slice/another.service\n',
+    );
     expect(() => execFileSync(process.execPath, [
       script,
       '--marker',
       marker,
-      '--pid',
-      '4243',
+      '--cgroup',
+      '/system.slice/qqbot-koishi.service',
+      '--proc-root',
+      procRoot,
     ], { stdio: 'pipe' })).toThrow();
 
+    writeFileSync(
+      join(procRoot, '4242/cgroup'),
+      '0::/system.slice/qqbot-koishi.service\n',
+    );
     chmodSync(marker, 0o644);
     expect(() => execFileSync(process.execPath, [
       script,
       '--marker',
       marker,
-      '--pid',
-      '4242',
+      '--cgroup',
+      '/system.slice/qqbot-koishi.service',
+      '--proc-root',
+      procRoot,
     ], { stdio: 'pipe' })).toThrow();
   });
 });

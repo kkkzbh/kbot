@@ -75,7 +75,7 @@ describe('runtime startup contract', () => {
     expect(koishi).not.toContain('CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR ||');
     expect(koishi).not.toContain('CHATLUNA_ARCHIVE_DIR ||');
     expect(hostVerifier).toContain('verify-memory-v2-readiness.mjs');
-    expect(hostVerifier).toContain('systemctl show "${KOISHI_UNIT}" --property MainPID --value');
+    expect(hostVerifier).toContain('systemctl show "${KOISHI_UNIT}" --property ControlGroup --value');
     expect(hostVerifier).toContain('if [[ "${MEMORY_ENABLED:-true}" != "false" ]]');
   });
 

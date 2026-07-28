@@ -17,9 +17,14 @@ function requireNonEmptyString(value, field) {
 }
 
 const markerPath = readArgument('--marker');
-const expectedPid = Number(readArgument('--pid'));
-if (!Number.isSafeInteger(expectedPid) || expectedPid < 1) {
-  throw new Error('qqbot-koishi.service MainPID is invalid.');
+const serviceCgroup = readArgument('--cgroup');
+const procRootIndex = process.argv.indexOf('--proc-root');
+const procRoot = procRootIndex < 0 ? '/proc' : process.argv[procRootIndex + 1];
+if (!serviceCgroup.startsWith('/') || serviceCgroup === '/') {
+  throw new Error('qqbot-koishi.service ControlGroup is invalid.');
+}
+if (!procRoot) {
+  throw new Error('missing --proc-root value');
 }
 
 const stat = lstatSync(markerPath);
@@ -31,9 +36,16 @@ if ((stat.mode & 0o077) !== 0) {
 }
 
 const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
-if (marker.pid !== expectedPid) {
+if (!Number.isSafeInteger(marker.pid) || marker.pid < 1) {
+  throw new Error(`Memory V2 readiness marker has invalid pid: ${String(marker.pid)}.`);
+}
+const processCgroups = readFileSync(`${procRoot}/${marker.pid}/cgroup`, 'utf8')
+  .trim()
+  .split('\n')
+  .map((line) => line.split(':', 3)[2]);
+if (!processCgroups.includes(serviceCgroup)) {
   throw new Error(
-    `Memory V2 readiness PID mismatch: marker=${String(marker.pid)} service=${expectedPid}.`,
+    `Memory V2 readiness PID ${marker.pid} is outside service cgroup ${serviceCgroup}.`,
   );
 }
 if (marker.schemaVersion !== 2) {

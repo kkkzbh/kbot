@@ -127,11 +127,11 @@ systemd_unit_active() {
 }
 
 memory_v2_runtime_ready() {
-  local main_pid
-  main_pid="$(systemctl show "${KOISHI_UNIT}" --property MainPID --value)"
+  local control_group
+  control_group="$(systemctl show "${KOISHI_UNIT}" --property ControlGroup --value)"
   node "${QQBOT_APP_DIR}/scripts/verify-memory-v2-readiness.mjs" \
     --marker "${MEMORY_READY_FILE}" \
-    --pid "${main_pid}"
+    --cgroup "${control_group}"
 }
 
 wait_until() {
