@@ -1037,7 +1037,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
   }, { mutation: true });
   register('delete', '/context-presets/:id/qqbot-fragments', async (koaCtx) => {
     const id = parseInput(presetIdSchema, koaCtx.params.id);
-    const input = parseInput(promptFragmentPolicyResetRequestSchema, koaCtx.request.body);
+    const input = parseInput(promptFragmentPolicyResetRequestSchema, koaCtx.query);
     await presetDomain(() => readContextPresetDetail(options.ctx.chatluna.preset, id));
     return promptFragmentPolicyStateSchema.parse(
       await promptFragmentPolicyDomain(() => options.promptFragmentPolicy.reset(
@@ -1063,7 +1063,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return readContextPresetDetail(options.ctx.chatluna.preset, preset.id);
   }, { mutation: true });
   register('delete', '/context-presets/:id', async (koaCtx) => {
-    const input = parseInput(presetRevisionRequestSchema, koaCtx.request.body);
+    const input = parseInput(presetRevisionRequestSchema, koaCtx.query);
     await presetDomain(() => options.ctx.chatluna.preset.deleteContextPreset(
       parseInput(presetIdSchema, koaCtx.params.id),
       input.expectedRevision,
@@ -1071,7 +1071,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     koaCtx.status = 204;
   }, { mutation: true });
   register('delete', '/context-presets/:id/override', async (koaCtx) => {
-    const input = parseInput(presetRevisionRequestSchema, koaCtx.request.body);
+    const input = parseInput(presetRevisionRequestSchema, koaCtx.query);
     const preset = await presetDomain(() => options.ctx.chatluna.preset.revertContextPreset(
       parseInput(presetIdSchema, koaCtx.params.id),
       input.expectedRevision,
@@ -1103,7 +1103,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return readRolePresetDetail(options.ctx.chatluna.preset, preset.id);
   }, { mutation: true });
   register('delete', '/role-presets/:id', async (koaCtx) => {
-    const input = parseInput(presetRevisionRequestSchema, koaCtx.request.body);
+    const input = parseInput(presetRevisionRequestSchema, koaCtx.query);
     await presetDomain(() => options.ctx.chatluna.preset.deleteRolePreset(
       parseInput(presetIdSchema, koaCtx.params.id),
       input.expectedRevision,
@@ -1111,7 +1111,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     koaCtx.status = 204;
   }, { mutation: true });
   register('delete', '/role-presets/:id/override', async (koaCtx) => {
-    const input = parseInput(presetRevisionRequestSchema, koaCtx.request.body);
+    const input = parseInput(presetRevisionRequestSchema, koaCtx.query);
     const preset = await presetDomain(() => options.ctx.chatluna.preset.revertRolePreset(
       parseInput(presetIdSchema, koaCtx.params.id),
       input.expectedRevision,

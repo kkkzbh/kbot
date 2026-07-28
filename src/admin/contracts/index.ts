@@ -366,7 +366,7 @@ export const promptFragmentPolicyPutRequestSchema = z.object({
   config: promptFragmentPolicyConfigSchema,
 }).strict();
 export const promptFragmentPolicyResetRequestSchema = z.object({
-  expectedRevision: z.number().int().nonnegative(),
+  expectedRevision: z.coerce.number().int().nonnegative(),
 }).strict();
 
 export const contextPresetDraftDefinitionV1Schema = z.object({

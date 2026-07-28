@@ -58,6 +58,16 @@ export type RoleContextBlock = Extract<ContextPresetBlock, { type: 'role' }>;
 export type LoreContextBlock = Extract<ContextPresetBlock, { type: 'lore' }>;
 export type AuthorsNoteContextBlock = Extract<ContextPresetBlock, { type: 'authorsNote' }>;
 export type KnowledgeContextBlock = Extract<ContextPresetBlock, { type: 'knowledge' }>;
+
+function expectedRevisionQuery(expectedRevision: string): string {
+  const input = presetRevisionRequestSchema.parse({ expectedRevision });
+  return `?expectedRevision=${encodeURIComponent(input.expectedRevision)}`;
+}
+
+function promptFragmentRevisionQuery(expectedRevision: number): string {
+  const input = promptFragmentPolicyResetRequestSchema.parse({ expectedRevision });
+  return `?expectedRevision=${encodeURIComponent(String(input.expectedRevision))}`;
+}
 export type ModelOutputContextBlock = Extract<ContextPresetBlock, { type: 'modelOutput' }>;
 export type RolePresetMessage = RolePresetDefinitionV1['messages'][number];
 
@@ -90,20 +100,22 @@ export async function updateContextPreset(
 }
 
 export async function deleteContextPreset(id: string, expectedRevision: string): Promise<void> {
-  await api(`/context-presets/${encodeURIComponent(id)}`, emptyResponseSchema, {
-    method: 'DELETE',
-    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
-  });
+  await api(
+    `/context-presets/${encodeURIComponent(id)}${expectedRevisionQuery(expectedRevision)}`,
+    emptyResponseSchema,
+    { method: 'DELETE' },
+  );
 }
 
 export async function deleteContextPresetOverride(
   id: string,
   expectedRevision: string,
 ): Promise<ContextPresetDetailResponse> {
-  return api(`/context-presets/${encodeURIComponent(id)}/override`, contextPresetDetailResponseSchema, {
-    method: 'DELETE',
-    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
-  });
+  return api(
+    `/context-presets/${encodeURIComponent(id)}/override${expectedRevisionQuery(expectedRevision)}`,
+    contextPresetDetailResponseSchema,
+    { method: 'DELETE' },
+  );
 }
 
 export async function setDefaultContextPreset(
@@ -156,12 +168,9 @@ export async function resetPromptFragmentPolicy(
   expectedRevision: number,
 ): Promise<PromptFragmentPolicyState> {
   return api(
-    `/context-presets/${encodeURIComponent(contextPresetId)}/qqbot-fragments`,
+    `/context-presets/${encodeURIComponent(contextPresetId)}/qqbot-fragments${promptFragmentRevisionQuery(expectedRevision)}`,
     promptFragmentPolicyStateSchema,
-    {
-      method: 'DELETE',
-      body: jsonBody(promptFragmentPolicyResetRequestSchema, { expectedRevision }),
-    },
+    { method: 'DELETE' },
   );
 }
 
@@ -194,18 +203,20 @@ export async function updateRolePreset(
 }
 
 export async function deleteRolePreset(id: string, expectedRevision: string): Promise<void> {
-  await api(`/role-presets/${encodeURIComponent(id)}`, emptyResponseSchema, {
-    method: 'DELETE',
-    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
-  });
+  await api(
+    `/role-presets/${encodeURIComponent(id)}${expectedRevisionQuery(expectedRevision)}`,
+    emptyResponseSchema,
+    { method: 'DELETE' },
+  );
 }
 
 export async function deleteRolePresetOverride(
   id: string,
   expectedRevision: string,
 ): Promise<RolePresetDetailResponse> {
-  return api(`/role-presets/${encodeURIComponent(id)}/override`, rolePresetDetailResponseSchema, {
-    method: 'DELETE',
-    body: jsonBody(presetRevisionRequestSchema, { expectedRevision }),
-  });
+  return api(
+    `/role-presets/${encodeURIComponent(id)}/override${expectedRevisionQuery(expectedRevision)}`,
+    rolePresetDetailResponseSchema,
+    { method: 'DELETE' },
+  );
 }

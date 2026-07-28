@@ -703,7 +703,7 @@ describe('independent admin API plugin', () => {
     const resetRequest = createKoaCtx({
       origin: 'https://admin.example.com',
       params: { id: 'sakiko' },
-      body: { expectedRevision: 1 },
+      query: { expectedRevision: '1' },
     });
     await resetPolicy(resetRequest);
     expect(resetRequest.status).toBe(200);
@@ -1747,7 +1747,7 @@ describe('independent admin API plugin', () => {
     const removeContextCtx = createKoaCtx({
       origin: 'https://admin.example.com',
       params: { id: 'new-context' },
-      body: { expectedRevision: 'revision-context-new-context' },
+      query: { expectedRevision: 'revision-context-new-context' },
     });
     await removeContext(removeContextCtx);
     expect(removeContextCtx.status).toBe(204);
@@ -1762,7 +1762,7 @@ describe('independent admin API plugin', () => {
     const removeRoleCtx = createKoaCtx({
       origin: 'https://admin.example.com',
       params: { id: 'new-role' },
-      body: { expectedRevision: 'revision-role-new-role-updated' },
+      query: { expectedRevision: 'revision-role-new-role-updated' },
     });
     await removeRole(removeRoleCtx);
     expect(removeRoleCtx.status).toBe(204);
@@ -1844,7 +1844,7 @@ describe('independent admin API plugin', () => {
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
       params: { id: 'sakiko' },
-      body: { expectedRevision: 'revision-role-sakiko' },
+      query: { expectedRevision: 'revision-role-sakiko' },
     });
 
     await removeRole(request);
