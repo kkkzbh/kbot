@@ -82,29 +82,23 @@ onMounted(() => void loadOverview());
     <section v-if="state" class="panel overview-summary">
       <article class="summary-item">
         <span>运行服务</span>
-        <div><strong>{{ state.serviceSummary.running }}/{{ state.serviceSummary.total }}</strong><small>{{ state.serviceSummary.degraded ? `${state.serviceSummary.degraded} 个需关注` : state.serviceSummary.stopped ? `${state.serviceSummary.stopped} 个已停止` : '全部正常' }}</small></div>
+        <div><strong>{{ state.serviceSummary.running }}/{{ state.serviceSummary.total }}</strong></div>
       </article>
       <article class="summary-item summary-model">
         <span>当前模型</span>
-        <div><strong>{{ state.currentModel?.model || '未配置' }}</strong><small>{{ state.currentModel?.title || '没有 Provider' }}</small></div>
+        <div><strong>{{ state.currentModel?.model || '未配置' }}</strong></div>
       </article>
       <article class="summary-item">
         <span>长期记忆</span>
-        <div>
-          <strong>{{ state.memory.status.counts.active }}</strong>
-          <small>
-            {{ state.memory.status.counts.pendingReview }} 项待审核
-            <template v-if="state.memory.status.counts.stranded"> · {{ state.memory.status.counts.stranded }} 项不完整</template>
-          </small>
-        </div>
+        <div><strong>{{ state.memory.status.counts.active }}</strong></div>
       </article>
       <article class="summary-item">
         <span>全局默认预设</span>
-        <div><strong>{{ state.globalDefaultPresetId }}</strong><small>运行时已生效</small></div>
+        <div><strong>{{ state.globalDefaultPresetId }}</strong></div>
       </article>
       <article class="summary-item summary-events" :class="{ attention: state.events.openCount > 0 }">
         <span>待处理异常</span>
-        <div><strong>{{ state.events.openCount }}</strong><small>{{ state.events.openCount ? '需要确认或处置' : '当前无异常' }}</small></div>
+        <div><strong>{{ state.events.openCount }}</strong></div>
       </article>
       <button class="summary-refresh" :disabled="loading" @click="refreshAll">{{ loading ? '刷新中' : '刷新' }}</button>
     </section>
@@ -124,9 +118,8 @@ onMounted(() => void loadOverview());
 .summary-item { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 16px; border-right: 1px solid var(--line); }
 .summary-item > span { flex: none; color: #7b8595; font-size: 10px; }
 .summary-item div { min-width: 0; text-align: right; }
-.summary-item strong, .summary-item small { display: block; }
+.summary-item strong { display: block; }
 .summary-item strong { overflow: hidden; color: #1f2937; font-size: 18px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.summary-item small { margin-top: 2px; color: #929aa8; font-size: 9px; }
 .summary-model strong { font-size: 13px; }
 .summary-events.attention strong { color: var(--danger); }
 .summary-refresh { border: 0; color: #52647f; background: #fbfcfe; font-size: 11px; }

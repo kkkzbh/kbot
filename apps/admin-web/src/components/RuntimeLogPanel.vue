@@ -91,7 +91,6 @@ onBeforeUnmount(() => window.clearInterval(timer));
           <h2>运行日志</h2>
           <span class="live-state" :class="{ paused }"><i />{{ paused ? '已暂停' : '实时跟随' }}</span>
         </div>
-        <p>Koishi 进程日志 · 最近 {{ entries.length }} 条</p>
       </div>
       <div class="log-toolbar">
         <el-input v-model="query" clearable placeholder="搜索 namespace 或内容" class="log-search" />
@@ -122,7 +121,6 @@ onBeforeUnmount(() => window.clearInterval(timer));
     </div>
     <footer class="log-footer">
       <label><el-checkbox v-model="autoFollow" />自动滚动到最新日志</label>
-      <span>缓存上限 {{ MAX_VISIBLE_ENTRIES }} 条</span>
     </footer>
   </article>
 </template>
@@ -166,7 +164,7 @@ onBeforeUnmount(() => window.clearInterval(timer));
 .log-namespace { overflow: hidden; padding: 1px 20px 0 0; color: #2f568a; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .log-row pre { margin: 0; overflow-wrap: anywhere; color: #283548; font: inherit; white-space: pre-wrap; }
 .log-empty { height: 100%; display: grid; place-items: center; color: #8b95a5; font-size: 13px; }
-.log-footer { min-height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 6px 16px; border-top: 1px solid var(--line); color: #737f90; background: #fff; font-size: 12px; }
+.log-footer { min-height: 42px; display: flex; align-items: center; padding: 6px 16px; border-top: 1px solid var(--line); color: #737f90; background: #fff; font-size: 12px; }
 .log-footer label { display: flex; align-items: center; gap: 6px; }
 
 @media (max-width: 960px) {
@@ -180,6 +178,5 @@ onBeforeUnmount(() => window.clearInterval(timer));
   .log-level { flex: 1; }
   .log-list { min-width: 900px; }
   .log-row { grid-template-columns: 108px 72px 180px minmax(420px, 1fr); padding-inline: 12px; }
-  .log-footer span { display: none; }
 }
 </style>

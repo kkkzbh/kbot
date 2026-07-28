@@ -6,6 +6,7 @@ import type { ModelUsagePayload } from 'koishi-plugin-chatluna/llm-core/platform
 import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
 import type { CodexOAuthBridgeService } from '../codex-oauth/index.js';
 import type { ModelConfigService } from '../model-config/index.js';
+import type { NaturalTriggerConfigService } from '../natural-trigger-config/index.js';
 import type { AffinityServiceLike } from '../../types/affinity.js';
 import type { FeaturePolicyServiceLike } from '../../types/feature-policy.js';
 import type { MemoryStatusServiceLike } from '../../types/memory.js';
@@ -26,7 +27,15 @@ import {
 
 export const name = 'admin-api';
 export const inject = {
-  required: ['server', 'database', 'chatluna', 'modelConfig', 'codexBridge', 'copilotBridge'],
+  required: [
+    'server',
+    'database',
+    'chatluna',
+    'modelConfig',
+    'naturalTriggerConfig',
+    'codexBridge',
+    'copilotBridge',
+  ],
   optional: [
     'memoryStatus',
     'memoryAdmin',
@@ -53,6 +62,7 @@ type RuntimeContext = Context & {
     platform: PlatformService;
   };
   modelConfig: ModelConfigService;
+  naturalTriggerConfig: NaturalTriggerConfigService;
   codexBridge: CodexOAuthBridgeService;
   copilotBridge: CopilotOAuthBridgeService;
   memoryStatus?: MemoryStatusServiceLike;
@@ -119,6 +129,7 @@ export function apply(ctx: Context, config: Config): void {
     logger,
     contextSnapshots,
     modelConfig: runtimeCtx.modelConfig,
+    naturalTriggerConfig: runtimeCtx.naturalTriggerConfig,
   });
   registerAdminStatic({
     ctx,

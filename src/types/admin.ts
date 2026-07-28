@@ -20,7 +20,7 @@ export type ServiceAction = 'start' | 'stop' | 'restart' | 'enable';
 
 export type BotServiceRuntimeState = 'healthy' | 'degraded' | 'stopped' | 'unknown';
 
-export type AdminApplyReason = 'features' | 'tts';
+export type AdminApplyReason = 'features' | 'tts' | 'naturalTrigger';
 
 export type BotServiceUnit =
   | 'qqbot.target'

@@ -361,7 +361,6 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 
     <section class="form-section memory-settings">
       <h2 class="section-title">长期记忆配置</h2>
-      <p class="field-help">管理记忆召回、写入、提炼队列和自动归档参数。</p>
       <ManagedSettingsGrid
         v-model="memorySettingsDraft"
         v-model:clear-secrets="memorySettingsClearSecrets"
@@ -437,7 +436,6 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
           <strong>{{ assertionTypeLabel(row.assertionType) }}</strong>
           <code>{{ row.subjectKey }}</code>
           <el-tag size="small" effect="plain">{{ stateLabel(row.state) }}</el-tag>
-          <small v-if="row.kind">{{ row.kind }} · {{ row.topicKey }}</small>
         </div>
         <div class="record-content">
           <p v-if="row.content">{{ row.content }}</p>
@@ -494,7 +492,6 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <EmptyState
         v-if="!loading && rows.length === 0"
         title="当前筛选没有记录"
-        description="调整主体、来源、类型或状态后重试。"
       />
     </div>
 

@@ -44,6 +44,11 @@ import {
   type RolePresetMessage,
   type StoredContextBlockType,
 } from '@/api/context-presets';
+import {
+  contextBlockGuides,
+  supportsBudgetOrder,
+  type GuidedContextBlockType,
+} from './context-preset-guides';
 
 type Anchor = LoreContextBlock['anchor'];
 type RoleAnchor = Extract<Anchor, { type: 'role' }>;
@@ -51,6 +56,10 @@ type BlockAnchor = Extract<Anchor, { type: 'block' }>;
 type HistoryAnchor = Extract<Anchor, { type: 'chatHistory' }>;
 type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemory'>;
 type EditableContextPresetBlock = Exclude<ContextPresetBlock, { type: 'longMemory' }>;
+type BudgetOrderBlock = Extract<
+  ContextPresetBlock,
+  { type: 'chatHistory' | 'requestDocuments' | 'lore' | 'authorsNote' | 'knowledge' }
+>;
 
 const router = useRouter();
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
@@ -88,20 +97,6 @@ const blockLabels: Record<ResolvedContextBlock['type'], string> = {
   toolDefinitions: '工具定义',
 };
 
-const blockDescriptions: Record<ResolvedContextBlock['type'], string> = {
-  role: '共享角色资源',
-  chatHistory: '最近的完整对话轮次',
-  requestDocuments: '本次请求携带的文档',
-  lore: '按关键字激活的世界书条目',
-  authorsNote: '固定或按深度注入的作者说明',
-  knowledge: '指定来源检索出的知识',
-  currentInput: '格式化后的当前用户消息',
-  agentScratchpad: 'Agent 协议与中间步骤',
-  modelOutput: '输出预算与后处理',
-  qqbotFragments: 'QQBot 在请求时派生的上下文片段',
-  toolDefinitions: '当前请求可用的工具协议',
-};
-
 const rolePositions: Array<{ value: RoleAnchor['position']; label: string }> = [
   { value: 'beforeCharacterDefinitions', label: '角色定义前' },
   { value: 'afterCharacterDefinitions', label: '角色定义后' },
@@ -132,6 +127,28 @@ const selectedBudgetBlock = computed<BudgetedContextBlock | null>(() => {
   const block = selectedStoredBlock.value;
   return block && 'budgetPriority' in block ? block as BudgetedContextBlock : null;
 });
+const selectedBlockGuide = computed(() => {
+  const type = selectedResolvedBlock.value?.type;
+  if (!type || type === 'role') return null;
+  return contextBlockGuides[type as GuidedContextBlockType];
+});
+const budgetOrderBlocks = computed<BudgetOrderBlock[]>(() => (
+  contextDraft.value?.blocks
+    .filter(isBudgetOrderBlock)
+    .sort((left, right) => (
+      left.budgetPriority - right.budgetPriority
+      || (contextDraft.value?.blocks.indexOf(left) ?? 0) - (contextDraft.value?.blocks.indexOf(right) ?? 0)
+    )) ?? []
+));
+const selectedBudgetRank = computed(() => {
+  const block = selectedBudgetBlock.value;
+  if (!block || !isBudgetOrderBlock(block)) return 0;
+  return budgetOrderBlocks.value.findIndex((candidate) => candidate.id === block.id) + 1;
+});
+
+function isBudgetOrderBlock(block: ContextPresetBlock): block is BudgetOrderBlock {
+  return supportsBudgetOrder(block.type);
+}
 const selectedRoleBlock = computed<RoleContextBlock | null>(() => (
   selectedStoredBlock.value?.type === 'role' ? selectedStoredBlock.value : null
 ));
@@ -612,7 +629,7 @@ function createBlock(type: EditableStoredContextBlockType): ContextPresetBlock {
         maxTokens: null,
         anchor: { type: 'chatHistory', depth: 0 },
         content: '作者注内容',
-        insertFrequency: 0,
+        insertFrequency: 1,
       };
     case 'knowledge':
       return {
@@ -677,29 +694,6 @@ function resolvedFor(id: string): ResolvedContextBlock | null {
   return preview.value?.blocks.find((block) => block.id === id) ?? null;
 }
 
-function blockHeight(block: ResolvedContextBlock): string {
-  const stored = contextDraft.value?.blocks.find((item) => item.id === block.id);
-  const tokens = stored?.type === 'modelOutput'
-    ? stored.maxOutputTokens
-    : stored && 'maxTokens' in stored
-      ? stored.maxTokens
-      : block.type === 'role'
-        ? block.staticTokens
-        : null;
-  if (tokens == null || block.source === 'runtime') return '52px';
-  const height = Math.min(144, Math.max(52, 52 + 16 * Math.log2(1 + tokens / 256)));
-  return `${height}px`;
-}
-
-function blockScaleLabel(block: ResolvedContextBlock): string {
-  if (block.source === 'runtime') return '运行时';
-  const stored = contextDraft.value?.blocks.find((item) => item.id === block.id);
-  if (stored?.type === 'modelOutput') return `${stored.maxOutputTokens} token`;
-  if (stored && 'maxTokens' in stored) return stored.maxTokens == null ? '弹性' : `${stored.maxTokens} token`;
-  if (block.type === 'role') return block.staticTokens == null ? '静态估算' : `约 ${block.staticTokens} token`;
-  return '固定边界';
-}
-
 function canMoveTo(blockId: string, targetStoredIndex: number): boolean {
   const resolved = resolvedFor(blockId);
   const range = resolved?.legalDropRange;
@@ -732,6 +726,12 @@ function moveSelectedBy(delta: number): void {
   moveBlock(selectedStoredBlock.value.id, index + delta);
 }
 
+function moveBlockByKeyboard(block: ResolvedContextBlock, delta: number): void {
+  if (!block.movable) return;
+  selectedBlockId.value = block.id;
+  moveSelectedBy(delta);
+}
+
 function dragStart(block: ResolvedContextBlock, event: DragEvent): void {
   if (!block.movable) {
     event.preventDefault();
@@ -761,6 +761,17 @@ function dropOn(block: ResolvedContextBlock, event: DragEvent): void {
 function setBlockMaxTokens(value: number | undefined): void {
   if (!selectedBudgetBlock.value) return;
   selectedBudgetBlock.value.maxTokens = typeof value === 'number' && value > 0 ? value : null;
+}
+
+function setSelectedBudgetRank(value: number): void {
+  const selected = selectedBudgetBlock.value;
+  if (!selected || !isBudgetOrderBlock(selected)) return;
+  const ordered = budgetOrderBlocks.value.filter((block) => block.id !== selected.id);
+  const target = Math.max(0, Math.min(ordered.length, value - 1));
+  ordered.splice(target, 0, selected);
+  ordered.forEach((block, index) => {
+    block.budgetPriority = (index + 1) * 100;
+  });
 }
 
 function setAnchorType(type: Anchor['type']): void {
@@ -940,14 +951,9 @@ onBeforeUnmount(() => {
             :label="item.displayName"
           >
             <span>{{ item.displayName }}</span>
-            <small class="option-id">{{ item.id }}</small>
           </el-option>
         </el-select>
-        <span v-if="contextDetail" class="resource-meta">
-          {{ contextDetail.source }}
-          <template v-if="contextDetail.hasOverride"> · override</template>
-          <template v-if="contextDirty"> · 未保存</template>
-        </span>
+        <span v-if="contextDirty" class="resource-meta">未保存</span>
       </div>
       <div class="preset-actions-inline">
         <el-button
@@ -982,42 +988,23 @@ onBeforeUnmount(() => {
               runtime: block.source === 'runtime',
               dragging: block.id === draggingBlockId,
             }"
-            :style="{ minHeight: blockHeight(block) }"
             :draggable="block.movable"
             tabindex="0"
+            :aria-label="`${blockLabels[block.type]}${block.enabled ? '' : '，已停用'}`"
             @click="selectedBlockId = block.id"
             @focus="selectedBlockId = block.id"
+            @keydown.up.prevent="moveBlockByKeyboard(block, -1)"
+            @keydown.down.prevent="moveBlockByKeyboard(block, 1)"
             @dragstart="dragStart(block, $event)"
             @dragover="dragOver(block, $event)"
             @drop="dropOn(block, $event)"
             @dragend="draggingBlockId = null"
           >
-            <button
-              v-if="block.movable"
-              class="grip"
-              type="button"
-              :aria-label="`移动${blockLabels[block.type]}，方向键上下移动`"
-              @keydown.up.prevent="selectedBlockId = block.id; moveSelectedBy(-1)"
-              @keydown.down.prevent="selectedBlockId = block.id; moveSelectedBy(1)"
-            >
-              ⠿
-            </button>
-            <span v-else class="lock" :title="block.source === 'runtime' ? '运行时派生' : '结构锁定'">
-              {{ block.source === 'runtime' ? 'R' : 'L' }}
-            </span>
-            <div class="block-copy">
-              <strong>{{ blockLabels[block.type] }}</strong>
-              <small>{{ blockDescriptions[block.type] }}</small>
-            </div>
-            <div class="block-state">
-              <span v-if="!block.enabled">停用</span>
-              <span>{{ blockScaleLabel(block) }}</span>
-            </div>
+            <strong>{{ blockLabels[block.type] }}</strong>
           </article>
         </div>
 
         <div v-if="!previewError && !previewing && preview" class="add-block-tray">
-          <span>添加</span>
           <button
             v-for="type in addableTypes"
             :key="type"
@@ -1026,18 +1013,12 @@ onBeforeUnmount(() => {
           >
             {{ blockLabels[type] }}
           </button>
-          <small v-if="addableTypes.length === 0">当前结构已完整</small>
         </div>
       </section>
 
       <section class="editor-panel panel">
         <div class="panel-head editor-head">
-          <div>
-            <h2>{{ selectedResolvedBlock ? blockLabels[selectedResolvedBlock.type] : '选择一个块' }}</h2>
-            <p v-if="selectedResolvedBlock">
-              {{ selectedResolvedBlock.owner }} · {{ selectedResolvedBlock.id }}
-            </p>
-          </div>
+          <h2>{{ selectedResolvedBlock ? blockLabels[selectedResolvedBlock.type] : '选择一个块' }}</h2>
           <div class="block-tools">
             <el-button v-if="canDuplicateSelected" size="small" @click="duplicateSelectedBlock">
               复制
@@ -1049,13 +1030,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="selectedResolvedBlock" class="editor-body">
+          <section v-if="selectedBlockGuide" class="block-guide">
+            <p class="guide-summary">{{ selectedBlockGuide.summary }}</p>
+          </section>
+
           <template v-if="selectedResolvedBlock.source === 'runtime'">
-            <div class="owner-card">
-              <strong>运行时派生，只读</strong>
-              <p>
-                这个块由 {{ selectedResolvedBlock.type === 'toolDefinitions' ? '工具策略' : 'QQBot 请求管线' }}
-                在请求时生成，不写入上下文预设。
-              </p>
+            <div class="runtime-actions">
+              <span>此区块由运行时生成，没有预设配置项。</span>
               <el-button
                 v-if="selectedResolvedBlock.type === 'toolDefinitions'"
                 @click="router.push('/policies')"
@@ -1067,24 +1048,49 @@ onBeforeUnmount(() => {
 
           <template v-else-if="selectedStoredBlock">
             <el-form label-position="top">
-              <div v-if="selectedBudgetBlock" class="form-grid two">
+              <div v-if="selectedBudgetBlock" class="budget-settings">
                 <el-form-item label="启用">
                   <el-switch v-model="selectedBudgetBlock.enabled" />
                 </el-form-item>
-                <el-form-item label="预算优先级（数字越小越优先）">
-                  <el-input-number v-model="selectedBudgetBlock.budgetPriority" :min="0" :step="10" />
-                </el-form-item>
-                <el-form-item label="最大 Token">
-                  <div class="inline-field">
-                    <el-input-number
-                      :model-value="selectedBudgetBlock.maxTokens ?? undefined"
-                      :min="1"
-                      placeholder="弹性"
-                      @change="setBlockMaxTokens"
+                <el-form-item v-if="selectedBudgetRank > 0" label="预算分配顺序">
+                  <el-select
+                    :model-value="selectedBudgetRank"
+                    @change="setSelectedBudgetRank(Number($event))"
+                  >
+                    <el-option
+                      v-for="(block, index) in budgetOrderBlocks"
+                      :key="block.id"
+                      :value="index + 1"
+                      :label="`第 ${index + 1} 位 · ${blockLabels[block.type]}`"
                     />
-                    <el-button text @click="setBlockMaxTokens(undefined)">使用剩余预算</el-button>
+                  </el-select>
+                </el-form-item>
+                <el-form-item
+                  :label="selectedBudgetBlock.type === 'agentScratchpad' ? 'Scratchpad 上限' : '最大占用'"
+                >
+                  <div class="inline-field">
+                    <template v-if="selectedBudgetBlock.maxTokens === null">
+                      <span class="budget-mode">
+                        {{ selectedBudgetBlock.type === 'agentScratchpad' ? '不设上限' : '自动使用分到的预算' }}
+                      </span>
+                      <el-button @click="setBlockMaxTokens(1024)">设置上限</el-button>
+                    </template>
+                    <template v-else>
+                      <el-input-number
+                        :model-value="selectedBudgetBlock.maxTokens"
+                        :min="1"
+                        @change="setBlockMaxTokens"
+                      />
+                      <el-button @click="setBlockMaxTokens(undefined)">改为自动</el-button>
+                    </template>
                   </div>
                 </el-form-item>
+                <p v-if="selectedBudgetRank > 0" class="field-note wide">
+                  固定边界先占用空间，其余预算按这里的顺序分给启用的弹性区块。
+                </p>
+                <p v-else-if="selectedBudgetBlock.type === 'agentScratchpad'" class="field-note wide">
+                  Scratchpad 不参与弹性预算排序；设置上限后，超限会直接结束本次请求。
+                </p>
               </div>
 
               <template v-if="selectedRoleBlock">
@@ -1099,24 +1105,15 @@ onBeforeUnmount(() => {
                         v-for="role in roleSummaries"
                         :key="role.id"
                         :value="role.id"
-                        :label="`${role.displayName} · ${role.referenceCount} 引用`"
+                        :label="role.displayName"
                       />
                     </el-select>
                   </el-form-item>
-                  <span v-if="roleDetail" class="reference-count">
-                    {{ roleDetail.referenceCount }} 个上下文引用 · {{ roleDetail.source }}
-                    <template v-if="roleDirty"> · 未保存</template>
-                  </span>
                 </div>
                 <template v-if="roleDraft">
-                  <div class="form-grid two">
-                    <el-form-item label="角色显示名">
-                      <el-input v-model="roleDraft.displayName" />
-                    </el-form-item>
-                    <el-form-item label="角色 ID">
-                      <el-input :model-value="roleDraft.id" disabled />
-                    </el-form-item>
-                  </div>
+                  <el-form-item label="角色显示名">
+                    <el-input v-model="roleDraft.displayName" />
+                  </el-form-item>
                   <div class="subsection-head">
                     <strong>角色消息</strong>
                     <el-button size="small" @click="addRoleMessage">新增消息</el-button>
@@ -1191,34 +1188,38 @@ onBeforeUnmount(() => {
                 <el-form-item label="最大输出 Token">
                   <el-input-number v-model="selectedOutputBlock.maxOutputTokens" :min="1" />
                 </el-form-item>
-                <el-form-item label="启用 postHandler">
-                  <el-switch
-                    :model-value="selectedOutputBlock.postHandler !== null"
-                    @change="setPostHandlerEnabled"
-                  />
-                </el-form-item>
-                <div v-if="selectedOutputBlock.postHandler" class="form-grid two">
-                  <el-form-item label="Handler ID">
-                    <el-input v-model="selectedOutputBlock.postHandler.id" />
-                  </el-form-item>
-                  <el-form-item label="Censor">
-                    <el-switch v-model="selectedOutputBlock.postHandler.censor" />
-                  </el-form-item>
-                  <el-form-item label="Prefix">
-                    <el-input v-model="selectedOutputBlock.postHandler.prefix" />
-                  </el-form-item>
-                  <el-form-item label="Postfix">
-                    <el-input v-model="selectedOutputBlock.postHandler.postfix" />
-                  </el-form-item>
-                  <el-form-item class="wide" label="Variables（JSON object）">
-                    <el-input
-                      :model-value="postVariablesText(selectedOutputBlock)"
-                      type="textarea"
-                      :autosize="{ minRows: 3, maxRows: 10 }"
-                      @change="setPostVariables"
+                <details class="advanced-settings">
+                  <summary>回复后处理</summary>
+                  <p>仅在运行时已经注册对应 Handler 时启用；处理发生在模型生成回复之后。</p>
+                  <el-form-item label="启用">
+                    <el-switch
+                      :model-value="selectedOutputBlock.postHandler !== null"
+                      @change="setPostHandlerEnabled"
                     />
                   </el-form-item>
-                </div>
+                  <div v-if="selectedOutputBlock.postHandler" class="form-grid two">
+                    <el-form-item label="Handler ID">
+                      <el-input v-model="selectedOutputBlock.postHandler.id" />
+                    </el-form-item>
+                    <el-form-item label="内容审查">
+                      <el-switch v-model="selectedOutputBlock.postHandler.censor" />
+                    </el-form-item>
+                    <el-form-item label="回复前缀">
+                      <el-input v-model="selectedOutputBlock.postHandler.prefix" />
+                    </el-form-item>
+                    <el-form-item label="回复后缀">
+                      <el-input v-model="selectedOutputBlock.postHandler.postfix" />
+                    </el-form-item>
+                    <el-form-item class="wide" label="变量（JSON object）">
+                      <el-input
+                        :model-value="postVariablesText(selectedOutputBlock)"
+                        type="textarea"
+                        :autosize="{ minRows: 3, maxRows: 10 }"
+                        @change="setPostVariables"
+                      />
+                    </el-form-item>
+                  </div>
+                </details>
               </template>
 
               <template v-else-if="selectedStoredBlock.type === 'agentScratchpad'">
@@ -1233,7 +1234,7 @@ onBeforeUnmount(() => {
               </template>
 
               <template v-else-if="selectedKnowledgeBlock">
-                <el-form-item label="知识来源（每行一个）">
+                <el-form-item label="知识来源 ID（每行一个）">
                   <el-input
                     :model-value="knowledgeSourcesText(selectedKnowledgeBlock)"
                     type="textarea"
@@ -1294,7 +1295,7 @@ onBeforeUnmount(() => {
                 <el-form-item label="作者注">
                   <el-input v-model="selectedAuthorsNoteBlock.content" type="textarea" :autosize="{ minRows: 6, maxRows: 18 }" />
                 </el-form-item>
-                <el-form-item label="注入频率">
+                <el-form-item label="每 N 轮注入（0 表示关闭）">
                   <el-input-number v-model="selectedAuthorsNoteBlock.insertFrequency" :min="0" />
                 </el-form-item>
               </template>
@@ -1332,13 +1333,6 @@ onBeforeUnmount(() => {
                 </div>
               </template>
 
-              <div
-                v-if="selectedStoredBlock.type === 'chatHistory' || selectedStoredBlock.type === 'requestDocuments'"
-                class="owner-card compact"
-              >
-                <strong>{{ blockLabels[selectedStoredBlock.type] }}</strong>
-                <p>内容由请求运行时提供；此处控制启停、预算优先级和最大 Token。</p>
-              </div>
             </el-form>
           </template>
         </div>
@@ -1421,24 +1415,16 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.resource-meta,
-.reference-count {
+.resource-meta {
   color: #8a93a2;
   font-size: 11px;
 }
 
-.option-id {
-  float: right;
-  margin-left: 18px;
-  color: #9aa3b1;
-  font-family: "SFMono-Regular", Consolas, monospace;
-}
-
 .workbench-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.72fr) minmax(440px, 1.28fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   align-items: stretch;
-  gap: 18px;
+  gap: 14px;
   min-width: 0;
 }
 
@@ -1452,9 +1438,7 @@ onBeforeUnmount(() => {
 .stack-panel {
   display: flex;
   flex-direction: column;
-  background:
-    radial-gradient(circle at 18px 20px, rgba(85, 120, 215, .12), transparent 28px),
-    linear-gradient(180deg, #fbfcff 0%, #f6f8fc 100%);
+  background: #f8f9fc;
 }
 
 .editor-panel {
@@ -1471,71 +1455,48 @@ onBeforeUnmount(() => {
   margin-bottom: 3px;
 }
 
-.editor-head p {
-  margin: 0;
-  color: #8a94a5;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 10px;
-}
-
 .context-stack {
-  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px 18px 12px;
+  gap: 7px;
+  padding: 12px;
   overflow: auto;
 }
 
-.context-stack::before {
-  content: "";
-  position: absolute;
-  top: 30px;
-  bottom: 30px;
-  left: 36px;
-  width: 2px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #b8c7f4, #d9e2f7 55%, #c8d7ff);
-}
-
 .stack-block {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 10px;
   width: 100%;
-  padding: 12px 13px;
+  min-height: 44px;
+  padding: 0 13px;
   border: 1px solid rgba(206, 216, 232, .92);
-  border-radius: 14px;
+  border-radius: 9px;
   color: #263248;
-  background: rgba(255, 255, 255, .92);
-  box-shadow: 0 8px 22px rgba(34, 49, 78, .05);
+  background: #fff;
+  cursor: pointer;
   outline: none;
-  transition: transform .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease;
+  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
 }
 
 .stack-block:hover,
 .stack-block:focus-visible {
-  transform: translateY(-1px);
   border-color: #9fb1df;
-  background: #fff;
-  box-shadow: 0 12px 30px rgba(36, 55, 94, .08);
+  background: #fafbff;
 }
 
 .stack-block.selected {
-  z-index: 2;
   border-color: #5c7fe2;
-  background: linear-gradient(180deg, #f8faff, #eef3ff);
-  box-shadow: 0 14px 34px rgba(66, 103, 207, .16), inset 0 0 0 1px rgba(90, 126, 224, .16);
+  color: #244ba9;
+  background: #eef3ff;
+  box-shadow: inset 3px 0 0 #5c7fe2;
 }
 
 .stack-block.disabled {
   color: #7c8798;
-  background: rgba(247, 248, 250, .88);
+  background: #f4f5f7;
+  opacity: .72;
 }
 
 .stack-block.runtime {
@@ -1547,69 +1508,11 @@ onBeforeUnmount(() => {
   opacity: .55;
 }
 
-.grip {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid #dce4f1;
-  border-radius: 50%;
-  color: #758399;
-  background: #fff;
-  font-size: 19px;
-  cursor: grab;
-}
-
-.grip:focus-visible {
-  outline: 2px solid #6f8de2;
-  outline-offset: 1px;
-}
-
-.lock {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: 1px solid #dce2ea;
-  border-radius: 50%;
-  color: #8793a5;
-  background: #f8fafc;
-  font-size: 9px;
-  font-weight: 800;
-}
-
-.block-copy {
+.stack-block strong {
   min-width: 0;
-}
-
-.block-copy strong,
-.block-copy small {
-  display: block;
-}
-
-.block-copy strong {
   overflow: hidden;
   font-size: 12px;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.block-copy small {
-  margin-top: 3px;
-  overflow: hidden;
-  color: #8993a3;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.block-state {
-  display: grid;
-  justify-items: end;
-  gap: 3px;
-  color: #7a879a;
-  font-size: 9px;
   white-space: nowrap;
 }
 
@@ -1623,12 +1526,6 @@ onBeforeUnmount(() => {
   border-top: 1px solid rgba(219, 226, 238, .9);
   background: rgba(255, 255, 255, .78);
   backdrop-filter: blur(10px);
-}
-
-.add-block-tray span,
-.add-block-tray small {
-  color: #8a94a5;
-  font-size: 10px;
 }
 
 .add-block-tray button {
@@ -1683,6 +1580,75 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+.block-guide {
+  margin-bottom: 20px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid #e5e9f0;
+}
+
+.guide-summary {
+  max-width: 760px;
+  margin: 0;
+  color: #29354a;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+.runtime-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #6f7a8d;
+  font-size: 11px;
+}
+
+.advanced-settings {
+  margin: 8px 0 18px;
+  padding: 13px 0 0;
+  border-top: 1px solid #e5e9f0;
+}
+
+.advanced-settings summary {
+  width: fit-content;
+  color: #34425a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.advanced-settings > p {
+  margin: 8px 0 14px;
+  color: #788397;
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+.budget-settings {
+  display: grid;
+  grid-template-columns: 86px minmax(180px, .8fr) minmax(230px, 1.2fr);
+  gap: 0 14px;
+  align-items: start;
+  margin-bottom: 8px;
+}
+
+.budget-settings .el-form-item {
+  margin-bottom: 10px;
+}
+
+.budget-settings .wide {
+  grid-column: 1 / -1;
+}
+
+.budget-mode {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  color: #45536a;
+  font-size: 11px;
+}
+
 .form-grid {
   display: grid;
   gap: 14px;
@@ -1723,8 +1689,7 @@ onBeforeUnmount(() => {
 
 .message-editor,
 .lore-entry,
-.anchor-editor,
-.owner-card {
+.anchor-editor {
   min-width: 0;
   margin-bottom: 12px;
   padding: 14px;
@@ -1756,21 +1721,6 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.owner-card strong {
-  font-size: 13px;
-}
-
-.owner-card p {
-  margin: 7px 0 12px;
-  color: #778294;
-  font-size: 11px;
-  line-height: 1.65;
-}
-
-.owner-card.compact p {
-  margin-bottom: 0;
-}
-
 .field-note {
   margin: -8px 0 14px;
   color: #858f9f;
@@ -1788,7 +1738,11 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1080px) {
   .workbench-grid {
-    grid-template-columns: minmax(250px, .8fr) minmax(380px, 1.2fr);
+    grid-template-columns: 204px minmax(0, 1fr);
+  }
+
+  .budget-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1834,10 +1788,6 @@ onBeforeUnmount(() => {
     max-height: 520px;
     padding: 12px;
   }
-
-  .context-stack::before {
-    left: 30px;
-  }
 }
 
 @media (max-width: 520px) {
@@ -1854,13 +1804,8 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .stack-block {
-    grid-template-columns: 30px minmax(0, 1fr);
-  }
-
-  .block-state {
-    grid-column: 2;
-    justify-items: start;
+  .budget-settings {
+    grid-template-columns: 1fr;
   }
 
   .editor-body {

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  naturalTriggerFeatureSettingKeys,
+  naturalTriggerAdminResponseSchema,
   runtimeFeatureSettingKeys,
 } from '../src/admin/contracts/index.js';
 
@@ -19,11 +19,7 @@ describe('admin settings ownership', () => {
   });
 
   it('assigns every retired generic field to a domain workspace', () => {
-    expect(naturalTriggerFeatureSettingKeys).toEqual([
-      'CHAT_NATURAL_TRIGGER_ENABLED',
-      'CHAT_NATURAL_TRIGGER_GROUPS',
-      'CHAT_NATURAL_TRIGGER_ALIASES',
-    ]);
+    expect(naturalTriggerAdminResponseSchema).toBeDefined();
     expect(runtimeFeatureSettingKeys).toEqual([
       'QQBOT_REALTIME_MESSAGE_ENABLED',
       'QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT',
@@ -39,9 +35,12 @@ describe('admin settings ownership', () => {
       'apps/admin-web/src/pages/PoliciesPage.vue',
     ), 'utf8');
 
+    expect(naturalTriggerPage).toContain("api('/natural-trigger'");
+    expect(naturalTriggerPage).toContain('draft.mechanisms.alias.aliases');
     expect(naturalTriggerPage).toContain(
-      'useManagedFeatureSettings(naturalTriggerFeatureSettingKeys)',
+      "/intelligence/models?workload=naturalTrigger.decision",
     );
+    expect(policiesPage).not.toContain('CHAT_NATURAL_TRIGGER_ENABLED');
     expect(policiesPage).toContain(
       'useManagedFeatureSettings(runtimeFeatureSettingKeys)',
     );

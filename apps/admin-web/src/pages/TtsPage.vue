@@ -109,12 +109,11 @@ onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if
   <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="loading" @click="probe">健康探测</el-button></template></PageHeader>
   <template v-if="state">
     <section class="tts-status panel">
-      <div><i class="status-dot" :class="healthClass" /><span><strong>{{ state.health.status }}</strong><small>{{ state.health.targetBaseUrl || '尚未配置目标地址' }}</small></span></div>
+      <div><i class="status-dot" :class="healthClass" /><strong>{{ state.health.status }}</strong></div>
       <dl><div><dt>Latency</dt><dd>{{ state.health.latencyMs == null ? '—' : `${state.health.latencyMs} ms` }}</dd></div><div><dt>Device</dt><dd>{{ state.health.device || state.localGateway.resolved.device }}</dd></div><div><dt>Upstream</dt><dd>{{ state.health.running == null ? 'unknown' : state.health.running ? 'running' : 'stopped' }}</dd></div></dl>
     </section>
     <section class="form-section">
       <h2 class="section-title">语音交互</h2>
-      <p class="field-help">统一管理语音识别、语音回复和机器人到 TTS 服务的连接参数。</p>
       <ManagedSettingsGrid
         v-model="botDraft"
         v-model:clear-secrets="clearBotSecrets"
@@ -122,7 +121,7 @@ onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if
       />
     </section>
     <section class="form-section">
-      <div class="section-head"><div><h2 class="section-title">本机 GPT-SoVITS 网关</h2><p>配置文件：<span class="mono">{{ state.localGateway.envFile }}</span></p></div><el-tag :type="state.localGateway.manageable ? 'success' : 'info'">{{ state.localGateway.manageable ? '可管理' : '只读角色' }}</el-tag></div>
+      <div class="section-head"><h2 class="section-title">本机 GPT-SoVITS 网关</h2><el-tag :type="state.localGateway.manageable ? 'success' : 'info'">{{ state.localGateway.manageable ? '可管理' : '只读角色' }}</el-tag></div>
       <el-form label-position="top" class="settings-grid">
         <el-form-item label="API Key"><el-input v-model="localDraft.VOICE_TTS_API_KEY" type="password" show-password :disabled="clearLocalSecret" :placeholder="state.localGateway.secretState.VOICE_TTS_API_KEY.configured ? '已配置，留空保持原值' : '输入新的 Secret'" /><el-checkbox v-if="state.localGateway.secretState.VOICE_TTS_API_KEY.configured" v-model="clearLocalSecret">显式清空</el-checkbox></el-form-item>
         <el-form-item v-for="[key] in localEntries" :key="key" :label="labelFor(key)"><el-switch v-if="['VOICE_TTS_IS_HALF','VOICE_TTS_PARALLEL_INFER'].includes(key)" v-model="localDraft[key]" active-value="true" inactive-value="false" /><el-input v-else v-model="localDraft[key]" /></el-form-item>
@@ -130,7 +129,6 @@ onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if
     </section>
     <section class="form-section sample-section">
       <h2 class="section-title">流式试听</h2>
-      <p class="field-help">音频以原始响应流返回，浏览器通过 Blob URL 播放。</p>
       <el-input v-model="sampleText" type="textarea" :rows="3" maxlength="500" show-word-limit />
       <div class="sample-actions"><el-segmented v-model="sampleStyle" :options="[{label:'白祥',value:'white'},{label:'黑祥',value:'black'}]" /><el-button type="primary" :loading="sampleLoading" @click="sample">生成试听</el-button><audio id="tts-player" :src="sampleUrl" controls /></div>
     </section>
@@ -138,5 +136,5 @@ onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if
 </template>
 
 <style scoped>
-.tts-status{display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:960px;margin-bottom:16px;padding:18px 22px}.tts-status>div{display:flex;align-items:center;gap:12px}.tts-status strong,.tts-status small{display:block}.tts-status strong{font-size:14px;text-transform:uppercase}.tts-status small{margin-top:3px;color:var(--muted);font-size:10px}.tts-status dl{display:flex;gap:32px;margin:0}.tts-status dl div{min-width:80px}.tts-status dt{color:#939baa;font-size:9px}.tts-status dd{margin:4px 0 0;font-size:12px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.section-head{display:flex;align-items:flex-start;justify-content:space-between}.section-head .section-title{margin-bottom:4px}.section-head p{margin:0 0 18px;color:var(--muted);font-size:10px}.sample-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.sample-actions audio{height:34px;max-width:320px}@media(max-width:760px){.tts-status{align-items:flex-start;flex-direction:column}.tts-status dl{width:100%;justify-content:space-between;gap:8px}.settings-grid{grid-template-columns:1fr}.sample-actions{align-items:stretch;flex-direction:column}.sample-actions audio{max-width:100%}}
+.tts-status{display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:960px;margin-bottom:16px;padding:18px 22px}.tts-status>div{display:flex;align-items:center;gap:12px}.tts-status strong{display:block;font-size:14px;text-transform:uppercase}.tts-status dl{display:flex;gap:32px;margin:0}.tts-status dl div{min-width:80px}.tts-status dt{color:#939baa;font-size:9px}.tts-status dd{margin:4px 0 0;font-size:12px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.section-head{display:flex;align-items:flex-start;justify-content:space-between}.section-head .section-title{margin-bottom:4px}.sample-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.sample-actions audio{height:34px;max-width:320px}@media(max-width:760px){.tts-status{align-items:flex-start;flex-direction:column}.tts-status dl{width:100%;justify-content:space-between;gap:8px}.settings-grid{grid-template-columns:1fr}.sample-actions{align-items:stretch;flex-direction:column}.sample-actions audio{max-width:100%}}
 </style>

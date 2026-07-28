@@ -282,8 +282,6 @@ function createAffinityTestVoiceRuntime() {
     synthTimeoutMs: 1000,
     replyInterruptCollectWindowMs: 1000,
     replyInterruptMaxPendingInputs: 1,
-    naturalTriggerEnabled: false,
-    naturalTriggerGroups: '',
   });
 }
 

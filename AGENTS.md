@@ -14,4 +14,5 @@
 - Keep detailed diagnostics in service logs and persisted failure state. User-visible errors must remain actionable while excluding passwords, cookies, tokens, session data, and other secrets.
 - If a change touches runtime backend code, shared runtime types, Admin API contracts, or managed env keys used by `koishi.yml` through `./dist/plugins/**`, verify with `pnpm build` before handing it off. For frontend-only admin changes, run both `pnpm admin:typecheck` and `pnpm admin:build`.
 - After every frontend change, verify the affected UI through real browser interactions.
+- Admin UI: omit nonessential or repetitive small text, internal keys, and metadata.
 - Follow `docs/testing-policy.md` when adding or changing tests. Keep assertions tied to stable user behavior, runtime contracts, or artifact boundaries. Do not add broad string snapshots, unrelated cross-domain assertions, or duplicate checks that mainly increase failure noise.

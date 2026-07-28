@@ -97,6 +97,7 @@ const filteredCommands = computed(() => {
 });
 const restartReasonLabels: Record<string, string> = {
   features: '运行功能配置',
+  naturalTrigger: '自然触发配置',
   model: '模型配置',
   preset: '上下文预设',
   tts: '语音服务',
@@ -257,12 +258,6 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
           </div>
         </section>
       </nav>
-      <div class="sidebar-footer">
-        <span class="status-dot" :class="runtime.shellState === 'ready' && runtime.running === runtime.total && runtime.total > 0 ? 'ok' : 'warn'" />
-        <template v-if="runtime.shellState === 'loading'">服务状态加载中</template>
-        <template v-else-if="runtime.shellState === 'error'">服务状态不可用</template>
-        <template v-else>{{ runtime.running }}/{{ runtime.total }} 服务运行中</template>
-      </div>
     </aside>
     <div v-if="mobileOpen" class="sidebar-backdrop" @click="mobileOpen = false" />
 
@@ -273,7 +268,7 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
           <span>搜索页面和操作</span><kbd>⌘ K</kbd>
         </button>
         <div class="topbar-state">
-          <span class="model-chip" :title="runtime.shellError || undefined">
+          <span v-if="route.name !== 'overview'" class="model-chip" :title="runtime.shellError || undefined">
             {{ runtime.shellState === 'loading' ? '加载中' : runtime.shellState === 'error' ? '状态不可用' : runtime.currentModel }}
           </span>
           <button

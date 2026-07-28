@@ -15,6 +15,8 @@ plugins:
     ./dist/plugins/model-runtime:model-runtime:
       configPath: ${{ env.QQBOT_MODEL_CONFIG_PATH || './.runtime/model-config.json' }}
       kekPath: ${{ env.QQBOT_MODEL_CONFIG_KEK_PATH || './.runtime/model-config.kek' }}
+    ./dist/plugins/natural-trigger-config:natural-trigger-config:
+      configPath: ${{ env.QQBOT_NATURAL_TRIGGER_CONFIG_PATH || './.runtime/natural-trigger.json' }}
     ./dist/plugins/genshin:genshin:
       bindPagePath: ${{ env.GENSHIN_BIND_PAGE_PATH || '/genshin/bind' }}
       publicBaseUrl: >-
@@ -34,8 +36,8 @@ plugins:
         ${{ env.GENSHIN_GACHA_ICON_CACHE_PATH ||
         './.runtime/genshin/gacha-icon-cache.json' }}
       allowedGroups: ${{ env.GENSHIN_ALLOWED_GROUPS || '' }}
-      naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
-      naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.GENSHIN_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.GENSHIN_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/feature-policy:feature-policy: {}
     ./dist/plugins/tool-policy:tool-policy: {}
     ./dist/plugins/admin-api:admin-api:
@@ -62,8 +64,6 @@ plugins:
       synthTimeoutMs: ${{ +env.QQ_VOICE_SYNTH_TIMEOUT_MS || 300000 }}
       replyInterruptCollectWindowMs: ${{ +env.QQBOT_REPLY_COLLECT_WINDOW_MS || 400 }}
       replyInterruptMaxPendingInputs: ${{ +env.QQBOT_REPLY_MAX_PENDING_INPUTS || 8 }}
-      naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
-      naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/realtime-message:realtime-message:
       maxInjectCount: ${{ +env.QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT || 12 }}
     ./dist/plugins/native-feature-chat:native-feature-chat: {}
@@ -109,8 +109,8 @@ plugins:
       webVpnBrokerUrl: ${{ env.HBU_JW_WEBVPN_BROKER_URL || '' }}
       webVpnBrokerTokenFile: ${{ env.HBU_JW_WEBVPN_BROKER_TOKEN_FILE || '' }}
       allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
-      naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
-      naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.HBU_JW_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.HBU_JW_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/chaoxing:chaoxing:
       bindPagePath: ${{ env.CHAOXING_BIND_PAGE_PATH || '/chaoxing/bind' }}
       publicBaseUrl: >-
@@ -125,8 +125,8 @@ plugins:
       autoReloginEnabled: ${{ env.CHAOXING_AUTO_RELOGIN_ENABLED !== 'false' }}
       sessionValidationTtlMs: ${{ +env.CHAOXING_SESSION_VALIDATION_TTL_MS || 600000 }}
       allowedGroups: ${{ env.CHAOXING_ALLOWED_GROUPS || '' }}
-      naturalTriggerEnabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
-      naturalTriggerGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
+      naturalTriggerEnabled: ${{ env.CHAOXING_NATURAL_TRIGGER_ENABLED === 'true' }}
+      naturalTriggerGroups: ${{ env.CHAOXING_NATURAL_TRIGGER_GROUPS || '' }}
       requestIntervalMs: ${{ +env.CHAOXING_REQUEST_INTERVAL_MS || 1200 }}
       workerPollIntervalMs: ${{ +env.CHAOXING_WORKER_POLL_INTERVAL_MS || 5000 }}
       signWatchIntervalMs: ${{ +env.CHAOXING_SIGN_WATCH_INTERVAL_MS || 15000 }}
@@ -137,19 +137,7 @@ plugins:
       answerProviderUrl: ${{ env.CHAOXING_ANSWER_PROVIDER_URL || '' }}
       answerProviderApiKey: ${{ env.CHAOXING_ANSWER_PROVIDER_API_KEY || '' }}
       answerProviderTimeoutMs: ${{ +env.CHAOXING_ANSWER_PROVIDER_TIMEOUT_MS || 15000 }}
-    ./dist/plugins/triggers/group-natural:natural-trigger:
-      enabled: ${{ env.CHAT_NATURAL_TRIGGER_ENABLED === 'true' }}
-      enabledGroups: ${{ env.CHAT_NATURAL_TRIGGER_GROUPS || '' }}
-      aliases: >-
-        ${{ env.CHAT_NATURAL_TRIGGER_ALIASES || '祥子,祥,丰川,丰川祥子,saki,saki酱,sakiko'
-        }}
-      directTriggerProbability: ${{ +env.CHAT_NATURAL_TRIGGER_DIRECT_PROBABILITY || 0.25 }}
-      focusWindowMs: ${{ +env.CHAT_NATURAL_TRIGGER_FOCUS_WINDOW_MS || 300000 }}
-      replyIntervalMs: ${{ +env.CHAT_NATURAL_TRIGGER_REPLY_INTERVAL_MS || 2000 }}
-      spamWindowMs: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_WINDOW_MS || 10000 }}
-      spamThreshold: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_THRESHOLD || 10 }}
-      spamMuteMs: ${{ +env.CHAT_NATURAL_TRIGGER_SPAM_MUTE_MS || 180000 }}
-      decisionMinConfidence: ${{ +env.CHAT_NATURAL_TRIGGER_DECISION_MIN_CONFIDENCE || 0.62 }}
+    ./dist/plugins/triggers/group-natural:natural-trigger: {}
     chatluna:0qm1bk:
       botNames:
         - 祥子
@@ -160,7 +148,8 @@ plugins:
         - saki酱
         - sakiko
         - 小祥
-      isNickNameWithContent: true
+      isNickname: false
+      isNickNameWithContent: false
       sendThinkingMessage: false
       bundledContextPresetDir: ${{ env.CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR }}
       runtimeContextPresetDir: ${{ env.CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR }}

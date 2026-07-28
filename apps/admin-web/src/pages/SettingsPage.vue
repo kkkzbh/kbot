@@ -94,7 +94,6 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
   <el-skeleton v-if="loading && !fields.length" :rows="9" animated />
   <template v-else>
     <section v-for="[group,items] in grouped" :key="group" class="form-section">
-      <h2 class="section-title">{{ group }}</h2>
       <el-form label-position="top" class="settings-grid">
         <el-form-item v-for="field in items" :key="field.key" :label="field.label">
           <el-switch v-if="field.type === 'toggle'" v-model="draft[field.key]" active-value="true" inactive-value="false" />

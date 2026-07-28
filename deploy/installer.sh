@@ -133,6 +133,7 @@ restore_offline_transaction() {
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "context-presets" "${DATA_DIR}/chathub/context-presets" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "role-presets" "${DATA_DIR}/chathub/role-presets" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-config" "${DATA_DIR}/model-config.json" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "natural-trigger-config" "${DATA_DIR}/natural-trigger.json" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-kek" "${SHARED_DIR}/model-config.kek" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-map" "${MODEL_CONFIG_MAPPING_FILE}" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container" || restore_failed=1
@@ -550,6 +551,7 @@ require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
 require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/natural-trigger-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/memory-v3-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"
 require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"
@@ -601,6 +603,7 @@ write_runtime_env() {
     SQLITE_PATH
     QQBOT_MODEL_CONFIG_PATH
     QQBOT_MODEL_CONFIG_KEK_PATH
+    QQBOT_NATURAL_TRIGGER_CONFIG_PATH
     CHATLUNA_AGENT_DATA_DIR
     PMHQ_QQ_CONFIG_DIR
     QQBOT_QQ_CONFIG_MOUNT_SOURCE
@@ -651,6 +654,7 @@ write_runtime_env() {
   printf '%s\n' "SQLITE_PATH=${DATA_DIR}/koishi.db" >> "${tmp}"
   printf '%s\n' "QQBOT_MODEL_CONFIG_PATH=${DATA_DIR}/model-config.json" >> "${tmp}"
   printf '%s\n' "QQBOT_MODEL_CONFIG_KEK_PATH=${SHARED_DIR}/model-config.kek" >> "${tmp}"
+  printf '%s\n' "QQBOT_NATURAL_TRIGGER_CONFIG_PATH=${DATA_DIR}/natural-trigger.json" >> "${tmp}"
   printf '%s\n' "CHATLUNA_AGENT_DATA_DIR=${AGENT_DATA_ROOT}" >> "${tmp}"
   printf '%s\n' "PMHQ_QQ_CONFIG_DIR=${DATA_DIR}/pmhq/QQ" >> "${tmp}"
   printf '%s\n' "QQBOT_QQ_CONFIG_MOUNT_SOURCE=${DATA_DIR}/pmhq/QQ" >> "${tmp}"
@@ -787,6 +791,14 @@ else
   exit 2
 fi
 
+NATURAL_TRIGGER_CUTOVER_REPORT="${TRANSACTION_BACKUP_DIR}/natural-trigger-preflight.json"
+node "${STAGE_QQBOT}/dist/tools/natural-trigger-cutover.mjs" preflight \
+  --env "${ENV_SERVER}" \
+  --override-env "${ENV_RUNTIME}" \
+  --database "${DATA_DIR}/koishi.db" \
+  --config "${DATA_DIR}/natural-trigger.json" \
+  --report "${NATURAL_TRIGGER_CUTOVER_REPORT}"
+
 MEMORY_V3_CUTOVER_REQUIRED=0
 MEMORY_V3_INITIALIZE_REQUIRED=0
 MEMORY_V3_PREFLIGHT_REPORT="${TRANSACTION_BACKUP_DIR}/memory-v3-preflight.json"
@@ -854,6 +866,7 @@ deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-presets"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "context-presets" "${DATA_DIR}/chathub/context-presets"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "role-presets" "${DATA_DIR}/chathub/role-presets"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-config" "${DATA_DIR}/model-config.json"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "natural-trigger-config" "${DATA_DIR}/natural-trigger.json"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-kek" "${SHARED_DIR}/model-config.kek"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "model-map" "${MODEL_CONFIG_MAPPING_FILE}"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-pmhq-container" "${QUADLET_DIR}/qqbot-pmhq.container"
@@ -906,6 +919,13 @@ if [[ "${MODEL_CONFIG_V3_CUTOVER_REQUIRED}" == "1" ]]; then
     --config "${DATA_DIR}/model-config.json" \
     --report "${MODEL_CONFIG_V3_REPORT}"
 fi
+node "${STAGE_QQBOT}/dist/tools/natural-trigger-cutover.mjs" apply \
+  --env "${ENV_SERVER}" \
+  --override-env "${ENV_RUNTIME}" \
+  --database "${DATA_DIR}/koishi.db" \
+  --config "${DATA_DIR}/natural-trigger.json" \
+  --report "${NATURAL_TRIGGER_CUTOVER_REPORT}" \
+  --confirm-service-stopped
 if [[ "${MEMORY_V3_INITIALIZE_REQUIRED}" == "1" ]]; then
   node "${STAGE_QQBOT}/dist/tools/memory-v3-cutover.mjs" initialize \
     --database "${DATA_DIR}/koishi.db"

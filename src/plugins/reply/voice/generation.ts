@@ -66,12 +66,13 @@ import {
   buildModelReplyOutputContract,
   type MainChatReplyOutputContract,
 } from '../../shared/llm/index.js';
-import { normalizeGroupId, parseGroupSet } from '../../shared/group-id.js';
+import { normalizeGroupId } from '../../shared/group-id.js';
 import {
   CanonicalModelBindingResolver,
   type ModelConfigService,
   type ResolvedModelTarget,
 } from '../../model-config/index.js';
+import type { NaturalTriggerConfigService } from '../../natural-trigger-config/index.js';
 import {
   type ReplyRoute,
   type ResolvedAction,
@@ -110,7 +111,7 @@ const VOICE_WORD_SEGMENTER =
     : null;
 export const name = 'qq-voice';
 export const inject = {
-  required: ['chatluna', 'database', 'featurePolicy', 'modelConfig'],
+  required: ['chatluna', 'database', 'featurePolicy', 'modelConfig', 'naturalTriggerConfig'],
 } as const;
 const sharedReplyTransportSendStrand = createKeyedStrandRunner();
 const sharedReplyTransportCanSendRecordCache = new Map<string, boolean>();
@@ -131,8 +132,6 @@ export interface Config {
   synthTimeoutMs?: number;
   replyInterruptCollectWindowMs?: number;
   replyInterruptMaxPendingInputs?: number;
-  naturalTriggerEnabled?: boolean;
-  naturalTriggerGroups?: string[] | string;
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -150,11 +149,6 @@ export const Config: Schema<Config> = Schema.object({
   synthTimeoutMs: Schema.natural().role('time').description('TTS 请求超时（毫秒）。'),
   replyInterruptCollectWindowMs: Schema.natural().role('time').description('回复中断聚合窗口（毫秒）。'),
   replyInterruptMaxPendingInputs: Schema.natural().description('回复中断最多暂存的新消息条数。'),
-  naturalTriggerEnabled: Schema.boolean().description('群聊自然触发总开关，用于约束普通群语音输入。'),
-  naturalTriggerGroups: Schema.union([
-    Schema.array(Schema.string()).role('table').description('允许普通群语音输入进入自然触发链路的群号列表。'),
-    Schema.string().description('允许普通群语音输入进入自然触发链路的群号（逗号分隔）。'),
-  ]),
 });
 
 export interface RuntimeConfig {
@@ -172,8 +166,6 @@ export interface RuntimeConfig {
   synthTimeoutMs: number;
   replyInterruptCollectWindowMs: number;
   replyInterruptMaxPendingInputs: number;
-  naturalTriggerEnabled: boolean;
-  naturalTriggerGroups: Set<string>;
 }
 
 interface QqVoiceState {
@@ -342,6 +334,7 @@ type ReplyVoiceServicesLike = {
   chatluna?: ChatLunaLike;
   featurePolicy?: FeaturePolicyServiceLike;
   modelConfig?: ModelConfigService;
+  naturalTriggerConfig?: NaturalTriggerConfigService;
   database: StructuredReplyHistoryDatabaseLike;
 };
 type RuntimeRole = 'local' | 'server' | 'unknown';
@@ -438,8 +431,6 @@ function toRuntimeConfig(config: Config): RuntimeConfig {
     synthTimeoutMs: requireNaturalConfig(config, 'synthTimeoutMs'),
     replyInterruptCollectWindowMs: requireNaturalConfig(config, 'replyInterruptCollectWindowMs'),
     replyInterruptMaxPendingInputs: requireNaturalConfig(config, 'replyInterruptMaxPendingInputs'),
-    naturalTriggerEnabled: requireBooleanConfig(config, 'naturalTriggerEnabled'),
-    naturalTriggerGroups: parseGroupSet(requireConfigValue<string[] | string>(config, 'naturalTriggerGroups')),
   };
 }
 
@@ -463,8 +454,6 @@ export function createVoiceRuntimeConfigFromEnv(env: NodeJS.ProcessEnv = process
     synthTimeoutMs: Number(requireEnvValue(env, 'QQ_VOICE_SYNTH_TIMEOUT_MS')),
     replyInterruptCollectWindowMs: Number(requireEnvValue(env, 'QQBOT_REPLY_COLLECT_WINDOW_MS')),
     replyInterruptMaxPendingInputs: Number(requireEnvValue(env, 'QQBOT_REPLY_MAX_PENDING_INPUTS')),
-    naturalTriggerEnabled: requireBooleanEnv(env, 'CHAT_NATURAL_TRIGGER_ENABLED'),
-    naturalTriggerGroups: requireEnvValue(env, 'CHAT_NATURAL_TRIGGER_GROUPS'),
   });
 }
 
@@ -629,19 +618,19 @@ function isIncomingGroupVoiceExplicitlyAddressed(session: SessionWithVoiceState)
 
 async function shouldHandleIncomingVoiceInput(args: {
   runtime: RuntimeConfig;
-  featurePolicy: FeaturePolicyServiceLike;
+  naturalTriggerConfig: NaturalTriggerConfigService;
   session: SessionWithVoiceState;
   voiceFeatureState: { inputEnabled: boolean };
 }): Promise<boolean> {
-  const { runtime, featurePolicy, session, voiceFeatureState } = args;
+  const { runtime, naturalTriggerConfig, session, voiceFeatureState } = args;
   if (!voiceFeatureState.inputEnabled || !isVoiceInputRuntimeAvailable(runtime)) return false;
   if (session.isDirect) return true;
   if (isIncomingGroupVoiceExplicitlyAddressed(session)) return true;
 
-  if (!runtime.naturalTriggerEnabled || !runtime.naturalTriggerGroups.size) return false;
+  const naturalTrigger = naturalTriggerConfig.getRuntimeSnapshot();
+  if (!naturalTrigger.config.enabled || !naturalTrigger.config.voiceAdmission.enabled) return false;
   const groupId = resolveIncomingGroupId(session);
-  if (!groupId || !runtime.naturalTriggerGroups.has(groupId)) return false;
-  return featurePolicy.resolveFeatureEnabled(session, 'CHAT_NATURAL_TRIGGER_ENABLED');
+  return Boolean(groupId && naturalTrigger.allowedGroupIds.has(groupId));
 }
 
 function updateVoiceState(session: SessionWithVoiceState, state: QqVoiceState): void {
@@ -1858,6 +1847,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (!modelConfig) {
     throw new Error('qq-voice requires modelConfig service.');
   }
+  const naturalTriggerConfig = services.naturalTriggerConfig;
+  if (!naturalTriggerConfig) {
+    throw new Error('qq-voice requires naturalTriggerConfig service.');
+  }
   const resolveMainModelTarget = (): ResolvedModelTarget => {
     const resolved = new CanonicalModelBindingResolver(
       modelConfig.getRuntimeSnapshot(),
@@ -1918,7 +1911,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const voiceFeatureState = await resolveVoiceFeatureState(session);
       const admitted = await shouldHandleIncomingVoiceInput({
         runtime,
-        featurePolicy,
+        naturalTriggerConfig,
         session,
         voiceFeatureState,
       });

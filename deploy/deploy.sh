@@ -130,6 +130,7 @@ verify_bundle() {
   require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
   require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/natural-trigger-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/memory-v3-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"
   require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"

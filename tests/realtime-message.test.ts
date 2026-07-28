@@ -325,8 +325,6 @@ function stubVoiceRuntimeEnv(overrides: Record<string, string> = {}): void {
     QQ_VOICE_SYNTH_TIMEOUT_MS: '300000',
     QQBOT_REPLY_COLLECT_WINDOW_MS: '400',
     QQBOT_REPLY_MAX_PENDING_INPUTS: '8',
-    CHAT_NATURAL_TRIGGER_ENABLED: 'true',
-    CHAT_NATURAL_TRIGGER_GROUPS: 'group-100',
     ...overrides,
   };
   for (const [key, value] of Object.entries(values)) {

@@ -271,6 +271,9 @@ function createHarness(overrides: {
   canSendRecordImpl?: () => Promise<boolean>;
   includeInternalRequest?: boolean;
   pluginConfig?: Record<string, unknown>;
+  naturalTriggerEnabled?: boolean;
+  naturalTriggerVoiceAdmissionEnabled?: boolean;
+  naturalTriggerGroups?: string[];
   replyInterruptEnabled?: boolean;
   createChatModelImpl?: (model: string) => Promise<{ invoke: (input: unknown, options?: Record<string, unknown>) => Promise<{ content?: unknown }> }>;
   databaseGetImpl?: (table: string, query: Record<string, unknown>) => Promise<any[]>;
@@ -425,6 +428,22 @@ function createHarness(overrides: {
       }),
     },
     modelConfig: models.modelConfig,
+    naturalTriggerConfig: {
+      getRuntimeSnapshot: () => {
+        const allowedGroupIds = overrides.naturalTriggerGroups ?? ['group-100'];
+        return {
+          revision: 1,
+          config: {
+            enabled: overrides.naturalTriggerEnabled ?? true,
+            allowedGroupIds,
+            voiceAdmission: {
+              enabled: overrides.naturalTriggerVoiceAdmissionEnabled ?? true,
+            },
+          },
+          allowedGroupIds: new Set(allowedGroupIds),
+        };
+      },
+    },
     database,
     get: vi.fn((name: string) => {
       if (name !== 'chatluna') return undefined;
@@ -455,8 +474,6 @@ function createHarness(overrides: {
     synthTimeoutMs: 300_000,
     replyInterruptCollectWindowMs: 400,
     replyInterruptMaxPendingInputs: 8,
-    naturalTriggerEnabled: true,
-    naturalTriggerGroups: 'group-100',
     ...overrides.pluginConfig,
   });
 
@@ -715,8 +732,6 @@ describe('qq voice plugin', () => {
     vi.stubEnv('QQBOT_REPLY_COLLECT_WINDOW_MS', '400');
     vi.stubEnv('QQBOT_REPLY_MAX_PENDING_INPUTS', '8');
     vi.stubEnv('QQBOT_REPLY_INTERRUPT_ENABLED', 'false');
-    vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'true');
-    vi.stubEnv('CHAT_NATURAL_TRIGGER_GROUPS', 'group-100');
   });
 
   afterEach(() => {
@@ -742,6 +757,7 @@ describe('qq voice plugin', () => {
           'database',
           'featurePolicy',
           'modelConfig',
+          'naturalTriggerConfig',
         ]),
       }),
     );
@@ -771,8 +787,6 @@ describe('qq voice plugin', () => {
         synthTimeoutMs: 300_000,
         replyInterruptCollectWindowMs: 400,
         replyInterruptMaxPendingInputs: 8,
-        naturalTriggerEnabled: true,
-        naturalTriggerGroups: 'group-100',
       }),
     ).toThrow('qq-voice requires featurePolicy service.');
   });
@@ -1288,9 +1302,7 @@ describe('qq voice plugin', () => {
 
   it('skips ordinary group voice input outside the natural trigger whitelist before ASR', async () => {
     const { inbound, bot } = createHarness({
-      pluginConfig: {
-        naturalTriggerGroups: 'group-100',
-      },
+      naturalTriggerGroups: ['group-100'],
     });
     const fetchMock = vi.fn(async () => {
       throw new Error('ASR should not run');
@@ -1313,15 +1325,10 @@ describe('qq voice plugin', () => {
     expect(session.state.qqVoice).toBeUndefined();
   });
 
-  it('skips whitelisted group voice input when natural trigger is disabled for that group', async () => {
+  it('skips whitelisted group voice input when natural voice admission is disabled', async () => {
     const { inbound, bot } = createHarness({
-      featureResolverImpl: async (_session, featureKey) => {
-        if (featureKey === 'CHAT_NATURAL_TRIGGER_ENABLED') return false;
-        return true;
-      },
-      pluginConfig: {
-        naturalTriggerGroups: 'group-100',
-      },
+      naturalTriggerVoiceAdmissionEnabled: false,
+      naturalTriggerGroups: ['group-100'],
     });
     const fetchMock = vi.fn(async () => {
       throw new Error('ASR should not run');
@@ -1341,9 +1348,7 @@ describe('qq voice plugin', () => {
 
   it('handles explicitly addressed group voice input outside the natural trigger whitelist', async () => {
     const { inbound, bot } = createHarness({
-      pluginConfig: {
-        naturalTriggerGroups: 'group-100',
-      },
+      naturalTriggerGroups: ['group-100'],
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

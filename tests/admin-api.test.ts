@@ -50,6 +50,7 @@ import {
 } from '../src/plugins/admin-api/server.js';
 import { voiceFeatureSettingKeys } from '../src/admin/contracts/index.js';
 import { ModelConfigError } from '../src/plugins/model-config/index.js';
+import { NaturalTriggerConfigError } from '../src/plugins/natural-trigger-config/errors.js';
 import type { RedactedResolvedBinding } from '../src/plugins/model-config/types.js';
 import { MemoryRuntimeError } from '../src/plugins/memory/errors.js';
 import { createUnavailableMemoryStatusSnapshot } from '../src/plugins/shared/memory-status.js';
@@ -193,6 +194,58 @@ function createModelConfigService() {
   };
 }
 
+function createNaturalTriggerConfigService() {
+  let state = {
+    schemaVersion: 1 as const,
+    savedRevision: 1,
+    appliedRevision: 1,
+    pending: false,
+    updatedAt: '2026-07-28T00:00:00.000Z',
+    config: {
+      enabled: true,
+      allowedGroupIds: ['100'],
+      voiceAdmission: { enabled: true },
+      mechanisms: {
+        quote: { enabled: true },
+        alias: { enabled: true, aliases: ['祥子'] },
+        heuristic: { enabled: true },
+        focus: { enabled: true, windowMs: 300_000 },
+        random: { enabled: true, probability: 0.25 },
+      },
+      modelDecision: { minConfidence: 0.62 },
+      pacing: { minReplyIntervalMs: 2_000 },
+      antiSpam: {
+        enabled: true,
+        windowMs: 10_000,
+        threshold: 10,
+        muteMs: 180_000,
+      },
+    },
+  };
+  return {
+    getState: vi.fn(() => structuredClone(state)),
+    put: vi.fn(async (input: { expectedRevision: number; config: typeof state.config }) => {
+      if (input.expectedRevision !== state.savedRevision) {
+        throw new NaturalTriggerConfigError(
+          'revision_conflict',
+          'natural trigger revision conflict',
+          {
+            expectedRevision: input.expectedRevision,
+            actualRevision: state.savedRevision,
+          },
+        );
+      }
+      state = {
+        ...state,
+        savedRevision: state.savedRevision + 1,
+        pending: true,
+        config: structuredClone(input.config),
+      };
+      return structuredClone(state);
+    }),
+  };
+}
+
 function createOAuthBridge(authKind: 'codex_oauth' | 'oauth_device') {
   const status = {
     authKind,
@@ -228,6 +281,7 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
     upsert: vi.fn(async () => undefined),
   };
   const modelConfig = createModelConfigService();
+  const naturalTriggerConfig = createNaturalTriggerConfigService();
   const codexBridge = createOAuthBridge('codex_oauth');
   const copilotBridge = createOAuthBridge('oauth_device');
   const ctx = {
@@ -241,6 +295,7 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
     bots: {},
     chatluna: createChatLunaService(),
     modelConfig,
+    naturalTriggerConfig,
     codexBridge,
     copilotBridge,
     ...extra,
@@ -252,6 +307,7 @@ function createRuntime(dir: string, extra: Record<string, unknown> = {}) {
     database,
     preset: ctx.chatluna.preset,
     modelConfig: ctx.modelConfig,
+    naturalTriggerConfig: ctx.naturalTriggerConfig,
     codexBridge: ctx.codexBridge,
     copilotBridge: ctx.copilotBridge,
   };
@@ -485,6 +541,7 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/memory/reviews');
     expect(getPaths).toContain('/api/admin/v1/logs');
     expect(getPaths).toContain('/api/admin/v1/models');
+    expect(getPaths).toContain('/api/admin/v1/natural-trigger');
     expect(getPaths).toContain('/api/admin/v1/context-presets');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id');
     expect(getPaths).toContain('/api/admin/v1/role-presets');
@@ -522,6 +579,7 @@ describe('independent admin API plugin', () => {
     expect(getPaths).not.toContain('/api/admin/v1/memory/:kind');
     expect(postPaths).not.toContain('/api/admin/v1/memory/mutations');
     expect(putPaths).toContain('/api/admin/v1/models');
+    expect(putPaths).toContain('/api/admin/v1/natural-trigger');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();
@@ -628,6 +686,86 @@ describe('independent admin API plugin', () => {
 
   });
 
+  it('serves and saves the typed natural trigger aggregate', async () => {
+    const featurePolicy = {
+      listAdminFeatureScopes: vi.fn(async () => [
+        {
+          scopeKind: 'group',
+          scopeId: '100',
+          groupId: '100',
+          roomId: 1,
+          roomName: '测试群',
+          conversationId: 'conversation-1',
+          visibility: 'public',
+          updatedAt: 10,
+        },
+      ]),
+    };
+    const { server, naturalTriggerConfig } = createRuntime(
+      createTempDir(),
+      { featurePolicy },
+    );
+    const readNaturalTrigger = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/natural-trigger',
+    )?.[1];
+    const saveNaturalTrigger = server.put.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/natural-trigger',
+    )?.[1];
+
+    const read = createKoaCtx();
+    await readNaturalTrigger(read);
+    expect(read.status).toBe(200);
+    expect(read.body).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      savedRevision: 1,
+      appliedRevision: 1,
+      pending: false,
+      groupOptions: [{ groupId: '100', roomName: '测试群' }],
+      decisionBinding: expect.objectContaining({
+        mode: 'disabled',
+        available: false,
+      }),
+    }));
+
+    const nextConfig = structuredClone((read.body as any).config);
+    nextConfig.mechanisms.random.probability = 0.1;
+    const save = createKoaCtx({
+      method: 'PUT',
+      origin: 'https://admin.example.com',
+      body: { expectedRevision: 1, config: nextConfig },
+    });
+    await saveNaturalTrigger(save);
+    expect(save.status).toBe(200);
+    expect(save.body).toEqual(expect.objectContaining({
+      savedRevision: 2,
+      appliedRevision: 1,
+      pending: true,
+      restartRequired: true,
+      reasons: ['naturalTrigger'],
+    }));
+    expect(naturalTriggerConfig.put).toHaveBeenCalledWith({
+      expectedRevision: 1,
+      config: nextConfig,
+    });
+
+    const conflict = createKoaCtx({
+      method: 'PUT',
+      origin: 'https://admin.example.com',
+      body: { expectedRevision: 1, config: nextConfig },
+    });
+    await saveNaturalTrigger(conflict);
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({
+      error: {
+        code: 'conflict',
+        details: {
+          expectedRevision: 1,
+          actualRevision: 2,
+        },
+      },
+    });
+  });
+
   it('preserves typed Memory V3 failures without leaking provider credentials', async () => {
     const memoryAdmin = {
       getAssertionsPage: vi.fn(),
@@ -725,7 +863,7 @@ describe('independent admin API plugin', () => {
     const patchCtx = createKoaCtx({
       origin: 'https://admin.example.com',
       params: { section: 'features' },
-      body: { changes: [{ key: 'CHAT_NATURAL_TRIGGER_ALIASES', value: '小Q' }] },
+      body: { changes: [{ key: 'QQBOT_REALTIME_MESSAGE_ENABLED', value: 'false' }] },
     });
     await patchSettings(patchCtx);
     expect((patchCtx.body as any).restartRequired).toBe(true);

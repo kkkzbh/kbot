@@ -210,9 +210,9 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'QQ_VOICE_OUTPUT_MAX_WORDS', label: '语音单段字数上限', type: 'number', section: 'features' },
   { key: 'QQ_VOICE_OUTPUT_MAX_SECONDS', label: '语音单段最长秒数', type: 'number', section: 'features' },
   { key: 'QQ_VOICE_SYNTH_TIMEOUT_MS', label: '语音合成超时', type: 'number', section: 'features' },
-  { key: 'CHAT_NATURAL_TRIGGER_ENABLED', label: '群聊自然触发', type: 'toggle', section: 'features' },
-  { key: 'CHAT_NATURAL_TRIGGER_GROUPS', label: '自然触发白名单群', type: 'text', section: 'features' },
   { key: 'HBU_JW_ALLOWED_GROUPS', label: '教务系统白名单群', type: 'text', section: 'features' },
+  { key: 'HBU_JW_NATURAL_TRIGGER_ENABLED', label: '教务裸命令触发', type: 'toggle', section: 'features' },
+  { key: 'HBU_JW_NATURAL_TRIGGER_GROUPS', label: '教务裸命令群', type: 'text', section: 'features' },
   { key: 'HBU_JW_PUBLIC_BASE_URL', label: '教务绑定外部地址', type: 'text', section: 'features' },
   { key: 'HBU_JW_BIND_PAGE_PATH', label: '教务绑定页路径', type: 'text', section: 'features' },
   { key: 'HBU_JW_BIND_TOKEN_TTL_MS', label: '教务绑定链接有效期', type: 'number', section: 'features' },
@@ -237,6 +237,8 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'HBU_SECOND_CLASS_NATURAL_TRIGGER_ENABLED', label: '二课自然触发', type: 'toggle', section: 'features' },
   { key: 'HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS', label: '二课自然触发群', type: 'text', section: 'features' },
   { key: 'CHAOXING_ALLOWED_GROUPS', label: '学习通白名单群', type: 'text', section: 'features' },
+  { key: 'CHAOXING_NATURAL_TRIGGER_ENABLED', label: '学习通裸命令触发', type: 'toggle', section: 'features' },
+  { key: 'CHAOXING_NATURAL_TRIGGER_GROUPS', label: '学习通裸命令群', type: 'text', section: 'features' },
   { key: 'CHAOXING_PUBLIC_BASE_URL', label: '学习通绑定外部地址', type: 'text', section: 'features' },
   { key: 'CHAOXING_BIND_PAGE_PATH', label: '学习通绑定页路径', type: 'text', section: 'features' },
   { key: 'CHAOXING_BIND_TOKEN_TTL_MS', label: '学习通绑定链接有效期', type: 'number', section: 'features' },
@@ -256,6 +258,8 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'CHAOXING_ANSWER_PROVIDER_API_KEY', label: '学习通答案源密钥', type: 'secret', section: 'features' },
   { key: 'CHAOXING_ANSWER_PROVIDER_TIMEOUT_MS', label: '学习通答案源超时', type: 'number', section: 'features' },
   { key: 'GENSHIN_ALLOWED_GROUPS', label: '原神白名单群', type: 'text', section: 'features' },
+  { key: 'GENSHIN_NATURAL_TRIGGER_ENABLED', label: '原神裸命令触发', type: 'toggle', section: 'features' },
+  { key: 'GENSHIN_NATURAL_TRIGGER_GROUPS', label: '原神裸命令群', type: 'text', section: 'features' },
   { key: 'GENSHIN_PUBLIC_BASE_URL', label: '原神绑定外部地址', type: 'text', section: 'features' },
   { key: 'GENSHIN_BIND_PAGE_PATH', label: '原神绑定页路径', type: 'text', section: 'features' },
   { key: 'GENSHIN_BIND_TOKEN_TTL_MS', label: '原神绑定链接有效期', type: 'number', section: 'features' },
@@ -279,7 +283,6 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'MEMORY_ARCHIVE_DAYS', label: '记忆归档天数', type: 'number', section: 'features' },
   { key: 'MEMORY_MAX_JOB_RETRIES', label: '记忆任务重试', type: 'number', section: 'features' },
   { key: 'MEMORY_JOB_LOCK_TIMEOUT_MS', label: '记忆任务锁超时', type: 'number', section: 'features' },
-  { key: 'CHAT_NATURAL_TRIGGER_ALIASES', label: '触发别名', type: 'text', section: 'features' },
 ];
 
 export const ADMIN_ENV_KEYS = new Set(ADMIN_ENV_FIELDS.map((field) => field.key));
@@ -411,15 +414,17 @@ function normalizeManagedEnvValue(key: string, value: string | null | undefined)
     return expandHomePath(value.trim());
   }
   if (
-    key === 'CHAT_NATURAL_TRIGGER_GROUPS' ||
     key === 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS' ||
     key === 'HBU_JW_ALLOWED_GROUPS' ||
+    key === 'HBU_JW_NATURAL_TRIGGER_GROUPS' ||
     key === 'ZYH_ALLOWED_GROUPS' ||
     key === 'ZYH_NATURAL_TRIGGER_GROUPS' ||
     key === 'HBU_SECOND_CLASS_ALLOWED_GROUPS' ||
     key === 'HBU_SECOND_CLASS_NATURAL_TRIGGER_GROUPS' ||
     key === 'CHAOXING_ALLOWED_GROUPS' ||
-    key === 'GENSHIN_ALLOWED_GROUPS'
+    key === 'CHAOXING_NATURAL_TRIGGER_GROUPS' ||
+    key === 'GENSHIN_ALLOWED_GROUPS' ||
+    key === 'GENSHIN_NATURAL_TRIGGER_GROUPS'
   ) {
     return normalizeManagedGroupList(value);
   }

@@ -21,7 +21,6 @@ describe('affinity configuration', () => {
     expect(router).toContain("path: '/extensions/affinity'");
     expect(router).toContain("title: '关系事件'");
     expect(page).toContain("rawApi('/affinity')");
-    expect(page).toContain('affinity.analysis');
     expect(page).toContain('href="/intelligence/models"');
     expect(page).not.toContain('settings.analysisModel');
     expect(page).not.toContain('analysisModelApiKey');

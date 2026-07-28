@@ -1,12 +1,15 @@
 import { Context, Logger, Schema, Session } from 'koishi';
-import type { FeaturePolicyServiceLike } from '../../../types/feature-policy.js';
-import { buildGroupSessionScopeKey, normalizeGroupId, parseGroupSet } from '../../shared/group-id.js';
+import { buildGroupSessionScopeKey, normalizeGroupId } from '../../shared/group-id.js';
+import type { ModelRuntimeClient } from '../../model-config/index.js';
+import type {
+  NaturalTriggerConfig,
+  NaturalTriggerConfigService,
+} from '../../natural-trigger-config/index.js';
 import {
   containsAlias,
   createEmptySpamState,
-  parseAliasList,
   recordSpamMessage,
-  shouldTriggerByRule,
+  shouldTriggerByHeuristic,
   type SpamState,
 } from './matcher.js';
 import {
@@ -15,69 +18,23 @@ import {
   type NaturalTriggerReason,
   type NaturalTriggerState,
 } from './state.js';
-import type { ModelRuntimeClient } from '../../model-config/index.js';
 
 const logger = new Logger('group-natural-trigger');
 const allowReplyResolverName = 'group-natural-trigger';
+const STATE_CLEANUP_INTERVAL_MS = 60_000;
 
 export const name = 'group-natural-trigger';
 export const inject = {
-  required: ['chatluna', 'featurePolicy', 'modelRuntime'],
+  required: ['chatluna', 'modelRuntime', 'naturalTriggerConfig'],
 } as const;
+export const Config = Schema.object({});
+
 export {
   getNaturalTriggerState,
   setNaturalTriggerState,
   type NaturalTriggerReason,
   type NaturalTriggerState,
 } from './state.js';
-
-export interface Config {
-  enabled?: boolean;
-  enabledGroups?: string[] | string;
-  aliases?: string[] | string;
-  directTriggerProbability?: number;
-  focusWindowMs?: number;
-  replyIntervalMs?: number;
-  spamWindowMs?: number;
-  spamThreshold?: number;
-  spamMuteMs?: number;
-  decisionMinConfidence?: number;
-}
-
-export const Config: Schema<Config> = Schema.object({
-  enabled: Schema.boolean().description('是否启用群聊自然触发。'),
-  enabledGroups: Schema.union([
-    Schema.array(Schema.string()).role('table').description('启用自然触发的白名单群号列表。留空表示不在任何群自动触发。'),
-    Schema.string().description('启用自然触发的白名单群号（逗号分隔，留空表示不在任何群自动触发）。'),
-  ]),
-  aliases: Schema.union([
-    Schema.array(Schema.string()).role('table').description('可触发机器人对话的称呼列表。'),
-    Schema.string().description('可触发机器人对话的称呼（逗号分隔）。'),
-  ]),
-  directTriggerProbability: Schema.number()
-    .min(0)
-    .max(1)
-    .description('任意消息直接触发回复的概率。'),
-  focusWindowMs: Schema.natural().role('time').description('会话焦点窗口（毫秒）。'),
-  replyIntervalMs: Schema.natural().role('time').description('机器人两次回复最小时间间隔（毫秒）。'),
-  spamWindowMs: Schema.natural().role('time').description('刷屏判定窗口（毫秒）。'),
-  spamThreshold: Schema.natural().description('刷屏判定阈值（窗口内消息数）。'),
-  spamMuteMs: Schema.natural().role('time').description('刷屏后忽略时长（毫秒）。'),
-  decisionMinConfidence: Schema.number().min(0).max(1).description('触发判定模型最小置信度。'),
-});
-
-interface RuntimeConfig {
-  enabled: boolean;
-  enabledGroups: Set<string>;
-  aliases: string[];
-  directTriggerProbability: number;
-  focusWindowMs: number;
-  replyIntervalMs: number;
-  spamWindowMs: number;
-  spamThreshold: number;
-  spamMuteMs: number;
-  decisionMinConfidence: number;
-}
 
 interface ModelDecisionResponse {
   trigger?: boolean;
@@ -90,8 +47,8 @@ interface TriggerDecisionResult {
   rawContent: string | null;
 }
 
-type ContextWithFeaturePolicy = Context & {
-  featurePolicy?: FeaturePolicyServiceLike;
+type NaturalTriggerContext = Context & {
+  naturalTriggerConfig?: NaturalTriggerConfigService;
   modelRuntime?: ModelRuntimeClient;
   chatluna?: {
     registerAllowReplyResolver?: (
@@ -101,91 +58,43 @@ type ContextWithFeaturePolicy = Context & {
   };
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export class GroupReplyScheduler {
+  private readonly nextReplyAt = new Map<string, number>();
+  private readonly tails = new Map<string, Promise<void>>();
 
-function extractJsonObject(raw: string): string | null {
-  const fenced = raw.match(/```json\s*([\s\S]*?)```/i) ?? raw.match(/```\s*([\s\S]*?)```/);
-  if (fenced?.[1]) return fenced[1].trim();
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start >= 0 && end > start) return raw.slice(start, end + 1);
-  return null;
-}
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly wait: (ms: number) => Promise<void> = sleep,
+  ) {}
 
-function requireConfigValue<T>(config: Config, key: keyof Config): NonNullable<T> {
-  const value = config[key] as T | null | undefined;
-  if (value == null) {
-    throw new Error(`群聊自然触发配置缺失：${String(key)}。默认值必须由 koishi.yml 显式传入。`);
-  }
-  return value as NonNullable<T>;
-}
-
-function requireBooleanConfig(config: Config, key: keyof Config): boolean {
-  const value = requireConfigValue<unknown>(config, key);
-  if (typeof value !== 'boolean') {
-    throw new Error(`群聊自然触发配置 ${String(key)} 必须是 boolean。`);
-  }
-  return value;
-}
-
-function requireNumberConfig(config: Config, key: keyof Config, options: { min?: number; max?: number } = {}): number {
-  const value = Number(requireConfigValue<unknown>(config, key));
-  if (!Number.isFinite(value)) {
-    throw new Error(`群聊自然触发配置 ${String(key)} 必须是有效数字。`);
-  }
-  if (options.min != null && value < options.min) {
-    throw new Error(`群聊自然触发配置 ${String(key)} 不能小于 ${options.min}。`);
-  }
-  if (options.max != null && value > options.max) {
-    throw new Error(`群聊自然触发配置 ${String(key)} 不能大于 ${options.max}。`);
-  }
-  return value;
-}
-
-function toRuntimeConfig(config: Config): RuntimeConfig {
-  const configuredAliases = parseAliasList(requireConfigValue<string[] | string>(config, 'aliases'));
-  const configuredGroups = parseGroupSet(requireConfigValue<string[] | string>(config, 'enabledGroups'));
-  const directTriggerProbability = requireNumberConfig(config, 'directTriggerProbability', { min: 0, max: 1 });
-  return {
-    enabled: requireBooleanConfig(config, 'enabled'),
-    enabledGroups: configuredGroups,
-    aliases: configuredAliases,
-    directTriggerProbability,
-    focusWindowMs: requireNumberConfig(config, 'focusWindowMs', { min: 0 }),
-    replyIntervalMs: requireNumberConfig(config, 'replyIntervalMs', { min: 0 }),
-    spamWindowMs: requireNumberConfig(config, 'spamWindowMs', { min: 0 }),
-    spamThreshold: requireNumberConfig(config, 'spamThreshold', { min: 1 }),
-    spamMuteMs: requireNumberConfig(config, 'spamMuteMs', { min: 0 }),
-    decisionMinConfidence: requireNumberConfig(config, 'decisionMinConfidence', { min: 0, max: 1 }),
-  };
-}
-
-function normalizeMessageContent(session: Session): string {
-  const stripped = session.stripped?.content?.trim();
-  if (stripped) return stripped;
-  return session.content?.trim() ?? '';
-}
-
-function hasImageInput(session: Session): boolean {
-  const elements = Array.isArray(session.elements) ? session.elements : [];
-  if (
-    elements.some((element) => {
-      const type = typeof element?.type === 'string' ? element.type.toLowerCase() : '';
-      return type === 'img' || type === 'image';
-    })
-  ) {
-    return true;
+  async reserve(groupScopeKey: string, intervalMs: number): Promise<number> {
+    const previous = this.tails.get(groupScopeKey) ?? Promise.resolve();
+    const reservation = previous.then(async () => {
+      const delay = Math.max(0, (this.nextReplyAt.get(groupScopeKey) ?? 0) - this.now());
+      if (delay > 0) await this.wait(delay);
+      const handlingAt = this.now();
+      this.nextReplyAt.set(groupScopeKey, handlingAt + intervalMs);
+    });
+    this.tails.set(groupScopeKey, reservation);
+    try {
+      await reservation;
+      return this.nextReplyAt.get(groupScopeKey)! - intervalMs;
+    } finally {
+      if (this.tails.get(groupScopeKey) === reservation) {
+        this.tails.delete(groupScopeKey);
+      }
+    }
   }
 
-  const rawContent = String(session.content ?? '');
-  return /<img\b/i.test(rawContent) || /\[CQ:image,[^\]]+\]/i.test(rawContent);
-}
+  cleanup(now = this.now()): void {
+    for (const [key, expiresAt] of this.nextReplyAt) {
+      if (expiresAt <= now && !this.tails.has(key)) this.nextReplyAt.delete(key);
+    }
+  }
 
-function isQuotedToBot(session: Session): boolean {
-  const quote = session.quote as { user?: { id?: string } } | undefined;
-  return Boolean(quote?.user?.id && quote.user.id === session.bot?.selfId);
+  get stateSize(): number {
+    return this.nextReplyAt.size + this.tails.size;
+  }
 }
 
 const NATURAL_TRIGGER_DECISION_SCHEMA = {
@@ -200,7 +109,7 @@ const NATURAL_TRIGGER_DECISION_SCHEMA = {
 
 async function shouldTriggerByModel(
   content: string,
-  runtime: RuntimeConfig,
+  config: NaturalTriggerConfig,
   modelRuntime: ModelRuntimeClient,
 ): Promise<TriggerDecisionResult> {
   const binding = modelRuntime.resolve('naturalTrigger.decision');
@@ -230,16 +139,17 @@ async function shouldTriggerByModel(
     });
     const contentText = response.text.trim();
     if (!contentText) return { trigger: false, confidence: null, rawContent: null };
-
     const jsonText = extractJsonObject(contentText);
     if (!jsonText) return { trigger: false, confidence: null, rawContent: contentText };
-
     const parsed = JSON.parse(jsonText) as ModelDecisionResponse;
     const confidence = Number(parsed.confidence ?? 0);
-    if (!Number.isFinite(confidence) || confidence < runtime.decisionMinConfidence) {
-      return { trigger: false, confidence: Number.isFinite(confidence) ? confidence : null, rawContent: contentText };
+    if (!Number.isFinite(confidence) || confidence < config.modelDecision.minConfidence) {
+      return {
+        trigger: false,
+        confidence: Number.isFinite(confidence) ? confidence : null,
+        rawContent: contentText,
+      };
     }
-
     return {
       trigger: Boolean(parsed.trigger),
       confidence,
@@ -254,150 +164,177 @@ async function shouldTriggerByModel(
   }
 }
 
-function buildSpamKey(groupScopeKey: string, session: Session): string {
-  return `${groupScopeKey}:user:${session.userId ?? ''}`;
+function extractJsonObject(raw: string): string | null {
+  const fenced = raw.match(/```json\s*([\s\S]*?)```/i) ?? raw.match(/```\s*([\s\S]*?)```/);
+  if (fenced?.[1]) return fenced[1].trim();
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  return start >= 0 && end > start ? raw.slice(start, end + 1) : null;
+}
+
+function normalizeMessageContent(session: Session): string {
+  const stripped = session.stripped?.content?.trim();
+  if (stripped) return stripped;
+  return session.content?.trim() ?? '';
+}
+
+function hasImageInput(session: Session): boolean {
+  const elements = Array.isArray(session.elements) ? session.elements : [];
+  if (elements.some((element) => {
+    const type = typeof element?.type === 'string' ? element.type.toLowerCase() : '';
+    return type === 'img' || type === 'image';
+  })) {
+    return true;
+  }
+  const rawContent = String(session.content ?? '');
+  return /<img\b/i.test(rawContent) || /\[CQ:image,[^\]]+\]/i.test(rawContent);
+}
+
+function isQuotedToBot(session: Session): boolean {
+  const quote = session.quote as { user?: { id?: string } } | undefined;
+  return Boolean(quote?.user?.id && quote.user.id === session.bot?.selfId);
 }
 
 function resolveGroupId(session: Session): string | null {
   return normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
 }
 
-function buildNaturalTriggerGroupScopeKey(session: Session): string | null {
-  return buildGroupSessionScopeKey(session);
+export function naturalTriggerAllowsGroup(
+  session: Pick<Session, 'isDirect' | 'guildId' | 'channelId'>,
+  config: NaturalTriggerConfig,
+): boolean {
+  if (!config.enabled || session.isDirect) return false;
+  const groupId = normalizeGroupId(session.guildId) ?? normalizeGroupId(session.channelId);
+  return Boolean(groupId && config.allowedGroupIds.includes(groupId));
 }
 
-function shouldHandleGroup(session: Session, runtime: RuntimeConfig): boolean {
-  if (session.isDirect) return false;
-  const groupId = resolveGroupId(session);
-  if (!groupId) return false;
-  if (!runtime.enabledGroups.size) return false;
-  return runtime.enabledGroups.has(groupId);
+function buildSpamKey(groupScopeKey: string, session: Session): string {
+  return `${groupScopeKey}:user:${session.userId ?? ''}`;
 }
 
-export function apply(ctx: Context, config: Config): void {
-  const runtime = toRuntimeConfig(config);
-  const serviceCtx = ctx as ContextWithFeaturePolicy;
-  const featurePolicy = serviceCtx.featurePolicy;
-  if (!featurePolicy) {
-    throw new Error('group-natural-trigger requires featurePolicy service.');
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function apply(ctx: Context): void {
+  const serviceCtx = ctx as NaturalTriggerContext;
+  const configService = serviceCtx.naturalTriggerConfig;
   const modelRuntime = serviceCtx.modelRuntime;
-  if (!modelRuntime) {
-    throw new Error('group-natural-trigger requires modelRuntime service.');
-  }
   const chatluna = serviceCtx.chatluna;
   const registerAllowReplyResolver = chatluna?.registerAllowReplyResolver;
+  if (!configService) throw new Error('group-natural-trigger requires naturalTriggerConfig service.');
+  if (!modelRuntime) throw new Error('group-natural-trigger requires modelRuntime service.');
   if (!chatluna || typeof registerAllowReplyResolver !== 'function') {
     throw new Error('group-natural-trigger requires chatluna.registerAllowReplyResolver.');
   }
+  const runtime = configService.getRuntimeSnapshot();
+  const config = runtime.config;
   const focusExpires = new Map<string, number>();
   const spamStates = new Map<string, SpamState>();
-  const nextReplyAt = new Map<string, number>();
+  const scheduler = new GroupReplyScheduler();
   let disposeAllowReplyResolver: (() => void) | null = null;
 
   const ensureAllowReplyResolverRegistered = (): void => {
     if (disposeAllowReplyResolver) return;
-    disposeAllowReplyResolver = registerAllowReplyResolver.call(chatluna, allowReplyResolverName, ({ session }) => {
-      const naturalTrigger = getNaturalTriggerState(session as unknown as Record<string, unknown>);
-      if (!naturalTrigger) return;
-      logger.info(
-        'natural trigger allow resolver hit: channel=%s user=%s reason=%s explicit=%s',
-        session.channelId,
-        session.userId,
-        naturalTrigger.reason,
-        String(naturalTrigger.explicit),
-      );
-      return true;
-    });
-    logger.info('natural trigger allow resolver registered.');
+    disposeAllowReplyResolver = registerAllowReplyResolver.call(
+      chatluna,
+      allowReplyResolverName,
+      ({ session }) => {
+        const naturalTrigger = getNaturalTriggerState(
+          session as unknown as Record<string, unknown>,
+        );
+        if (!naturalTrigger) return;
+        logger.info(
+          'natural trigger allow resolver hit: channel=%s user=%s reason=%s explicit=%s',
+          session.channelId,
+          session.userId,
+          naturalTrigger.reason,
+          String(naturalTrigger.explicit),
+        );
+        return true;
+      },
+    );
   };
 
   ctx.middleware(async (session, next) => {
-    if (!runtime.enabled) return next();
-    if (!(await featurePolicy.resolveFeatureEnabled(session, 'CHAT_NATURAL_TRIGGER_ENABLED'))) {
-      return next();
-    }
     if (!session.userId || session.userId === session.bot?.selfId) return next();
-    if (!shouldHandleGroup(session, runtime)) return next();
-
+    if (!naturalTriggerAllowsGroup(session, config)) return next();
     const content = normalizeMessageContent(session);
     const imageInput = hasImageInput(session);
     if (!content && !imageInput) return next();
-
-    const groupScopeKey = buildNaturalTriggerGroupScopeKey(session);
+    const groupScopeKey = buildGroupSessionScopeKey(session);
     if (!groupScopeKey) return next();
     const now = Date.now();
-    const spamKey = buildSpamKey(groupScopeKey, session);
-    const spamState = spamStates.get(spamKey) ?? createEmptySpamState();
-    const spamResult = recordSpamMessage(spamState, now, {
-      windowMs: runtime.spamWindowMs,
-      threshold: runtime.spamThreshold,
-      muteMs: runtime.spamMuteMs,
-    });
-    spamStates.set(spamKey, spamResult.state);
 
-    if (spamResult.muted) {
-      if (spamResult.justMuted) {
-        logger.info('mute spam user for %d ms: channel=%s user=%s', runtime.spamMuteMs, session.channelId, session.userId);
-      }
-      return;
-    }
-
-    const directHit = Math.random() < runtime.directTriggerProbability;
-    const focusUntil = focusExpires.get(groupScopeKey) ?? 0;
-    const inFocus = focusUntil > now;
-    const quotedToBot = isQuotedToBot(session);
-    const hasAlias = content ? containsAlias(content, runtime.aliases) : false;
-    const ruleTriggered = content ? shouldTriggerByRule(content, runtime.aliases, quotedToBot) : quotedToBot && imageInput;
-    let triggerReason: NaturalTriggerReason | null = directHit ? 'direct' : null;
-    let explicitTrigger = false;
-    let modelDecision: TriggerDecisionResult | null = null;
-
-    let shouldTrigger = directHit;
-
-    if (!shouldTrigger) {
-      shouldTrigger = ruleTriggered;
-      if (shouldTrigger) {
-        if (quotedToBot) {
-          triggerReason = 'quote';
-        } else if (hasAlias) {
-          triggerReason = 'alias';
-        } else {
-          triggerReason = 'rule';
+    if (config.antiSpam.enabled) {
+      const spamKey = buildSpamKey(groupScopeKey, session);
+      const spamResult = recordSpamMessage(
+        spamStates.get(spamKey) ?? createEmptySpamState(),
+        now,
+        {
+          windowMs: config.antiSpam.windowMs,
+          threshold: config.antiSpam.threshold,
+          muteMs: config.antiSpam.muteMs,
+        },
+      );
+      spamStates.set(spamKey, spamResult.state);
+      if (spamResult.muted) {
+        if (spamResult.justMuted) {
+          logger.info(
+            'mute natural trigger for spam user: channel=%s user=%s durationMs=%d',
+            session.channelId,
+            session.userId,
+            config.antiSpam.muteMs,
+          );
         }
-        explicitTrigger = true;
+        return next();
       }
     }
 
-    if (!shouldTrigger && !inFocus && content) {
-      modelDecision = await shouldTriggerByModel(content, runtime, modelRuntime);
-      shouldTrigger = modelDecision.trigger;
-      if (shouldTrigger) {
-        triggerReason = 'model';
-        explicitTrigger = false;
-      }
-    } else if (!shouldTrigger && inFocus) {
-      shouldTrigger = true;
-      triggerReason = 'focus';
-      explicitTrigger = false;
+    const quotedToBot = isQuotedToBot(session);
+    const aliases = config.mechanisms.alias.aliases;
+    const hasAlias = content && config.mechanisms.alias.enabled
+      ? containsAlias(content, aliases)
+      : false;
+    const focusUntil = focusExpires.get(groupScopeKey) ?? 0;
+    let reason: NaturalTriggerReason | null = null;
+
+    if (config.mechanisms.quote.enabled && quotedToBot && (content || imageInput)) {
+      reason = 'quote';
+    } else if (hasAlias) {
+      reason = 'alias';
+    } else if (
+      config.mechanisms.heuristic.enabled
+      && content
+      && shouldTriggerByHeuristic(content)
+    ) {
+      reason = 'rule';
+    } else if (config.mechanisms.focus.enabled && focusUntil > now) {
+      reason = 'focus';
+    } else if (content) {
+      const modelDecision = await shouldTriggerByModel(content, config, modelRuntime);
+      if (modelDecision.trigger) reason = 'model';
     }
+    if (
+      !reason
+      && config.mechanisms.random.enabled
+      && Math.random() < config.mechanisms.random.probability
+    ) {
+      reason = 'direct';
+    }
+    if (!reason) return next();
 
-    if (!shouldTrigger) return next();
-
+    const handlingAt = await scheduler.reserve(
+      groupScopeKey,
+      config.pacing.minReplyIntervalMs,
+    );
+    if (config.mechanisms.focus.enabled) {
+      focusExpires.set(groupScopeKey, handlingAt + config.mechanisms.focus.windowMs);
+    }
     const naturalTrigger: NaturalTriggerState = {
-      reason: triggerReason ?? 'direct',
-      explicit: explicitTrigger,
+      reason,
+      explicit: reason === 'quote' || reason === 'alias' || reason === 'rule',
     };
-
-    const replyReadyAt = nextReplyAt.get(groupScopeKey) ?? 0;
-    if (replyReadyAt > now) {
-      await sleep(replyReadyAt - now);
-    }
-
-    const handlingAt = Date.now();
-    nextReplyAt.set(groupScopeKey, handlingAt + runtime.replyIntervalMs);
-    focusExpires.set(groupScopeKey, handlingAt + runtime.focusWindowMs);
-
     try {
       setNaturalTriggerState(session as unknown as Record<string, unknown>, naturalTrigger);
       logger.info(
@@ -413,25 +350,31 @@ export function apply(ctx: Context, config: Config): void {
     }
   });
 
+  ctx.setInterval(() => {
+    const now = Date.now();
+    for (const [key, expiresAt] of focusExpires) {
+      if (expiresAt <= now) focusExpires.delete(key);
+    }
+    for (const [key, state] of spamStates) {
+      const latest = state.timestamps.at(-1) ?? 0;
+      if (state.mutedUntil <= now && latest + config.antiSpam.windowMs <= now) {
+        spamStates.delete(key);
+      }
+    }
+    scheduler.cleanup(now);
+  }, STATE_CLEANUP_INTERVAL_MS);
+
   ctx.on('ready', () => {
     ensureAllowReplyResolverRegistered();
     logger.info(
-      'group natural trigger loaded: groups=%d, aliases=%d, direct=%s, focusWindowMs=%d, replyIntervalMs=%d, spam=%d/%dms mute=%dms',
-      runtime.enabledGroups.size,
-      runtime.aliases.length,
-      runtime.directTriggerProbability.toFixed(2),
-      runtime.focusWindowMs,
-      runtime.replyIntervalMs,
-      runtime.spamThreshold,
-      runtime.spamWindowMs,
-      runtime.spamMuteMs,
+      'group natural trigger loaded: revision=%d groups=%d aliases=%d',
+      runtime.revision,
+      config.allowedGroupIds.length,
+      config.mechanisms.alias.aliases.length,
     );
   });
-
   ctx.on('dispose', () => {
-    if (disposeAllowReplyResolver) {
-      disposeAllowReplyResolver();
-      disposeAllowReplyResolver = null;
-    }
+    disposeAllowReplyResolver?.();
+    disposeAllowReplyResolver = null;
   });
 }

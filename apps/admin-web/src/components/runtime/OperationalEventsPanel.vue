@@ -238,10 +238,7 @@ defineExpose({ refresh: load });
 <template>
   <article class="panel event-panel">
     <div class="panel-head">
-      <div>
-        <h2>异常与事件</h2>
-        <p>服务、模型、工具、后台任务及业务插件异常的统一处理入口</p>
-      </div>
+      <h2>异常与事件</h2>
       <el-button size="small" :loading="loading" @click="load()">刷新事件</el-button>
     </div>
     <div v-if="loadError" class="panel-error" role="alert">
@@ -291,11 +288,10 @@ defineExpose({ refresh: load });
           </div>
           <p>{{ item.summary }}</p>
           <div class="event-meta">
-            <span>{{ sourceLabel(item) }}</span>
             <span>{{ new Date(item.lastOccurredAt).toLocaleString() }}</span>
           </div>
         </button>
-        <el-tag class="event-status" size="small" :type="statusType(item)" effect="light">
+        <el-tag v-if="view === 'history'" class="event-status" size="small" :type="statusType(item)" effect="light">
           {{ statusLabel(item) }}
         </el-tag>
         <div v-if="view === 'pending'" class="event-actions" @click.stop>
@@ -325,10 +321,8 @@ defineExpose({ refresh: load });
     <EmptyState
       v-else
       :title="view === 'pending' ? '当前没有待处理事件' : '当前没有历史事件'"
-      description="事件采集器每 10 秒同步一次。"
     />
     <div v-if="page.total > page.pageSize" class="event-pagination">
-      <span>共 {{ page.total }} 条</span>
       <el-pagination
         size="small"
         :pager-count="5"
@@ -386,7 +380,6 @@ defineExpose({ refresh: load });
       </section>
       <section v-if="detail.occurrences.length" class="occurrences">
         <h3>归并内容</h3>
-        <p>按实际内容与来源归并，同一事件的不同原因均保留在这里。</p>
         <article v-for="occurrence in detail.occurrences" :key="occurrence.id">
           <header>
             <strong>{{ occurrence.occurrenceCount }} 次</strong>
@@ -416,8 +409,8 @@ defineExpose({ refresh: load });
 .event-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
 .event-count { min-width: 18px; height: 17px; display: inline-flex; align-items: center; justify-content: center; margin-left: 7px; padding: 0 5px; border-radius: 9px; color: #fff; background: var(--danger); font-size: 9px; font-weight: 700; }
 .event-list { max-height: 640px; overflow: auto; }
-.event-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 58px; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); transition: background .16s ease; }
-.event-row.has-actions { grid-template-columns: minmax(0, 1fr) 58px 52px; }
+.event-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 68px; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); transition: background .16s ease; }
+.event-row.has-actions { grid-template-columns: minmax(0, 1fr) 52px; }
 .event-row:first-child { border-top: 0; }
 .event-row:hover { background: #f7f9fd; }
 .event-open { min-width: 0; width: 100%; padding: 0; border: 0; outline: 0; color: inherit; background: transparent; text-align: left; }
@@ -428,12 +421,11 @@ defineExpose({ refresh: load });
 .event-title .status-dot { flex: none; }
 .event-title strong { overflow: hidden; color: #374151; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .event-open p { display: -webkit-box; overflow: hidden; margin: 5px 0 0 15px; color: #7d8797; font-size: 10px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.event-meta { justify-content: space-between; gap: 12px; margin: 6px 0 0 15px; color: #9aa2af; font-size: 9px; }
+.event-meta { justify-content: flex-end; margin: 6px 0 0 15px; color: #9aa2af; font-size: 9px; }
 .event-status { justify-self: center; }
 .event-actions { width: 52px; align-items: stretch; flex-direction: column; justify-content: center; gap: 4px; }
 .event-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.event-pagination { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); color: #8a94a3; font-size: 10px; }
-.event-pagination > span { flex: none; }
+.event-pagination { min-height: 48px; display: flex; align-items: center; justify-content: flex-end; padding: 8px 14px; border-top: 1px solid var(--line); }
 .event-pagination :deep(.el-pagination) { min-width: 0; overflow: hidden; }
 .event-detail header { display: flex; align-items: center; gap: 10px; color: #7d8797; font-size: 11px; }
 .event-detail h2 { margin: 18px 0 8px; color: #273142; font-size: 20px; }
@@ -444,7 +436,6 @@ defineExpose({ refresh: load });
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .cause, .occurrences, .journal { margin-top: 24px; }
 .cause h3, .occurrences h3, .journal h3 { color: #3c4658; font-size: 12px; }
-.occurrences > p { margin: -4px 0 12px; color: #8a94a3; font-size: 10px; line-height: 1.5; }
 .occurrences article { padding: 12px 0; border-top: 1px solid var(--line); }
 .occurrences article header { display: flex; flex-wrap: wrap; gap: 7px 12px; color: #8a94a3; font-size: 10px; }
 .occurrences article header strong { color: #53627a; }

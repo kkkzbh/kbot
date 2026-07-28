@@ -22,7 +22,6 @@ export const SCOPED_FEATURE_KEYS = [
   'QQBOT_REALTIME_MESSAGE_ENABLED',
   'QQ_VOICE_INPUT_ENABLED',
   'QQ_VOICE_OUTPUT_ENABLED',
-  'CHAT_NATURAL_TRIGGER_ENABLED',
   'QQBOT_REPLY_INTERRUPT_ENABLED',
 ] as const satisfies readonly ScopedFeatureKey[];
 
@@ -156,8 +155,6 @@ function defaultFeatureEnabled(featureKey: ScopedFeatureKey): boolean {
       return requireBooleanEnv('QQ_VOICE_INPUT_ENABLED');
     case 'QQ_VOICE_OUTPUT_ENABLED':
       return requireBooleanEnv('QQ_VOICE_OUTPUT_ENABLED');
-    case 'CHAT_NATURAL_TRIGGER_ENABLED':
-      return requireBooleanEnv('CHAT_NATURAL_TRIGGER_ENABLED');
     default:
       return true;
   }
@@ -194,9 +191,9 @@ function validateOverrideInput(input: FeatureOverrideInput): FeatureOverrideInpu
   }
   if (
     scopeKind === 'private_default'
-    && (featureKey === 'CHAT_NATURAL_TRIGGER_ENABLED' || featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED')
+    && featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED'
   ) {
-    throw new Error(featureKey === 'CHAT_NATURAL_TRIGGER_ENABLED' ? '群聊自然触发不支持私聊默认作用域。' : '实时消息不支持私聊默认作用域。');
+    throw new Error('实时消息不支持私聊默认作用域。');
   }
 
   return {
@@ -217,7 +214,7 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
 
     const defaultEnabled = defaultFeatureEnabled(featureKey);
     if (session.isDirect) {
-      if (featureKey === 'CHAT_NATURAL_TRIGGER_ENABLED' || featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED') {
+      if (featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED') {
         return false;
       }
       const override = await this.getOverride(featureKey, 'private_default', PRIVATE_DEFAULT_SCOPE_ID);

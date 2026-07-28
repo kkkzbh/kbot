@@ -446,16 +446,20 @@ describe('admin manager', () => {
     await expect(
       manager.saveEnv({
         HBU_JW_ALLOWED_GROUPS: '100\n200， group:300',
+        HBU_JW_NATURAL_TRIGGER_GROUPS: '100、200 300',
         CHAOXING_ALLOWED_GROUPS: '200\n300， group:400',
+        CHAOXING_NATURAL_TRIGGER_GROUPS: '200、300 400',
         GENSHIN_ALLOWED_GROUPS: '300\n400， group:500',
-        CHAT_NATURAL_TRIGGER_GROUPS: '100、200 300',
+        GENSHIN_NATURAL_TRIGGER_GROUPS: '300、400 500',
         CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100\n guild:200',
       }),
     ).resolves.toMatchObject({
       HBU_JW_ALLOWED_GROUPS: '100,200,group:300',
+      HBU_JW_NATURAL_TRIGGER_GROUPS: '100,200,300',
       CHAOXING_ALLOWED_GROUPS: '200,300,group:400',
+      CHAOXING_NATURAL_TRIGGER_GROUPS: '200,300,400',
       GENSHIN_ALLOWED_GROUPS: '300,400,group:500',
-      CHAT_NATURAL_TRIGGER_GROUPS: '100,200,300',
+      GENSHIN_NATURAL_TRIGGER_GROUPS: '300,400,500',
       CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100,guild:200',
     });
     expect(readFileSync(envFilePath, 'utf8')).toContain('HBU_JW_ALLOWED_GROUPS=100,200,group:300');

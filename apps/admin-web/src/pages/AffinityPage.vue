@@ -77,24 +77,21 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
     </section>
     <section class="form-section">
       <div class="model-owner">
-        <div>
-          <h2 class="section-title">分析模型</h2>
-          <p>关系分析统一使用“模型配置”中的 <code>affinity.analysis</code> 模型设置；主动事件沿用触发会话的模型。</p>
-        </div>
+        <h2 class="section-title">分析模型</h2>
         <el-button tag="a" href="/intelligence/models">前往模型配置</el-button>
       </div>
     </section>
     <article class="panel data-panel">
-      <div class="panel-head"><div><h2>范围白名单</h2><p>群聊/私聊范围与主动事件权限</p></div><el-button size="small" type="primary" @click="saveScopes">保存范围</el-button></div>
+      <div class="panel-head"><h2>范围白名单</h2><el-button size="small" type="primary" @click="saveScopes">保存范围</el-button></div>
       <el-table :data="scopes" style="width:100%"><el-table-column prop="label" label="范围" min-width="160"><template #default="scope">{{ scope.row.label || scope.row.scopeId }}</template></el-table-column><el-table-column prop="scopeKind" label="类型" width="100" /><el-table-column prop="scopeId" label="Scope ID" min-width="160" /><el-table-column label="启用" width="90"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column><el-table-column label="主动事件" width="110"><template #default="scope"><el-switch v-model="scope.row.proactiveEnabled" /></template></el-table-column></el-table>
     </article>
     <article class="panel data-panel">
-      <div class="panel-head"><div><h2>用户关系状态</h2><p>{{ state.users.length }} 个用户</p></div></div>
-      <el-table v-if="state.users.length" :data="state.users" style="width:100%"><el-table-column label="用户" min-width="170"><template #default="scope"><strong>{{ scope.row.displayName || scope.row.userKey }}</strong><div class="mono muted">{{ scope.row.userKey }}</div></template></el-table-column><el-table-column prop="stage" label="阶段" width="100" /><el-table-column prop="mood" label="Mood" width="100" /><el-table-column prop="trust" label="Trust" width="80" /><el-table-column prop="familiarity" label="熟悉" width="80" /><el-table-column prop="comfort" label="舒适" width="80" /><el-table-column prop="tension" label="紧张" width="80" /><el-table-column label="操作" width="90"><template #default="scope"><el-button size="small" @click="openAdjust(scope.row)">调整</el-button></template></el-table-column></el-table>
+      <div class="panel-head"><h2>用户关系状态</h2></div>
+      <el-table v-if="state.users.length" :data="state.users" style="width:100%"><el-table-column label="用户" min-width="170"><template #default="scope"><strong>{{ scope.row.displayName || scope.row.userKey }}</strong></template></el-table-column><el-table-column prop="stage" label="阶段" width="100" /><el-table-column prop="mood" label="Mood" width="100" /><el-table-column prop="trust" label="Trust" width="80" /><el-table-column prop="familiarity" label="熟悉" width="80" /><el-table-column prop="comfort" label="舒适" width="80" /><el-table-column prop="tension" label="紧张" width="80" /><el-table-column label="操作" width="90"><template #default="scope"><el-button size="small" @click="openAdjust(scope.row)">调整</el-button></template></el-table-column></el-table>
       <EmptyState v-else title="暂无关系用户" />
     </article>
   </template>
   <el-drawer v-model="adjustOpen" title="调整关系状态" size="min(440px, 90vw)"><el-form label-position="top"><el-form-item label="User key"><el-input v-model="adjustment.userKey" disabled /></el-form-item><el-form-item label="审计原因"><el-input v-model="adjustment.reason" /></el-form-item><el-form-item v-for="axis in ['trust','familiarity','comfort','tension']" :key="axis" :label="`${axis}（留空保持）`"><el-input-number v-model="adjustment[axis]" :controls="false" style="width:100%" /></el-form-item><el-button type="primary" :disabled="!adjustment.reason" @click="adjust">应用调整</el-button></el-form></el-drawer>
 </template>
 
-<style scoped>.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.span-2{grid-column:1/-1}.model-owner{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.model-owner .section-title{margin-bottom:4px}.model-owner p{margin:0;color:var(--muted);font-size:11px}.model-owner code{font-family:"SFMono-Regular",Consolas,monospace}.data-panel{max-width:1100px;margin-top:18px;overflow:hidden}.data-panel strong{font-size:11px}@media(max-width:760px){.settings-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.model-owner{align-items:flex-start;flex-direction:column}}</style>
+<style scoped>.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.span-2{grid-column:1/-1}.model-owner{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.model-owner .section-title{margin:0}.data-panel{max-width:1100px;margin-top:18px;overflow:hidden}.data-panel strong{font-size:11px}@media(max-width:760px){.settings-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.model-owner{align-items:flex-start;flex-direction:column}}</style>

@@ -53,11 +53,9 @@ export function containsAlias(content: string, aliases: string[]): boolean {
   return false;
 }
 
-export function shouldTriggerByRule(content: string, aliases: string[], quotedToBot: boolean): boolean {
+export function shouldTriggerByHeuristic(content: string): boolean {
   const text = content.trim();
   if (!text) return false;
-  if (quotedToBot) return true;
-  if (containsAlias(text, aliases)) return true;
 
   const hasAskVerb = ASK_VERB_PATTERN.test(text);
   const hasQuestion = QUESTION_PATTERN.test(text);
@@ -68,6 +66,10 @@ export function shouldTriggerByRule(content: string, aliases: string[], quotedTo
   if (/^(请|麻烦|帮我|给我|告诉我|解释|总结|翻译|写|算|查一下)/.test(text)) return true;
 
   return false;
+}
+
+export function shouldTriggerByRule(content: string, aliases: string[], quotedToBot: boolean): boolean {
+  return quotedToBot || containsAlias(content, aliases) || shouldTriggerByHeuristic(content);
 }
 
 export function createEmptySpamState(): SpamState {

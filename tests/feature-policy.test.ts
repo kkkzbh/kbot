@@ -128,7 +128,6 @@ describe('feature policy service', () => {
   });
 
   it('resolves defaults and scoped overrides', async () => {
-    vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'false');
     vi.stubEnv('QQ_VOICE_INPUT_ENABLED', 'true');
     const { ctx } = createHarness();
     const service = ctx.featurePolicy as NonNullable<typeof ctx.featurePolicy>;
@@ -162,40 +161,6 @@ describe('feature policy service', () => {
       ),
     ).resolves.toBe(false);
 
-    await expect(
-      service.resolveFeatureEnabled(
-        { isDirect: true, userId: 'u1', channelId: 'p1' } as any,
-        'CHAT_NATURAL_TRIGGER_ENABLED',
-      ),
-    ).resolves.toBe(false);
-
-    await expect(
-      service.resolveFeatureEnabled(
-        { isDirect: false, userId: 'u1', guildId: '10001', channelId: '10001' } as any,
-        'CHAT_NATURAL_TRIGGER_ENABLED',
-      ),
-    ).resolves.toBe(false);
-
-    vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', 'true');
-    await expect(
-      service.resolveFeatureEnabled(
-        { isDirect: false, userId: 'u1', guildId: '10001', channelId: '10001' } as any,
-        'CHAT_NATURAL_TRIGGER_ENABLED',
-      ),
-    ).resolves.toBe(true);
-  });
-
-  it('rejects natural trigger feature resolution when the env config is missing', async () => {
-    vi.stubEnv('CHAT_NATURAL_TRIGGER_ENABLED', '');
-    const { ctx } = createHarness();
-    const service = ctx.featurePolicy as NonNullable<typeof ctx.featurePolicy>;
-
-    await expect(
-      service.resolveFeatureEnabled(
-        { isDirect: false, userId: 'u1', guildId: '10001', channelId: '10001' } as any,
-        'CHAT_NATURAL_TRIGGER_ENABLED',
-      ),
-    ).rejects.toThrow('CHAT_NATURAL_TRIGGER_ENABLED 未配置');
   });
 
   it('supports realtime-message defaults and group-only overrides', async () => {

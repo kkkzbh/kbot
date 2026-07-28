@@ -13,6 +13,7 @@ LOG_FILE="$SMOKE_RUNTIME_DIR/koishi.log"
 TMP_KOISHI_YML="$SMOKE_RUNTIME_DIR/koishi.yml"
 export QQBOT_MODEL_CONFIG_PATH="$SMOKE_RUNTIME_DIR/model-config.json"
 export QQBOT_MODEL_CONFIG_KEK_PATH="$SMOKE_RUNTIME_DIR/model-config.kek"
+export QQBOT_NATURAL_TRIGGER_CONFIG_PATH="$SMOKE_RUNTIME_DIR/natural-trigger.json"
 export SQLITE_PATH="$SMOKE_RUNTIME_DIR/koishi.db"
 
 cleanup() {
@@ -50,6 +51,7 @@ export CHATLUNA_RUNTIME_ROLE_PRESET_DIR="${CHATLUNA_RUNTIME_ROLE_PRESET_DIR:-$SM
 export CHATLUNA_ARCHIVE_DIR="${CHATLUNA_ARCHIVE_DIR:-$SMOKE_RUNTIME_DIR/archive}"
 export QQ_VOICE_INPUT_ENABLED="${QQ_VOICE_INPUT_ENABLED:-false}"
 export QQ_VOICE_OUTPUT_ENABLED="${QQ_VOICE_OUTPUT_ENABLED:-false}"
+export QQ_VOICE_OUTPUT_LANGUAGE="${QQ_VOICE_OUTPUT_LANGUAGE:-zh}"
 export QQBOT_ADMIN_ORIGIN="${QQBOT_ADMIN_ORIGIN:-http://127.0.0.1:${KOISHI_PORT}}"
 export QQBOT_ADMIN_SSH_ORIGIN="${QQBOT_ADMIN_SSH_ORIGIN:-http://127.0.0.1:${KOISHI_PORT}}"
 
@@ -78,6 +80,8 @@ connection.execute(
 connection.commit()
 connection.close()
 PY
+
+node ./dist/tools/memory-v3-cutover.mjs initialize --database "$SQLITE_PATH"
 
 node --input-type=module <<'NODE'
 import { ModelConfigService } from './dist/plugins/model-config/index.js';
@@ -141,6 +145,40 @@ await modelConfig.createInitial({
 });
 NODE
 
+node --input-type=module <<'NODE'
+import { writeNaturalTriggerConfigDocumentAtomic } from './dist/plugins/natural-trigger-config/store.js';
+
+await writeNaturalTriggerConfigDocumentAtomic(
+  process.env.QQBOT_NATURAL_TRIGGER_CONFIG_PATH,
+  {
+    schemaVersion: 1,
+    savedRevision: 1,
+    appliedRevision: 0,
+    updatedAt: new Date().toISOString(),
+    config: {
+      enabled: false,
+      allowedGroupIds: [],
+      voiceAdmission: { enabled: false },
+      mechanisms: {
+        quote: { enabled: true },
+        alias: { enabled: false, aliases: [] },
+        heuristic: { enabled: false },
+        focus: { enabled: false, windowMs: 0 },
+        random: { enabled: false, probability: 0 },
+      },
+      modelDecision: { minConfidence: 0.62 },
+      pacing: { minReplyIntervalMs: 0 },
+      antiSpam: {
+        enabled: false,
+        windowMs: 10000,
+        threshold: 10,
+        muteMs: 180000,
+      },
+    },
+  },
+);
+NODE
+
 cp koishi.yml "$TMP_KOISHI_YML"
 
 node --input-type=module - "$TMP_KOISHI_YML" <<'NODE'
@@ -162,6 +200,8 @@ const keep = new Set([
   './dist/plugins/admin-api:admin-api',
   'database-sqlite:8jr5yp',
   './dist/plugins/model-runtime:model-runtime',
+  './dist/plugins/natural-trigger-config:natural-trigger-config',
+  './dist/plugins/feature-policy:feature-policy',
   'cron:task',
   './dist/plugins/automation:automation',
   './dist/plugins/reply:voice',

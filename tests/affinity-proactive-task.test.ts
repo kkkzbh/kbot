@@ -165,8 +165,6 @@ function createTestVoiceRuntime() {
     synthTimeoutMs: 1000,
     replyInterruptCollectWindowMs: 1000,
     replyInterruptMaxPendingInputs: 1,
-    naturalTriggerEnabled: false,
-    naturalTriggerGroups: '',
   });
 }
 
@@ -370,8 +368,6 @@ describe('affinity proactive task prompt and provider adapter', () => {
         synthTimeoutMs: 1000,
         replyInterruptCollectWindowMs: 1000,
         replyInterruptMaxPendingInputs: 1,
-        naturalTriggerEnabled: false,
-        naturalTriggerGroups: '',
       }),
       modelTarget: mainTarget,
     });

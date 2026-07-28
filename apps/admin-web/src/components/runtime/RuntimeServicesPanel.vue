@@ -133,19 +133,12 @@ defineExpose({ refresh: load });
 <template>
   <article class="panel service-panel">
     <div class="panel-head">
-      <div>
-        <h2>服务管理</h2>
-        <p>实时健康、systemd 控制状态与生命周期操作</p>
-      </div>
+      <h2>服务管理</h2>
       <el-button size="small" :loading="loading" @click="load()">刷新状态</el-button>
     </div>
     <div v-if="loadError" class="panel-error" role="alert">
       <div><strong>服务状态加载失败</strong><p>{{ loadError }}</p></div>
       <el-button size="small" @click="load()">重试</el-button>
-    </div>
-    <div v-if="services.length" class="service-list-toolbar">
-      <span>{{ services.length }} 个托管服务</span>
-      <span>每 5 秒自动刷新</span>
     </div>
     <div v-if="services.length" v-loading="loading" class="service-list">
       <section
@@ -157,20 +150,13 @@ defineExpose({ refresh: load });
       >
         <div class="service-identity">
           <strong>{{ service.description }}</strong>
-          <span class="mono muted">{{ service.unit }}</span>
         </div>
         <div class="service-health">
           <span class="service-state">
             <i class="status-dot" :class="stateClass(service.runtimeState)" />
             {{ runtimeLabels[service.runtimeState] }}
           </span>
-          <p>{{ service.healthDetail }}</p>
-          <small>
-            systemd {{ service.controllerState.activeState }}/{{ service.controllerState.subState }}
-            · result {{ service.controllerState.result }}
-            · {{ service.controllerState.unitFileState }}
-            · {{ new Date(service.checkedAt).toLocaleTimeString() }}
-          </small>
+          <p v-if="service.runtimeState !== 'healthy'">{{ service.healthDetail }}</p>
         </div>
         <div class="service-actions">
           <el-button
@@ -210,7 +196,7 @@ defineExpose({ refresh: load });
         </div>
       </section>
     </div>
-    <EmptyState v-else title="没有可管理的服务" description="服务清单为空或尚未加载。" />
+    <EmptyState v-else title="没有可管理的服务" />
   </article>
 </template>
 
@@ -219,7 +205,6 @@ defineExpose({ refresh: load });
 .panel-error { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid #f3c9cf; color: #9b3141; background: #fff4f5; }
 .panel-error strong { font-size: 11px; }
 .panel-error p { margin: 3px 0 0; font-size: 10px; line-height: 1.45; }
-.service-list-toolbar { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); color: #8a94a3; font-size: 10px; }
 .service-list { max-height: 720px; overflow: auto; }
 .service-row {
   min-width: 0;
@@ -234,12 +219,10 @@ defineExpose({ refresh: load });
 .service-row:first-child { border-top: 0; }
 .service-row.selected { background: #f1f5ff; box-shadow: inset 3px 0 0 var(--accent); }
 .service-identity, .service-health { min-width: 0; }
-.service-identity strong, .service-identity span { display: block; }
+.service-identity strong { display: block; }
 .service-identity strong { color: #364152; font-size: 11px; }
-.service-identity span { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .service-state { display: inline-flex; align-items: center; gap: 8px; color: #364152; font-size: 11px; font-weight: 650; }
 .service-health p { margin: 5px 0 0; color: #7d8797; font-size: 10px; line-height: 1.45; }
-.service-health small { display: block; margin-top: 4px; color: #9aa2af; font-size: 9px; line-height: 1.45; }
 .service-actions { width: 204px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .service-actions :deep(.el-button + .el-button) { margin-left: 0; }
 

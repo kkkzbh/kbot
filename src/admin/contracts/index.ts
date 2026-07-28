@@ -15,6 +15,11 @@ import {
   type ModelConfigDraft,
   type ModelConfigPutInput,
 } from '../../plugins/model-config/types.js';
+import {
+  NATURAL_TRIGGER_CONFIG_SCHEMA_VERSION,
+  naturalTriggerConfigPutSchema,
+  naturalTriggerConfigSchema,
+} from '../../plugins/natural-trigger-config/types.js';
 
 export * from './memory.js';
 
@@ -135,11 +140,33 @@ export const memoryFeatureSettingKeys = [
   'MEMORY_JOB_LOCK_TIMEOUT_MS',
 ] as const;
 
-export const naturalTriggerFeatureSettingKeys = [
-  'CHAT_NATURAL_TRIGGER_ENABLED',
-  'CHAT_NATURAL_TRIGGER_GROUPS',
-  'CHAT_NATURAL_TRIGGER_ALIASES',
-] as const;
+export { naturalTriggerConfigPutSchema, naturalTriggerConfigSchema };
+
+export const naturalTriggerDecisionBindingSchema = z.object({
+  mode: z.enum(['dedicated', 'disabled']),
+  canonicalModel: z.string().nullable(),
+  displayName: z.string().nullable(),
+  available: z.boolean(),
+  compatible: z.boolean(),
+}).strict();
+
+export const naturalTriggerAdminResponseSchema = z.object({
+  schemaVersion: z.literal(NATURAL_TRIGGER_CONFIG_SCHEMA_VERSION),
+  savedRevision: z.number().int().positive(),
+  appliedRevision: z.number().int().nonnegative(),
+  pending: z.boolean(),
+  updatedAt: z.string().datetime(),
+  config: naturalTriggerConfigSchema,
+  groupOptions: z.array(z.object({
+    groupId: z.string().min(1),
+    roomName: z.string().min(1),
+  }).strict()),
+  decisionBinding: naturalTriggerDecisionBindingSchema,
+  voiceInputEnabled: z.boolean(),
+  restartRequired: z.boolean(),
+  reasons: z.array(z.enum(['features', 'tts', 'naturalTrigger'])),
+}).strict();
+export type NaturalTriggerAdminResponse = z.infer<typeof naturalTriggerAdminResponseSchema>;
 
 export const runtimeFeatureSettingKeys = [
   'QQBOT_REALTIME_MESSAGE_ENABLED',

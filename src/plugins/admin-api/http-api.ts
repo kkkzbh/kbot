@@ -36,6 +36,8 @@ import {
   modelConnectionAuthStateSchema,
   modelConnectionProbeResponseSchema,
   modelOAuthPollRequestSchema,
+  naturalTriggerAdminResponseSchema,
+  naturalTriggerConfigPutSchema,
   operationalEventActionRequestSchema,
   operationalEventListQuerySchema,
   contextPresetCatalogResponseSchema,
@@ -77,8 +79,13 @@ import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
 import type { CodexOAuthBridgeService } from '../codex-oauth/index.js';
 import {
   ModelConfigError,
+  supportsWorkloadProtocol,
   type ModelConfigService,
 } from '../model-config/index.js';
+import {
+  NaturalTriggerConfigError,
+  type NaturalTriggerConfigService,
+} from '../natural-trigger-config/index.js';
 import { createUnavailableMemoryStatusSnapshot } from '../shared/memory-status.js';
 import {
   MemoryRuntimeError,
@@ -142,6 +149,7 @@ export type RegisterAdminApiOptions = {
   logger: Logger;
   contextSnapshots: ModelContextSnapshotStore;
   modelConfig: ModelConfigService;
+  naturalTriggerConfig: NaturalTriggerConfigService;
 };
 
 type KoaContext = any;
@@ -500,6 +508,32 @@ async function modelConfigDomain<T>(operation: () => Promise<T> | T): Promise<T>
   }
 }
 
+async function naturalTriggerConfigDomain<T>(
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof NaturalTriggerConfigError) {
+      const code = error.httpStatus === 409
+        ? 'conflict'
+        : error.httpStatus === 400
+          ? 'bad_request'
+          : error.httpStatus === 503
+            ? 'service_unavailable'
+            : 'internal_error';
+      throw new AdminHttpError(error.httpStatus, code, error.message, {
+        naturalTriggerConfigErrorCode: error.code,
+        path: error.details.path ?? null,
+        stage: error.details.stage ?? null,
+        expectedRevision: error.details.expectedRevision ?? null,
+        actualRevision: error.details.actualRevision ?? null,
+      });
+    }
+    throw error;
+  }
+}
+
 async function readModelAdminAggregate(
   modelConfig: ModelConfigService,
   operations: ModelConnectionOperations,
@@ -508,6 +542,69 @@ async function readModelAdminAggregate(
   return modelAdminAggregateSchema.parse({
     ...aggregate,
     connectionStates: await operations.getAuthStates(aggregate),
+  });
+}
+
+async function readNaturalTriggerAdminAggregate(
+  options: RegisterAdminApiOptions,
+  applyState: AdminApplyState,
+  modelOperations: ModelConnectionOperations,
+) {
+  const [state, scopes, modelAggregate, env] = await Promise.all([
+    Promise.resolve(options.naturalTriggerConfig.getState()),
+    requireService(options.services.featurePolicy, 'feature policy').listAdminFeatureScopes(),
+    readModelAdminAggregate(options.modelConfig, modelOperations),
+    options.manager.getManagedEnv(),
+  ]);
+  const resolved = modelAggregate.liveBindings.find(
+    (binding) => binding.workload === 'naturalTrigger.decision',
+  );
+  const model = resolved?.connectionId && resolved.modelId
+    ? modelAggregate.models.find((candidate) => (
+        candidate.connectionId === resolved.connectionId
+        && candidate.id === resolved.modelId
+      ))
+    : null;
+  const connectionState = resolved?.connectionId
+    ? modelAggregate.connectionStates.find(
+        (candidate) => candidate.connectionId === resolved.connectionId,
+      )
+    : null;
+  const compatible = Boolean(
+    model
+    && model.capabilities.structuredOutput
+    && supportsWorkloadProtocol('naturalTrigger.decision', model),
+  );
+  const apply = applyState.snapshot();
+  const groupOptions = scopes
+    .filter((scope) => scope.scopeKind === 'group' && scope.groupId)
+    .map((scope) => ({
+      groupId: scope.groupId!,
+      roomName: scope.roomName,
+      updatedAt: scope.updatedAt ?? 0,
+    }))
+    .sort((left, right) => (
+      right.updatedAt - left.updatedAt
+      || left.groupId.localeCompare(right.groupId)
+    ));
+
+  return naturalTriggerAdminResponseSchema.parse({
+    ...state,
+    groupOptions: groupOptions.map(({ groupId, roomName }) => ({ groupId, roomName })),
+    decisionBinding: {
+      mode: resolved?.mode === 'dedicated' ? 'dedicated' : 'disabled',
+      canonicalModel: resolved?.canonicalModel ?? null,
+      displayName: model?.displayName ?? null,
+      available: Boolean(
+        resolved?.mode === 'dedicated'
+        && model
+        && (connectionState?.status === 'ready' || connectionState?.status === 'not_required'),
+      ),
+      compatible,
+    },
+    voiceInputEnabled: env.QQ_VOICE_INPUT_ENABLED === 'true',
+    restartRequired: apply.restartRequired,
+    reasons: apply.reasons,
   });
 }
 
@@ -691,6 +788,18 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     const env = await domain(() => options.manager.saveEnv(patch));
     applyState.mark(section);
     return { section, fields: settingsFields(section, env), ...applyState.snapshot() };
+  }, { mutation: true });
+
+  register('get', '/natural-trigger', () => naturalTriggerConfigDomain(
+    () => readNaturalTriggerAdminAggregate(options, applyState, modelOperations),
+  ));
+  register('put', '/natural-trigger', async (koaCtx) => {
+    const input = parseInput(naturalTriggerConfigPutSchema, koaCtx.request.body);
+    await naturalTriggerConfigDomain(() => options.naturalTriggerConfig.put(input));
+    applyState.mark('naturalTrigger');
+    return naturalTriggerConfigDomain(
+      () => readNaturalTriggerAdminAggregate(options, applyState, modelOperations),
+    );
   }, { mutation: true });
 
   register('get', '/models', () => modelConfigDomain(
