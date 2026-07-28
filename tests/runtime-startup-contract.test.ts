@@ -74,7 +74,7 @@ describe('runtime startup contract', () => {
     expect(koishi).not.toContain('CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR ||');
     expect(koishi).not.toContain('CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR ||');
     expect(koishi).not.toContain('CHATLUNA_ARCHIVE_DIR ||');
-    expect(hostVerifier).toContain('verify-memory-v2-readiness.mjs');
+    expect(hostVerifier).toContain('verify-memory-v3-readiness.mjs');
     expect(hostVerifier).toContain('systemctl show "${KOISHI_UNIT}" --property ControlGroup --value');
     expect(hostVerifier).toContain('if [[ "${MEMORY_ENABLED:-true}" != "false" ]]');
   });
@@ -95,7 +95,7 @@ describe('runtime startup contract', () => {
       'node ./scripts/build-model-config-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"',
     );
     expect(buildScript).toContain(
-      'node ./scripts/build-memory-v2-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"',
+      'node ./scripts/build-memory-v3-cutover-tool.mjs --out-dir "$STAGE_DIST/tools"',
     );
     expect(buildScript).toContain(
       'node ./scripts/build-memory-evaluation-tool.mjs --out-dir "$STAGE_DIST/tools"',
@@ -162,9 +162,9 @@ describe('runtime startup contract', () => {
     mkdirSync(join(distDir, 'tools'), { recursive: true });
     writeFileSync(join(distDir, 'tools/context-preset-cutover.mjs'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'tools/context-preset-sqlite.py'), 'raise SystemExit(0)\n', 'utf8');
-    writeFileSync(join(distDir, 'tools/model-config-cutover.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/model-config-v3-cutover.mjs'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'tools/model-auth-connection-cutover.mjs'), 'export {}\n', 'utf8');
-    writeFileSync(join(distDir, 'tools/memory-v2-cutover.mjs'), 'export {}\n', 'utf8');
+    writeFileSync(join(distDir, 'tools/memory-v3-cutover.mjs'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'tools/memory-evaluation.mjs'), 'export {}\n', 'utf8');
     writeFileSync(join(distDir, 'tools/memory-evaluation-adapter.mjs'), 'export {}\n', 'utf8');
 

@@ -11,7 +11,7 @@ function readArgument(name) {
 
 function requireNonEmptyString(value, field) {
   if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Memory V2 readiness marker has invalid ${field}.`);
+    throw new Error(`Memory V3 readiness marker has invalid ${field}.`);
   }
   return value;
 }
@@ -29,15 +29,15 @@ if (!procRoot) {
 
 const stat = lstatSync(markerPath);
 if (!stat.isFile() || stat.isSymbolicLink()) {
-  throw new Error('Memory V2 readiness marker must be a regular file.');
+  throw new Error('Memory V3 readiness marker must be a regular file.');
 }
 if ((stat.mode & 0o077) !== 0) {
-  throw new Error('Memory V2 readiness marker permissions must not allow group or other access.');
+  throw new Error('Memory V3 readiness marker permissions must not allow group or other access.');
 }
 
 const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
 if (!Number.isSafeInteger(marker.pid) || marker.pid < 1) {
-  throw new Error(`Memory V2 readiness marker has invalid pid: ${String(marker.pid)}.`);
+  throw new Error(`Memory V3 readiness marker has invalid pid: ${String(marker.pid)}.`);
 }
 const processCgroups = readFileSync(`${procRoot}/${marker.pid}/cgroup`, 'utf8')
   .trim()
@@ -45,21 +45,20 @@ const processCgroups = readFileSync(`${procRoot}/${marker.pid}/cgroup`, 'utf8')
   .map((line) => line.split(':', 3)[2]);
 if (!processCgroups.includes(serviceCgroup)) {
   throw new Error(
-    `Memory V2 readiness PID ${marker.pid} is outside service cgroup ${serviceCgroup}.`,
+    `Memory V3 readiness PID ${marker.pid} is outside service cgroup ${serviceCgroup}.`,
   );
 }
-if (marker.schemaVersion !== 2) {
-  throw new Error(`Memory V2 readiness schema mismatch: ${String(marker.schemaVersion)}.`);
+if (marker.schemaVersion !== 3) {
+  throw new Error(`Memory V3 readiness schema mismatch: ${String(marker.schemaVersion)}.`);
 }
 if (!Number.isSafeInteger(marker.appliedModelRevision) || marker.appliedModelRevision < 1) {
-  throw new Error('Memory V2 readiness applied model revision is invalid.');
+  throw new Error('Memory V3 readiness applied model revision is invalid.');
 }
 requireNonEmptyString(marker.extractionModel, 'extractionModel');
-requireNonEmptyString(marker.embeddingModel, 'embeddingModel');
 if (!Number.isSafeInteger(marker.readyAt) || marker.readyAt < 1) {
-  throw new Error('Memory V2 readiness timestamp is invalid.');
+  throw new Error('Memory V3 readiness timestamp is invalid.');
 }
 
 process.stdout.write(
-  `Memory V2 ready: pid=${marker.pid} schema=${marker.schemaVersion} modelRevision=${marker.appliedModelRevision}\n`,
+  `Memory V3 ready: pid=${marker.pid} schema=${marker.schemaVersion} modelRevision=${marker.appliedModelRevision}\n`,
 );

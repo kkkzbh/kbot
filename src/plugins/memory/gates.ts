@@ -1,6 +1,7 @@
 import type {
   MemoryAddress,
   MemoryAudiencePolicy,
+  MemoryFactKind,
   MemoryHeadState,
   MemorySensitivity,
 } from '../../types/memory.js';
@@ -13,14 +14,7 @@ export type MemoryCandidateSubject =
   | 'assistant'
   | 'unknown';
 
-export type MemoryFactKind =
-  | 'identity'
-  | 'preference'
-  | 'trait'
-  | 'boundary'
-  | 'plan'
-  | 'relationship'
-  | 'response_policy';
+export type { MemoryFactKind } from '../../types/memory.js';
 
 export interface ExtractedMemoryCandidate {
   candidateType: 'fact' | 'episode' | 'drop';
@@ -144,6 +138,15 @@ export function runDeterministicCaptureGuard(
     sensitivity = maxSensitivity(sensitivity, 'personal');
     state = 'pendingReview';
     reasonCode ??= 'group_joke_guard';
+  }
+  if (candidate.kind === 'trait') {
+    sensitivity = maxSensitivity(sensitivity, 'personal');
+    state = 'pendingReview';
+    reasonCode ??= 'quality-review';
+  }
+  if (candidate.conflictHint?.trim()) {
+    state = 'pendingReview';
+    reasonCode ??= 'quality-review';
   }
   const audience = policy.capturePolicy(address, sensitivity);
   return {

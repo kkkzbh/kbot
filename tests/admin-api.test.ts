@@ -86,13 +86,10 @@ function createModelDraft() {
       connectionId: 'openai',
       displayName: 'GPT Test',
       transportModel: 'gpt-test',
-      modelType: 'chat' as const,
       contextSize: 128_000,
       requestMode: 'responses' as const,
       structuredOutputProtocol: 'native_responses_json_schema' as const,
       capabilities: {
-        chat: true,
-        embedding: false,
         vision: true,
         tools: true,
         structuredOutput: true,
@@ -103,7 +100,6 @@ function createModelDraft() {
     bindings: [
       { workload: 'main.chat', mode: 'dedicated' as const, connectionId: 'openai', modelId: 'gpt-test' },
       { workload: 'memory.extract', mode: 'disabled' as const },
-      { workload: 'memory.embedding', mode: 'disabled' as const },
       { workload: 'affinity.analysis', mode: 'inheritMain' as const },
       { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
@@ -127,7 +123,7 @@ function createModelConfigService() {
   let draft = createModelDraft();
   let savedRevision = 2;
   const aggregate = () => ({
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     savedRevision,
     appliedRevision: 1,
     pending: true,
@@ -519,7 +515,7 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/role-presets');
     expect(postPaths).toContain('/api/admin/v1/memory/reviews/:streamId');
     expect(postPaths).toContain('/api/admin/v1/memory/forget');
-    expect(postPaths).toContain('/api/admin/v1/memory/backfill');
+    expect(postPaths).not.toContain('/api/admin/v1/memory/backfill');
     expect(postPaths).toContain('/api/admin/v1/memory/probe/:workload');
     expect(getPaths).not.toContain('/api/admin/v1/memory/users');
     expect(getPaths).not.toContain('/api/admin/v1/memory/:kind');
@@ -533,7 +529,7 @@ describe('independent admin API plugin', () => {
     expect(postPaths).not.toContain('/api/admin/v1/models/:provider/list');
   });
 
-  it('serves only the typed Memory Ledger V2 API and derives backfill identity from live binding', async () => {
+  it('serves the typed Memory Ledger V3 API without embedding or backfill routes', async () => {
     const modelConfig = createModelConfigService();
     const baseAggregate = modelConfig.getAggregate();
     modelConfig.getAggregate.mockImplementation(() => ({
@@ -548,15 +544,6 @@ describe('independent admin API plugin', () => {
           connectionId: 'openai',
           modelId: 'gpt-test',
         },
-        {
-          workload: 'memory.embedding',
-          sourceWorkload: 'memory.embedding',
-          mode: 'dedicated',
-          revision: 7,
-          canonicalModel: 'qqbot-siliconflow/qwen3-embedding-8b',
-          connectionId: 'siliconflow',
-          modelId: 'qwen3-embedding-8b',
-        },
       ],
     }));
     const status = createUnavailableMemoryStatusSnapshot({
@@ -566,9 +553,8 @@ describe('independent admin API plugin', () => {
       readEnabled: true,
       writeEnabled: true,
       extractConfigured: true,
-      embedConfigured: true,
       extractModel: 'qqbot-openai/gpt-test',
-      embedModel: 'qqbot-siliconflow/qwen3-embedding-8b',
+      toolReady: true,
     });
     const memoryAdmin = {
       getAssertionsPage: vi.fn(async (query) => ({
@@ -586,12 +572,10 @@ describe('independent admin API plugin', () => {
       review: vi.fn(async () => undefined),
       archive: vi.fn(async () => undefined),
       forget: vi.fn(async () => 1),
-      backfill: vi.fn(async () => ({ queued: 59 })),
       getOperationalAttentionItems: vi.fn(async () => []),
     };
     const memoryStatus = {
       getSnapshot: vi.fn(async () => status),
-      probeEmbedding: vi.fn(),
       probeExtraction: vi.fn(),
     };
     const { server } = createRuntime(createTempDir(), {
@@ -605,9 +589,6 @@ describe('independent admin API plugin', () => {
     const readAssertions = server.get.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/memory/assertions',
     )?.[1];
-    const runBackfill = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/memory/backfill',
-    )?.[1];
     const archiveMemory = server.post.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/memory/archive',
     )?.[1];
@@ -616,10 +597,9 @@ describe('independent admin API plugin', () => {
     await readMemory(overviewRequest);
     expect(overviewRequest.status).toBe(200);
     expect(overviewRequest.body).toMatchObject({
-      status: { schemaVersion: 2, counts: { active: 0, stranded: 0 } },
+      status: { schemaVersion: 3, counts: { active: 0, stranded: 0 } },
       bindings: {
         extraction: { mode: 'inheritMain', canonicalModel: 'qqbot-openai/gpt-test' },
-        embedding: { mode: 'dedicated', canonicalModel: 'qqbot-siliconflow/qwen3-embedding-8b' },
       },
     });
 
@@ -645,28 +625,9 @@ describe('independent admin API plugin', () => {
       reasonCode: 'duplicate',
     });
 
-    const backfillRequest = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: {},
-    });
-    await runBackfill(backfillRequest);
-    expect(backfillRequest.status).toBe(200);
-    expect(memoryAdmin.backfill).toHaveBeenCalledWith({
-      canonicalModel: 'qqbot-siliconflow/qwen3-embedding-8b',
-      modelRevision: 7,
-    });
-    expect(backfillRequest.body).toMatchObject({ queued: 59 });
-
-    const invalidBackfill = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { canonicalModel: 'attacker-selected/model' },
-    });
-    await runBackfill(invalidBackfill);
-    expect(invalidBackfill.status).toBe(400);
-    expect(memoryAdmin.backfill).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves typed Memory V2 failures without leaking provider credentials', async () => {
+  it('preserves typed Memory V3 failures without leaking provider credentials', async () => {
     const memoryAdmin = {
       getAssertionsPage: vi.fn(),
       getReviewsPage: vi.fn(),
@@ -681,7 +642,6 @@ describe('independent admin API plugin', () => {
           { providerCode: 'subject_private_required' },
         );
       }),
-      backfill: vi.fn(),
       getOperationalAttentionItems: vi.fn(async () => []),
     };
     const { server } = createRuntime(createTempDir(), { memoryAdmin });
@@ -710,7 +670,7 @@ describe('independent admin API plugin', () => {
     expect(JSON.stringify(request.body)).not.toContain('must-not-surface');
   });
 
-  it('maps missing Memory V2 streams to a typed 404 response', async () => {
+  it('maps missing Memory V3 streams to a typed 404 response', async () => {
     const memoryAdmin = {
       getAssertionsPage: vi.fn(),
       getReviewsPage: vi.fn(),
@@ -724,7 +684,6 @@ describe('independent admin API plugin', () => {
         );
       }),
       forget: vi.fn(),
-      backfill: vi.fn(),
       getOperationalAttentionItems: vi.fn(async () => []),
     };
     const { server } = createRuntime(createTempDir(), { memoryAdmin });
@@ -1092,7 +1051,7 @@ describe('independent admin API plugin', () => {
 
     expect(request.status).toBe(200);
     expect(request.body).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       savedRevision: 2,
       appliedRevision: 1,
       pending: true,
@@ -1112,6 +1071,26 @@ describe('independent admin API plugin', () => {
   });
 
   it('saves one aggregate draft with CAS and returns a typed revision conflict', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify('tools' in body
+        ? {
+            output: [{
+              type: 'function_call',
+              name: 'qqbot_capability_probe',
+              arguments: '{"marker":"ok"}',
+            }],
+          }
+        : {
+            output: [{
+              content: [{ type: 'output_text', text: '{"ok":true}' }],
+            }],
+          }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
     const { server, modelConfig } = createRuntime(createTempDir());
     const saveModels = server.put.mock.calls.find(
       (call) => call[0] === '/api/admin/v1/models',
@@ -1134,6 +1113,7 @@ describe('independent admin API plugin', () => {
       draft: createModelDraft(),
       secretOperations: [{ connectionId: 'openai', operation: 'retain' }],
     });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     const stale = createKoaCtx({
       origin: 'https://admin.example.com',
@@ -1157,6 +1137,62 @@ describe('independent admin API plugin', () => {
         },
       },
     });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a declared model capability when the provider fails the semantic probe', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify('tools' in body
+        ? {
+            output: [{
+              type: 'function_call',
+              name: 'qqbot_capability_probe',
+              arguments: '{"marker":"ok"}',
+            }],
+          }
+        : {
+            output: [{
+              content: [{ type: 'output_text', text: '{"ok":false}' }],
+            }],
+          }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { server, modelConfig } = createRuntime(createTempDir());
+    const saveModels = server.put.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/models',
+    )?.[1];
+    const request = createKoaCtx({
+      origin: 'https://admin.example.com',
+      body: {
+        expectedRevision: 2,
+        draft: createModelDraft(),
+        secretOperations: [{ connectionId: 'openai', operation: 'retain' }],
+      },
+    });
+
+    await saveModels(request);
+
+    expect(request.status).toBe(400);
+    expect(request.body).toMatchObject({
+      error: {
+        code: 'bad_request',
+        details: {
+          modelConfigErrorCode: 'binding_invalid',
+          operation: 'save',
+          stage: 'validate',
+          connectionId: 'openai',
+          modelId: 'gpt-test',
+          workload: 'main.chat',
+          providerCode: 'capability_probe_failed',
+        },
+      },
+    });
+    expect(JSON.stringify(request.body)).not.toContain('runtime-secret');
+    expect(modelConfig.put).not.toHaveBeenCalled();
   });
 
   it('probes catalogs with runtime credentials and filters upstream errors', async () => {

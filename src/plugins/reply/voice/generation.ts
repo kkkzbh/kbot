@@ -1089,8 +1089,7 @@ export function ensureSupportedStructuredReplyModel(
   target: ResolvedModelTarget,
 ): void {
   if (
-    target.model.capabilities.chat
-    && target.model.capabilities.structuredOutput
+    target.model.capabilities.structuredOutput
     && target.model.structuredOutputProtocol !== null
     && target.model.structuredOutputProtocol !== 'json_mode'
   ) {

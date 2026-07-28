@@ -188,9 +188,9 @@ function main() {
   for (const toolPath of [
     join(distDir, 'tools/context-preset-cutover.mjs'),
     join(distDir, 'tools/context-preset-sqlite.py'),
-    join(distDir, 'tools/model-config-cutover.mjs'),
+    join(distDir, 'tools/model-config-v3-cutover.mjs'),
     join(distDir, 'tools/model-auth-connection-cutover.mjs'),
-    join(distDir, 'tools/memory-v2-cutover.mjs'),
+    join(distDir, 'tools/memory-v3-cutover.mjs'),
     join(distDir, 'tools/memory-evaluation.mjs'),
     join(distDir, 'tools/memory-evaluation-adapter.mjs'),
   ]) {

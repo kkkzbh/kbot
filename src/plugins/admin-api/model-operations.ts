@@ -5,14 +5,22 @@ import type {
 import type { CodexOAuthBridgeService } from '../codex-oauth/index.js';
 import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
 import {
+  capabilityProbeKindsForWorkload,
+  modelCapabilityProbeFingerprint,
   ModelConfigError,
+  verifyModelCapabilityProbe,
   type ConnectionRuntimeView,
   type ModelConfigAggregate,
+  type ModelConfigPutInput,
   type ModelConfigService,
+  OpenAiConnectionExecutor,
+  type RuntimeConnection,
 } from '../model-config/index.js';
 import { AdminHttpError } from './access-policy.js';
 
 type OAuthAction = 'start' | 'poll' | 'logout';
+const CAPABILITY_VERIFICATION_TTL_MS = 60 * 60 * 1_000;
+const MAX_CAPABILITY_VERIFICATIONS = 512;
 
 type BridgeAdminStatus = {
   authStatus: 'unauthenticated' | 'pending' | 'ready' | 'expired' | 'error';
@@ -39,6 +47,8 @@ export interface ModelConnectionOperationsOptions {
 export class ModelConnectionOperations {
   private readonly fetchFn: typeof fetch;
   private readonly now: () => Date;
+  private readonly verifiedCapabilityFingerprints = new Map<string, number>();
+  private readonly pendingCapabilityVerifications = new Map<string, Promise<void>>();
 
   constructor(private readonly options: ModelConnectionOperationsOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
@@ -81,6 +91,98 @@ export class ModelConnectionOperations {
         });
       }
     }));
+  }
+
+  async verifyBindings(input: ModelConfigPutInput): Promise<void> {
+    const connectionById = new Map(
+      input.draft.connections.map((connection) => [connection.id, connection]),
+    );
+    const modelByIdentity = new Map(
+      input.draft.models.map((model) => [
+        modelIdentity(model.connectionId, model.id),
+        model,
+      ]),
+    );
+    const main = input.draft.bindings.find(
+      (binding) => binding.workload === 'main.chat' && binding.mode === 'dedicated',
+    );
+    if (!main || main.mode !== 'dedicated') {
+      throw new ModelConfigError({
+        code: 'binding_invalid',
+        operation: 'save',
+        stage: 'validate',
+        workload: 'main.chat',
+        message: 'main.chat requires a dedicated model before capability verification',
+      });
+    }
+
+    const secretOperationByConnection = new Map(
+      input.secretOperations.map((operation) => [operation.connectionId, operation]),
+    );
+    const runtimeConnectionById = new Map<string, RuntimeConnection>();
+    const executorByConnectionId = new Map<string, OpenAiConnectionExecutor>();
+
+    for (const binding of input.draft.bindings) {
+      const reference = binding.mode === 'dedicated'
+        ? binding
+        : binding.mode === 'inheritMain'
+          ? main
+          : null;
+      if (!reference || reference.mode !== 'dedicated') continue;
+      const connection = connectionById.get(reference.connectionId);
+      const model = modelByIdentity.get(
+        modelIdentity(reference.connectionId, reference.modelId),
+      );
+      if (!connection || !model) {
+        throw new ModelConfigError({
+          code: 'binding_invalid',
+          operation: 'save',
+          stage: 'validate',
+          workload: binding.workload,
+          connectionId: reference.connectionId,
+          modelId: reference.modelId,
+          message: `${binding.workload} references a missing model target`,
+        });
+      }
+
+      let runtimeConnection = runtimeConnectionById.get(connection.id);
+      if (!runtimeConnection) {
+        runtimeConnection = this.createDraftRuntimeConnection(
+          connection,
+          secretOperationByConnection.get(connection.id),
+        );
+        runtimeConnectionById.set(connection.id, runtimeConnection);
+      }
+      let executor = executorByConnectionId.get(connection.id);
+      if (!executor) {
+        const transport = await this.resolveTransport(runtimeConnection);
+        executor = new OpenAiConnectionExecutor({
+          connectionId: connection.id,
+          baseUrl: transport.baseUrl,
+          apiKey: transport.apiKey,
+          fetchFn: this.fetchFn,
+        });
+        executorByConnectionId.set(connection.id, executor);
+      }
+      const target = {
+        canonicalModel: `qqbot-${connection.id}/${model.id}`,
+        connection: runtimeConnection,
+        model,
+      };
+      for (const kind of capabilityProbeKindsForWorkload(binding.workload, model)) {
+        const fingerprint = modelCapabilityProbeFingerprint({
+          connection: runtimeConnection,
+          model,
+          kind,
+        });
+        await this.verifyWithCache(fingerprint, () => verifyModelCapabilityProbe({
+          workload: binding.workload,
+          kind,
+          target,
+          executor,
+        }));
+      }
+    }
   }
 
   async probe(connectionId: string): Promise<{
@@ -132,7 +234,7 @@ export class ModelConnectionOperations {
         requestMode: model.requestMode,
         structuredOutputProtocol: model.structuredOutputProtocol,
         metadataTags: [
-          model.modelType,
+          'chat',
           ...Object.entries(model.capabilities)
             .filter(([, enabled]) => enabled)
             .map(([capability]) => capability),
@@ -232,6 +334,107 @@ export class ModelConnectionOperations {
       }
       throw error;
     }
+  }
+
+  private createDraftRuntimeConnection(
+    connection: ModelConfigPutInput['draft']['connections'][number],
+    secretOperation: ModelConfigPutInput['secretOperations'][number] | undefined,
+  ): RuntimeConnection {
+    if (connection.auth.kind !== 'apiKey') {
+      return { ...connection, apiKey: null };
+    }
+    if (!secretOperation) {
+      throw new ModelConfigError({
+        code: 'secret_operation_invalid',
+        operation: 'save',
+        stage: 'credential',
+        connectionId: connection.id,
+        message: `missing secret operation for capability verification: ${connection.id}`,
+      });
+    }
+    if (secretOperation.operation === 'set') {
+      return { ...connection, apiKey: secretOperation.value };
+    }
+    if (secretOperation.operation === 'clear') {
+      throw new ModelConfigError({
+        code: 'credential_invalid',
+        operation: 'save',
+        stage: 'credential',
+        connectionId: connection.id,
+        message: `active model binding cannot clear the credential for ${connection.id}`,
+      });
+    }
+    const current = this.connection(connection.id).connection;
+    if (current.auth.kind !== 'apiKey') {
+      throw new ModelConfigError({
+        code: 'credential_invalid',
+        operation: 'save',
+        stage: 'credential',
+        connectionId: connection.id,
+        message: `retained credential source is invalid for ${connection.id}`,
+      });
+    }
+    return { ...connection, apiKey: current.apiKey };
+  }
+
+  private async resolveTransport(
+    connection: RuntimeConnection,
+  ): Promise<{ baseUrl: string; apiKey: string | null }> {
+    if (connection.adapter === 'codexBridge') {
+      return this.options.codexBridge.getRuntimeConfig();
+    }
+    if (connection.adapter === 'copilotBridge') {
+      return this.options.copilotBridge.getRuntimeConfig();
+    }
+    if (!connection.baseUrl) {
+      throw new ModelConfigError({
+        code: 'binding_invalid',
+        operation: 'save',
+        stage: 'validate',
+        connectionId: connection.id,
+        message: `connection ${connection.id} has no capability probe endpoint`,
+      });
+    }
+    return {
+      baseUrl: connection.baseUrl,
+      apiKey: connection.apiKey,
+    };
+  }
+
+  private async verifyWithCache(
+    fingerprint: string,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const now = this.now().getTime();
+    const verifiedAt = this.verifiedCapabilityFingerprints.get(fingerprint);
+    if (
+      verifiedAt !== undefined
+      && now - verifiedAt < CAPABILITY_VERIFICATION_TTL_MS
+    ) {
+      return;
+    }
+    this.verifiedCapabilityFingerprints.delete(fingerprint);
+    const pending = this.pendingCapabilityVerifications.get(fingerprint);
+    if (pending) return pending;
+    const verification = run()
+      .then(() => {
+        this.verifiedCapabilityFingerprints.set(
+          fingerprint,
+          this.now().getTime(),
+        );
+        while (
+          this.verifiedCapabilityFingerprints.size > MAX_CAPABILITY_VERIFICATIONS
+        ) {
+          const oldest = this.verifiedCapabilityFingerprints.keys().next().value;
+          if (typeof oldest !== 'string') break;
+          this.verifiedCapabilityFingerprints.delete(oldest);
+        }
+      })
+      .finally(() => {
+        this.pendingCapabilityVerifications.delete(fingerprint);
+      });
+    this.pendingCapabilityVerifications.set(fingerprint, verification);
+    return verification;
   }
 
   private bridge(provider: 'codex' | 'copilot') {
@@ -349,6 +552,10 @@ export class ModelConnectionOperations {
       );
     }
   }
+}
+
+function modelIdentity(connectionId: string, modelId: string): string {
+  return `${connectionId}/${modelId}`;
 }
 
 function createAuthState(

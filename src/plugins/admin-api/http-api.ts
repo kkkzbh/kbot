@@ -17,8 +17,6 @@ import {
   memoryAssertionsResponseSchema,
   memoryArchiveRequestSchema,
   memoryArchiveResponseSchema,
-  memoryBackfillRequestSchema,
-  memoryBackfillResponseSchema,
   memoryForgetRequestSchema,
   memoryForgetResponseSchema,
   memoryOverviewResponseSchema,
@@ -359,7 +357,7 @@ async function memoryDomain<T>(operation: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof AdminHttpError) throw error;
     if (error instanceof MemoryRuntimeError) throw memoryHttpError(error);
-    throw new AdminHttpError(500, 'memory_error', 'Memory V2 请求执行失败。', {
+    throw new AdminHttpError(500, 'memory_error', 'Memory V3 请求执行失败。', {
       operation: 'admin',
       stage: 'unexpected',
     });
@@ -704,6 +702,20 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
   ));
   register('put', '/models', async (koaCtx) => {
     const input = parseInput(modelConfigPutSchema, koaCtx.request.body);
+    await modelConfigDomain(async () => {
+      const currentRevision = options.modelConfig.getAggregate().savedRevision;
+      if (currentRevision !== input.expectedRevision) {
+        throw new ModelConfigError({
+          code: 'revision_conflict',
+          operation: 'save',
+          stage: 'compare',
+          expectedRevision: input.expectedRevision,
+          actualRevision: currentRevision,
+          message: `model config revision conflict: expected ${input.expectedRevision}, actual ${currentRevision}`,
+        });
+      }
+    });
+    await modelConfigDomain(() => modelOperations.verifyBindings(input));
     const aggregate = await modelConfigDomain(() => options.modelConfig.put(input));
     return modelAdminAggregateSchema.parse({
       ...aggregate,
@@ -995,21 +1007,18 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     const extraction = aggregate.liveBindings.find(
       (binding) => binding.workload === 'memory.extract',
     );
-    const embedding = aggregate.liveBindings.find(
-      (binding) => binding.workload === 'memory.embedding',
-    );
-    if (!extraction || !embedding) {
+    if (!extraction) {
       throw new AdminHttpError(
         503,
         'service_unavailable',
-        'Memory V2 模型绑定不完整，请先在模型配置页完成设置。',
+        'Memory V3 提炼模型绑定缺失，请先在模型配置页完成设置。',
       );
     }
     return memoryOverviewResponseSchema.parse({
       status: options.services.memoryStatus
         ? await options.services.memoryStatus.getSnapshot()
         : createUnavailableMemoryStatusSnapshot(),
-      bindings: { extraction, embedding },
+      bindings: { extraction },
     });
   }));
   register('get', '/memory/assertions', async (koaCtx) => memoryDomain(async () => (
@@ -1049,27 +1058,6 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     ).forget(input);
     return memoryForgetResponseSchema.parse({ forgotten });
   }), { mutation: true });
-  register('post', '/memory/backfill', async (koaCtx) => memoryDomain(async () => {
-    parseInput(memoryBackfillRequestSchema, koaCtx.request.body);
-    const binding = options.modelConfig.getAggregate().liveBindings.find(
-      (candidate) => candidate.workload === 'memory.embedding',
-    );
-    if (!binding?.canonicalModel || binding.mode === 'disabled') {
-      throw new AdminHttpError(
-        409,
-        'conflict',
-        'memory.embedding 尚未绑定可用模型，无法创建 backfill 任务。',
-      );
-    }
-    const result = await requireService(
-      options.services.memoryAdmin,
-      'memory admin',
-    ).backfill({
-      canonicalModel: binding.canonicalModel,
-      modelRevision: binding.revision,
-    });
-    return memoryBackfillResponseSchema.parse({ ...result, binding });
-  }), { mutation: true });
   register('post', '/memory/probe/:workload', async (koaCtx) => memoryDomain(async () => {
     parseInput(emptyRequestSchema, koaCtx.request.body ?? {});
     const workload = parseInput(
@@ -1077,11 +1065,7 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       koaCtx.params.workload,
     );
     const service = requireService(options.services.memoryStatus, 'memory status');
-    return memoryProbeResponseSchema.parse(
-      workload === 'memory.embedding'
-        ? await service.probeEmbedding()
-        : await service.probeExtraction(),
-    );
+    return memoryProbeResponseSchema.parse(await service.probeExtraction());
   }), { mutation: true });
 
   register('get', '/tts', async () => {

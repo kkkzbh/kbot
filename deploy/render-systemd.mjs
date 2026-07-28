@@ -136,7 +136,7 @@ EnvironmentFile=${server}
 EnvironmentFile=-${runtime}
 Environment=QQBOT_ENV_BASE_FILE=${server}
 Environment=QQBOT_ENV_OVERRIDE_FILE=${runtime}
-Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v2-ready.json
+Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v3-ready.json
 Environment=CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${app}/data/chathub/context-presets
 Environment=CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR=${data}/chathub/context-presets
 Environment=CHATLUNA_BUNDLED_ROLE_PRESET_DIR=${app}/data/chathub/role-presets
@@ -149,7 +149,7 @@ Environment=HBU_JW_WEBVPN_BROKER_TOKEN_FILE=%d/hbu-webvpn-broker
 ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/archive
 ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/web-artifacts
 ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/agents
-ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v2-ready.json
+ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v3-ready.json
 ExecStart=/usr/bin/env bash -lc 'cd "${app}" && exec pnpm start:server'
 Restart=always
 RestartSec=5

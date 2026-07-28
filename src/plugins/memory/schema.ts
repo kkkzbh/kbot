@@ -5,32 +5,45 @@ import { MemoryRuntimeError } from './errors.js';
 export { MEMORY_LEDGER_SCHEMA_VERSION };
 
 export const MEMORY_LEDGER_TABLES = {
-  meta: 'memory_v2_meta',
-  principal: 'memory_v2_principal',
-  context: 'memory_v2_context',
-  event: 'memory_v2_event',
-  payload: 'memory_v2_payload',
-  evidence: 'memory_v2_evidence',
-  head: 'memory_v2_head',
-  embedding: 'memory_v2_embedding',
-  fts: 'memory_v2_fts',
-  work: 'memory_v2_work',
-  cursor: 'memory_v2_cursor',
-  suppression: 'memory_v2_suppression',
-  audit: 'memory_v2_audit',
+  meta: 'memory_v3_meta',
+  principal: 'memory_v3_principal',
+  context: 'memory_v3_context',
+  event: 'memory_v3_event',
+  payload: 'memory_v3_payload',
+  evidence: 'memory_v3_evidence',
+  head: 'memory_v3_head',
+  lexicalDocument: 'memory_v3_lexical_document',
+  lexicalTerm: 'memory_v3_lexical_term',
+  work: 'memory_v3_work',
+  cursor: 'memory_v3_cursor',
+  suppression: 'memory_v3_suppression',
+  audit: 'memory_v3_audit',
 } as const;
 
 export const MEMORY_LEDGER_TABLE_NAMES = Object.freeze(Object.values(MEMORY_LEDGER_TABLES));
 
+const IDENTITY_COLUMNS = `
+    "assertionType" TEXT NOT NULL CHECK ("assertionType" IN ('userAssertion', 'groupArtifact', 'assistantCommitment', 'episode')),
+    "kind" TEXT CHECK ("kind" IS NULL OR "kind" IN ('identity', 'preference', 'trait', 'boundary', 'plan', 'relationship', 'response_policy')),
+    "topicKey" TEXT NOT NULL,
+    "memoryKey" TEXT NOT NULL,
+    "subjectType" TEXT NOT NULL CHECK ("subjectType" IN ('user', 'group', 'assistant')),
+    "subjectKey" TEXT NOT NULL,
+    "sourceContextKey" TEXT NOT NULL,
+    "audiencePolicy" TEXT NOT NULL CHECK ("audiencePolicy" IN ('subjectPrivate', 'sourceContext', 'captureAudience', 'subjectAllContexts', 'explicitContexts')),
+    "audienceContextKeys" TEXT NOT NULL,
+    "audienceSnapshots" TEXT NOT NULL,
+    "sensitivity" TEXT NOT NULL CHECK ("sensitivity" IN ('low', 'personal', 'sensitive', 'secret'))`;
+
 export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
-  `CREATE TABLE IF NOT EXISTS "memory_v2_meta" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_meta" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "key" TEXT NOT NULL,
     "value" TEXT NOT NULL,
     "updatedAt" REAL NOT NULL,
     UNIQUE ("key")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_principal" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_principal" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "userKey" TEXT NOT NULL,
     "platform" TEXT NOT NULL,
@@ -43,7 +56,7 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "lastSeenAt" REAL NOT NULL,
     UNIQUE ("userKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_context" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_context" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "contextKey" TEXT NOT NULL,
     "platform" TEXT NOT NULL,
@@ -56,21 +69,14 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "lastSeenAt" REAL NOT NULL,
     UNIQUE ("contextKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_event" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_event" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "eventId" TEXT NOT NULL,
     "streamId" TEXT NOT NULL,
     "revision" INTEGER NOT NULL,
     "eventType" TEXT NOT NULL CHECK ("eventType" IN ('asserted', 'reviewed', 'superseded', 'visibilityChanged', 'retracted', 'forgotten', 'archived')),
-    "assertionType" TEXT NOT NULL CHECK ("assertionType" IN ('userAssertion', 'groupArtifact', 'assistantCommitment', 'episode')),
-    "subjectType" TEXT NOT NULL CHECK ("subjectType" IN ('user', 'group', 'assistant')),
-    "subjectKey" TEXT NOT NULL,
+    ${IDENTITY_COLUMNS},
     "actorKey" TEXT NOT NULL,
-    "sourceContextKey" TEXT NOT NULL,
-    "audiencePolicy" TEXT NOT NULL CHECK ("audiencePolicy" IN ('subjectPrivate', 'sourceContext', 'captureAudience', 'subjectAllContexts', 'explicitContexts')),
-    "audienceContextKeys" TEXT NOT NULL,
-    "audienceSnapshots" TEXT NOT NULL,
-    "sensitivity" TEXT NOT NULL CHECK ("sensitivity" IN ('low', 'personal', 'sensitive', 'secret')),
     "payloadId" TEXT,
     "causationId" TEXT,
     "idempotencyKey" TEXT NOT NULL,
@@ -79,7 +85,7 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     UNIQUE ("streamId", "revision"),
     UNIQUE ("idempotencyKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_payload" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_payload" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "payloadId" TEXT NOT NULL,
     "eventId" TEXT NOT NULL,
@@ -90,7 +96,7 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "createdAt" REAL NOT NULL,
     UNIQUE ("payloadId")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_evidence" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_evidence" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "evidenceId" TEXT NOT NULL,
     "eventId" TEXT NOT NULL,
@@ -105,20 +111,13 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     UNIQUE ("evidenceId"),
     UNIQUE ("eventId", "messageId")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_head" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_head" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "streamId" TEXT NOT NULL,
     "eventId" TEXT NOT NULL,
     "revision" INTEGER NOT NULL,
     "state" TEXT NOT NULL CHECK ("state" IN ('active', 'pendingReview', 'archived', 'retracted', 'forgotten')),
-    "assertionType" TEXT NOT NULL CHECK ("assertionType" IN ('userAssertion', 'groupArtifact', 'assistantCommitment', 'episode')),
-    "subjectType" TEXT NOT NULL CHECK ("subjectType" IN ('user', 'group', 'assistant')),
-    "subjectKey" TEXT NOT NULL,
-    "sourceContextKey" TEXT NOT NULL,
-    "audiencePolicy" TEXT NOT NULL CHECK ("audiencePolicy" IN ('subjectPrivate', 'sourceContext', 'captureAudience', 'subjectAllContexts', 'explicitContexts')),
-    "audienceContextKeys" TEXT NOT NULL,
-    "audienceSnapshots" TEXT NOT NULL,
-    "sensitivity" TEXT NOT NULL CHECK ("sensitivity" IN ('low', 'personal', 'sensitive', 'secret')),
+    ${IDENTITY_COLUMNS},
     "payloadId" TEXT,
     "contentHash" TEXT,
     "importance" REAL NOT NULL,
@@ -129,39 +128,33 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "deletionGeneration" INTEGER NOT NULL,
     "createdAt" REAL NOT NULL,
     "updatedAt" REAL NOT NULL,
-    UNIQUE ("streamId")
+    UNIQUE ("streamId"),
+    UNIQUE ("memoryKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_embedding" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_lexical_document" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
-    "embeddingKey" TEXT NOT NULL,
     "streamId" TEXT NOT NULL,
-    "eventId" TEXT NOT NULL,
-    "revision" INTEGER NOT NULL,
-    "canonicalModel" TEXT NOT NULL,
-    "modelRevision" INTEGER NOT NULL,
-    "contentHash" TEXT NOT NULL,
-    "dimensions" INTEGER NOT NULL,
-    "vector" TEXT NOT NULL,
-    "createdAt" REAL NOT NULL,
-    UNIQUE ("embeddingKey"),
-    UNIQUE ("streamId", "revision", "canonicalModel", "modelRevision", "contentHash")
-  )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_fts" (
-    "streamId" TEXT NOT NULL PRIMARY KEY,
     "eventId" TEXT NOT NULL,
     "revision" INTEGER NOT NULL CHECK ("revision" > 0),
     "contentHash" TEXT NOT NULL,
     "canonicalText" TEXT NOT NULL,
     "tokenCount" INTEGER NOT NULL CHECK ("tokenCount" >= 0),
-    "termFrequencies" TEXT NOT NULL,
     "createdAt" REAL NOT NULL,
     "updatedAt" REAL NOT NULL,
+    UNIQUE ("streamId"),
     UNIQUE ("eventId")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_work" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_lexical_term" (
+    "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+    "term" TEXT NOT NULL,
+    "streamId" TEXT NOT NULL,
+    "frequency" INTEGER NOT NULL CHECK ("frequency" > 0),
+    UNIQUE ("term", "streamId")
+  )`,
+  `CREATE TABLE IF NOT EXISTS "memory_v3_work" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "workKey" TEXT NOT NULL,
-    "workType" TEXT NOT NULL CHECK ("workType" IN ('extract', 'embed', 'backfill', 'maintenance')),
+    "workType" TEXT NOT NULL CHECK ("workType" IN ('extract', 'maintenance')),
     "status" TEXT NOT NULL CHECK ("status" IN ('pending', 'leased', 'succeeded', 'failed', 'deadLetter', 'cancelled')),
     "subjectKey" TEXT,
     "contextKey" TEXT,
@@ -184,7 +177,7 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "completedAt" REAL,
     UNIQUE ("workKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_cursor" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_cursor" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "laneKey" TEXT NOT NULL,
     "subjectKey" TEXT NOT NULL,
@@ -198,7 +191,7 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "updatedAt" REAL NOT NULL,
     UNIQUE ("laneKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_suppression" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_suppression" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "suppressionKey" TEXT NOT NULL,
     "subjectKey" TEXT,
@@ -211,7 +204,7 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     "createdAt" REAL NOT NULL,
     UNIQUE ("suppressionKey")
   )`,
-  `CREATE TABLE IF NOT EXISTS "memory_v2_audit" (
+  `CREATE TABLE IF NOT EXISTS "memory_v3_audit" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
     "auditId" TEXT NOT NULL,
     "idempotencyKey" TEXT NOT NULL,
@@ -226,207 +219,113 @@ export const MEMORY_LEDGER_SQLITE_DDL = Object.freeze([
     UNIQUE ("auditId"),
     UNIQUE ("idempotencyKey")
   )`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_event_subject_idx" ON "memory_v2_event" ("subjectKey", "createdAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_event_stream_idx" ON "memory_v2_event" ("streamId", "revision")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_principal_platform_idx" ON "memory_v2_principal" ("platform", "userId")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_context_platform_idx" ON "memory_v2_context" ("platform", "channelType")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_payload_event_idx" ON "memory_v2_payload" ("eventId", "payloadKind")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_payload_hash_idx" ON "memory_v2_payload" ("contentHash")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_evidence_context_idx" ON "memory_v2_evidence" ("contextKey", "occurredAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_evidence_event_idx" ON "memory_v2_evidence" ("eventId")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_head_subject_idx" ON "memory_v2_head" ("subjectKey", "state", "updatedAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_head_context_idx" ON "memory_v2_head" ("sourceContextKey", "state", "updatedAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_embedding_stream_idx" ON "memory_v2_embedding" ("streamId", "revision")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_fts_hash_idx" ON "memory_v2_fts" ("contentHash")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_work_due_idx" ON "memory_v2_work" ("workType", "status", "nextRunAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_work_lease_idx" ON "memory_v2_work" ("status", "leaseExpiresAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_work_subject_idx" ON "memory_v2_work" ("subjectKey", "contextKey", "status")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_work_stream_idx" ON "memory_v2_work" ("streamId", "status")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_cursor_subject_idx" ON "memory_v2_cursor" ("subjectKey", "contextKey")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_cursor_conversation_idx" ON "memory_v2_cursor" ("conversationId")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_suppression_subject_idx" ON "memory_v2_suppression" ("subjectKey", "contextKey", "generation")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_suppression_stream_idx" ON "memory_v2_suppression" ("streamId", "generation")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_suppression_source_idx" ON "memory_v2_suppression" ("contextKey", "sourceMessageDigest")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_audit_subject_idx" ON "memory_v2_audit" ("subjectKey", "contextKey", "createdAt")`,
-  `CREATE INDEX IF NOT EXISTS "memory_v2_audit_work_idx" ON "memory_v2_audit" ("workKey", "createdAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_event_subject_idx" ON "memory_v3_event" ("subjectKey", "createdAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_event_stream_idx" ON "memory_v3_event" ("streamId", "revision")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_payload_event_idx" ON "memory_v3_payload" ("eventId", "payloadKind")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_evidence_context_idx" ON "memory_v3_evidence" ("contextKey", "occurredAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_evidence_event_idx" ON "memory_v3_evidence" ("eventId")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_head_subject_idx" ON "memory_v3_head" ("subjectKey", "state", "updatedAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_head_context_idx" ON "memory_v3_head" ("sourceContextKey", "state", "updatedAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_head_topic_idx" ON "memory_v3_head" ("kind", "topicKey", "state")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_lexical_term_lookup_idx" ON "memory_v3_lexical_term" ("term", "streamId")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_lexical_term_stream_idx" ON "memory_v3_lexical_term" ("streamId")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_work_due_idx" ON "memory_v3_work" ("workType", "status", "nextRunAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_work_lease_idx" ON "memory_v3_work" ("status", "leaseExpiresAt")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_work_subject_idx" ON "memory_v3_work" ("subjectKey", "contextKey", "status")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_cursor_subject_idx" ON "memory_v3_cursor" ("subjectKey", "contextKey")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_suppression_subject_idx" ON "memory_v3_suppression" ("subjectKey", "contextKey", "generation")`,
+  `CREATE INDEX IF NOT EXISTS "memory_v3_audit_subject_idx" ON "memory_v3_audit" ("subjectKey", "contextKey", "createdAt")`,
 ] as const);
-
-type MemorySchemaDatabaseLike = {
-  _driver?: unknown;
-};
 
 type MemorySchemaDriverLike = {
   _all(sql: string, params?: unknown[]): unknown[];
 };
 
-interface MemorySchemaRelation {
-  type: string;
-  name: string;
-  sql: string;
-}
-
 function normalizeSchemaSql(input: string): string {
   return input
     .trim()
     .replace(/;\s*$/u, '')
-    .replace(
-      /^CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS/iu,
-      'CREATE $1',
-    )
+    .replace(/^CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS/iu, 'CREATE $1')
     .replace(/\s+/gu, ' ');
 }
 
-function canonicalMemoryRelations(): ReadonlyMap<string, MemorySchemaRelation> {
-  const relations = new Map<string, MemorySchemaRelation>();
-  for (const statement of MEMORY_LEDGER_SQLITE_DDL) {
-    const match = statement.match(
-      /^CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+"([^"]+)"/iu,
-    );
-    if (!match) {
-      throw new Error('Memory Ledger DDL contains an unrecognized relation statement.');
-    }
-    const type = match[1]!.toLowerCase() as 'table' | 'index';
-    const name = match[2]!;
-    if (relations.has(name)) {
-      throw new Error(`Memory Ledger DDL contains duplicate relation ${name}.`);
-    }
-    relations.set(name, {
-      type,
-      name,
-      sql: normalizeSchemaSql(statement),
-    });
-  }
-  return relations;
-}
+const CANONICAL_RELATIONS = new Map(MEMORY_LEDGER_SQLITE_DDL.map((statement) => {
+  const match = statement.match(/^CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+"([^"]+)"/iu);
+  if (!match) throw new Error('Memory Ledger DDL contains an invalid relation.');
+  return [match[2]!, {
+    type: match[1]!.toLowerCase(),
+    sql: normalizeSchemaSql(statement),
+  }] as const;
+}));
 
-const CANONICAL_MEMORY_RELATIONS = canonicalMemoryRelations();
-
-function isMemorySchemaObject(row: {
-  name: string;
-  tableName: string;
-  sql: string;
-}): boolean {
-  if (
-    row.name.startsWith('memory_')
-    || row.tableName.startsWith('memory_')
-  ) {
-    return true;
-  }
-  return MEMORY_LEDGER_TABLE_NAMES.some((table) => (
-    row.sql.includes(`"${table}"`)
-    || new RegExp(`\\b${table}\\b`, 'u').test(row.sql)
-  ));
-}
-
-function memoryLedgerSqliteDriver(databaseValue: unknown): MemorySchemaDriverLike {
-  const database = databaseValue as MemorySchemaDatabaseLike;
-  const driver = database?._driver as Partial<MemorySchemaDriverLike> | undefined;
+function sqliteDriver(databaseValue: unknown): MemorySchemaDriverLike {
+  const driver = (databaseValue as { _driver?: Partial<MemorySchemaDriverLike> })?._driver;
   if (typeof driver?._all !== 'function') {
     throw new MemoryRuntimeError(
       'startup',
       'schema',
       'memory_schema_driver_unavailable',
-      'Memory Ledger V2 requires direct access to the configured SQLite driver before model registration.',
+      'Memory Ledger V3 requires direct access to the configured SQLite driver.',
     );
   }
   return driver as MemorySchemaDriverLike;
 }
 
-function assertMemoryLedgerSqliteSchemaWithDriver(
-  driver: MemorySchemaDriverLike,
-): void {
-  const actualRows = driver._all(
+function assertCanonicalSchema(driver: MemorySchemaDriverLike): void {
+  const rows = driver._all(
     `SELECT "type", "name", "tbl_name" AS "tableName", "sql"
        FROM "sqlite_master"
       WHERE "name" NOT LIKE 'sqlite_autoindex_%'
       ORDER BY "name"`,
-  ) as Array<{
-    type?: unknown;
-    name?: unknown;
-    tableName?: unknown;
-    sql?: unknown;
-  }>;
-  const actual = new Map<string, MemorySchemaRelation>();
-  for (const row of actualRows) {
-    const hasMemoryIdentity = (
-      typeof row.name === 'string'
-      && row.name.startsWith('memory_')
-    ) || (
-      typeof row.tableName === 'string'
-      && row.tableName.startsWith('memory_')
-    );
+  ) as Array<{ type?: unknown; name?: unknown; tableName?: unknown; sql?: unknown }>;
+  const actual = new Map<string, { type: string; sql: string }>();
+  for (const row of rows) {
+    const name = typeof row.name === 'string' ? row.name : '';
+    const tableName = typeof row.tableName === 'string' ? row.tableName : '';
+    if (!name.startsWith('memory_') && !tableName.startsWith('memory_')) continue;
     if (
       typeof row.type !== 'string'
-      || typeof row.name !== 'string'
-      || typeof row.tableName !== 'string'
       || typeof row.sql !== 'string'
+      || !name
     ) {
-      if (hasMemoryIdentity) {
-        throw new MemoryRuntimeError(
-          'startup',
-          'schema',
-          'memory_schema_relation_invalid',
-          'Memory Ledger V2 contains an invalid schema relation.',
-        );
-      }
-      continue;
+      throw new MemoryRuntimeError(
+        'startup',
+        'schema',
+        'memory_schema_relation_invalid',
+        'Memory Ledger V3 contains an invalid schema relation.',
+      );
     }
-    if (!isMemorySchemaObject({
-      name: row.name,
-      tableName: row.tableName,
-      sql: row.sql,
-    })) {
-      continue;
-    }
-    actual.set(row.name, {
-      type: row.type,
-      name: row.name,
-      sql: normalizeSchemaSql(row.sql),
-    });
+    actual.set(name, { type: row.type, sql: normalizeSchemaSql(row.sql) });
   }
-
-  const missing = [...CANONICAL_MEMORY_RELATIONS.keys()].filter((name) => !actual.has(name));
-  const extra = [...actual.keys()].filter((name) => !CANONICAL_MEMORY_RELATIONS.has(name));
-  const mutated = [...CANONICAL_MEMORY_RELATIONS.entries()]
-    .filter(([name, expected]) => {
-      const relation = actual.get(name);
-      return relation != null
-        && (relation.type !== expected.type || relation.sql !== expected.sql);
-    })
-    .map(([name]) => name);
+  const missing = [...CANONICAL_RELATIONS.keys()].filter((name) => !actual.has(name));
+  const extra = [...actual.keys()].filter((name) => !CANONICAL_RELATIONS.has(name));
+  const mutated = [...CANONICAL_RELATIONS].filter(([name, expected]) => {
+    const relation = actual.get(name);
+    return relation && (relation.type !== expected.type || relation.sql !== expected.sql);
+  }).map(([name]) => name);
   if (missing.length || extra.length || mutated.length) {
     throw new MemoryRuntimeError(
       'startup',
       'schema',
       'memory_schema_contract_invalid',
-      `Memory Ledger V2 schema contract failed: missing=${missing.join(',') || '-'}; `
+      `Memory Ledger V3 schema contract failed: missing=${missing.join(',') || '-'}; `
       + `extra=${extra.join(',') || '-'}; mutated=${mutated.join(',') || '-'}.`,
     );
   }
 }
 
-export function assertMemoryLedgerSqliteSchema(
-  databaseValue: unknown,
-): void {
-  assertMemoryLedgerSqliteSchemaWithDriver(memoryLedgerSqliteDriver(databaseValue));
+export function assertMemoryLedgerSqliteSchema(databaseValue: unknown): void {
+  assertCanonicalSchema(sqliteDriver(databaseValue));
 }
 
-export function assertMemoryLedgerSqlitePreflight(
-  databaseValue: unknown,
-): void {
-  const driver = memoryLedgerSqliteDriver(databaseValue);
-  assertMemoryLedgerSqliteSchemaWithDriver(driver);
+export function assertMemoryLedgerSqlitePreflight(databaseValue: unknown): void {
+  const driver = sqliteDriver(databaseValue);
+  assertCanonicalSchema(driver);
   const rows = driver._all(
-    `SELECT "value"
-       FROM "memory_v2_meta"
-      WHERE "key" = ?
-      ORDER BY "id"`,
+    `SELECT "value" FROM "memory_v3_meta" WHERE "key" = ? ORDER BY "id"`,
     ['schemaVersion'],
   ) as Array<{ value?: unknown }>;
-  if (
-    rows.length !== 1
-    || String(rows[0]?.value) !== String(MEMORY_LEDGER_SCHEMA_VERSION)
-  ) {
+  if (rows.length !== 1 || String(rows[0]?.value) !== String(MEMORY_LEDGER_SCHEMA_VERSION)) {
     throw new MemoryRuntimeError(
       'startup',
       'schema',
@@ -437,14 +336,10 @@ export function assertMemoryLedgerSqlitePreflight(
 }
 
 function registerMemoryModels(ctx: Context): void {
-  ctx.model.extend('memory_v2_meta', {
-    id: 'unsigned',
-    key: 'string',
-    value: 'text',
-    updatedAt: 'double',
+  ctx.model.extend('memory_v3_meta', {
+    id: 'unsigned', key: 'string', value: 'text', updatedAt: 'double',
   }, { autoInc: true, unique: ['key'] });
-
-  ctx.model.extend('memory_v2_principal', {
+  ctx.model.extend('memory_v3_principal', {
     id: 'unsigned',
     userKey: 'string',
     platform: 'string',
@@ -456,8 +351,7 @@ function registerMemoryModels(ctx: Context): void {
     firstSeenAt: 'double',
     lastSeenAt: 'double',
   }, { autoInc: true, unique: ['userKey'] });
-
-  ctx.model.extend('memory_v2_context', {
+  ctx.model.extend('memory_v3_context', {
     id: 'unsigned',
     contextKey: 'string',
     platform: 'string',
@@ -470,31 +364,33 @@ function registerMemoryModels(ctx: Context): void {
     lastSeenAt: 'double',
   }, { autoInc: true, unique: ['contextKey'] });
 
-  ctx.model.extend('memory_v2_event', {
-    id: 'unsigned',
-    eventId: 'string',
-    streamId: 'string',
-    revision: 'unsigned',
-    eventType: 'string',
+  const identityFields = {
     assertionType: 'string',
+    kind: { type: 'string', nullable: true },
+    topicKey: 'string',
+    memoryKey: 'string',
     subjectType: 'string',
     subjectKey: 'string',
-    actorKey: 'string',
     sourceContextKey: 'string',
     audiencePolicy: 'string',
     audienceContextKeys: 'text',
     audienceSnapshots: 'text',
     sensitivity: 'string',
+  } as const;
+  ctx.model.extend('memory_v3_event', {
+    id: 'unsigned',
+    eventId: 'string',
+    streamId: 'string',
+    revision: 'unsigned',
+    eventType: 'string',
+    ...identityFields,
+    actorKey: 'string',
     payloadId: { type: 'string', nullable: true },
     causationId: { type: 'string', nullable: true },
     idempotencyKey: 'string',
     createdAt: 'double',
-  }, {
-    autoInc: true,
-    unique: ['eventId', 'idempotencyKey', ['streamId', 'revision']],
-  });
-
-  ctx.model.extend('memory_v2_payload', {
+  }, { autoInc: true, unique: ['eventId', 'idempotencyKey', ['streamId', 'revision']] });
+  ctx.model.extend('memory_v3_payload', {
     id: 'unsigned',
     payloadId: 'string',
     eventId: 'string',
@@ -504,8 +400,7 @@ function registerMemoryModels(ctx: Context): void {
     contentHash: 'string',
     createdAt: 'double',
   }, { autoInc: true, unique: ['payloadId'] });
-
-  ctx.model.extend('memory_v2_evidence', {
+  ctx.model.extend('memory_v3_evidence', {
     id: 'unsigned',
     evidenceId: 'string',
     eventId: 'string',
@@ -517,25 +412,14 @@ function registerMemoryModels(ctx: Context): void {
     replyToMessageId: { type: 'string', nullable: true },
     excerptPayloadId: { type: 'string', nullable: true },
     occurredAt: 'double',
-  }, {
-    autoInc: true,
-    unique: ['evidenceId', ['eventId', 'messageId']],
-  });
-
-  ctx.model.extend('memory_v2_head', {
+  }, { autoInc: true, unique: ['evidenceId', ['eventId', 'messageId']] });
+  ctx.model.extend('memory_v3_head', {
     id: 'unsigned',
     streamId: 'string',
     eventId: 'string',
     revision: 'unsigned',
     state: 'string',
-    assertionType: 'string',
-    subjectType: 'string',
-    subjectKey: 'string',
-    sourceContextKey: 'string',
-    audiencePolicy: 'string',
-    audienceContextKeys: 'text',
-    audienceSnapshots: 'text',
-    sensitivity: 'string',
+    ...identityFields,
     payloadId: { type: 'string', nullable: true },
     contentHash: { type: 'string', nullable: true },
     importance: 'double',
@@ -546,29 +430,25 @@ function registerMemoryModels(ctx: Context): void {
     deletionGeneration: 'unsigned',
     createdAt: 'double',
     updatedAt: 'double',
-  }, {
-    autoInc: true,
-    unique: ['streamId'],
-  });
-
-  ctx.model.extend('memory_v2_embedding', {
+  }, { autoInc: true, unique: ['streamId', 'memoryKey'] });
+  ctx.model.extend('memory_v3_lexical_document', {
     id: 'unsigned',
-    embeddingKey: 'string',
     streamId: 'string',
     eventId: 'string',
     revision: 'unsigned',
-    canonicalModel: 'string',
-    modelRevision: 'unsigned',
     contentHash: 'string',
-    dimensions: 'unsigned',
-    vector: 'text',
+    canonicalText: 'text',
+    tokenCount: 'unsigned',
     createdAt: 'double',
-  }, {
-    autoInc: true,
-    unique: ['embeddingKey', ['streamId', 'revision', 'canonicalModel', 'modelRevision', 'contentHash']],
-  });
-
-  ctx.model.extend('memory_v2_work', {
+    updatedAt: 'double',
+  }, { autoInc: true, unique: ['streamId', 'eventId'] });
+  ctx.model.extend('memory_v3_lexical_term', {
+    id: 'unsigned',
+    term: 'string',
+    streamId: 'string',
+    frequency: 'unsigned',
+  }, { autoInc: true, unique: [['term', 'streamId']] });
+  ctx.model.extend('memory_v3_work', {
     id: 'unsigned',
     workKey: 'string',
     workType: 'string',
@@ -592,12 +472,8 @@ function registerMemoryModels(ctx: Context): void {
     createdAt: 'double',
     updatedAt: 'double',
     completedAt: { type: 'double', nullable: true },
-  }, {
-    autoInc: true,
-    unique: ['workKey'],
-  });
-
-  ctx.model.extend('memory_v2_cursor', {
+  }, { autoInc: true, unique: ['workKey'] });
+  ctx.model.extend('memory_v3_cursor', {
     id: 'unsigned',
     laneKey: 'string',
     subjectKey: 'string',
@@ -610,8 +486,7 @@ function registerMemoryModels(ctx: Context): void {
     firstSeenAt: 'double',
     updatedAt: 'double',
   }, { autoInc: true, unique: ['laneKey'] });
-
-  ctx.model.extend('memory_v2_suppression', {
+  ctx.model.extend('memory_v3_suppression', {
     id: 'unsigned',
     suppressionKey: 'string',
     subjectKey: { type: 'string', nullable: true },
@@ -622,12 +497,8 @@ function registerMemoryModels(ctx: Context): void {
     generation: 'unsigned',
     reasonCode: 'string',
     createdAt: 'double',
-  }, {
-    autoInc: true,
-    unique: ['suppressionKey'],
-  });
-
-  ctx.model.extend('memory_v2_audit', {
+  }, { autoInc: true, unique: ['suppressionKey'] });
+  ctx.model.extend('memory_v3_audit', {
     id: 'unsigned',
     auditId: 'string',
     idempotencyKey: 'string',
@@ -639,16 +510,10 @@ function registerMemoryModels(ctx: Context): void {
     workKey: { type: 'string', nullable: true },
     detailJson: { type: 'text', nullable: true },
     createdAt: 'double',
-  }, {
-    autoInc: true,
-    unique: ['auditId', 'idempotencyKey'],
-  });
+  }, { autoInc: true, unique: ['auditId', 'idempotencyKey'] });
 }
 
-export function registerMemoryLedgerModels(
-  ctx: Context,
-  databaseValue: unknown,
-): void {
+export function registerMemoryLedgerModels(ctx: Context, databaseValue: unknown): void {
   assertMemoryLedgerSqlitePreflight(databaseValue);
   registerMemoryModels(ctx);
 }

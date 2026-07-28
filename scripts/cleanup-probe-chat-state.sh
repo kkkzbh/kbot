@@ -74,10 +74,8 @@ memory_schema="$(
       from sqlite_schema
       where type = 'table'
         and name in (
-          'memory_user',
-          'memory_context',
-          'memory_v2_principal',
-          'memory_v2_context'
+          'memory_v3_principal',
+          'memory_v3_context'
         )
       order by name
     );
@@ -88,11 +86,8 @@ memory_cleanup_sql=""
 case "$memory_schema" in
   "")
     ;;
-  "memory_context,memory_user")
-    memory_cleanup_sql=$'delete from memory_user where userKey='"'onebot:user:${fake_user_id}'"$' and platform='"'onebot'"' and userId='"'${fake_user_id}'"$';\n'"delete from memory_context where platform='onebot' and channelType='group' and groupId='${group_id}';"
-    ;;
-  "memory_v2_context,memory_v2_principal")
-    memory_cleanup_sql=$'delete from memory_v2_principal where userKey='"'onebot:user:${fake_user_id}'"$' and platform='"'onebot'"' and userId='"'${fake_user_id}'"$';\n'"delete from memory_v2_context where platform='onebot' and channelType='group' and groupId='${group_id}';"
+  "memory_v3_context,memory_v3_principal")
+    memory_cleanup_sql=$'delete from memory_v3_principal where userKey='"'onebot:user:${fake_user_id}'"$' and platform='"'onebot'"' and userId='"'${fake_user_id}'"$';\n'"delete from memory_v3_context where platform='onebot' and channelType='group' and groupId='${group_id}';"
     ;;
   *)
     echo "[error] unsupported probe memory schema: ${memory_schema}" >&2

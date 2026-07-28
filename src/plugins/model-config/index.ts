@@ -1,5 +1,7 @@
+export * from './capability-verifier.js';
 export * from './connection-identity.js';
 export * from './errors.js';
+export * from './openai-executor.js';
 export * from './resolver.js';
 export * from './runtime-client.js';
 export * from './service.js';

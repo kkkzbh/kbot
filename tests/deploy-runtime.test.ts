@@ -101,17 +101,16 @@ function runDurableRebootScenario(mode: 'offline' | 'runtime'): {
     'set -euo pipefail',
     'source "$1"',
     'TEST_ENABLED="$5"',
-    'deployment_transaction_configure "$2" tx-reboot "$3" "$4" full memory-v2 start',
+    'deployment_transaction_configure "$2" tx-reboot "$3" "$4" full memory-v3 start',
     'inhibit() { rm -f -- "$TEST_ENABLED"; }',
     'verify_inhibited() { [[ ! -e "$TEST_ENABLED" ]]; }',
     'deployment_transaction_begin_offline_activation inhibit verify_inhibited',
     'deployment_transaction_mark_snapshot_complete',
-    'printf "v2-published\\n" >> "$6"',
+    'printf "v3-published\\n" >> "$6"',
     'if [[ "$7" == runtime ]]; then',
     '  deployment_transaction_mark_app_swap_intent',
     '  deployment_transaction_mark_app_swapped 0',
     '  deployment_transaction_transfer_runtime_ownership',
-    '  deployment_transaction_mark_runtime_phase runtime-probes',
     'fi',
   ].join('\n'), 'first-installer',
   transaction, state, join(root, 'backup'), join(root, 'preflight.json'), enabled, database, mode]);
@@ -126,10 +125,8 @@ function runDurableRebootScenario(mode: 'offline' | 'runtime'): {
     '  cp -- "$8" "$6"',
     '  deployment_transaction_mark_restore_verification',
     'else',
-    '  [[ "$DEPLOYMENT_TRANSACTION_PHASE" == runtime-probes ]]',
-    '  printf "probe-gate\\n" >> "$9"',
-    '  deployment_transaction_mark_runtime_phase runtime-backfill',
-    '  printf "stranded=0\\n" >> "$9"',
+    '  [[ "$DEPLOYMENT_TRANSACTION_PHASE" == runtime-bootstrap ]]',
+    '  printf "runtime-gate\\n" >> "$9"',
     '  deployment_transaction_mark_runtime_phase runtime-final',
     'fi',
     'touch "$5"',
@@ -386,7 +383,7 @@ describe('deployment transaction ownership', () => {
     expect(result.stopped).toBe(true);
   });
 
-  it('survives a reboot after V2 publication and restores the offline snapshot before boot', () => {
+  it('survives a reboot after V3 publication and restores the offline snapshot before boot', () => {
     const result = runDurableRebootScenario('offline');
 
     expect(result.database).toBe('legacy-pair\n');
@@ -394,11 +391,11 @@ describe('deployment transaction ownership', () => {
     expect(result.stateExists).toBe(false);
   });
 
-  it('resumes probes and stranded backfill on a second installer run before boot enablement', () => {
+  it('resumes the V3 runtime gate on a second installer run before boot enablement', () => {
     const result = runDurableRebootScenario('runtime');
 
-    expect(result.database).toBe('legacy-pair\nv2-published\n');
-    expect(result.gates).toBe('probe-gate\nstranded=0\n');
+    expect(result.database).toBe('legacy-pair\nv3-published\n');
+    expect(result.gates).toBe('runtime-gate\n');
     expect(result.enabled).toBe(true);
     expect(result.stateExists).toBe(false);
   });
@@ -440,12 +437,12 @@ describe('deployment transaction ownership', () => {
   });
 });
 
-describe('Memory V2 process readiness contract', () => {
+describe('Memory V3 process readiness contract', () => {
   it('accepts only a private marker bound to the current service cgroup', () => {
     const root = createTempDir();
-    const marker = join(root, 'memory-v2-ready.json');
+    const marker = join(root, 'memory-v3-ready.json');
     const procRoot = join(root, 'proc');
-    const script = join(process.cwd(), 'scripts/verify-memory-v2-readiness.mjs');
+    const script = join(process.cwd(), 'scripts/verify-memory-v3-readiness.mjs');
     mkdirSync(join(procRoot, '4242'), { recursive: true });
     writeFileSync(
       join(procRoot, '4242/cgroup'),
@@ -453,10 +450,9 @@ describe('Memory V2 process readiness contract', () => {
     );
     writeFileSync(marker, JSON.stringify({
       pid: 4242,
-      schemaVersion: 2,
+      schemaVersion: 3,
       appliedModelRevision: 7,
       extractionModel: 'qqbot-codex/gpt-5.6-luna',
-      embeddingModel: 'qqbot-siliconflow/qwen3-embedding-8b',
       readyAt: Date.now(),
     }));
     chmodSync(marker, 0o600);
@@ -470,7 +466,7 @@ describe('Memory V2 process readiness contract', () => {
       '--proc-root',
       procRoot,
     ], { encoding: 'utf8' });
-    expect(valid).toContain('pid=4242 schema=2 modelRevision=7');
+    expect(valid).toContain('pid=4242 schema=3 modelRevision=7');
 
     writeFileSync(
       join(procRoot, '4242/cgroup'),
@@ -558,8 +554,8 @@ describe('server runtime artifact rendering', () => {
     expect(koishi).toContain(`ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/agents`);
     expect(koishi).toContain('RuntimeDirectory=qqbot');
     expect(koishi).toContain('RuntimeDirectoryMode=0700');
-    expect(koishi).toContain('Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v2-ready.json');
-    expect(koishi).toContain('ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v2-ready.json');
+    expect(koishi).toContain('Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v3-ready.json');
+    expect(koishi).toContain('ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v3-ready.json');
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
   });
@@ -596,61 +592,37 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('remove_env_key "${file}" "CHATLUNA_BUNDLED_PRESET_DIR"');
     expect(installer).toContain('context-preset-cutover.mjs" preflight');
     expect(installer).toContain('context-preset-cutover.mjs" apply');
-    expect(installer).toContain('model-config-cutover.mjs" preflight');
-    expect(installer).toContain('model-config-cutover.mjs" apply');
-    expect(installer).toContain('memory-v2-cutover.mjs" preflight');
-    expect(installer).toContain('memory-v2-cutover.mjs" initialize');
-    expect(installer).toContain(
-      'elif [[ "${MEMORY_V2_STATE}" == "empty" ]]; then',
-    );
-    expect(installer).toContain('MEMORY_V2_INITIALIZE_REQUIRED=1');
-    expect(installer).toContain('memory-v2-cutover.mjs" apply');
-    expect(installer).toContain('memory-v2-cutover.mjs" bootstrap-verify');
-    expect(installer).toContain('memory-v2-cutover.mjs" probe-gate');
-    expect(installer).toContain('memory-v2-cutover.mjs" verify');
-    expect(installer).toContain('model-config-contract.mjs" preflight');
-    expect(installer).toContain('model-config-contract.mjs" apply');
-    expect(installer).toContain('MODEL_CONFIG_MAPPING_FILE="${SHARED_DIR}/model-config-mapping.json"');
-    expect(installer).toContain('--model-map-file "${MODEL_CONFIG_MAPPING_FILE}"');
+    expect(installer).toContain('model-config-v3-cutover.mjs" preflight');
+    expect(installer).toContain('model-config-v3-cutover.mjs" apply');
+    expect(installer).toContain('memory-v3-cutover.mjs" preflight');
+    expect(installer).toContain('memory-v3-cutover.mjs" initialize');
+    expect(installer).toContain('MEMORY_V3_INITIALIZE_REQUIRED=1');
+    expect(installer).toContain('memory-v3-cutover.mjs" apply');
+    expect(installer).not.toContain('bootstrap-verify');
+    expect(installer).not.toContain('probe-gate');
+    expect(installer).not.toContain('runtime-backfill');
     expect(installer).toContain('AGENT_DATA_ROOT="${DATA_DIR}/chatluna"');
     expect(installer).toContain('PERSISTENT_AGENT_DIR="${AGENT_DATA_ROOT}/agents"');
     expect(installer).toContain('"CHATLUNA_AGENT_DATA_DIR=${AGENT_DATA_ROOT}"');
-    expect(installer).toContain('--agent-data-root "${AGENT_DATA_ROOT}"');
-    expect(installer).toContain('--legacy-agent-root "${LEGACY_APP_AGENT_DIR}"');
     expect(installer).toContain('--confirm-service-stopped');
     expect(installer).toContain('remove_env_key "${file}" "MEMORY_EXTRACT_API_KEY"');
     expect(installer).toContain('remove_env_key "${file}" "MEMORY_EMBED_API_KEY"');
     expect(installer).toContain(
-      'set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"',
+      'set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "true"',
     );
     expect(installer).toContain(
       'set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"',
     );
-    expect(installer).toContain('while [[ "${attempt}" -lt 180 ]]');
-    const memoryApply = installer.indexOf('memory-v2-cutover.mjs" apply');
-    const maintenanceBoot = installer.indexOf(
-      'set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "true"',
-      memoryApply,
-    );
-    const gatesStart = installer.indexOf('run_memory_v2_runtime_gates()');
-    const gatesEnd = installer.indexOf('resume_or_recover_deployment_transaction()', gatesStart);
-    const gates = installer.slice(gatesStart, gatesEnd);
-    const targetRestart = gates.indexOf('systemctl restart qqbot.target');
-    const bootstrapVerify = gates.indexOf('memory-v2-cutover.mjs" bootstrap-verify');
-    const maintenanceRelease = gates.indexOf(
-      'set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"',
-    );
-    const koishiRestart = gates.indexOf('systemctl restart qqbot-koishi.service');
-    const probeGate = gates.indexOf('memory-v2-cutover.mjs" probe-gate');
-    const finalVerify = gates.indexOf('memory-v2-cutover.mjs" verify');
-    expect(maintenanceBoot).toBeGreaterThan(memoryApply);
-    expect(targetRestart).toBeGreaterThanOrEqual(0);
-    expect(bootstrapVerify).toBeGreaterThan(targetRestart);
-    expect(maintenanceRelease).toBeGreaterThan(bootstrapVerify);
-    expect(koishiRestart).toBeGreaterThan(maintenanceRelease);
-    expect(probeGate).toBeGreaterThan(koishiRestart);
-    expect(finalVerify).toBeGreaterThan(probeGate);
-    expect(installer).toContain('Memory V2 final backfill and stranded gate timed out');
+    const memoryPreflight = installer.indexOf('memory-v3-cutover.mjs" preflight');
+    const stop = installer.indexOf('stop_deployment_stack', memoryPreflight);
+    const memoryApply = installer.indexOf('memory-v3-cutover.mjs" apply', stop);
+    const appSwap = installer.indexOf('deployment_transaction_swap_application', memoryApply);
+    const runtimeGates = installer.indexOf('run_runtime_gates', appSwap);
+    expect(memoryPreflight).toBeGreaterThanOrEqual(0);
+    expect(stop).toBeGreaterThan(memoryPreflight);
+    expect(memoryApply).toBeGreaterThan(stop);
+    expect(appSwap).toBeGreaterThan(memoryApply);
+    expect(runtimeGates).toBeGreaterThan(appSwap);
     expect(installer).toContain('trap rollback_after_failure EXIT');
     expect(installer).toContain('deployment_transaction_begin_offline_activation');
     expect(installer).toContain('deployment_transaction_transfer_runtime_ownership');
@@ -689,13 +661,13 @@ describe('server runtime artifact rendering', () => {
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
     expect(deploy).toContain(
-      'require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"',
+      'require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"',
     );
     expect(deploy).toContain(
       'require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"',
     );
     expect(deploy).toContain(
-      'require_bundle_entry "qqbot/dist/tools/memory-v2-cutover.mjs"',
+      'require_bundle_entry "qqbot/dist/tools/memory-v3-cutover.mjs"',
     );
     expect(deploy).toContain(
       'require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"',
@@ -709,9 +681,7 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain(
       'require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"',
     );
-    expect(deploy).toContain(
-      'require_bundle_entry "qqbot/deploy/model-config-contract.mjs"',
-    );
+    expect(deploy).not.toContain('model-config-contract.mjs');
     expect(deploy).toContain(
       'require_bundle_entry "qqbot/deploy/deployment-transaction.sh"',
     );
@@ -720,7 +690,7 @@ describe('server runtime artifact rendering', () => {
     );
   });
 
-  it('executes each context cutover argument once and validates the new model contract after Memory V2', () => {
+  it('executes each context cutover argument once and publishes V3 before the app swap', () => {
     const installerPath = join(process.cwd(), 'deploy/installer.sh');
     const installer = readFileSync(installerPath, 'utf8');
     execFileSync('bash', ['-n', installerPath]);
@@ -741,19 +711,12 @@ describe('server runtime artifact rendering', () => {
     ].join('\n')], { encoding: 'utf8' });
     expect(output.match(/<--confirm-service-stopped>/gu)).toHaveLength(1);
 
-    expect(installer).toContain('if [[ "${MEMORY_V2_STATE}" != "legacy" ]]');
-    const memoryApply = installer.indexOf('memory-v2-cutover.mjs" apply');
-    const postMigrationContractPreflight = installer.indexOf(
-      'model-config-contract.mjs" preflight',
-      memoryApply,
-    );
-    const postMigrationContractApply = installer.indexOf(
-      'model-config-contract.mjs" apply',
-      postMigrationContractPreflight,
-    );
+    expect(installer).toContain('if [[ "${MEMORY_SCHEMA_STATE}" == "v2" ]]');
+    const modelApply = installer.indexOf('model-config-v3-cutover.mjs" apply');
+    const memoryApply = installer.indexOf('memory-v3-cutover.mjs" apply');
     const appSwap = installer.indexOf('deployment_transaction_swap_application');
-    expect(postMigrationContractPreflight).toBeGreaterThan(memoryApply);
-    expect(postMigrationContractApply).toBeGreaterThan(postMigrationContractPreflight);
-    expect(appSwap).toBeGreaterThan(postMigrationContractApply);
+    expect(modelApply).toBeGreaterThanOrEqual(0);
+    expect(memoryApply).toBeGreaterThan(modelApply);
+    expect(appSwap).toBeGreaterThan(memoryApply);
   });
 });

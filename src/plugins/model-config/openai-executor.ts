@@ -1,12 +1,11 @@
 import {
-  ModelConfigError,
   type ManagedChatRequest,
   type ManagedChatResponse,
-  type ManagedEmbeddingResponse,
   type ModelConnectionExecutor,
   type ModelRuntimeExecutionRequest,
-  type ResolvedModelTarget,
-} from '../model-config/index.js';
+} from './runtime-client.js';
+import { ModelConfigError } from './errors.js';
+import type { ResolvedModelTarget } from './resolver.js';
 import { createProxyFetchRequest } from '../shared/proxy-fetch.js';
 
 export interface OpenAiConnectionExecutorOptions {
@@ -27,7 +26,7 @@ export class OpenAiConnectionExecutor implements ModelConnectionExecutor {
 
   async execute(
     request: ModelRuntimeExecutionRequest,
-  ): Promise<ManagedChatResponse | ManagedEmbeddingResponse> {
+  ): Promise<ManagedChatResponse> {
     if (request.target.connection.id !== this.options.connectionId) {
       throw runtimeError(
         request.target,
@@ -35,9 +34,7 @@ export class OpenAiConnectionExecutor implements ModelConnectionExecutor {
         `executor ${this.options.connectionId} cannot execute connection ${request.target.connection.id}`,
       );
     }
-    return request.operation === 'chat'
-      ? this.executeChat(request.target, request.payload, request.signal)
-      : this.executeEmbedding(request.target, request.payload.inputs, request.signal);
+    return this.executeChat(request.target, request.payload, request.signal);
   }
 
   private async executeChat(
@@ -53,13 +50,14 @@ export class OpenAiConnectionExecutor implements ModelConnectionExecutor {
         signal,
       );
       const text = extractChatCompletionsText(payload);
-      if (!text) {
+      const toolCalls = extractChatCompletionsToolCalls(payload);
+      if (!text && toolCalls.length === 0) {
         throw upstreamResponseError(
           target,
-          'chat completions response contains no text',
+          'chat completions response contains no text or tool calls',
         );
       }
-      return { text, raw: payload };
+      return { text, toolCalls, raw: payload };
     }
     if (target.model.requestMode === 'responses') {
       const payload = await this.postJson(
@@ -69,48 +67,16 @@ export class OpenAiConnectionExecutor implements ModelConnectionExecutor {
         signal,
       );
       const text = extractResponsesText(payload);
-      if (!text) {
+      const toolCalls = extractResponsesToolCalls(payload);
+      if (!text && toolCalls.length === 0) {
         throw upstreamResponseError(
           target,
-          'responses API response contains no text',
+          'responses API response contains no text or tool calls',
         );
       }
-      return { text, raw: payload };
+      return { text, toolCalls, raw: payload };
     }
     throw runtimeError(target, 'validate', 'chat model has no request mode');
-  }
-
-  private async executeEmbedding(
-    target: ResolvedModelTarget,
-    inputs: readonly string[],
-    signal?: AbortSignal,
-  ): Promise<ManagedEmbeddingResponse> {
-    const payload = await this.postJson(
-      target,
-      '/embeddings',
-      {
-        model: target.model.transportModel,
-        input: inputs,
-      },
-      signal,
-    );
-    let vectors: readonly (readonly number[])[];
-    try {
-      vectors = extractEmbeddingVectors(payload);
-    } catch (error) {
-      throw upstreamResponseError(
-        target,
-        'embedding response contains invalid vectors',
-        error,
-      );
-    }
-    if (vectors.length !== inputs.length) {
-      throw upstreamResponseError(
-        target,
-        `embedding response count mismatch: expected ${inputs.length}, got ${vectors.length}`,
-      );
-    }
-    return { vectors };
   }
 
   private async postJson(
@@ -230,6 +196,7 @@ function buildChatCompletionsBody(
     ...(defaults.thinkingMode
       ? { thinking: { type: defaults.thinkingMode } }
       : {}),
+    ...buildChatTools(request),
     ...buildChatStructuredOutput(target, request),
   };
 }
@@ -269,7 +236,56 @@ function buildResponsesBody(
     ...(defaults.thinkingMode
       ? { thinking: { type: defaults.thinkingMode } }
       : {}),
+    ...buildResponsesTools(request),
     ...buildResponsesStructuredOutput(target, request),
+  };
+}
+
+function buildChatTools(
+  request: ManagedChatRequest,
+): Readonly<Record<string, unknown>> {
+  if (!request.tools) return {};
+  return {
+    tools: request.tools.map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+        strict: tool.strict,
+      },
+    })),
+    ...(request.toolChoice
+      ? {
+          tool_choice: {
+            type: 'function',
+            function: { name: request.toolChoice },
+          },
+        }
+      : {}),
+  };
+}
+
+function buildResponsesTools(
+  request: ManagedChatRequest,
+): Readonly<Record<string, unknown>> {
+  if (!request.tools) return {};
+  return {
+    tools: request.tools.map((tool) => ({
+      type: 'function',
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      strict: tool.strict,
+    })),
+    ...(request.toolChoice
+      ? {
+          tool_choice: {
+            type: 'function',
+            name: request.toolChoice,
+          },
+        }
+      : {}),
   };
 }
 
@@ -344,19 +360,33 @@ function extractResponsesText(payload: unknown): string {
   }).join('').trim();
 }
 
-function extractEmbeddingVectors(payload: unknown): readonly (readonly number[])[] {
+function extractChatCompletionsToolCalls(
+  payload: unknown,
+): Array<{ name: string; arguments: string }> {
   const record = asRecord(payload);
-  const data = Array.isArray(record?.data) ? record.data : [];
-  return data.map((entry) => {
-    const embedding = asRecord(entry)?.embedding;
-    if (
-      !Array.isArray(embedding)
-      || embedding.length === 0
-      || embedding.some((value) => typeof value !== 'number' || !Number.isFinite(value))
-    ) {
-      throw new Error('embedding response contains an invalid vector');
-    }
-    return embedding as number[];
+  const choices = Array.isArray(record?.choices) ? record.choices : [];
+  const message = asRecord(asRecord(choices[0])?.message);
+  const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  return toolCalls.flatMap((entry) => {
+    const callable = asRecord(asRecord(entry)?.function);
+    return typeof callable?.name === 'string' && typeof callable.arguments === 'string'
+      ? [{ name: callable.name, arguments: callable.arguments }]
+      : [];
+  });
+}
+
+function extractResponsesToolCalls(
+  payload: unknown,
+): Array<{ name: string; arguments: string }> {
+  const record = asRecord(payload);
+  const output = Array.isArray(record?.output) ? record.output : [];
+  return output.flatMap((entry) => {
+    const callable = asRecord(entry);
+    return callable?.type === 'function_call'
+      && typeof callable.name === 'string'
+      && typeof callable.arguments === 'string'
+      ? [{ name: callable.name, arguments: callable.arguments }]
+      : [];
   });
 }
 

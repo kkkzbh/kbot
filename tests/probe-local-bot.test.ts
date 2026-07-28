@@ -150,17 +150,17 @@ create table chatluna_conversation (id text primary key, latestMessageId text, u
 create table chathub_room_member (userId text, roomId integer, roomPermission text, mute integer, primary key (userId, roomId));
 create table chathub_user (userId text, defaultRoomId integer, groupId text, primary key (userId, groupId));
 create table chatluna_message (id text primary key, parentId text, role text, conversationId text, content blob);
-create table memory_user (id integer primary key, userKey text, platform text, userId text);
-create table memory_context (id integer primary key, contextKey text, platform text, channelType text, groupId text);
+create table memory_v3_principal (id integer primary key, userKey text, platform text, userId text);
+create table memory_v3_context (id integer primary key, contextKey text, platform text, channelType text, groupId text);
 insert into chathub_room values (147, 'codex-probe 的模版克隆房间', 'conv-147', '9177543101', 'template_clone', '', '', '', '', 0, 0);
 insert into chatluna_conversation values ('conv-147', null, 0);
 insert into chathub_room_member values ('9177543101', 147, 'owner', 0);
 insert into chathub_user values ('9177543101', 147, '839573671');
 insert into chatluna_message values ('msg-1', null, 'human', 'conv-147', 'hello');
-insert into memory_user values (1, 'onebot:user:9177543101', 'onebot', '9177543101');
-insert into memory_user values (2, 'onebot:user:10001', 'onebot', '10001');
-insert into memory_context values (1, 'onebot:bot:2219854433:group:839573671', 'onebot', 'group', '839573671');
-insert into memory_context values (2, 'onebot:bot:2219854433:group:10002', 'onebot', 'group', '10002');
+insert into memory_v3_principal values (1, 'onebot:user:9177543101', 'onebot', '9177543101');
+insert into memory_v3_principal values (2, 'onebot:user:10001', 'onebot', '10001');
+insert into memory_v3_context values (1, 'onebot:bot:2219854433:group:839573671', 'onebot', 'group', '839573671');
+insert into memory_v3_context values (2, 'onebot:bot:2219854433:group:10002', 'onebot', 'group', '10002');
         `,
       ],
       { encoding: 'utf8' },
@@ -180,13 +180,13 @@ insert into memory_context values (2, 'onebot:bot:2219854433:group:10002', 'oneb
     expect(sqlite(dbPath, "select count(*) from chatluna_message where conversationId = 'conv-147';")).toBe('0');
     expect(sqlite(dbPath, "select count(*) from chathub_room_member where roomId = 147;")).toBe('0');
     expect(sqlite(dbPath, "select count(*) from chathub_user where userId = '9177543101' and groupId = '839573671';")).toBe('0');
-    expect(sqlite(dbPath, "select count(*) from memory_user where userKey = 'onebot:user:9177543101';")).toBe('0');
-    expect(sqlite(dbPath, "select count(*) from memory_context where groupId = '839573671';")).toBe('0');
-    expect(sqlite(dbPath, 'select count(*) from memory_user;')).toBe('1');
-    expect(sqlite(dbPath, 'select count(*) from memory_context;')).toBe('1');
+    expect(sqlite(dbPath, "select count(*) from memory_v3_principal where userKey = 'onebot:user:9177543101';")).toBe('0');
+    expect(sqlite(dbPath, "select count(*) from memory_v3_context where groupId = '839573671';")).toBe('0');
+    expect(sqlite(dbPath, 'select count(*) from memory_v3_principal;')).toBe('1');
+    expect(sqlite(dbPath, 'select count(*) from memory_v3_context;')).toBe('1');
   });
 
-  it('removes isolated Memory V2 probe identities after chat cleanup', () => {
+  it('rejects a partial Memory V3 identity schema', () => {
     const dir = createTempDir();
     const dbPath = join(dir, 'koishi.db');
     writeFileSync(dbPath, '');
@@ -196,29 +196,25 @@ insert into memory_context values (2, 'onebot:bot:2219854433:group:10002', 'oneb
         dbPath,
         `
 create table chathub_user (userId text, defaultRoomId integer, groupId text, primary key (userId, groupId));
-create table memory_v2_principal (id integer primary key, userKey text, platform text, userId text);
-create table memory_v2_context (id integer primary key, contextKey text, platform text, channelType text, groupId text);
-insert into memory_v2_principal values (1, 'onebot:user:9177543101', 'onebot', '9177543101');
-insert into memory_v2_principal values (2, 'onebot:user:10001', 'onebot', '10001');
-insert into memory_v2_context values (1, 'onebot:bot:2219854433:group:839573671', 'onebot', 'group', '839573671');
-insert into memory_v2_context values (2, 'onebot:bot:2219854433:group:10002', 'onebot', 'group', '10002');
+create table memory_v3_principal (id integer primary key, userKey text, platform text, userId text);
+insert into memory_v3_principal values (1, 'onebot:user:9177543101', 'onebot', '9177543101');
         `,
       ],
       { encoding: 'utf8' },
     );
 
-    execFileSync('bash', [resolve(process.cwd(), 'scripts/cleanup-probe-chat-state.sh'), '9177543101', '839573671'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        QQBOT_KOISHI_DB_PATH: dbPath,
+    expect(() => execFileSync(
+      'bash',
+      [resolve(process.cwd(), 'scripts/cleanup-probe-chat-state.sh'), '9177543101', '839573671'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          QQBOT_KOISHI_DB_PATH: dbPath,
+        },
       },
-    });
-
-    expect(sqlite(dbPath, "select count(*) from memory_v2_principal where userKey = 'onebot:user:9177543101';")).toBe('0');
-    expect(sqlite(dbPath, "select count(*) from memory_v2_context where groupId = '839573671';")).toBe('0');
-    expect(sqlite(dbPath, 'select count(*) from memory_v2_principal;')).toBe('1');
-    expect(sqlite(dbPath, 'select count(*) from memory_v2_context;')).toBe('1');
+    )).toThrow();
+    expect(sqlite(dbPath, 'select count(*) from memory_v3_principal;')).toBe('1');
   });
 });

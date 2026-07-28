@@ -6,8 +6,6 @@ import {
   memoryAssertionsResponseSchema,
   memoryArchiveRequestSchema,
   memoryArchiveResponseSchema,
-  memoryBackfillRequestSchema,
-  memoryBackfillResponseSchema,
   memoryForgetRequestSchema,
   memoryForgetResponseSchema,
   memoryOverviewResponseSchema,
@@ -118,7 +116,7 @@ async function applyFilters(): Promise<void> {
 async function forget(row: MemoryAssertionItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '删除会清空正文、证据摘录、向量和检索投影，并阻止旧任务复活。',
+      '删除会清空正文、证据摘录和 lexical projection，并阻止旧任务复活。',
       '永久遗忘这条记忆',
       {
         type: 'warning',
@@ -145,16 +143,18 @@ async function forget(row: MemoryAssertionItem): Promise<void> {
   }
 }
 
-async function reject(row: MemoryAssertionItem): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      '拒绝后该候选不会进入可召回状态。',
-      '拒绝记忆候选',
-      { type: 'warning' },
-    );
-  } catch (error) {
-    if (isMemoryDialogCancellation(error)) return;
-    throw error;
+async function review(row: MemoryAssertionItem, decision: 'approve' | 'reject'): Promise<void> {
+  if (decision === 'reject') {
+    try {
+      await ElMessageBox.confirm(
+        '拒绝后该候选不会进入可检索状态。',
+        '拒绝记忆候选',
+        { type: 'warning' },
+      );
+    } catch (error) {
+      if (isMemoryDialogCancellation(error)) return;
+      throw error;
+    }
   }
   activeOperation.value = `review:${row.streamId}`;
   try {
@@ -163,10 +163,10 @@ async function reject(row: MemoryAssertionItem): Promise<void> {
       memoryReviewResponseSchema,
       {
         method: 'POST',
-        body: jsonBody(memoryReviewRequestSchema, { decision: 'reject' }),
+        body: jsonBody(memoryReviewRequestSchema, { decision }),
       },
     );
-    ElMessage.success('候选已拒绝');
+    ElMessage.success(decision === 'approve' ? '候选已批准' : '候选已拒绝');
     await refresh();
   } finally {
     activeOperation.value = '';
@@ -176,7 +176,7 @@ async function reject(row: MemoryAssertionItem): Promise<void> {
 async function archive(row: MemoryAssertionItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '归档会停止召回并移除向量与检索投影，正文和证据仍保留供审核。',
+      '归档会停止检索并移除 lexical projection，正文和证据仍保留供审核。',
       '归档这条记忆',
       {
         type: 'warning',
@@ -203,43 +203,18 @@ async function archive(row: MemoryAssertionItem): Promise<void> {
   }
 }
 
-async function backfill(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      '只会为当前 active 记录补齐当前模型的向量和检索投影。',
-      '创建向量回填任务',
-      { type: 'warning' },
-    );
-  } catch (error) {
-    if (isMemoryDialogCancellation(error)) return;
-    throw error;
-  }
-  activeOperation.value = 'backfill';
-  try {
-    const result = await api('/memory/backfill', memoryBackfillResponseSchema, {
-      method: 'POST',
-      body: jsonBody(memoryBackfillRequestSchema, {}),
-    });
-    ElMessage.success(`已创建 ${result.queued} 个回填任务`);
-    await loadOverview();
-  } finally {
-    activeOperation.value = '';
-  }
-}
-
-async function probe(workload: 'memory.extract' | 'memory.embedding'): Promise<void> {
-  activeOperation.value = `probe:${workload}`;
+async function probe(): Promise<void> {
+  activeOperation.value = 'probe:memory.extract';
   try {
     const result = await api(
-      `/memory/probe/${workload}`,
+      '/memory/probe/memory.extract',
       memoryProbeResponseSchema,
       { method: 'POST', body: '{}' },
     );
     if (result.ok) {
-      const dimensions = result.dimensions == null ? '' : ` · ${result.dimensions} 维`;
-      ElMessage.success(`${result.canonicalModel} · schema 有效${dimensions}`);
+      ElMessage.success(`${result.canonicalModel} · structured output 有效`);
     }
-    else ElMessage.error(result.error || `${workload} 探测失败`);
+    else ElMessage.error(result.error || '记忆提炼探测失败');
     overview.value = overview.value
       ? { ...overview.value, status: result.snapshot }
       : await api('/memory', memoryOverviewResponseSchema);
@@ -301,21 +276,12 @@ onMounted(() => void refresh());
   <PageHeader hide-save>
     <template #actions>
       <el-button @click="router.push('/intelligence/models')">模型配置</el-button>
-      <el-dropdown>
-        <el-button :disabled="Boolean(activeOperation)">运行探测</el-button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item @click="probe('memory.extract')">提炼模型</el-dropdown-item>
-            <el-dropdown-item @click="probe('memory.embedding')">向量模型</el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
       <el-button
-        :loading="activeOperation === 'backfill'"
+        :loading="activeOperation === 'probe:memory.extract'"
         :disabled="overview?.status.maintenance"
-        @click="backfill"
+        @click="probe"
       >
-        向量回填
+        探测提炼
       </el-button>
       <el-button :loading="loading" @click="refresh">刷新</el-button>
     </template>
@@ -327,22 +293,34 @@ onMounted(() => void refresh());
   </article>
 
   <template v-if="overview">
-    <section class="metric-strip">
+    <section class="runtime-strip">
       <div>
         <span>运行状态</span>
         <el-tag :type="runtimeTone" effect="light">{{ runtimeLabel }}</el-tag>
       </div>
-      <div><span>生效记忆</span><strong>{{ overview.status.counts.active }}</strong></div>
-      <div><span>待审核</span><strong>{{ overview.status.counts.pendingReview }}</strong></div>
       <div>
-        <span>不完整</span>
-        <strong :class="{ danger: overview.status.counts.stranded > 0 }">
-          {{ overview.status.counts.stranded }}
+        <span>记忆提炼</span>
+        <strong>{{ bindingModel(overview.bindings.extraction) }}</strong>
+      </div>
+      <div>
+        <span>记忆检索 Tool</span>
+        <strong :class="{ danger: !overview.status.toolReady }">
+          {{ overview.status.toolReady ? '可用' : '不可用' }}
         </strong>
       </div>
       <div>
-        <span>任务队列</span>
-        <strong :class="{ danger: overview.status.jobs.deadLetter > 0 }">{{ queueTotal }}</strong>
+        <span>生效 / 待审核</span>
+        <strong>{{ overview.status.counts.active }} / {{ overview.status.counts.pendingReview }}</strong>
+      </div>
+      <div>
+        <span>Lexical index</span>
+        <strong>{{ overview.status.counts.lexicalDocuments }} 文档 · {{ overview.status.counts.lexicalTerms }} 词项</strong>
+      </div>
+      <div>
+        <span>队列 / 不完整</span>
+        <strong :class="{ danger: overview.status.jobs.deadLetter > 0 || overview.status.counts.stranded > 0 }">
+          {{ queueTotal }} / {{ overview.status.counts.stranded }}
+        </strong>
       </div>
     </section>
 
@@ -350,7 +328,7 @@ onMounted(() => void refresh());
       v-if="overview.status.maintenance"
       type="warning"
       :closable="false"
-      title="维护模式已开启：召回、提炼、审核、探测和回填均已冻结。"
+      title="维护模式已开启：检索、提炼、审核与探测已冻结。"
     />
     <el-alert
       v-else-if="overview.status.counts.stranded > 0"
@@ -358,26 +336,6 @@ onMounted(() => void refresh());
       :closable="false"
       :title="`存在 ${overview.status.counts.stranded} 条不完整记录：${strandedDetail}`"
     />
-
-    <section class="binding-bar">
-      <div>
-        <span>提炼</span>
-        <strong>{{ bindingModel(overview.bindings.extraction) }}</strong>
-        <small>{{ overview.bindings.extraction.mode }}</small>
-      </div>
-      <div>
-        <span>向量</span>
-        <strong>{{ bindingModel(overview.bindings.embedding) }}</strong>
-        <small>{{ overview.bindings.embedding.mode }}</small>
-      </div>
-      <div class="queue-detail">
-        <span>任务</span>
-        <strong>
-          待执行 {{ overview.status.jobs.pending }} · 执行中 {{ overview.status.jobs.leased }}
-          · 失败 {{ overview.status.jobs.failed }} · Dead letter {{ overview.status.jobs.deadLetter }}
-        </strong>
-      </div>
-    </section>
   </template>
 
   <section class="records-panel">
@@ -434,6 +392,7 @@ onMounted(() => void refresh());
           <strong>{{ assertionTypeLabel(row.assertionType) }}</strong>
           <code>{{ row.subjectKey }}</code>
           <el-tag size="small" effect="plain">{{ stateLabel(row.state) }}</el-tag>
+          <small v-if="row.kind">{{ row.kind }} · {{ row.topicKey }}</small>
         </div>
         <div class="record-content">
           <p v-if="row.content">{{ row.content }}</p>
@@ -449,10 +408,20 @@ onMounted(() => void refresh());
           <el-button
             v-if="activeView === 'reviews'"
             size="small"
+            type="primary"
+            plain
+            :loading="activeOperation === `review:${row.streamId}`"
+            @click="review(row, 'approve')"
+          >
+            批准
+          </el-button>
+          <el-button
+            v-if="activeView === 'reviews'"
+            size="small"
             type="danger"
             plain
             :loading="activeOperation === `review:${row.streamId}`"
-            @click="reject(row)"
+            @click="review(row, 'reject')"
           >
             拒绝
           </el-button>
@@ -496,7 +465,7 @@ onMounted(() => void refresh());
 </template>
 
 <style scoped>
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0c7c7;border-radius:10px;background:#fff6f6;color:#a53a3a;font-size:11px}.metric-strip{display:grid;grid-template-columns:1.2fr repeat(4,1fr);margin-bottom:14px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.metric-strip>div{display:flex;min-height:62px;align-items:center;justify-content:space-between;gap:12px;padding:0 16px;border-right:1px solid var(--line)}.metric-strip>div:last-child{border-right:0}.metric-strip span{color:var(--muted);font-size:10px}.metric-strip strong{color:#24324a;font-size:17px}.metric-strip strong.danger{color:#d44b58}.binding-bar{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(260px,1.2fr);margin:14px 0;border:1px solid var(--line);border-radius:10px;background:#fff}.binding-bar>div{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:11px 14px;border-right:1px solid var(--line)}.binding-bar>div:last-child{border-right:0}.binding-bar span,.binding-bar small{color:var(--muted);font-size:9px}.binding-bar strong{overflow:hidden;color:#354158;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.queue-detail{grid-template-columns:auto minmax(0,1fr)!important}.records-panel{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line)}.filters{display:flex;min-width:0;align-items:center;gap:8px}.filters .el-input{width:150px}.filters .el-select{width:130px}.review-rule{border-radius:0}.record-list{min-height:180px}.record-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(280px,2fr) minmax(190px,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.record-identity,.record-content,.record-scope{min-width:0}.record-identity{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center}.record-identity code{grid-column:1/-1}.record-row strong{color:#344057;font-size:11px}.record-row code,.record-row small{display:block;overflow:hidden;color:var(--muted);font:9px/1.45 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.record-content p{display:-webkit-box;overflow:hidden;margin:0 0 6px;color:#48556b;font-size:11px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:3}.record-content .content-cleared{color:#a56b6b;font-style:italic}.record-scope{display:flex;flex-direction:column;gap:4px}.record-actions{display:flex;justify-content:flex-end;gap:6px}.record-actions :deep(.el-button+.el-button){margin-left:0}.pagination{justify-content:flex-end;padding:12px 14px}
-@media(max-width:1050px){.metric-strip{grid-template-columns:repeat(3,1fr)}.metric-strip>div{border-bottom:1px solid var(--line)}.binding-bar{grid-template-columns:1fr}.binding-bar>div{border-right:0;border-bottom:1px solid var(--line)}.binding-bar>div:last-child{border-bottom:0}.records-toolbar{align-items:stretch;flex-direction:column}.filters{flex-wrap:wrap}.filters .el-input,.filters .el-select{flex:1 1 150px;width:auto}.record-row{grid-template-columns:minmax(135px,.8fr) minmax(240px,2fr) auto}.record-scope{grid-column:1/3;grid-row:2}.record-actions{grid-column:3;grid-row:1/3}}
-@media(max-width:720px){.metric-strip{grid-template-columns:1fr 1fr}.metric-strip>div{min-height:54px}.binding-bar>div{grid-template-columns:auto minmax(0,1fr)}.binding-bar small{display:none}.record-row{grid-template-columns:1fr auto;gap:12px}.record-content,.record-scope{grid-column:1/-1}.record-scope{grid-row:auto}.record-actions{grid-column:2;grid-row:1}.pagination{overflow:auto;justify-content:flex-start}}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0c7c7;border-radius:10px;background:#fff6f6;color:#a53a3a;font-size:11px}.runtime-strip{display:grid;grid-template-columns:.9fr 1.7fr .9fr 1fr 1.3fr 1fr;margin-bottom:14px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.runtime-strip>div{display:flex;min-width:0;min-height:62px;align-items:center;justify-content:space-between;gap:10px;padding:0 14px;border-right:1px solid var(--line)}.runtime-strip>div:last-child{border-right:0}.runtime-strip span{flex:none;color:var(--muted);font-size:9px}.runtime-strip strong{overflow:hidden;color:#24324a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.runtime-strip strong.danger{color:#d44b58}.records-panel{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line)}.filters{display:flex;min-width:0;align-items:center;gap:8px}.filters .el-input{width:150px}.filters .el-select{width:130px}.review-rule{border-radius:0}.record-list{min-height:180px}.record-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(280px,2fr) minmax(190px,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.record-identity,.record-content,.record-scope{min-width:0}.record-identity{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center}.record-identity code,.record-identity small{grid-column:1/-1}.record-row strong{color:#344057;font-size:11px}.record-row code,.record-row small{display:block;overflow:hidden;color:var(--muted);font:9px/1.45 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.record-content p{display:-webkit-box;overflow:hidden;margin:0 0 6px;color:#48556b;font-size:11px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:3}.record-content .content-cleared{color:#a56b6b;font-style:italic}.record-scope{display:flex;flex-direction:column;gap:4px}.record-actions{display:flex;justify-content:flex-end;gap:6px}.record-actions :deep(.el-button+.el-button){margin-left:0}.pagination{justify-content:flex-end;padding:12px 14px}
+@media(max-width:1050px){.runtime-strip{grid-template-columns:repeat(3,1fr)}.runtime-strip>div:nth-child(3){border-right:0}.runtime-strip>div:nth-child(-n+3){border-bottom:1px solid var(--line)}.records-toolbar{align-items:stretch;flex-direction:column}.filters{flex-wrap:wrap}.filters .el-input,.filters .el-select{flex:1 1 150px;width:auto}.record-row{grid-template-columns:minmax(135px,.8fr) minmax(240px,2fr) auto}.record-scope{grid-column:1/3;grid-row:2}.record-actions{grid-column:3;grid-row:1/3}}
+@media(max-width:720px){.runtime-strip{grid-template-columns:1fr 1fr}.runtime-strip>div{min-height:54px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.runtime-strip>div:nth-child(2n){border-right:0}.runtime-strip>div:nth-last-child(-n+2){border-bottom:0}.record-row{grid-template-columns:1fr auto;gap:12px}.record-content,.record-scope{grid-column:1/-1}.record-scope{grid-row:auto}.record-actions{grid-column:2;grid-row:1}.pagination{overflow:auto;justify-content:flex-start}}
 </style>

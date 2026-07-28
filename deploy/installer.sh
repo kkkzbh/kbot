@@ -391,9 +391,9 @@ reset_new_deployment_transaction() {
   APP_PREVIOUS_EXISTED=0
 }
 
-run_memory_v2_runtime_gates() {
-  if [[ "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "memory-v2" && ! -s "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" ]]; then
-    echo "[installer] persisted Memory V2 preflight report is missing: ${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" >&2
+run_runtime_gates() {
+  if [[ "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "memory-v3" && ! -s "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" ]]; then
+    echo "[installer] persisted Memory V3 preflight report is missing: ${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" >&2
     return 1
   fi
 
@@ -401,83 +401,7 @@ run_memory_v2_runtime_gates() {
   systemctl daemon-reload
   systemctl restart qqbot.target
   QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${DEPLOYMENT_TRANSACTION_VERIFY_SCOPE}"
-
-  if [[ "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "ordinary" ]]; then
-    deployment_transaction_mark_runtime_phase runtime-final
-  fi
-
-  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" == "runtime-bootstrap" ]]; then
-    node "${APP_DIR}/dist/tools/memory-v2-cutover.mjs" bootstrap-verify \
-      --database "${DATA_DIR}/koishi.db" \
-      --model-config "${DATA_DIR}/model-config.json" \
-      --koishi-config "${APP_DIR}/koishi.yml" \
-      --bundled-context-dir "${APP_DIR}/data/chathub/context-presets" \
-      --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
-      --preflight-report "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}"
-    deployment_transaction_mark_runtime_phase runtime-probes
-  fi
-
-  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" == "runtime-probes" ]]; then
-    set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"
-    set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"
-    set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"
-    remove_env_key "${ENV_RUNTIME}" "MEMORY_MAINTENANCE"
-    remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
-    remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
-    systemctl restart qqbot-koishi.service
-    QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" koishi
-    (
-      set -a
-      # shellcheck disable=SC1090
-      . "${ENV_SERVER}"
-      if [[ -f "${ENV_RUNTIME}" ]]; then
-        # shellcheck disable=SC1090
-        . "${ENV_RUNTIME}"
-      fi
-      set +a
-      node "${APP_DIR}/dist/tools/memory-v2-cutover.mjs" probe-gate \
-        --database "${DATA_DIR}/koishi.db" \
-        --preflight-report "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" \
-        --admin-origin "${QQBOT_ADMIN_SSH_ORIGIN}"
-    )
-    deployment_transaction_mark_runtime_phase runtime-backfill
-  fi
-
-  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" == "runtime-backfill" ]]; then
-    local attempt=0
-    local ready=0
-    local verify_error="${STAGING_DIR}/memory-v2-verify.error"
-    mkdir -p "${STAGING_DIR}"
-    while [[ "${attempt}" -lt 180 ]]; do
-      attempt=$((attempt + 1))
-      if node "${APP_DIR}/dist/tools/memory-v2-cutover.mjs" verify \
-        --database "${DATA_DIR}/koishi.db" \
-        --model-config "${DATA_DIR}/model-config.json" \
-        --koishi-config "${APP_DIR}/koishi.yml" \
-        --bundled-context-dir "${APP_DIR}/data/chathub/context-presets" \
-        --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
-        --preflight-report "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" \
-        2>"${verify_error}"
-      then
-        ready=1
-        break
-      fi
-      sleep 5
-    done
-    if [[ "${ready}" != "1" ]]; then
-      cat "${verify_error}" >&2
-      echo "[installer] Memory V2 final backfill and stranded gate timed out" >&2
-      return 1
-    fi
-    rm -f -- "${verify_error}"
-    deployment_transaction_mark_runtime_phase runtime-final
-  fi
-
-  if [[ "${DEPLOYMENT_TRANSACTION_PHASE}" != "runtime-final" ]]; then
-    echo "[installer] runtime transaction stopped in unexpected phase: ${DEPLOYMENT_TRANSACTION_PHASE}" >&2
-    return 1
-  fi
-  QQBOT_BASE_DIR="${BASE_DIR}" bash "${APP_DIR}/deploy/verify.sh" "${DEPLOYMENT_TRANSACTION_VERIFY_SCOPE}"
+  deployment_transaction_mark_runtime_phase runtime-final
 }
 
 resume_or_recover_deployment_transaction() {
@@ -495,10 +419,10 @@ resume_or_recover_deployment_transaction() {
     *) echo "[installer] persisted deployment backup is outside the managed backup root" >&2; return 2 ;;
   esac
   if [[
-    "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "memory-v2"
-    && "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" != "${DEPLOYMENT_TRANSACTION_BACKUP_DIR}/memory-v2-preflight.json"
+    "${DEPLOYMENT_TRANSACTION_PURPOSE}" == "memory-v3"
+    && "${DEPLOYMENT_TRANSACTION_PREFLIGHT_REPORT}" != "${DEPLOYMENT_TRANSACTION_BACKUP_DIR}/memory-v3-preflight.json"
   ]]; then
-    echo "[installer] persisted Memory V2 report path is outside its transaction backup" >&2
+    echo "[installer] persisted Memory V3 report path is outside its transaction backup" >&2
     return 2
   fi
   adopt_loaded_deployment_transaction
@@ -507,9 +431,9 @@ resume_or_recover_deployment_transaction() {
   ACTIVATION_STARTED=1
 
   case "${DEPLOYMENT_TRANSACTION_PHASE}" in
-    runtime-bootstrap|runtime-probes|runtime-backfill|runtime-final)
+    runtime-bootstrap|runtime-final)
       echo "[installer] resuming transaction ${TRANSACTION_ID} at ${DEPLOYMENT_TRANSACTION_PHASE}"
-      run_memory_v2_runtime_gates
+      run_runtime_gates
       deployment_transaction_complete_after_boot_verification enable_deployment_boot
       ACTIVATION_STARTED=0
       echo "[installer] resumed deployment transaction ${TRANSACTION_ID}"
@@ -522,7 +446,7 @@ resume_or_recover_deployment_transaction() {
         exit 0
       fi
       deployment_transaction_transfer_runtime_ownership
-      run_memory_v2_runtime_gates
+      run_runtime_gates
       deployment_transaction_complete_after_boot_verification enable_deployment_boot
       ACTIVATION_STARTED=0
       echo "[installer] activated stopped deployment transaction ${TRANSACTION_ID}"
@@ -583,6 +507,9 @@ ensure_server_env_defaults() {
     remove_env_key "${file}" "MEMORY_EMBED_API_KEY"
     remove_env_key "${file}" "MEMORY_EMBED_MODEL"
     remove_env_key "${file}" "MEMORY_EMBED_TIMEOUT_MS"
+    remove_env_key "${file}" "MEMORY_EMBED_BATCH_SIZE"
+    remove_env_key "${file}" "MEMORY_QUERY_TOPK"
+    remove_env_key "${file}" "MEMORY_PROMPT_BUDGET_TOKENS"
   done
   chmod 600 "${ENV_SERVER}"
 }
@@ -621,9 +548,9 @@ require_bundle_entry "qqbot/koishi.yml"
 require_bundle_entry "qqbot/dist"
 require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
-require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
-require_bundle_entry "qqbot/dist/tools/memory-v2-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/memory-v3-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"
 require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"
 require_bundle_entry "qqbot/data/chathub/context-presets"
@@ -631,9 +558,8 @@ require_bundle_entry "qqbot/data/chathub/role-presets"
 require_bundle_catalog "qqbot/data/chathub/context-presets"
 require_bundle_catalog "qqbot/data/chathub/role-presets"
 require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
-require_bundle_entry "qqbot/deploy/model-config-contract.mjs"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
-require_bundle_entry "qqbot/scripts/verify-memory-v2-readiness.mjs"
+require_bundle_entry "qqbot/scripts/verify-memory-v3-readiness.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "chatluna/packages/core/package.json"
 
@@ -821,104 +747,89 @@ if [[ -d "${APP_DIR}/data/chathub/presets" ]]; then
     --report "${STAGING_DIR}/context-preset-preflight.json"
 fi
 
-MEMORY_V2_STATE="empty"
-if [[ -f "${DATA_DIR}/koishi.db" ]]; then
-  MEMORY_V2_STATUS_JSON="$(
-    node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" status \
-      --database "${DATA_DIR}/koishi.db"
-  )"
-  MEMORY_V2_STATE="$(
-    node -e '
-      const value = JSON.parse(process.argv[1]);
-      if (!["empty", "legacy", "v2"].includes(value.state)) process.exit(2);
-      process.stdout.write(value.state);
-    ' "${MEMORY_V2_STATUS_JSON}"
-  )"
-fi
-
-MODEL_CONFIG_CUTOVER_REQUIRED=0
-MODEL_CONFIG_CONTRACT_REQUIRED=0
-MODEL_CONFIG_BACKUP_DIR=""
-MODEL_CONFIG_MAPPING_ARGS=()
-if [[ -e "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
-  if [[ -L "${MODEL_CONFIG_MAPPING_FILE}" || ! -f "${MODEL_CONFIG_MAPPING_FILE}" ]]; then
-    echo "[installer] model config mapping must be a regular file: ${MODEL_CONFIG_MAPPING_FILE}" >&2
-    exit 2
-  fi
-  chmod 600 "${MODEL_CONFIG_MAPPING_FILE}"
-  MODEL_CONFIG_MAPPING_ARGS=(--model-map-file "${MODEL_CONFIG_MAPPING_FILE}")
-fi
+MODEL_CONFIG_V3_CUTOVER_REQUIRED=0
+MODEL_CONFIG_V3_REPORT="${TRANSACTION_BACKUP_DIR}/model-config-v3-preflight.json"
 if [[ -f "${DATA_DIR}/model-config.json" && -f "${SHARED_DIR}/model-config.kek" ]]; then
-  MODEL_CONFIG_CONTRACT_REQUIRED=1
-  if [[ "${MEMORY_V2_STATE}" != "legacy" ]]; then
-    node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" preflight \
+  MODEL_CONFIG_SCHEMA_VERSION="$(
+    node -e '
+      const fs = require("node:fs");
+      const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      if (!Number.isSafeInteger(value.schemaVersion)) process.exit(2);
+      process.stdout.write(String(value.schemaVersion));
+    ' "${DATA_DIR}/model-config.json"
+  )"
+  if [[ "${MODEL_CONFIG_SCHEMA_VERSION}" == "2" ]]; then
+    MODEL_CONFIG_V3_CUTOVER_REQUIRED=1
+    node "${STAGE_QQBOT}/dist/tools/model-config-v3-cutover.mjs" preflight \
       --config "${DATA_DIR}/model-config.json" \
-      --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
+      --report "${MODEL_CONFIG_V3_REPORT}"
+  elif [[ "${MODEL_CONFIG_SCHEMA_VERSION}" == "3" ]]; then
+    node -e '
+      const { pathToFileURL } = require("node:url");
+      const fs = require("node:fs");
+      (async () => {
+        const schema = await import(pathToFileURL(process.argv[2]).href);
+        schema.modelConfigDocumentSchema.parse(JSON.parse(fs.readFileSync(process.argv[1], "utf8")));
+      })().catch((error) => {
+        console.error(error);
+        process.exit(1);
+      });
+    ' "${DATA_DIR}/model-config.json" "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
+  else
+    echo "[installer] unsupported model config schema: ${MODEL_CONFIG_SCHEMA_VERSION}" >&2
+    exit 2
   fi
 elif [[ -e "${DATA_DIR}/model-config.json" || -e "${SHARED_DIR}/model-config.kek" ]]; then
   echo "[installer] canonical model config and KEK must either both exist or both be absent" >&2
   exit 2
 else
-  if [[ ! -f "${DATA_DIR}/koishi.db" ]]; then
-    echo "[installer] canonical model config is absent and the legacy SQLite database is missing" >&2
-    echo "[installer] initialize or import an explicit canonical model config before a clean install" >&2
-    exit 2
-  fi
-  MODEL_CONFIG_CUTOVER_REQUIRED=1
-  MODEL_CONFIG_BACKUP_DIR="${BASE_DIR}/backup/model-config-$(date -u +%Y%m%dT%H%M%SZ)"
-  node "${STAGE_QQBOT}/dist/tools/model-config-cutover.mjs" preflight \
-    --database "${DATA_DIR}/koishi.db" \
-    --env-file "${ENV_SERVER}" \
-    --env-file "${ENV_RUNTIME}" \
-    --agent-data-root "${AGENT_DATA_ROOT}" \
-    --legacy-agent-root "${LEGACY_APP_AGENT_DIR}" \
-    --archive-root "${DATA_DIR}/chatluna/archive" \
-    --config-out "${DATA_DIR}/model-config.json" \
-    --kek-out "${SHARED_DIR}/model-config.kek" \
-    "${MODEL_CONFIG_MAPPING_ARGS[@]}"
+  echo "[installer] Model Config V2 or V3 and its KEK are required" >&2
+  exit 2
 fi
 
-MEMORY_V2_CUTOVER_REQUIRED=0
-MEMORY_V2_INITIALIZE_REQUIRED=0
-MEMORY_V2_BACKUP_DIR="${TRANSACTION_BACKUP_DIR}/memory-v2-cutover"
-MEMORY_V2_PREFLIGHT_REPORT="${TRANSACTION_BACKUP_DIR}/memory-v2-preflight.json"
+MEMORY_V3_CUTOVER_REQUIRED=0
+MEMORY_V3_INITIALIZE_REQUIRED=0
+MEMORY_V3_PREFLIGHT_REPORT="${TRANSACTION_BACKUP_DIR}/memory-v3-preflight.json"
 if [[ -f "${DATA_DIR}/koishi.db" ]]; then
-  if [[ "${MEMORY_V2_STATE}" == "legacy" ]]; then
-    if [[ "${ACTIVATION_MODE}" != "start" ]]; then
-      echo "[installer] Memory V2 cutover requires activation mode start" >&2
-      exit 2
-    fi
-    if [[ ! -f "${DATA_DIR}/model-config.json" || ! -f "${SHARED_DIR}/model-config.kek" ]]; then
-      echo "[installer] Memory V2 cutover requires an already-applied canonical model config" >&2
-      exit 2
-    fi
-    MEMORY_V2_CUTOVER_REQUIRED=1
-    node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" preflight \
+  MEMORY_SCHEMA_STATE="$(
+    node -e '
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1], { readOnly: true });
+      const rows = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = '\''table'\'' AND name LIKE '\''memory\\_%'\'' ESCAPE '\''\\'\''"
+      ).all();
+      db.close();
+      const names = rows.map((row) => row.name);
+      const hasV2 = names.some((name) => name.startsWith("memory_v2_"));
+      const hasV3 = names.some((name) => name.startsWith("memory_v3_"));
+      if (hasV2 && hasV3) process.exit(2);
+      process.stdout.write(hasV2 ? "v2" : hasV3 ? "v3" : "empty");
+    ' "${DATA_DIR}/koishi.db"
+  )"
+  if [[ "${MEMORY_SCHEMA_STATE}" == "v2" ]]; then
+    MEMORY_V3_CUTOVER_REQUIRED=1
+    node "${STAGE_QQBOT}/dist/tools/memory-v3-cutover.mjs" preflight \
       --database "${DATA_DIR}/koishi.db" \
-      --model-config "${DATA_DIR}/model-config.json" \
-      --koishi-config "${STAGE_QQBOT}/koishi.yml" \
-      --bundled-context-dir "${STAGE_QQBOT}/data/chathub/context-presets" \
-      --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
-      --report "${MEMORY_V2_PREFLIGHT_REPORT}"
-  elif [[ "${MEMORY_V2_STATE}" == "empty" ]]; then
-    MEMORY_V2_INITIALIZE_REQUIRED=1
+      --report "${MEMORY_V3_PREFLIGHT_REPORT}"
+  elif [[ "${MEMORY_SCHEMA_STATE}" == "empty" ]]; then
+    MEMORY_V3_INITIALIZE_REQUIRED=1
   fi
 else
-  MEMORY_V2_INITIALIZE_REQUIRED=1
+  MEMORY_V3_INITIALIZE_REQUIRED=1
 fi
 
 ACTIVATION_STARTED=1
 DEPLOYMENT_TRANSACTION_PURPOSE="ordinary"
-if [[ "${MEMORY_V2_CUTOVER_REQUIRED}" == "1" ]]; then
-  DEPLOYMENT_TRANSACTION_PURPOSE="memory-v2"
-  sync -f "${MEMORY_V2_PREFLIGHT_REPORT}"
+if [[ "${MEMORY_V3_CUTOVER_REQUIRED}" == "1" ]]; then
+  DEPLOYMENT_TRANSACTION_PURPOSE="memory-v3"
+  sync -f "${MEMORY_V3_PREFLIGHT_REPORT}"
   sync -f "${TRANSACTION_BACKUP_DIR}"
 fi
 deployment_transaction_configure \
   "${DEPLOYMENT_TRANSACTION_STATE_FILE}" \
   "${TRANSACTION_ID}" \
   "${TRANSACTION_BACKUP_DIR}" \
-  "${MEMORY_V2_PREFLIGHT_REPORT}" \
+  "${MEMORY_V3_PREFLIGHT_REPORT}" \
   "${VERIFY_SCOPE}" \
   "${DEPLOYMENT_TRANSACTION_PURPOSE}" \
   "${ACTIVATION_MODE}"
@@ -990,73 +901,35 @@ if [[ "${CONTEXT_PRESET_CUTOVER_REQUIRED}" == "1" ]]; then
     --report "${CONTEXT_PRESET_BACKUP_DIR}/applied.json" \
     --confirm-service-stopped
 fi
-if [[ "${MODEL_CONFIG_CUTOVER_REQUIRED}" == "1" ]]; then
-  node "${STAGE_QQBOT}/dist/tools/model-config-cutover.mjs" apply \
-    --database "${DATA_DIR}/koishi.db" \
-    --env-file "${ENV_SERVER}" \
-    --env-file "${ENV_RUNTIME}" \
-    --agent-data-root "${AGENT_DATA_ROOT}" \
-    --legacy-agent-root "${LEGACY_APP_AGENT_DIR}" \
-    --archive-root "${DATA_DIR}/chatluna/archive" \
-    --config-out "${DATA_DIR}/model-config.json" \
-    --kek-out "${SHARED_DIR}/model-config.kek" \
-    "${MODEL_CONFIG_MAPPING_ARGS[@]}" \
-    --backup-dir "${MODEL_CONFIG_BACKUP_DIR}" \
-    --report "${MODEL_CONFIG_BACKUP_DIR}/applied.json" \
-    --confirm-service-stopped
-fi
-if [[
-  "${MODEL_CONFIG_CONTRACT_REQUIRED}" == "1"
-  && "${MEMORY_V2_CUTOVER_REQUIRED}" != "1"
-]]; then
-  node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" apply \
+if [[ "${MODEL_CONFIG_V3_CUTOVER_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/model-config-v3-cutover.mjs" apply \
     --config "${DATA_DIR}/model-config.json" \
-    --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js" \
-    --report "${TRANSACTION_BACKUP_DIR}/model-config-contract.json" \
-    --confirm-service-stopped
+    --report "${MODEL_CONFIG_V3_REPORT}"
 fi
-if [[ "${MEMORY_V2_INITIALIZE_REQUIRED}" == "1" ]]; then
-  node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" initialize \
-    --database "${DATA_DIR}/koishi.db" \
-    --confirm-service-stopped
+if [[ "${MEMORY_V3_INITIALIZE_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/memory-v3-cutover.mjs" initialize \
+    --database "${DATA_DIR}/koishi.db"
   set_env_key "${ENV_SERVER}" "MEMORY_ENABLED" "true"
   set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"
-  set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"
+  set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "true"
   set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_ENABLED"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_MAINTENANCE"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
 fi
-if [[ "${MEMORY_V2_CUTOVER_REQUIRED}" == "1" ]]; then
-  node "${STAGE_QQBOT}/dist/tools/memory-v2-cutover.mjs" apply \
+if [[ "${MEMORY_V3_CUTOVER_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/memory-v3-cutover.mjs" apply \
     --database "${DATA_DIR}/koishi.db" \
-    --model-config "${DATA_DIR}/model-config.json" \
-    --koishi-config "${STAGE_QQBOT}/koishi.yml" \
-    --bundled-context-dir "${STAGE_QQBOT}/data/chathub/context-presets" \
-    --runtime-context-dir "${DATA_DIR}/chathub/context-presets" \
-    --preflight-report "${MEMORY_V2_PREFLIGHT_REPORT}" \
-    --backup-dir "${MEMORY_V2_BACKUP_DIR}" \
-    --report "${MEMORY_V2_BACKUP_DIR}/applied.json" \
-    --confirm-service-stopped
+    --report "${MEMORY_V3_PREFLIGHT_REPORT}"
   set_env_key "${ENV_SERVER}" "MEMORY_ENABLED" "true"
-  set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "true"
-  set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "false"
+  set_env_key "${ENV_SERVER}" "MEMORY_MAINTENANCE" "false"
+  set_env_key "${ENV_SERVER}" "MEMORY_READ_ENABLED" "true"
   set_env_key "${ENV_SERVER}" "MEMORY_WRITE_ENABLED" "false"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_ENABLED"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_MAINTENANCE"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
-  if [[ "${MODEL_CONFIG_CONTRACT_REQUIRED}" == "1" ]]; then
-    node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" preflight \
-      --config "${DATA_DIR}/model-config.json" \
-      --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js"
-    node "${STAGE_QQBOT}/deploy/model-config-contract.mjs" apply \
-      --config "${DATA_DIR}/model-config.json" \
-      --schema-module "${STAGE_QQBOT}/dist/plugins/model-config/types.js" \
-      --report "${TRANSACTION_BACKUP_DIR}/model-config-contract.json" \
-      --confirm-service-stopped
-  fi
 fi
 deployment_transaction_fsync_tree "${WORK_DIR}"
 deployment_transaction_swap_application \
@@ -1067,7 +940,7 @@ APP_SWAPPED=1
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
 if [[ "${ACTIVATION_MODE}" == "start" ]]; then
   deployment_transaction_transfer_runtime_ownership
-  run_memory_v2_runtime_gates
+  run_runtime_gates
 else
   deployment_transaction_mark_installed_stopped
   echo "[installer] application installed with qqbot.target kept stopped"

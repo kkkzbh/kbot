@@ -1,19 +1,16 @@
 import type {
   MemoryAssertionType,
   MemoryAudiencePolicy,
+  MemoryFactKind,
   MemoryHeadState,
   MemorySensitivity,
-  MemoryV2EvidenceRecord,
-  MemoryV2HeadRecord,
-  MemoryV2PayloadRecord,
-  MemoryV2WorkRecord,
+  MemoryV3EvidenceRecord,
+  MemoryV3HeadRecord,
+  MemoryV3PayloadRecord,
+  MemoryV3WorkRecord,
 } from '../../types/memory.js';
 import { MEMORY_LEDGER_TABLES } from './schema.js';
-import type {
-  MemoryDatabaseLike,
-  MemoryEmbeddingIdentity,
-  MemoryStore,
-} from './store.js';
+import type { MemoryDatabaseLike, MemoryStore } from './store.js';
 import type { MemoryRuntimeConfig } from './config.js';
 import { MemoryRuntimeError, type MemoryOperation } from './errors.js';
 import { parseAudienceSnapshots } from './policy.js';
@@ -39,6 +36,8 @@ export interface MemoryAdminAssertionItem {
   revision: number;
   state: MemoryHeadState;
   assertionType: MemoryAssertionType;
+  kind: MemoryFactKind | null;
+  topicKey: string;
   subjectKey: string;
   sourceContextKey: string;
   audiencePolicy: MemoryAudiencePolicy;
@@ -99,21 +98,23 @@ export class MemoryAdminService {
     }
   }
 
-  private async toItem(head: MemoryV2HeadRecord): Promise<MemoryAdminAssertionItem> {
+  private async toItem(head: MemoryV3HeadRecord): Promise<MemoryAdminAssertionItem> {
     const [payload] = head.payloadId
-      ? await this.database.get(MEMORY_LEDGER_TABLES.payload, { payloadId: head.payloadId }) as MemoryV2PayloadRecord[]
+      ? await this.database.get(MEMORY_LEDGER_TABLES.payload, { payloadId: head.payloadId }) as MemoryV3PayloadRecord[]
       : [];
     const evidence = payload
       ? await this.database.get(
           MEMORY_LEDGER_TABLES.evidence,
           { eventId: payload.eventId },
-        ) as MemoryV2EvidenceRecord[]
+        ) as MemoryV3EvidenceRecord[]
       : [];
     return {
       streamId: head.streamId,
       revision: head.revision,
       state: head.state,
       assertionType: head.assertionType,
+      kind: head.kind,
+      topicKey: head.topicKey,
       subjectKey: head.subjectKey,
       sourceContextKey: head.sourceContextKey,
       audiencePolicy: head.audiencePolicy,
@@ -133,7 +134,7 @@ export class MemoryAdminService {
   ): Promise<MemoryAdminPage<MemoryAdminAssertionItem>> {
     this.assertOperational('recall');
     const { page, pageSize } = normalizePage(query);
-    const rows = await this.database.get(MEMORY_LEDGER_TABLES.head, {}) as MemoryV2HeadRecord[];
+    const rows = await this.database.get(MEMORY_LEDGER_TABLES.head, {}) as MemoryV3HeadRecord[];
     const filtered = rows.filter((row) => {
       if (query.subjectKey && row.subjectKey !== query.subjectKey) return false;
       if (query.contextKey && row.sourceContextKey !== query.contextKey) return false;
@@ -159,7 +160,7 @@ export class MemoryAdminService {
 
   async review(input: {
     streamId: string;
-    decision: 'reject';
+    decision: 'approve' | 'reject';
   }): Promise<void> {
     this.assertOperational('review');
     await this.store.review({
@@ -205,15 +206,10 @@ export class MemoryAdminService {
     });
   }
 
-  async backfill(identity: MemoryEmbeddingIdentity): Promise<{ queued: number }> {
-    this.assertOperational('backfill');
-    return { queued: await this.store.queueBackfill(identity) };
-  }
-
   async getOperationalAttentionItems(): Promise<MemoryOperationalAttentionItem[]> {
     const [deadLetters, reviews] = await Promise.all([
-      this.database.get(MEMORY_LEDGER_TABLES.work, { status: 'deadLetter' }) as Promise<MemoryV2WorkRecord[]>,
-      this.database.get(MEMORY_LEDGER_TABLES.head, { state: 'pendingReview' }) as Promise<MemoryV2HeadRecord[]>,
+      this.database.get(MEMORY_LEDGER_TABLES.work, { status: 'deadLetter' }) as Promise<MemoryV3WorkRecord[]>,
+      this.database.get(MEMORY_LEDGER_TABLES.head, { state: 'pendingReview' }) as Promise<MemoryV3HeadRecord[]>,
     ]);
     return [
       ...deadLetters.map((row) => ({

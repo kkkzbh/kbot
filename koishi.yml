@@ -236,9 +236,6 @@ plugins:
       maintenance: ${{ env.MEMORY_MAINTENANCE === 'true' }}
       readEnabled: ${{ env.MEMORY_READ_ENABLED !== 'false' }}
       writeEnabled: ${{ env.MEMORY_WRITE_ENABLED !== 'false' }}
-      queryTopK: ${{ +env.MEMORY_QUERY_TOPK || 8 }}
-      promptBudgetTokens: ${{ +env.MEMORY_PROMPT_BUDGET_TOKENS || 1200 }}
-      embedBatchSize: ${{ +env.MEMORY_EMBED_BATCH_SIZE || 16 }}
       extractIdleMs: ${{ +env.MEMORY_EXTRACT_IDLE_MS || 90000 }}
       extractMessageBatch: ${{ +env.MEMORY_EXTRACT_MESSAGE_BATCH || 12 }}
       archiveDays: ${{ +env.MEMORY_ARCHIVE_DAYS || 90 }}

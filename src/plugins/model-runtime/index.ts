@@ -17,12 +17,12 @@ import {
   CanonicalModelBindingResolver,
   ModelConfigService,
   ModelRuntimeClient,
+  OpenAiConnectionExecutor,
   type ModelBinding,
   type ModelConnectionExecutor,
   type ModelRuntimeSnapshot,
   type ModelWorkload,
 } from '../model-config/index.js';
-import { OpenAiConnectionExecutor } from './openai-executor.js';
 import { toManagedOpenAIModel } from './managed-model.js';
 
 export const name = 'model-runtime';
@@ -307,5 +307,3 @@ async function disposePublishedRuntime(runtime: PublishedRuntime): Promise<void>
     await registration.dispose();
   }
 }
-
-export { OpenAiConnectionExecutor } from './openai-executor.js';

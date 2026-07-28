@@ -36,6 +36,7 @@ import { ApiError, api, jsonBody } from '@/api/client';
 import {
   allowedBindingModes,
   buildModelConfigPutInput,
+  compatibleConnectionIds,
   createCatalogModelProfile,
   createModelConfigDraft,
   createSecretDrafts,
@@ -77,10 +78,6 @@ const WORKLOAD_DETAILS: Record<string, {
   },
   'memory.extract': {
     label: '记忆提炼',
-    services: 'Memory worker',
-  },
-  'memory.embedding': {
-    label: '记忆向量',
     services: 'Memory worker',
   },
   'affinity.analysis': {
@@ -127,11 +124,9 @@ const createConnectionOpen = ref(false);
 const addCatalogModelOpen = ref(false);
 const addCatalogModel = reactive<{
   transportModel: string;
-  modelType: ModelProfileDraft['modelType'];
   contextSize: number;
 }>({
   transportModel: '',
-  modelType: 'chat',
   contextSize: 128_000,
 });
 const createConnection = reactive<{
@@ -233,10 +228,6 @@ function connectionBrand(connection: ConnectionDraft): ConnectionBrand {
     return { icon: xiaomiMimoIcon, tone: 'xiaomi' };
   }
   return { icon: openAiIcon, tone: 'openai' };
-}
-
-function modelTypeLabel(model: ModelProfileDraft): string {
-  return model.modelType === 'embedding' ? '向量' : '对话';
 }
 
 function hydrate(aggregate: ModelConfigAdminAggregate): void {
@@ -556,15 +547,12 @@ async function addStaticModelProfile(): Promise<void> {
       connectionId: selectedConnection.value.id,
       displayName: id,
       transportModel: '',
-      modelType: 'chat',
       contextSize: 128_000,
       requestMode: selectedConnection.value.adapter === 'codexBridge'
         ? 'responses'
         : 'chat_completions',
       structuredOutputProtocol: null,
       capabilities: {
-        chat: true,
-        embedding: false,
         vision: false,
         tools: false,
         structuredOutput: false,
@@ -596,7 +584,6 @@ async function openAddModel(): Promise<void> {
   }
   Object.assign(addCatalogModel, {
     transportModel: '',
-    modelType: 'chat',
     contextSize: 128_000,
   });
   addCatalogModelOpen.value = true;
@@ -613,7 +600,6 @@ function addSelectedCatalogModel(): void {
     draft.value.models.push(createCatalogModelProfile({
       connection,
       entry,
-      modelType: addCatalogModel.modelType,
       contextSize: addCatalogModel.contextSize,
       existingIds: selectedConnectionModels.value.map((model) => model.id),
     }));
@@ -621,48 +607,6 @@ function addSelectedCatalogModel(): void {
   } catch (error) {
     ElMessage.error(errorMessage(error, '模型档案创建失败'));
   }
-}
-
-function setModelType(model: ModelProfileDraft, value: unknown): void {
-  if (isSavedModel(model)) {
-    ElMessage.warning('已保存 model profile 的类型不可修改；请创建新的 canonical model ID。');
-    return;
-  }
-  if (value === 'embedding') {
-    if (modelConnectionAdapter(model) !== 'openaiCompatible') {
-      ElMessage.warning('Bridge connection 只允许创建 chat model profile。');
-      return;
-    }
-    model.modelType = 'embedding';
-    model.requestMode = null;
-    model.structuredOutputProtocol = null;
-    model.capabilities = {
-      chat: false,
-      embedding: true,
-      vision: false,
-      tools: false,
-      structuredOutput: false,
-    };
-    return;
-  }
-  model.modelType = 'chat';
-  model.requestMode = modelConnectionAdapter(model) === 'codexBridge'
-    ? 'responses'
-    : 'chat_completions';
-  model.structuredOutputProtocol = null;
-  model.capabilities = {
-    chat: true,
-    embedding: false,
-    vision: false,
-    tools: false,
-    structuredOutput: false,
-  };
-}
-
-function isSavedModel(model: ModelProfileDraft): boolean {
-  return Boolean(saved.value?.models.some((item) => (
-    item.connectionId === model.connectionId && item.id === model.id
-  )));
 }
 
 function modelConnectionAdapter(model: ModelProfileDraft): AdapterType | null {
@@ -695,7 +639,6 @@ function setRequestMode(model: ModelProfileDraft, value: unknown): void {
 }
 
 function structuredOutputOptions(model: ModelProfileDraft) {
-  if (model.modelType !== 'chat' || model.requestMode === null) return [];
   return structuredOutputProtocolsForRequestMode(model.requestMode);
 }
 
@@ -778,6 +721,15 @@ function setBindingConnection(binding: BindingDraft, value: unknown): void {
   if (binding.mode !== 'dedicated') return;
   binding.connectionId = String(value);
   binding.modelId = '';
+}
+
+function compatibleConnections(binding: BindingDraft): ConnectionDraft[] {
+  if (!draft.value || binding.mode !== 'dedicated') return [];
+  const compatibleIds = compatibleConnectionIds(draft.value, binding.workload);
+  return draft.value.connections.filter((connection) => (
+    compatibleIds.has(connection.id)
+    && connectionConfigured(connection.id)
+  ));
 }
 
 function compatibleModels(binding: BindingDraft): ModelProfileDraft[] {
@@ -1246,7 +1198,6 @@ onBeforeUnmount(() => {
                 <template #title>
                   <div class="model-title">
                     <strong>{{ model.displayName }}</strong>
-                    <el-tag size="small" effect="plain">{{ modelTypeLabel(model) }}</el-tag>
                   </div>
                 </template>
                 <el-form label-position="top" class="model-form">
@@ -1259,28 +1210,13 @@ onBeforeUnmount(() => {
                   <el-form-item label="Provider 模型名">
                     <el-input v-model="model.transportModel" />
                   </el-form-item>
-                  <el-form-item label="类型">
-                    <el-segmented
-                      :model-value="model.modelType"
-                      :disabled="isSavedModel(model) || modelConnectionAdapter(model) !== 'openaiCompatible'"
-                      :options="[
-                        { label: 'Chat', value: 'chat' },
-                        {
-                          label: 'Embedding',
-                          value: 'embedding',
-                          disabled: modelConnectionAdapter(model) !== 'openaiCompatible',
-                        },
-                      ]"
-                      @change="setModelType(model, $event)"
-                    />
-                  </el-form-item>
                   <el-form-item label="上下文长度">
                     <el-input-number v-model="model.contextSize" :min="1" :controls="false" style="width:100%" />
                   </el-form-item>
                   <el-form-item label="超时（ms）">
                     <el-input-number v-model="model.timeoutMs" :min="1000" :max="600000" :controls="false" style="width:100%" />
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="请求模式">
+                  <el-form-item label="请求模式">
                     <el-select
                       :model-value="model.requestMode"
                       :disabled="modelConnectionAdapter(model) === 'codexBridge'"
@@ -1295,7 +1231,7 @@ onBeforeUnmount(() => {
                       <el-option value="responses" label="responses" />
                     </el-select>
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="结构化输出">
+                  <el-form-item label="结构化输出">
                     <el-select
                       :model-value="model.structuredOutputProtocol"
                       clearable
@@ -1311,7 +1247,7 @@ onBeforeUnmount(() => {
                       />
                     </el-select>
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="能力" class="span-2">
+                  <el-form-item label="能力" class="span-2">
                     <el-checkbox
                       :model-value="model.capabilities.vision"
                       @change="setModelCapability(model, 'vision', $event)"
@@ -1335,12 +1271,12 @@ onBeforeUnmount(() => {
                   <el-form-item label="Max output tokens">
                     <el-input-number v-model="model.requestDefaults.maxOutputTokens" :min="1" :controls="false" style="width:100%" />
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="Reasoning effort">
+                  <el-form-item label="Reasoning effort">
                     <el-select v-model="model.requestDefaults.reasoningEffort" clearable style="width:100%">
                       <el-option v-for="effort in ['none','minimal','low','medium','high','xhigh']" :key="effort" :value="effort" :label="effort" />
                     </el-select>
                   </el-form-item>
-                  <el-form-item v-if="model.modelType === 'chat'" label="Thinking mode">
+                  <el-form-item label="Thinking mode">
                     <el-select v-model="model.requestDefaults.thinkingMode" clearable style="width:100%">
                       <el-option value="enabled" label="enabled" />
                       <el-option value="disabled" label="disabled" />
@@ -1402,7 +1338,7 @@ onBeforeUnmount(() => {
                   @change="setBindingConnection(binding, $event)"
                 >
                   <el-option
-                    v-for="connection in draft.connections"
+                    v-for="connection in compatibleConnections(binding)"
                     :key="connection.id"
                     :value="connection.id"
                     :label="connection.displayName"
@@ -1489,19 +1425,6 @@ onBeforeUnmount(() => {
             <small class="option-id">{{ entry.transportModel }}</small>
           </el-option>
         </el-select>
-      </el-form-item>
-      <el-form-item label="类型">
-        <el-segmented
-          v-model="addCatalogModel.modelType"
-          :options="[
-            { label: '对话', value: 'chat' },
-            {
-              label: '向量',
-              value: 'embedding',
-              disabled: selectedConnection?.adapter !== 'openaiCompatible',
-            },
-          ]"
-        />
       </el-form-item>
       <el-form-item label="上下文长度">
         <el-input-number

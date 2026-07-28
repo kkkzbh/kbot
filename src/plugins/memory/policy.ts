@@ -36,10 +36,12 @@ function isTemporallyActive(record: MemoryPolicyRecord, now: number): boolean {
 
 function currentAudienceIsCaptured(record: MemoryPolicyRecord, address: MemoryAddress): boolean {
   const currentAudience = address.currentAudienceSubjectKeys;
-  const capturedAudience = new Set(record.audienceSnapshots[address.contextKey] ?? []);
   return Array.isArray(currentAudience)
     && currentAudience.length > 0
-    && currentAudience.every((subjectKey) => capturedAudience.has(subjectKey));
+    && Object.values(record.audienceSnapshots).some((snapshot) => {
+      const capturedAudience = new Set(snapshot);
+      return currentAudience.every((subjectKey) => capturedAudience.has(subjectKey));
+    });
 }
 
 function audienceAllows(record: MemoryPolicyRecord, address: MemoryAddress): boolean {
@@ -49,7 +51,7 @@ function audienceAllows(record: MemoryPolicyRecord, address: MemoryAddress): boo
     case 'sourceContext':
       return record.sourceContextKey === address.contextKey;
     case 'captureAudience':
-      return record.audienceContextKeys.includes(address.contextKey);
+      return currentAudienceIsCaptured(record, address);
     case 'explicitContexts':
       return record.audienceContextKeys.includes(address.contextKey);
     case 'subjectAllContexts':
@@ -62,15 +64,33 @@ export class MemoryPolicyService {
     if (record.state !== 'active') return false;
     if (record.sensitivity === 'secret') return false;
     if (!isTemporallyActive(record, now)) return false;
-    if (record.subjectType === 'user' && record.subjectKey !== address.userKey) return false;
-    if (address.channelType === 'group' && (record.sensitivity === 'sensitive' || record.audiencePolicy === 'subjectPrivate')) {
+    if (address.channelType === 'direct') {
+      return record.subjectType === 'user'
+        && record.subjectKey === address.userKey
+        && (
+          record.audiencePolicy === 'subjectPrivate'
+          || record.audiencePolicy === 'subjectAllContexts'
+          || (
+            record.audiencePolicy === 'explicitContexts'
+            && record.audienceContextKeys.includes(address.contextKey)
+          )
+        );
+    }
+    const currentAudience = address.currentAudienceSubjectKeys;
+    if (
+      record.sensitivity !== 'low'
+      || !Array.isArray(currentAudience)
+      || currentAudience.length === 0
+    ) {
       return false;
     }
-    if (address.channelType === 'group' && record.audiencePolicy === 'subjectAllContexts') {
-      return false;
+    if (record.subjectType === 'user') {
+      if (!currentAudience.includes(record.subjectKey)) return false;
+      return audienceAllows(record, address);
     }
-    if (address.channelType === 'group' && !currentAudienceIsCaptured(record, address)) return false;
-    return audienceAllows(record, address);
+    return record.sourceContextKey === address.contextKey
+      && record.audiencePolicy === 'sourceContext'
+      && currentAudienceIsCaptured(record, address);
   }
 
   canList(record: MemoryPolicyRecord, address: MemoryAddress, privateExport = false, now = Date.now()): boolean {

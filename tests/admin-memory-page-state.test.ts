@@ -3,7 +3,7 @@ import {
   isMemoryDialogCancellation,
 } from '../apps/admin-web/src/pages/memory-page-state.js';
 
-describe('admin Memory V2 confirmation state', () => {
+describe('admin Memory V3 confirmation state', () => {
   it('treats only Element Plus dialog cancellation signals as a no-op', () => {
     expect(isMemoryDialogCancellation('cancel')).toBe(true);
     expect(isMemoryDialogCancellation('close')).toBe(true);

@@ -45,9 +45,6 @@ export function createTestModelRuntime(
     ?? mainProtocol !== null;
   const executor = options.executor ?? {
     async execute(request) {
-      if (request.operation === 'embedding') {
-        return { vectors: request.payload.inputs.map(() => [0.1, 0.2]) };
-      }
       if (request.target.model.id === 'natural-trigger') {
         return { text: JSON.stringify({ trigger: false, confidence: 0 }) };
       }
@@ -116,13 +113,10 @@ export function createTestModelRuntime(
         connectionId: 'primary',
         displayName: 'Main Chat',
         transportModel: 'provider-main-chat',
-        modelType: 'chat',
         contextSize: 131_072,
         requestMode: mainRequestMode,
         structuredOutputProtocol: mainProtocol,
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: true,
           tools: true,
           structuredOutput: mainStructuredOutput,
@@ -135,13 +129,10 @@ export function createTestModelRuntime(
         connectionId: 'primary',
         displayName: 'Affinity Analysis',
         transportModel: 'provider-affinity-analysis',
-        modelType: 'chat',
         contextSize: 32_768,
         requestMode: 'chat_completions',
         structuredOutputProtocol: 'native_chat_json_schema',
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: false,
           tools: false,
           structuredOutput: mainStructuredOutput,
@@ -154,13 +145,10 @@ export function createTestModelRuntime(
         connectionId: 'primary',
         displayName: 'Alternate Chat',
         transportModel: 'provider-alternate-chat',
-        modelType: 'chat',
         contextSize: 65_536,
         requestMode: mainRequestMode,
         structuredOutputProtocol: mainProtocol,
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: true,
           tools: true,
           structuredOutput: true,
@@ -173,13 +161,10 @@ export function createTestModelRuntime(
         connectionId: 'primary',
         displayName: 'Natural Trigger',
         transportModel: 'provider-natural-trigger',
-        modelType: 'chat',
         contextSize: 16_384,
         requestMode: 'chat_completions',
         structuredOutputProtocol: 'native_chat_json_schema',
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: false,
           tools: false,
           structuredOutput: true,

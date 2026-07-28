@@ -8,8 +8,6 @@ export type MemoryOperation =
   | 'archive'
   | 'recall'
   | 'forget'
-  | 'embed'
-  | 'backfill'
   | 'maintenance'
   | 'audit';
 

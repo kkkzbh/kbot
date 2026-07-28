@@ -37,25 +37,6 @@ export function createValidModelConfigDraft(): ModelConfigDraft {
     ],
     models: [
       primaryChat,
-      {
-        id: 'primary-embedding',
-        connectionId: 'primary',
-        displayName: 'Primary Embedding',
-        transportModel: 'provider-embedding-model',
-        modelType: 'embedding',
-        contextSize: 8_192,
-        requestMode: null,
-        structuredOutputProtocol: null,
-        capabilities: {
-          chat: false,
-          embedding: true,
-          vision: false,
-          tools: false,
-          structuredOutput: false,
-        },
-        timeoutMs: 30_000,
-        requestDefaults: {},
-      },
       createChatModel({
         id: 'repairable-chat',
         connectionId: 'repairable',
@@ -75,12 +56,6 @@ export function createValidModelConfigDraft(): ModelConfigDraft {
         mode: 'dedicated',
         connectionId: 'primary',
         modelId: 'primary-chat',
-      },
-      {
-        workload: 'memory.embedding',
-        mode: 'dedicated',
-        connectionId: 'primary',
-        modelId: 'primary-embedding',
       },
       {
         workload: 'affinity.analysis',
@@ -112,13 +87,10 @@ export function createChatModel(
 ): ModelDefinition {
   return {
     ...identity,
-    modelType: 'chat',
     contextSize: 131_072,
     requestMode: 'chat_completions',
     structuredOutputProtocol: 'native_chat_json_schema',
     capabilities: {
-      chat: true,
-      embedding: false,
       vision: true,
       tools: true,
       structuredOutput: true,

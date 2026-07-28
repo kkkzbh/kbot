@@ -356,7 +356,7 @@ describe('ModelConfigService persistence lifecycle', () => {
     });
   });
 
-  it('rejects connection adapter and connection-scoped model type mutation', async () => {
+  it('rejects connection adapter mutation', async () => {
     await withRunningService(async ({ service }) => {
       const changedConnection = createValidModelConfigDraft();
       changedConnection.connections[1].adapter = 'copilotBridge';
@@ -377,30 +377,6 @@ describe('ModelConfigService persistence lifecycle', () => {
         connectionId: 'repairable',
       });
 
-      const changedModelType = createValidModelConfigDraft();
-      const model = changedModelType.models.find(
-        (candidate) => candidate.connectionId === 'repairable',
-      );
-      if (!model) throw new Error('fixture is missing repairable model');
-      model.modelType = 'embedding';
-      model.requestMode = null;
-      model.structuredOutputProtocol = null;
-      model.capabilities = {
-        chat: false,
-        embedding: true,
-        vision: false,
-        tools: false,
-        structuredOutput: false,
-      };
-      await expect(service.put({
-        expectedRevision: 1,
-        draft: changedModelType,
-        secretOperations: retainAllApiKeyConnections(),
-      })).rejects.toMatchObject({
-        code: 'immutable_identity',
-        connectionId: 'repairable',
-        modelId: 'repairable-chat',
-      });
     });
   });
 });

@@ -22,13 +22,10 @@ const model = {
   connectionId: 'openai',
   displayName: 'GPT Test',
   transportModel: 'gpt-test',
-  modelType: 'chat' as const,
   contextSize: 128_000,
   requestMode: 'responses' as const,
   structuredOutputProtocol: 'native_responses_json_schema' as const,
   capabilities: {
-    chat: true,
-    embedding: false,
     vision: true,
     tools: true,
     structuredOutput: true,

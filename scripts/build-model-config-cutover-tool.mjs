@@ -27,8 +27,8 @@ process.umask(0o077);
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TOOLS = [
   {
-    entry: resolve(ROOT_DIR, 'src/tools/model-config-cutover.ts'),
-    outputName: 'model-config-cutover.mjs',
+    entry: resolve(ROOT_DIR, 'src/tools/model-config-v3-cutover.ts'),
+    outputName: 'model-config-v3-cutover.mjs',
   },
   {
     entry: resolve(ROOT_DIR, 'src/tools/model-auth-connection-cutover.ts'),

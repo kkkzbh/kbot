@@ -1,5 +1,6 @@
 import { MemoryRuntimeError } from './errors.js';
 import { MEMORY_LEDGER_TABLES } from './schema.js';
+import type { MemoryAssertionType } from '../../types/memory.js';
 import type { MemoryDatabaseLike } from './store.js';
 
 const BM25_K1 = 1.2;
@@ -15,8 +16,8 @@ export interface MemoryLexicalProjectionInput {
 }
 
 export interface MemoryLexicalProjectionRow extends MemoryLexicalProjectionInput {
+  id?: number;
   tokenCount: number;
-  termFrequencies: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -32,12 +33,24 @@ export interface MemorySearchIndex {
   get(database: MemoryDatabaseLike, streamId: string): Promise<MemoryLexicalProjectionRow[]>;
   list(database: MemoryDatabaseLike): Promise<MemoryLexicalProjectionRow[]>;
   count(database: MemoryDatabaseLike): Promise<number>;
+  countTerms(database: MemoryDatabaseLike): Promise<number>;
   search(
     database: MemoryDatabaseLike,
     query: string,
-    allowedStreamIds: readonly string[],
     limit: number,
+    filters?: MemorySearchCandidateFilters,
   ): Promise<Map<string, number>>;
+  recent(
+    database: MemoryDatabaseLike,
+    limit: number,
+    filters?: MemorySearchCandidateFilters,
+  ): Promise<string[]>;
+}
+
+export interface MemorySearchCandidateFilters {
+  assertionTypes?: readonly MemoryAssertionType[];
+  from?: number | null;
+  to?: number | null;
 }
 
 type SqliteDriverLike = {
@@ -45,34 +58,20 @@ type SqliteDriverLike = {
   _run(sql: string, params?: unknown[]): unknown;
 };
 
-type SqliteMasterRow = {
-  sql?: unknown;
-};
-
-type SqliteTableInfoRow = {
-  name?: unknown;
-  type?: unknown;
-  notnull?: unknown;
-  pk?: unknown;
-};
-
-type SqliteIndexListRow = {
-  name?: unknown;
-  unique?: unknown;
-};
-
-type SqliteIndexInfoRow = {
-  name?: unknown;
-};
-
 function lexicalError(
-  operation: 'startup' | 'recall' | 'backfill',
+  operation: 'startup' | 'recall' | 'maintenance',
   stage: 'schema' | 'validation' | 'read' | 'write',
   code: string,
   message: string,
   cause?: unknown,
 ): MemoryRuntimeError {
-  return new MemoryRuntimeError(operation, stage, code, message, cause === undefined ? {} : { cause });
+  return new MemoryRuntimeError(
+    operation,
+    stage,
+    code,
+    message,
+    cause === undefined ? {} : { cause },
+  );
 }
 
 function sqliteDriver(database: MemoryDatabaseLike): SqliteDriverLike {
@@ -84,22 +83,22 @@ function sqliteDriver(database: MemoryDatabaseLike): SqliteDriverLike {
       'startup',
       'schema',
       'memory_lexical_driver_unavailable',
-      'Memory Ledger V2 requires the configured SQLite driver.',
+      'Memory Ledger V3 requires the configured SQLite driver.',
     );
   }
-  const driver = resolver.call(database, MEMORY_LEDGER_TABLES.head) as Partial<SqliteDriverLike>;
+  const driver = resolver.call(database, MEMORY_LEDGER_TABLES.lexicalDocument) as Partial<SqliteDriverLike>;
   if (typeof driver?._all !== 'function' || typeof driver?._run !== 'function') {
     throw lexicalError(
       'startup',
       'schema',
       'memory_lexical_driver_invalid',
-      'Memory Ledger V2 requires SQLite projection operations.',
+      'Memory Ledger V3 requires SQLite lexical index operations.',
     );
   }
   return driver as SqliteDriverLike;
 }
 
-function normalizedTokens(input: string): string[] {
+export function tokenizeMemoryText(input: string): string[] {
   const normalized = input.normalize('NFKC').toLowerCase();
   const lexemes = normalized.match(/\p{Script=Han}|[\p{L}\p{N}]+/gu) ?? [];
   const tokens: string[] = [];
@@ -117,14 +116,10 @@ function normalizedTokens(input: string): string[] {
   return tokens;
 }
 
-function canonicalTermFrequencies(tokens: readonly string[]): string {
-  const frequencies = new Map<string, number>();
-  for (const token of tokens) {
-    frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
-  }
-  return JSON.stringify(Object.fromEntries(
-    [...frequencies.entries()].sort(([left], [right]) => left.localeCompare(right)),
-  ));
+function frequencies(tokens: readonly string[]): Map<string, number> {
+  const output = new Map<string, number>();
+  for (const token of tokens) output.set(token, (output.get(token) ?? 0) + 1);
+  return output;
 }
 
 function assertProjectionInput(input: MemoryLexicalProjectionInput): void {
@@ -138,7 +133,7 @@ function assertProjectionInput(input: MemoryLexicalProjectionInput): void {
     || input.canonicalText.trim() !== input.canonicalText
   ) {
     throw lexicalError(
-      'backfill',
+      'maintenance',
       'validation',
       'memory_lexical_projection_input_invalid',
       'Lexical projection identity and canonical text are required.',
@@ -153,54 +148,45 @@ export function createMemoryLexicalProjection(
   assertProjectionInput(input);
   if (!Number.isFinite(now) || now < 0) {
     throw lexicalError(
-      'backfill',
+      'maintenance',
       'validation',
       'memory_lexical_projection_timestamp_invalid',
       'Lexical projection timestamp is invalid.',
     );
   }
-  const tokens = normalizedTokens(input.canonicalText);
   return {
     ...input,
-    tokenCount: tokens.length,
-    termFrequencies: canonicalTermFrequencies(tokens),
+    tokenCount: tokenizeMemoryText(input.canonicalText).length,
     createdAt: now,
     updatedAt: now,
   };
 }
 
 function parseProjectionRow(value: unknown): MemoryLexicalProjectionRow {
-  const row = value as Partial<Record<keyof MemoryLexicalProjectionRow, unknown>>;
-  const parsed: MemoryLexicalProjectionRow = {
-    streamId: typeof row.streamId === 'string' ? row.streamId : '',
-    eventId: typeof row.eventId === 'string' ? row.eventId : '',
+  const row = value as Record<string, unknown>;
+  return {
+    id: Number(row.id),
+    streamId: String(row.streamId ?? ''),
+    eventId: String(row.eventId ?? ''),
     revision: Number(row.revision),
-    contentHash: typeof row.contentHash === 'string' ? row.contentHash : '',
-    canonicalText: typeof row.canonicalText === 'string' ? row.canonicalText : '',
+    contentHash: String(row.contentHash ?? ''),
+    canonicalText: String(row.canonicalText ?? ''),
     tokenCount: Number(row.tokenCount),
-    termFrequencies: typeof row.termFrequencies === 'string' ? row.termFrequencies : '',
     createdAt: Number(row.createdAt),
     updatedAt: Number(row.updatedAt),
   };
-  return parsed;
 }
 
 export function isMemoryLexicalProjectionValid(row: MemoryLexicalProjectionRow): boolean {
   try {
     assertProjectionInput(row);
-    if (
-      !Number.isSafeInteger(row.tokenCount)
-      || row.tokenCount < 0
-      || !Number.isFinite(row.createdAt)
-      || row.createdAt < 0
-      || !Number.isFinite(row.updatedAt)
-      || row.updatedAt < row.createdAt
-    ) {
-      return false;
-    }
-    const tokens = normalizedTokens(row.canonicalText);
-    return row.tokenCount === tokens.length
-      && row.termFrequencies === canonicalTermFrequencies(tokens);
+    return Number.isSafeInteger(row.tokenCount)
+      && row.tokenCount >= 0
+      && row.tokenCount === tokenizeMemoryText(row.canonicalText).length
+      && Number.isFinite(row.createdAt)
+      && Number.isFinite(row.updatedAt)
+      && row.createdAt >= 0
+      && row.updatedAt >= row.createdAt;
   } catch {
     return false;
   }
@@ -218,106 +204,74 @@ export function memoryLexicalProjectionMatches(
     && row.canonicalText === input.canonicalText;
 }
 
-function parseTermFrequencies(row: MemoryLexicalProjectionRow): ReadonlyMap<string, number> {
-  if (!isMemoryLexicalProjectionValid(row)) {
-    throw lexicalError(
-      'recall',
-      'validation',
-      'memory_lexical_projection_invalid',
-      'A lexical projection is corrupt and must be rebuilt before recall.',
-    );
-  }
-  const value = JSON.parse(row.termFrequencies) as Record<string, number>;
-  return new Map(Object.entries(value));
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => '?').join(',');
 }
 
-function quoteSqliteIdentifier(input: string): string {
-  return `"${input.replaceAll('"', '""')}"`;
-}
-
-function assertCanonicalSchema(driver: SqliteDriverLike): void {
-  const rows = driver._all(
-    `SELECT "sql" FROM "sqlite_master" WHERE "type" = 'table' AND "name" = ?`,
-    [MEMORY_LEDGER_TABLES.fts],
-  ) as SqliteMasterRow[];
-  const sql = typeof rows[0]?.sql === 'string' ? rows[0].sql : '';
-  if (
-    rows.length !== 1
-    || /\bvirtual\s+table\b/iu.test(sql)
-    || /\bfts[345]\b/iu.test(sql)
-  ) {
-    throw lexicalError(
-      'startup',
-      'schema',
-      'memory_lexical_schema_invalid',
-      'memory_v2_fts must be the canonical persistent lexical projection table.',
-    );
+function candidateFilterSql(
+  filters: MemorySearchCandidateFilters = {},
+): { sql: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (filters.assertionTypes?.length) {
+    clauses.push(`h."assertionType" IN (${placeholders(filters.assertionTypes.length)})`);
+    params.push(...filters.assertionTypes);
   }
-
-  const expected = [
-    ['streamId', 'TEXT', 1, 1],
-    ['eventId', 'TEXT', 1, 0],
-    ['revision', 'INTEGER', 1, 0],
-    ['contentHash', 'TEXT', 1, 0],
-    ['canonicalText', 'TEXT', 1, 0],
-    ['tokenCount', 'INTEGER', 1, 0],
-    ['termFrequencies', 'TEXT', 1, 0],
-    ['createdAt', 'REAL', 1, 0],
-    ['updatedAt', 'REAL', 1, 0],
-  ] as const;
-  const columns = driver._all(
-    `PRAGMA table_info(${quoteSqliteIdentifier(MEMORY_LEDGER_TABLES.fts)})`,
-  ) as SqliteTableInfoRow[];
-  const canonicalColumns = columns.length === expected.length
-    && expected.every(([name, type, notnull, pk], index) => {
-      const column = columns[index];
-      return column?.name === name
-        && String(column.type ?? '').toUpperCase() === type
-        && Number(column.notnull) === notnull
-        && Number(column.pk) === pk;
-    });
-  if (!canonicalColumns) {
-    throw lexicalError(
-      'startup',
-      'schema',
-      'memory_lexical_columns_invalid',
-      'memory_v2_fts columns do not match the canonical Memory Ledger V2 schema.',
-    );
+  if (filters.from != null) {
+    clauses.push('e."occurredAt" >= ?');
+    params.push(filters.from);
   }
-
-  const indexes = driver._all(
-    `PRAGMA index_list(${quoteSqliteIdentifier(MEMORY_LEDGER_TABLES.fts)})`,
-  ) as SqliteIndexListRow[];
-  const uniqueColumnSets = indexes
-    .filter((index) => Number(index.unique) === 1 && typeof index.name === 'string')
-    .map((index) => (
-      driver._all(
-        `PRAGMA index_info(${quoteSqliteIdentifier(String(index.name))})`,
-      ) as SqliteIndexInfoRow[]
-    ).map((column) => String(column.name ?? '')).join(','));
-  if (!uniqueColumnSets.includes('streamId') || !uniqueColumnSets.includes('eventId')) {
-    throw lexicalError(
-      'startup',
-      'schema',
-      'memory_lexical_identity_constraint_missing',
-      'memory_v2_fts requires unique stream and event identities.',
-    );
+  if (filters.to != null) {
+    clauses.push('e."occurredAt" <= ?');
+    params.push(filters.to);
   }
+  return {
+    sql: clauses.length ? ` AND ${clauses.join(' AND ')}` : '',
+    params,
+  };
 }
 
 export class SqliteMemorySearchIndex implements MemorySearchIndex {
   async assertReady(database: MemoryDatabaseLike): Promise<void> {
-    assertCanonicalSchema(sqliteDriver(database));
+    const driver = sqliteDriver(database);
+    const rows = driver._all(
+      `SELECT "name" FROM "sqlite_master"
+       WHERE "type" = 'table' AND "name" IN (?, ?)
+       ORDER BY "name"`,
+      [MEMORY_LEDGER_TABLES.lexicalDocument, MEMORY_LEDGER_TABLES.lexicalTerm],
+    ) as Array<{ name?: unknown }>;
+    const names = rows.map((row) => String(row.name));
+    if (
+      names.length !== 2
+      || !names.includes(MEMORY_LEDGER_TABLES.lexicalDocument)
+      || !names.includes(MEMORY_LEDGER_TABLES.lexicalTerm)
+    ) {
+      throw lexicalError(
+        'startup',
+        'schema',
+        'memory_lexical_schema_invalid',
+        'Memory Ledger V3 lexical document and term tables are required.',
+      );
+    }
   }
 
   async insert(database: MemoryDatabaseLike, input: MemoryLexicalProjectionInput): Promise<void> {
     const row = createMemoryLexicalProjection(input);
+    const driver = sqliteDriver(database);
+    const termFrequencies = frequencies(tokenizeMemoryText(row.canonicalText));
     try {
-      sqliteDriver(database)._run(
-        `INSERT INTO "memory_v2_fts"
-          ("streamId", "eventId", "revision", "contentHash", "canonicalText", "tokenCount",
-           "termFrequencies", "createdAt", "updatedAt")
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      driver._run(
+        `DELETE FROM "${MEMORY_LEDGER_TABLES.lexicalTerm}" WHERE "streamId" = ?`,
+        [row.streamId],
+      );
+      driver._run(
+        `DELETE FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}" WHERE "streamId" = ?`,
+        [row.streamId],
+      );
+      driver._run(
+        `INSERT INTO "${MEMORY_LEDGER_TABLES.lexicalDocument}"
+          ("streamId", "eventId", "revision", "contentHash", "canonicalText", "tokenCount", "createdAt", "updatedAt")
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           row.streamId,
           row.eventId,
@@ -325,14 +279,20 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
           row.contentHash,
           row.canonicalText,
           row.tokenCount,
-          row.termFrequencies,
           row.createdAt,
           row.updatedAt,
         ],
       );
+      for (const [term, frequency] of termFrequencies) {
+        driver._run(
+          `INSERT INTO "${MEMORY_LEDGER_TABLES.lexicalTerm}" ("term", "streamId", "frequency")
+           VALUES (?, ?, ?)`,
+          [term, row.streamId, frequency],
+        );
+      }
     } catch (error) {
       throw lexicalError(
-        'backfill',
+        'maintenance',
         'write',
         'memory_lexical_projection_insert_failed',
         'Failed to persist the lexical projection.',
@@ -355,33 +315,28 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
       || input.revision < 1
     ) {
       throw lexicalError(
-        'backfill',
+        'maintenance',
         'validation',
         'memory_lexical_projection_identity_invalid',
         'Lexical projection identity cannot be advanced from the current head.',
       );
     }
-    try {
-      sqliteDriver(database)._run(
-        `UPDATE "memory_v2_fts"
-         SET "eventId" = ?, "revision" = ?, "contentHash" = ?, "updatedAt" = ?
-         WHERE "streamId" = ?`,
-        [input.eventId, input.revision, input.contentHash, Date.now(), input.streamId],
-      );
-    } catch (error) {
-      throw lexicalError(
-        'backfill',
-        'write',
-        'memory_lexical_projection_update_failed',
-        'Failed to update the lexical projection identity.',
-        error,
-      );
-    }
+    sqliteDriver(database)._run(
+      `UPDATE "${MEMORY_LEDGER_TABLES.lexicalDocument}"
+       SET "eventId" = ?, "revision" = ?, "updatedAt" = ?
+       WHERE "streamId" = ?`,
+      [input.eventId, input.revision, Date.now(), input.streamId],
+    );
   }
 
   async remove(database: MemoryDatabaseLike, streamId: string): Promise<void> {
-    sqliteDriver(database)._run(
-      `DELETE FROM "memory_v2_fts" WHERE "streamId" = ?`,
+    const driver = sqliteDriver(database);
+    driver._run(
+      `DELETE FROM "${MEMORY_LEDGER_TABLES.lexicalTerm}" WHERE "streamId" = ?`,
+      [streamId],
+    );
+    driver._run(
+      `DELETE FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}" WHERE "streamId" = ?`,
       [streamId],
     );
   }
@@ -389,10 +344,7 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
   async get(database: MemoryDatabaseLike, streamId: string): Promise<MemoryLexicalProjectionRow[]> {
     return (
       sqliteDriver(database)._all(
-        `SELECT "streamId", "eventId", "revision", "contentHash", "canonicalText",
-                "tokenCount", "termFrequencies", "createdAt", "updatedAt"
-         FROM "memory_v2_fts"
-         WHERE "streamId" = ?`,
+        `SELECT * FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}" WHERE "streamId" = ?`,
         [streamId],
       ) as unknown[]
     ).map(parseProjectionRow);
@@ -401,17 +353,21 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
   async list(database: MemoryDatabaseLike): Promise<MemoryLexicalProjectionRow[]> {
     return (
       sqliteDriver(database)._all(
-        `SELECT "streamId", "eventId", "revision", "contentHash", "canonicalText",
-                "tokenCount", "termFrequencies", "createdAt", "updatedAt"
-         FROM "memory_v2_fts"
-         ORDER BY "streamId" ASC`,
+        `SELECT * FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}" ORDER BY "streamId"`,
       ) as unknown[]
     ).map(parseProjectionRow);
   }
 
   async count(database: MemoryDatabaseLike): Promise<number> {
     const rows = sqliteDriver(database)._all(
-      `SELECT COUNT(*) AS "count" FROM "memory_v2_fts"`,
+      `SELECT COUNT(*) AS "count" FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}"`,
+    ) as Array<{ count?: unknown }>;
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  async countTerms(database: MemoryDatabaseLike): Promise<number> {
+    const rows = sqliteDriver(database)._all(
+      `SELECT COUNT(*) AS "count" FROM "${MEMORY_LEDGER_TABLES.lexicalTerm}"`,
     ) as Array<{ count?: unknown }>;
     return Number(rows[0]?.count ?? 0);
   }
@@ -419,54 +375,160 @@ export class SqliteMemorySearchIndex implements MemorySearchIndex {
   async search(
     database: MemoryDatabaseLike,
     query: string,
-    allowedStreamIds: readonly string[],
     limit: number,
+    filters: MemorySearchCandidateFilters = {},
   ): Promise<Map<string, number>> {
-    const queryTokens = normalizedTokens(query).slice(0, MAX_QUERY_TERMS);
+    const terms = [...new Set(tokenizeMemoryText(query))].slice(0, MAX_QUERY_TERMS);
     const maximum = Math.max(0, Math.floor(limit));
-    if (!queryTokens.length || !allowedStreamIds.length || maximum === 0) return new Map();
+    if (!terms.length || maximum === 0) return new Map();
 
-    const allowed = new Set(allowedStreamIds);
-    const rows = (await this.list(database)).filter((row) => allowed.has(row.streamId));
-    if (!rows.length) return new Map();
-    const documents = rows.map((row) => ({
-      row,
-      frequencies: parseTermFrequencies(row),
-    }));
-    const queryTerms = [...new Set(queryTokens)];
-    const averageLength = documents.reduce((sum, document) => sum + document.row.tokenCount, 0)
-      / documents.length;
-    const scores = documents.map((document) => {
-      let score = 0;
-      for (const term of queryTerms) {
-        const documentFrequency = documents.reduce(
-          (count, candidate) => count + (candidate.frequencies.has(term) ? 1 : 0),
-          0,
-        );
-        const termFrequency = document.frequencies.get(term) ?? 0;
-        if (termFrequency === 0 || documentFrequency === 0) continue;
-        const inverseDocumentFrequency = Math.log(
-          1 + (documents.length - documentFrequency + 0.5) / (documentFrequency + 0.5),
-        );
-        const lengthNormalization = averageLength > 0
-          ? 1 - BM25_B + BM25_B * document.row.tokenCount / averageLength
-          : 1;
-        score += inverseDocumentFrequency
-          * (termFrequency * (BM25_K1 + 1))
-          / (termFrequency + BM25_K1 * lengthNormalization);
-      }
-      return {
-        streamId: document.row.streamId,
-        score,
-      };
-    })
-      .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score || left.streamId.localeCompare(right.streamId))
-      .slice(0, maximum);
-    const maximumScore = scores[0]?.score ?? 0;
-    return new Map(scores.map((entry) => [
-      entry.streamId,
-      maximumScore > 0 ? entry.score / maximumScore : 0,
+    const driver = sqliteDriver(database);
+    const candidateFilter = candidateFilterSql(filters);
+    const postings = (
+      driver._all(
+        `SELECT t."term", t."streamId", t."frequency",
+                MAX(e."occurredAt") AS "lastOccurredAt"
+         FROM "${MEMORY_LEDGER_TABLES.lexicalTerm}" t
+         JOIN "${MEMORY_LEDGER_TABLES.lexicalDocument}" d
+           ON d."streamId" = t."streamId"
+         JOIN "${MEMORY_LEDGER_TABLES.head}" h
+           ON h."streamId" = d."streamId"
+          AND h."eventId" = d."eventId"
+          AND h."revision" = d."revision"
+          AND h."contentHash" = d."contentHash"
+          AND h."state" = 'active'
+         JOIN "${MEMORY_LEDGER_TABLES.payload}" p
+           ON p."payloadId" = h."payloadId"
+          AND p."contentHash" = h."contentHash"
+          AND p."payloadKind" = 'assertion'
+         JOIN "${MEMORY_LEDGER_TABLES.evidence}" e
+           ON e."eventId" = p."eventId"
+         WHERE t."term" IN (${placeholders(terms.length)})
+         ${candidateFilter.sql}
+         GROUP BY t."term", t."streamId", t."frequency"`,
+        [...terms, ...candidateFilter.params],
+      ) as Array<{
+        term?: unknown;
+        streamId?: unknown;
+        frequency?: unknown;
+        lastOccurredAt?: unknown;
+      }>
+    ).flatMap((row) => {
+      const streamId = String(row.streamId ?? '');
+      const term = String(row.term ?? '');
+      const frequency = Number(row.frequency);
+      return streamId && terms.includes(term) && frequency > 0
+        ? [{
+            streamId,
+            term,
+            frequency,
+            lastOccurredAt: Number(row.lastOccurredAt),
+          }]
+        : [];
+    });
+    if (!postings.length) return new Map();
+
+    const candidateIds = [...new Set(postings.map((posting) => posting.streamId))];
+    const documents = driver._all(
+      `SELECT "streamId", "tokenCount"
+       FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}"
+       WHERE "streamId" IN (${placeholders(candidateIds.length)})`,
+      candidateIds,
+    ) as Array<{ streamId?: unknown; tokenCount?: unknown }>;
+    const lengthByStream = new Map(documents.map((row) => [
+      String(row.streamId ?? ''),
+      Number(row.tokenCount),
     ]));
+    const [corpus] = driver._all(
+      `SELECT COUNT(*) AS "count", AVG("tokenCount") AS "averageLength"
+       FROM "${MEMORY_LEDGER_TABLES.lexicalDocument}"`,
+    ) as Array<{ count?: unknown; averageLength?: unknown }>;
+    const documentCount = Math.max(1, Number(corpus?.count ?? 0));
+    const averageLength = Math.max(0, Number(corpus?.averageLength ?? 0));
+    const documentFrequency = new Map<string, number>();
+    for (const term of terms) {
+      documentFrequency.set(term, new Set(
+        postings.filter((posting) => posting.term === term).map((posting) => posting.streamId),
+      ).size);
+    }
+    const lexicalScores = new Map<string, number>();
+    const lastOccurredAtByStream = new Map<string, number>();
+    for (const posting of postings) {
+      const docLength = lengthByStream.get(posting.streamId) ?? 0;
+      const df = documentFrequency.get(posting.term) ?? 0;
+      if (!df) continue;
+      const idf = Math.log(
+        1 + (documentCount - df + 0.5) / (df + 0.5),
+      );
+      const lengthNormalization = averageLength > 0
+        ? 1 - BM25_B + BM25_B * docLength / averageLength
+        : 1;
+      const termScore = idf
+        * (posting.frequency * (BM25_K1 + 1))
+        / (posting.frequency + BM25_K1 * lengthNormalization);
+      lexicalScores.set(
+        posting.streamId,
+        (lexicalScores.get(posting.streamId) ?? 0) + termScore,
+      );
+      lastOccurredAtByStream.set(
+        posting.streamId,
+        Math.max(
+          lastOccurredAtByStream.get(posting.streamId) ?? 0,
+          posting.lastOccurredAt,
+        ),
+      );
+    }
+    const now = Date.now();
+    const ranked = [...lexicalScores]
+      .map(([streamId, lexicalScore]) => {
+        const ageDays = Math.max(
+          0,
+          (now - (lastOccurredAtByStream.get(streamId) ?? 0)) / 86_400_000,
+        );
+        const recencyMultiplier = 1 + 0.15 / (1 + ageDays / 30);
+        return [streamId, lexicalScore * recencyMultiplier] as const;
+      })
+      .filter(([, score]) => score > 0)
+      .sort(([leftId, leftScore], [rightId, rightScore]) => (
+        rightScore - leftScore || leftId.localeCompare(rightId)
+      ))
+      .slice(0, maximum);
+    const highest = ranked[0]?.[1] ?? 0;
+    return new Map(ranked.map(([streamId, score]) => [
+      streamId,
+      highest > 0 ? score / highest : 0,
+    ]));
+  }
+
+  async recent(
+    database: MemoryDatabaseLike,
+    limit: number,
+    filters: MemorySearchCandidateFilters = {},
+  ): Promise<string[]> {
+    const maximum = Math.max(0, Math.floor(limit));
+    if (maximum === 0) return [];
+    const candidateFilter = candidateFilterSql(filters);
+    const rows = sqliteDriver(database)._all(
+      `SELECT h."streamId", MAX(e."occurredAt") AS "lastOccurredAt"
+       FROM "${MEMORY_LEDGER_TABLES.head}" h
+       JOIN "${MEMORY_LEDGER_TABLES.lexicalDocument}" d
+         ON d."streamId" = h."streamId"
+        AND d."eventId" = h."eventId"
+        AND d."revision" = h."revision"
+        AND d."contentHash" = h."contentHash"
+       JOIN "${MEMORY_LEDGER_TABLES.payload}" p
+         ON p."payloadId" = h."payloadId"
+        AND p."contentHash" = h."contentHash"
+        AND p."payloadKind" = 'assertion'
+       JOIN "${MEMORY_LEDGER_TABLES.evidence}" e
+         ON e."eventId" = p."eventId"
+       WHERE h."state" = 'active'
+       ${candidateFilter.sql}
+       GROUP BY h."streamId"
+       ORDER BY "lastOccurredAt" DESC, h."updatedAt" DESC, h."streamId"
+       LIMIT ?`,
+      [...candidateFilter.params, maximum],
+    ) as Array<{ streamId?: unknown }>;
+    return rows.map((row) => String(row.streamId ?? '')).filter(Boolean);
   }
 }

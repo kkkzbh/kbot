@@ -32,8 +32,8 @@ vi.mock('koishi', () => {
 });
 
 const memoryMocks = vi.hoisted(() => ({
-  embedTexts: vi.fn(async () => [[0.1, 0.2]]),
   registerMemoryLedgerModels: vi.fn(),
+  registerMemorySearchTool: vi.fn(() => vi.fn()),
   extractMemoryCandidates: vi.fn(async () => ({
     ok: true,
     route: 'native_chat_json_schema',
@@ -75,16 +75,12 @@ vi.mock('../src/plugins/memory/pipeline.js', () => ({
   runMemoryJobTick: memoryMocks.runMemoryJobTick,
 }));
 
-vi.mock('../src/plugins/memory/providers/embedding-client.js', () => ({
-  embedTexts: memoryMocks.embedTexts,
-}));
-
 vi.mock('../src/plugins/memory/providers/router.js', () => ({
   extractMemoryCandidates: memoryMocks.extractMemoryCandidates,
 }));
 
 vi.mock('../src/plugins/memory/schema.js', () => ({
-  MEMORY_LEDGER_SCHEMA_VERSION: 2,
+  MEMORY_LEDGER_SCHEMA_VERSION: 3,
   registerMemoryLedgerModels: memoryMocks.registerMemoryLedgerModels,
 }));
 
@@ -104,6 +100,10 @@ vi.mock('../src/plugins/memory/store.js', () => ({
       storeMocks.instances.push(this);
     }
   },
+}));
+
+vi.mock('../src/plugins/memory/tool.js', () => ({
+  registerMemorySearchTool: memoryMocks.registerMemorySearchTool,
 }));
 
 import { apply } from '../src/plugins/memory/index.js';
@@ -129,9 +129,6 @@ function config(maintenance = false) {
     maintenance,
     readEnabled: true,
     writeEnabled: true,
-    queryTopK: 4,
-    promptBudgetTokens: 800,
-    embedBatchSize: 8,
     extractIdleMs: 10_000,
     extractMessageBatch: 8,
     archiveDays: 30,
@@ -177,6 +174,7 @@ function createHarness(options: {
   if (options.contextManager !== false) {
     chatluna.contextManager = { inject: vi.fn() };
   }
+  chatluna.platform = {};
   if (options.chatChainInitially !== false) {
     chatluna.chatChain = chatChain;
   }
@@ -186,9 +184,7 @@ function createHarness(options: {
       resolve: vi.fn((workload: string) => ({
         revision: 4,
         target: {
-          canonicalModel: workload === 'memory.embedding'
-            ? 'qqbot-siliconflow/qwen3-embedding-8b'
-            : 'qqbot-codex/gpt-5.6-luna',
+          canonicalModel: 'qqbot-codex/gpt-5.6-luna',
         },
       })),
     },
@@ -223,7 +219,7 @@ function createHarness(options: {
   };
 }
 
-describe('Memory Ledger V2 ChatLuna lifecycle', () => {
+describe('Memory Ledger V3 ChatLuna lifecycle', () => {
   const originalReadinessPath = process.env.QQBOT_MEMORY_READY_FILE;
 
   beforeEach(() => {
@@ -239,7 +235,7 @@ describe('Memory Ledger V2 ChatLuna lifecycle', () => {
     }
   });
 
-  it('gates runtime registration on schemaVersion=2 without running migration code', async () => {
+  it('gates runtime and Tool registration on schemaVersion=3 without migration code', async () => {
     const harness = createHarness({ chatChainInitially: false });
     const store = storeMocks.instances.at(-1)!;
 
@@ -266,9 +262,11 @@ describe('Memory Ledger V2 ChatLuna lifecycle', () => {
       target: 'resolve_conversation',
     });
     expect(harness.chatChain.middleware).toHaveBeenCalledTimes(2);
+    expect(memoryMocks.registerMemorySearchTool).toHaveBeenCalledTimes(1);
 
     await harness.runHook('chatluna/chat-chain-added');
     expect(harness.chatChain.middleware).toHaveBeenCalledTimes(2);
+    expect(memoryMocks.registerMemorySearchTool).toHaveBeenCalledTimes(1);
     expect(store.assertSchemaVersion).toHaveBeenCalledTimes(1);
   });
 
@@ -292,19 +290,19 @@ describe('Memory Ledger V2 ChatLuna lifecycle', () => {
     );
   });
 
-  it('injects a low-authority prompt envelope after memory assembly', async () => {
+  it('keeps the shared low-authority envelope independent from memory recall', async () => {
     const harness = createHarness();
     const conversationId = 'conv-resolution-only-memory';
     await harness.runHook('ready');
     registerPromptFragment(conversationId, {
-      source: 'qqbot_memory',
-      title: 'Memory Context',
+      source: 'qqbot_turn_context',
+      title: 'Turn Context',
       authority: 'reference',
       trust: 'untrusted',
       ttl: 'turn',
       payload: {
         kind: 'text',
-        value: '用户喜欢安静的回答。',
+        value: '当前回合上下文。',
       },
     });
 
@@ -337,7 +335,7 @@ describe('Memory Ledger V2 ChatLuna lifecycle', () => {
           additional_kwargs: {
             qqbot_context: expect.objectContaining({
               authority: 'reference',
-              source: 'qqbot_memory',
+              source: 'qqbot_turn_context',
               trust: 'untrusted',
             }),
           },
@@ -349,7 +347,7 @@ describe('Memory Ledger V2 ChatLuna lifecycle', () => {
 
   it('publishes process-bound readiness only after schema and model startup validation', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'qqbot-memory-ready-'));
-    const marker = join(dir, 'memory-v2-ready.json');
+    const marker = join(dir, 'memory-v3-ready.json');
     process.env.QQBOT_MEMORY_READY_FILE = marker;
     try {
       const failed = createHarness();
@@ -364,10 +362,9 @@ describe('Memory Ledger V2 ChatLuna lifecycle', () => {
       const document = JSON.parse(readFileSync(marker, 'utf8'));
       expect(document).toMatchObject({
         pid: process.pid,
-        schemaVersion: 2,
+        schemaVersion: 3,
         appliedModelRevision: 4,
         extractionModel: 'qqbot-codex/gpt-5.6-luna',
-        embeddingModel: 'qqbot-siliconflow/qwen3-embedding-8b',
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

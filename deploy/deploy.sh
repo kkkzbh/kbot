@@ -128,9 +128,9 @@ verify_bundle() {
   require_bundle_entry "qqbot/dist"
   require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
-  require_bundle_entry "qqbot/dist/tools/model-config-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
-  require_bundle_entry "qqbot/dist/tools/memory-v2-cutover.mjs"
+  require_bundle_entry "qqbot/dist/tools/memory-v3-cutover.mjs"
   require_bundle_entry "qqbot/dist/tools/memory-evaluation.mjs"
   require_bundle_entry "qqbot/dist/tools/memory-evaluation-adapter.mjs"
   require_bundle_entry "qqbot/data/chathub/context-presets"
@@ -139,9 +139,8 @@ verify_bundle() {
   require_bundle_catalog "qqbot/data/chathub/role-presets"
   require_bundle_entry "qqbot/deploy/installer.sh"
   require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
-  require_bundle_entry "qqbot/deploy/model-config-contract.mjs"
   require_bundle_entry "qqbot/deploy/render-systemd.mjs"
-  require_bundle_entry "qqbot/scripts/verify-memory-v2-readiness.mjs"
+  require_bundle_entry "qqbot/scripts/verify-memory-v3-readiness.mjs"
   require_bundle_entry "chatluna/packages/core/package.json"
 }
 

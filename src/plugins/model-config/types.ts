@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const MODEL_CONFIG_SCHEMA_VERSION = 2 as const;
+export const MODEL_CONFIG_SCHEMA_VERSION = 3 as const;
 
 export const adapterTypeSchema = z.enum([
   'openaiCompatible',
@@ -146,8 +146,6 @@ function validateConnectionDefinition(
 }
 
 export const modelCapabilitiesSchema = z.object({
-  chat: z.boolean(),
-  embedding: z.boolean(),
   vision: z.boolean(),
   tools: z.boolean(),
   structuredOutput: z.boolean(),
@@ -175,9 +173,8 @@ export const modelDefinitionSchema = z.object({
   connectionId: connectionIdSchema,
   displayName: z.string().trim().min(1).max(160),
   transportModel: z.string().trim().min(1).max(240),
-  modelType: z.enum(['chat', 'embedding']),
   contextSize: z.number().int().positive(),
-  requestMode: z.enum(['chat_completions', 'responses']).nullable(),
+  requestMode: z.enum(['chat_completions', 'responses']),
   structuredOutputProtocol: z.enum([
     'native_chat_json_schema',
     'native_responses_json_schema',
@@ -188,61 +185,6 @@ export const modelDefinitionSchema = z.object({
   timeoutMs: z.number().int().min(1_000).max(600_000),
   requestDefaults: requestDefaultsSchema,
 }).strict().superRefine((model, context) => {
-  if (model.modelType === 'embedding') {
-    if (!model.capabilities.embedding) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['capabilities', 'embedding'],
-        message: 'embedding models require embedding capability',
-      });
-    }
-    for (const capability of ['chat', 'vision', 'tools', 'structuredOutput'] as const) {
-      if (model.capabilities[capability]) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['capabilities', capability],
-          message: `embedding models cannot declare ${capability} capability`,
-        });
-      }
-    }
-    if (model.requestMode !== null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['requestMode'],
-        message: 'embedding models do not use a chat request mode',
-      });
-    }
-    if (model.structuredOutputProtocol !== null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['structuredOutputProtocol'],
-        message: 'embedding models do not use a structured output protocol',
-      });
-    }
-    return;
-  }
-
-  if (!model.capabilities.chat) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['capabilities', 'chat'],
-      message: 'chat models require chat capability',
-    });
-  }
-  if (model.capabilities.embedding) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['capabilities', 'embedding'],
-      message: 'chat model profiles cannot also be embedding profiles',
-    });
-  }
-  if (model.requestMode === null) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['requestMode'],
-      message: 'chat models require requestMode',
-    });
-  }
   if (model.capabilities.structuredOutput !== (model.structuredOutputProtocol !== null)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -276,7 +218,6 @@ export type ModelDefinition = z.infer<typeof modelDefinitionSchema>;
 export const FIXED_MODEL_WORKLOADS = [
   'main.chat',
   'memory.extract',
-  'memory.embedding',
   'affinity.analysis',
   'naturalTrigger.decision',
   'agent.subagent.default',
@@ -335,7 +276,6 @@ export type ModelBinding = z.infer<typeof modelBindingSchema>;
 export const WORKLOAD_ALLOWED_MODES = {
   'main.chat': ['dedicated'],
   'memory.extract': ['inheritMain', 'dedicated', 'disabled'],
-  'memory.embedding': ['dedicated', 'disabled'],
   'affinity.analysis': ['inheritMain', 'dedicated'],
   'naturalTrigger.decision': ['dedicated', 'disabled'],
   'agent.subagent.default': ['inheritInvocation', 'dedicated'],
@@ -351,14 +291,13 @@ const REQUIRED_CAPABILITIES: Record<
   FixedModelWorkload | 'agent.subagent.override',
   readonly (keyof ModelCapabilities)[]
 > = {
-  'main.chat': ['chat', 'tools', 'structuredOutput'],
-  'memory.extract': ['chat', 'structuredOutput'],
-  'memory.embedding': ['embedding'],
-  'affinity.analysis': ['chat', 'structuredOutput'],
-  'naturalTrigger.decision': ['chat', 'structuredOutput'],
-  'agent.subagent.default': ['chat', 'tools'],
-  'agent.subagent.override': ['chat', 'tools'],
-  'sticker.index': ['chat', 'vision', 'structuredOutput'],
+  'main.chat': ['tools', 'structuredOutput'],
+  'memory.extract': ['structuredOutput'],
+  'affinity.analysis': ['structuredOutput'],
+  'naturalTrigger.decision': ['structuredOutput'],
+  'agent.subagent.default': ['tools'],
+  'agent.subagent.override': ['tools'],
+  'sticker.index': ['vision', 'structuredOutput'],
 };
 
 export function requiredCapabilitiesForWorkload(
@@ -452,13 +391,6 @@ export const modelConfigDraftSchema = z.object({
       continue;
     }
     if (connection.adapter === 'codexBridge') {
-      if (model.modelType !== 'chat') {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['models', index, 'modelType'],
-          message: 'codexBridge only supports chat model profiles',
-        });
-      }
       if (model.requestMode !== 'responses') {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -466,13 +398,6 @@ export const modelConfigDraftSchema = z.object({
           message: 'codexBridge chat model profiles require responses requestMode',
         });
       }
-    }
-    if (connection.adapter === 'copilotBridge' && model.modelType !== 'chat') {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['models', index, 'modelType'],
-        message: 'copilotBridge only supports chat model profiles',
-      });
     }
   }
 

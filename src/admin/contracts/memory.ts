@@ -7,6 +7,16 @@ export const memoryAssertionTypeSchema = z.enum([
   'episode',
 ]);
 
+export const memoryFactKindSchema = z.enum([
+  'identity',
+  'preference',
+  'trait',
+  'boundary',
+  'plan',
+  'relationship',
+  'response_policy',
+]);
+
 export const memoryHeadStateSchema = z.enum([
   'active',
   'pendingReview',
@@ -44,7 +54,7 @@ export const memoryReviewsQuerySchema = memoryPageQuerySchema.omit({
 });
 
 export const memoryReviewRequestSchema = z.object({
-  decision: z.literal('reject'),
+  decision: z.enum(['approve', 'reject']),
 }).strict();
 
 export const memoryArchiveReasonCodeSchema = z.enum([
@@ -89,12 +99,7 @@ export const memoryForgetRequestSchema = z.object({
   }
 });
 
-export const memoryBackfillRequestSchema = z.object({}).strict();
-
-export const memoryProbeWorkloadSchema = z.enum([
-  'memory.extract',
-  'memory.embedding',
-]);
+export const memoryProbeWorkloadSchema = z.literal('memory.extract');
 
 export const memoryQueueSummarySchema = z.object({
   pending: z.number().int().nonnegative(),
@@ -103,8 +108,6 @@ export const memoryQueueSummarySchema = z.object({
   deadLetter: z.number().int().nonnegative(),
   byType: z.object({
     extract: z.number().int().nonnegative(),
-    embed: z.number().int().nonnegative(),
-    backfill: z.number().int().nonnegative(),
     maintenance: z.number().int().nonnegative(),
   }).strict(),
 }).strict();
@@ -116,20 +119,25 @@ export const memoryLedgerCountsSchema = z.object({
   retracted: z.number().int().nonnegative(),
   forgotten: z.number().int().nonnegative(),
   stranded: z.number().int().nonnegative(),
-  ftsRows: z.number().int().nonnegative(),
-  embeddingRows: z.number().int().nonnegative(),
+  lexicalDocuments: z.number().int().nonnegative(),
+  lexicalTerms: z.number().int().nonnegative(),
   orphanEvidence: z.number().int().nonnegative(),
-  staleFts: z.number().int().nonnegative(),
-  inactiveFts: z.number().int().nonnegative(),
-  staleEmbedding: z.number().int().nonnegative(),
-  inactiveEmbedding: z.number().int().nonnegative(),
+  staleLexicalDocuments: z.number().int().nonnegative(),
+  inactiveLexicalDocuments: z.number().int().nonnegative(),
   strandedByReason: z.object({
     payload: z.number().int().nonnegative(),
     evidence: z.number().int().nonnegative(),
     audience: z.number().int().nonnegative(),
-    embedding: z.number().int().nonnegative(),
-    fts: z.number().int().nonnegative(),
+    lexical: z.number().int().nonnegative(),
   }).strict(),
+}).strict();
+
+export const memorySearchMetricsSchema = z.object({
+  searches: z.number().int().nonnegative(),
+  recentReads: z.number().int().nonnegative(),
+  returnedItems: z.number().int().nonnegative(),
+  rejectedCalls: z.number().int().nonnegative(),
+  lastSearchAt: z.number().nullable(),
 }).strict();
 
 export const memoryOperationSnapshotSchema = z.object({
@@ -145,18 +153,18 @@ export const memoryOperationSnapshotSchema = z.object({
 }).strict();
 
 export const memoryStatusSnapshotSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   available: z.boolean(),
   enabled: z.boolean(),
   maintenance: z.boolean(),
   readEnabled: z.boolean(),
   writeEnabled: z.boolean(),
   extractConfigured: z.boolean(),
-  embedConfigured: z.boolean(),
   extractModel: z.string(),
-  embedModel: z.string(),
+  toolReady: z.boolean(),
   jobs: memoryQueueSummarySchema,
   counts: memoryLedgerCountsSchema,
+  searchMetrics: memorySearchMetricsSchema,
   providerRoutes: z.array(z.object({
     route: z.enum([
       'native_responses_json_schema',
@@ -169,7 +177,6 @@ export const memoryStatusSnapshotSchema = z.object({
   }).strict()),
   lastMaintenanceAt: z.number().nullable(),
   extract: memoryOperationSnapshotSchema,
-  embed: memoryOperationSnapshotSchema,
 }).strict();
 
 export const memoryResolvedBindingSchema = z.object({
@@ -186,7 +193,6 @@ export const memoryOverviewResponseSchema = z.object({
   status: memoryStatusSnapshotSchema,
   bindings: z.object({
     extraction: memoryResolvedBindingSchema,
-    embedding: memoryResolvedBindingSchema,
   }).strict(),
 }).strict();
 
@@ -195,6 +201,8 @@ export const memoryAssertionItemSchema = z.object({
   revision: z.number().int().positive(),
   state: memoryHeadStateSchema,
   assertionType: memoryAssertionTypeSchema,
+  kind: memoryFactKindSchema.nullable(),
+  topicKey: z.string(),
   subjectKey: z.string().min(1),
   sourceContextKey: z.string().min(1),
   audiencePolicy: memoryAudiencePolicySchema,
@@ -241,11 +249,6 @@ export const memoryForgetResponseSchema = z.object({
   forgotten: z.number().int().nonnegative(),
 }).strict();
 
-export const memoryBackfillResponseSchema = z.object({
-  queued: z.number().int().nonnegative(),
-  binding: memoryResolvedBindingSchema,
-}).strict();
-
 export const memoryProbeResponseSchema = z.object({
   target: memoryProbeWorkloadSchema,
   ok: z.boolean(),
@@ -253,7 +256,6 @@ export const memoryProbeResponseSchema = z.object({
   latencyMs: z.number().int().nonnegative().nullable(),
   canonicalModel: z.string().min(1).nullable(),
   schemaValid: z.boolean(),
-  dimensions: z.number().int().positive().nullable(),
   error: z.string().nullable(),
   snapshot: memoryStatusSnapshotSchema,
 }).strict();

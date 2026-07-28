@@ -1,18 +1,18 @@
-# Memory Ledger V2 评测与群聊回放
+# Memory Ledger V3 评测与群聊回放
 
-`memory-evaluation` 是 QQBot 自有的离线评测工具。它在一次性 SQLite 数据库中调用真实的 Memory V2 `MemoryStore`、policy、search index、recall 和 audit API。工具不读取生产记忆数据库，不包含旧表或兼容路径，也不修改 ChatLuna。
+`memory-evaluation` 是 QQBot 自有的离线评测工具。它在一次性 SQLite 数据库中调用真实的 Memory V3 `MemoryStore`、policy、search index、recall 和 audit API。工具不读取生产记忆数据库，不包含旧表或兼容路径，也不修改 ChatLuna。
 
 构建产物：
 
 - `dist/tools/memory-evaluation.mjs`
 - `dist/tools/memory-evaluation-adapter.mjs`
 
-第二个产物同时提供真实 Memory V2 ephemeral adapter 和基于 Model Config `main.chat` 的 answer/judge。构建与部署只校验产物存在，不会自动执行评测。
+第二个产物同时提供真实 Memory V3 ephemeral adapter 和基于 Model Config `main.chat` 的 answer/judge。构建与部署只校验产物存在，不会自动执行评测。
 
 ## 构建
 
 ```bash
-pnpm memory-v2:eval:build
+pnpm memory-v3:eval:build
 ```
 
 报告通过 staging file 原子发布，权限固定为 `0600`。所有 gate 通过时退出码为 `0`，评测完成但 gate 未通过时为 `2`，输入或 adapter contract 错误时为 `1`。
@@ -66,7 +66,7 @@ GroupMemBench 路径直接读取上游 raw schema：
 - question JSONL：`id`、`question`、`answer`、`asking_user_id`
 - qtype：`multi_hop | knowledge_update | temporal | user_implicit | term_ambiguity | abstention`
 
-执行顺序固定为 raw ingest → Memory V2 search top-10 → Model Config `main.chat` answer → 同一 model/revision judge → numeric accuracy：
+执行顺序固定为 raw ingest → Memory V3 search top-10 → Model Config `main.chat` answer → 同一 model/revision judge → numeric accuracy：
 
 ```bash
 node dist/tools/memory-evaluation.mjs run \
@@ -102,7 +102,7 @@ Baseline 只保存数值：
 }
 ```
 
-每个 qtype 的 V2 accuracy 必须不低于 `max(legacy QQBot, BM25)`。
+每个 qtype 的 V3 accuracy 必须不低于 `max(legacy QQBot, BM25)`。
 
 ## 官方 EverMemBench
 
@@ -142,13 +142,13 @@ node dist/tools/memory-evaluation.mjs run \
 }
 ```
 
-每个 V2 dimension accuracy 必须不低于 legacy QQBot。
+每个 V3 dimension accuracy 必须不低于 legacy QQBot。
 
 官方 GroupMemBench 与 EverMemBench 仓库当前未声明清晰的 repository license。原始数据不得提交到 QQBot 仓库，也不得由构建或测试自动下载；只允许操作员把依法取得的数据放在仓库外、权限受限的临时目录中。
 
 ## 脱敏 QQ 群回放
 
-QQ replay 只运行 Memory V2 policy/search privacy probe，不调用 answer/judge，也不把消息发送给第三方 provider：
+QQ replay 只运行 Memory V3 policy/search privacy probe，不调用 answer/judge，也不把消息发送给第三方 provider：
 
 ```bash
 node dist/tools/memory-evaluation.mjs run \
@@ -202,7 +202,7 @@ Memory adapter descriptor 必须精确声明：
 ```ts
 {
   contractVersion: 1
-  runtime: 'qqbot-memory-v2'
+  runtime: 'qqbot-memory-v3'
   isolation: 'ephemeral'
 }
 ```

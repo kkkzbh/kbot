@@ -25,11 +25,11 @@ import { build } from 'vite';
 process.umask(0o077);
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const ENTRY = resolve(ROOT_DIR, 'src/tools/memory-v2-cutover.ts');
-const OUTPUT_NAME = 'memory-v2-cutover.mjs';
-const OWNER_MARKER = '.memory-v2-cutover-tool-output.json';
+const ENTRY = resolve(ROOT_DIR, 'src/tools/memory-v3-cutover.ts');
+const OUTPUT_NAME = 'memory-v3-cutover.mjs';
+const OWNER_MARKER = '.memory-v3-cutover-tool-output.json';
 const OWNER_MARKER_CONTENT = `${JSON.stringify({
-  owner: 'qqbot-memory-v2-cutover-tool',
+  owner: 'qqbot-memory-v3-cutover-tool',
   schemaVersion: 1,
 })}\n`;
 
@@ -121,7 +121,7 @@ async function main() {
   const { outDir } = parseArgs(process.argv.slice(2));
   await assertOwnedOutput(outDir);
   const temporaryDir = await mkdtemp(
-    resolve(dirname(outDir), '.memory-v2-cutover-build-'),
+    resolve(dirname(outDir), '.memory-v3-cutover-build-'),
   );
   try {
     await build({
@@ -159,7 +159,7 @@ async function main() {
   } finally {
     await rm(temporaryDir, { recursive: true, force: true });
   }
-  process.stdout.write(`[info] Memory V2 cutover tool built: ${outDir}\n`);
+  process.stdout.write(`[info] Memory V3 cutover tool built: ${outDir}\n`);
 }
 
 main().catch((error) => {

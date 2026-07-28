@@ -106,7 +106,7 @@ export interface MemoryEvaluationScenario {
 
 export interface MemoryEvaluationAdapterDescriptor {
   contractVersion: 1;
-  runtime: 'qqbot-memory-v2';
+  runtime: 'qqbot-memory-v3';
   isolation: 'ephemeral';
   adapterName: string;
   adapterVersion: string;
@@ -237,7 +237,7 @@ export interface MemoryContractEvaluationReport {
   mode: 'contract';
   sourceFormat: MemoryEvaluationSourceFormat;
   adapter: {
-    runtime: 'qqbot-memory-v2';
+    runtime: 'qqbot-memory-v3';
     name: string;
     version: string;
   };

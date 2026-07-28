@@ -98,7 +98,7 @@ function syntheticQuery(overrides: Record<string, unknown> = {}) {
 class CanonicalFixtureAdapter implements MemoryEvaluationAdapter {
   readonly descriptor = {
     contractVersion: 1 as const,
-    runtime: 'qqbot-memory-v2' as const,
+    runtime: 'qqbot-memory-v3' as const,
     isolation: 'ephemeral' as const,
     adapterName: 'fixture',
     adapterVersion: '1.0.0',
@@ -334,7 +334,7 @@ function replayCorpus(): Record<string, unknown> {
   };
 }
 
-describe('Memory V2 evaluation harness', () => {
+describe('Memory V3 evaluation harness', () => {
   it('loads the explicitly named synthetic contract and measures real adapter boundaries', async () => {
     const input = await writeJsonl([{
       schemaVersion: 1,
@@ -555,7 +555,7 @@ describe('Memory V2 evaluation harness', () => {
         return {
           descriptor: {
             contractVersion: 1,
-            runtime: 'qqbot-memory-v2',
+            runtime: 'qqbot-memory-v3',
             isolation: 'ephemeral',
             adapterName: 'cli-fixture',
             adapterVersion: '1.0.0'

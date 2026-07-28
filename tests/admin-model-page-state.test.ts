@@ -6,6 +6,7 @@ import type {
 import {
   allowedBindingModes,
   buildModelConfigPutInput,
+  compatibleConnectionIds,
   createCatalogModelProfile,
   createModelConfigDraft,
   createSecretDrafts,
@@ -24,7 +25,7 @@ import {
 
 function aggregate(): ModelConfigAdminAggregate {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     savedRevision: 7,
     appliedRevision: 6,
     pending: true,
@@ -46,42 +47,20 @@ function aggregate(): ModelConfigAdminAggregate {
       connectionId: 'provider',
       displayName: 'Chat',
       transportModel: 'chat-transport',
-      modelType: 'chat',
       contextSize: 128_000,
       requestMode: 'chat_completions',
       structuredOutputProtocol: 'native_chat_json_schema',
       capabilities: {
-        chat: true,
-        embedding: false,
         vision: true,
         tools: true,
         structuredOutput: true,
       },
       timeoutMs: 180_000,
       requestDefaults: {},
-    }, {
-      id: 'embedding',
-      connectionId: 'provider',
-      displayName: 'Embedding',
-      transportModel: 'embedding-transport',
-      modelType: 'embedding',
-      contextSize: 8_192,
-      requestMode: null,
-      structuredOutputProtocol: null,
-      capabilities: {
-        chat: false,
-        embedding: true,
-        vision: false,
-        tools: false,
-        structuredOutput: false,
-      },
-      timeoutMs: 12_000,
-      requestDefaults: {},
     }],
     bindings: [
       { workload: 'main.chat', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
       { workload: 'memory.extract', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
-      { workload: 'memory.embedding', mode: 'dedicated', connectionId: 'provider', modelId: 'embedding' },
       { workload: 'affinity.analysis', mode: 'inheritMain' },
       { workload: 'naturalTrigger.decision', mode: 'disabled' },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
@@ -124,7 +103,6 @@ describe('admin unified model page state', () => {
     expect(createCatalogModelProfile({
       connection,
       entry,
-      modelType: 'chat',
       contextSize: 200_000,
       existingIds: [],
     })).toMatchObject({
@@ -132,13 +110,10 @@ describe('admin unified model page state', () => {
       connectionId: 'provider',
       displayName: 'GPT 5.6 Luna',
       transportModel: 'openai/gpt-5.6-luna',
-      modelType: 'chat',
       contextSize: 200_000,
       requestMode: 'responses',
       structuredOutputProtocol: 'native_responses_json_schema',
       capabilities: {
-        chat: true,
-        embedding: false,
         vision: true,
         tools: true,
         structuredOutput: true,
@@ -150,7 +125,6 @@ describe('admin unified model page state', () => {
     const bindings = [
       { workload: 'sticker.index', mode: 'disabled' },
       { workload: 'agent.subagent.preset:research', mode: 'inheritInvocation' },
-      { workload: 'memory.embedding', mode: 'disabled' },
       { workload: 'main.chat', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
       { workload: 'affinity.analysis', mode: 'inheritMain' },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
@@ -163,7 +137,6 @@ describe('admin unified model page state', () => {
     expect(ordered.map(({ binding }) => binding.workload)).toEqual([
       'main.chat',
       'memory.extract',
-      'memory.embedding',
       'naturalTrigger.decision',
       'affinity.analysis',
       'agent.subagent.default',
@@ -171,7 +144,7 @@ describe('admin unified model page state', () => {
       'sticker.index',
     ]);
     expect(ordered.find(({ binding }) => binding.workload === 'main.chat')?.sourceIndex)
-      .toBe(3);
+      .toBe(2);
   });
 
   it('loads the required aggregate through a retryable boundary', async () => {
@@ -346,20 +319,45 @@ describe('admin unified model page state', () => {
   it('filters profiles by workload capabilities, including vision sticker indexing', () => {
     const configuration = aggregate();
     const chat = configuration.models[0];
-    const embedding = configuration.models[1];
-
     expect(isModelCompatible('main.chat', chat)).toBe(true);
     expect(isModelCompatible('main.chat', {
       ...chat,
       capabilities: { ...chat.capabilities, tools: false },
     })).toBe(false);
-    expect(isModelCompatible('memory.embedding', embedding)).toBe(true);
-    expect(isModelCompatible('memory.embedding', chat)).toBe(false);
     expect(isModelCompatible('sticker.index', chat)).toBe(true);
     expect(isModelCompatible('sticker.index', {
       ...chat,
       capabilities: { ...chat.capabilities, vision: false },
     })).toBe(false);
+  });
+
+  it('only exposes authentication configurations with a compatible registered model', () => {
+    const configuration = aggregate();
+    configuration.connections.push({
+      id: 'chat-only',
+      displayName: 'Chat only',
+      adapter: 'openaiCompatible',
+      baseUrl: 'https://chat-only.example.com/v1',
+      auth: { kind: 'none' },
+      catalogDriver: 'static',
+      credentialState: 'external',
+      hasSecret: false,
+    });
+    configuration.models.push({
+      ...structuredClone(configuration.models[0]),
+      id: 'plain-chat',
+      connectionId: 'chat-only',
+      capabilities: {
+        vision: false,
+        tools: false,
+        structuredOutput: false,
+      },
+      structuredOutputProtocol: null,
+    });
+    const draft = createModelConfigDraft(configuration);
+
+    expect([...compatibleConnectionIds(draft, 'memory.extract')]).toEqual(['provider']);
+    expect([...compatibleConnectionIds(draft, 'agent.subagent.default')]).toEqual(['provider']);
   });
 
   it('keeps request mode and native structured-output protocol atomic', () => {

@@ -4,22 +4,6 @@ export function uniqueKeywords(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-export function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
-  if (!left.length || left.length !== right.length) return 0;
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
-    dot += leftValue * rightValue;
-    leftNorm += leftValue * leftValue;
-    rightNorm += rightValue * rightValue;
-  }
-  if (!leftNorm || !rightNorm) return 0;
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
-}
-
 function estimateTokens(text: string): number {
   let tokens = 0;
   let asciiRun = 0;

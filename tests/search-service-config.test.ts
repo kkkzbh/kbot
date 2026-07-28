@@ -87,8 +87,6 @@ describe('chatluna search service wiring', () => {
   it('migrates the tool catalog and Sydney instructions to web_run only', () => {
     const catalog = readFileSync(resolve(process.cwd(), 'src/plugins/tool-policy/catalog.ts'), 'utf8');
     const sydney = readFileSync(resolve(process.cwd(), 'data/chathub/role-presets/sydney.yml'), 'utf8');
-    const cutover = readFileSync(resolve(process.cwd(), 'src/tools/model-config-cutover.ts'), 'utf8');
-
     for (const content of [catalog, sydney]) {
       expect(content).toContain('web_run');
       expect(content).not.toContain('web_search');
@@ -96,8 +94,5 @@ describe('chatluna search service wiring', () => {
       expect(content).not.toContain('web_fetch');
       expect(content).not.toContain('web_post');
     }
-    expect(cutover).toContain("const WEB_RUN_TOOL_NAME = 'web_run'");
-    expect(cutover).toContain('migrateWebRunAgentConfig(config)');
-    expect(cutover).toContain('migrateWebRunSkillContent');
   });
 });

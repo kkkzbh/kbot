@@ -47,14 +47,6 @@ function createDraft(): ModelConfigDraft {
         catalogDriver: 'openaiModels',
       },
       {
-        id: 'memory-embedding',
-        displayName: 'Memory embedding',
-        adapter: 'openaiCompatible',
-        baseUrl: 'https://api.siliconflow.cn/v1',
-        auth: { kind: 'apiKey', secretRef: 'connection:memory-embedding:api-key' },
-        catalogDriver: 'static',
-      },
-      {
         id: 'memory-extraction',
         displayName: 'Memory extraction',
         adapter: 'openaiCompatible',
@@ -77,13 +69,10 @@ function createDraft(): ModelConfigDraft {
         connectionId: 'codex',
         displayName: 'GPT main',
         transportModel: 'gpt-main',
-        modelType: 'chat',
         contextSize: 128_000,
         requestMode: 'responses',
         structuredOutputProtocol: 'native_responses_json_schema',
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: true,
           tools: true,
           structuredOutput: true,
@@ -92,36 +81,14 @@ function createDraft(): ModelConfigDraft {
         requestDefaults: {},
       },
       {
-        id: 'qwen-embedding',
-        connectionId: 'memory-embedding',
-        displayName: 'Qwen embedding',
-        transportModel: 'Qwen/Qwen3-Embedding-8B',
-        modelType: 'embedding',
-        contextSize: 8_192,
-        requestMode: null,
-        structuredOutputProtocol: null,
-        capabilities: {
-          chat: false,
-          embedding: true,
-          vision: false,
-          tools: false,
-          structuredOutput: false,
-        },
-        timeoutMs: 12_000,
-        requestDefaults: {},
-      },
-      {
         id: 'qwen-extract',
         connectionId: 'memory-extraction',
         displayName: 'Qwen extract',
         transportModel: 'Qwen/Qwen3.5-35B-A3B',
-        modelType: 'chat',
         contextSize: 128_000,
         requestMode: 'chat_completions',
         structuredOutputProtocol: 'native_chat_json_schema',
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: false,
           tools: false,
           structuredOutput: true,
@@ -134,13 +101,10 @@ function createDraft(): ModelConfigDraft {
         connectionId: 'sticker-indexer',
         displayName: 'Doubao vision',
         transportModel: 'doubao-vision',
-        modelType: 'chat',
         contextSize: 128_000,
         requestMode: 'chat_completions',
         structuredOutputProtocol: 'native_chat_json_schema',
         capabilities: {
-          chat: true,
-          embedding: false,
           vision: true,
           tools: false,
           structuredOutput: true,
@@ -155,12 +119,6 @@ function createDraft(): ModelConfigDraft {
         mode: 'dedicated',
         connectionId: 'codex',
         modelId: 'gpt-main',
-      },
-      {
-        workload: 'memory.embedding',
-        mode: 'dedicated',
-        connectionId: 'memory-embedding',
-        modelId: 'qwen-embedding',
       },
       {
         workload: 'memory.extract',
@@ -207,7 +165,6 @@ describe('model auth connection cutover', () => {
       draft: createDraft(),
       apiKeys: {
         'siliconflow-api-key': 'siliconflow-main-secret',
-        'memory-embedding': 'embedding-secret',
         'memory-extraction': 'extraction-secret',
         'sticker-indexer': 'sticker-secret',
       },
@@ -228,12 +185,6 @@ describe('model auth connection cutover', () => {
     expect(preflight.changed).toBe(true);
     expect(preflight.connections).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        oldId: 'memory-embedding',
-        newId: 'siliconflow',
-        newDisplayName: 'SiliconFlow',
-        credentialDisposition: 'discarded',
-      }),
-      expect.objectContaining({
         oldId: 'memory-extraction',
         newId: 'siliconflow',
         newDisplayName: 'SiliconFlow',
@@ -250,7 +201,7 @@ describe('model auth connection cutover', () => {
         newDisplayName: 'Volcengine Ark API Key',
       }),
     ]));
-    expect(JSON.stringify(preflight)).not.toContain('embedding-secret');
+    expect(JSON.stringify(preflight)).not.toContain('extraction-secret');
 
     const applied = await runModelAuthConnectionCutover({
       ...options,
@@ -269,13 +220,8 @@ describe('model auth connection cutover', () => {
     expect(document.savedRevision).toBe(2);
     expect(document.appliedRevision).toBe(1);
     expect(document.connections.map((connection) => connection.displayName)).not.toEqual(
-      expect.arrayContaining(['Memory embedding', 'Memory extraction', 'Sticker indexer']),
+      expect.arrayContaining(['Memory extraction', 'Sticker indexer']),
     );
-    expect(document.bindings).toContainEqual(expect.objectContaining({
-      workload: 'memory.embedding',
-      connectionId: 'siliconflow',
-      modelId: 'qwen-embedding',
-    }));
     expect(document.bindings).toContainEqual(expect.objectContaining({
       workload: 'memory.extract',
       connectionId: 'siliconflow',

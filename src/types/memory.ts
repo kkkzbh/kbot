@@ -1,6 +1,6 @@
 import type {} from 'koishi';
 
-export const MEMORY_LEDGER_SCHEMA_VERSION = 2 as const;
+export const MEMORY_LEDGER_SCHEMA_VERSION = 3 as const;
 
 export type MemoryChannelType = 'direct' | 'group';
 export type MemorySubjectType = 'user' | 'group' | 'assistant';
@@ -9,6 +9,14 @@ export type MemoryAssertionType =
   | 'groupArtifact'
   | 'assistantCommitment'
   | 'episode';
+export type MemoryFactKind =
+  | 'identity'
+  | 'preference'
+  | 'trait'
+  | 'boundary'
+  | 'plan'
+  | 'relationship'
+  | 'response_policy';
 export type MemoryEventType =
   | 'asserted'
   | 'reviewed'
@@ -31,7 +39,7 @@ export type MemoryAudiencePolicy =
   | 'explicitContexts';
 export type MemorySensitivity = 'low' | 'personal' | 'sensitive' | 'secret';
 export type MemoryPayloadKind = 'assertion' | 'evidenceExcerpt';
-export type MemoryWorkType = 'extract' | 'embed' | 'backfill' | 'maintenance';
+export type MemoryWorkType = 'extract' | 'maintenance';
 export type MemoryWorkStatus =
   | 'pending'
   | 'leased'
@@ -63,14 +71,14 @@ export interface MemoryAddress {
   observedAt: number;
 }
 
-export interface MemoryV2MetaRecord {
+export interface MemoryV3MetaRecord {
   id: number;
   key: string;
   value: string;
   updatedAt: number;
 }
 
-export interface MemoryV2PrincipalRecord {
+export interface MemoryV3PrincipalRecord {
   id: number;
   userKey: string;
   platform: string;
@@ -83,7 +91,7 @@ export interface MemoryV2PrincipalRecord {
   lastSeenAt: number;
 }
 
-export interface MemoryV2ContextRecord {
+export interface MemoryV3ContextRecord {
   id: number;
   contextKey: string;
   platform: string;
@@ -96,28 +104,34 @@ export interface MemoryV2ContextRecord {
   lastSeenAt: number;
 }
 
-export interface MemoryV2EventRecord {
-  id: number;
-  eventId: string;
-  streamId: string;
-  revision: number;
-  eventType: MemoryEventType;
+interface MemoryIdentityRecord {
   assertionType: MemoryAssertionType;
+  kind: MemoryFactKind | null;
+  topicKey: string;
+  memoryKey: string;
   subjectType: MemorySubjectType;
   subjectKey: string;
-  actorKey: string;
   sourceContextKey: string;
   audiencePolicy: MemoryAudiencePolicy;
   audienceContextKeys: string;
   audienceSnapshots: string;
   sensitivity: MemorySensitivity;
+}
+
+export interface MemoryV3EventRecord extends MemoryIdentityRecord {
+  id: number;
+  eventId: string;
+  streamId: string;
+  revision: number;
+  eventType: MemoryEventType;
+  actorKey: string;
   payloadId: string | null;
   causationId: string | null;
   idempotencyKey: string;
   createdAt: number;
 }
 
-export interface MemoryV2PayloadRecord {
+export interface MemoryV3PayloadRecord {
   id: number;
   payloadId: string;
   eventId: string;
@@ -128,7 +142,7 @@ export interface MemoryV2PayloadRecord {
   createdAt: number;
 }
 
-export interface MemoryV2EvidenceRecord {
+export interface MemoryV3EvidenceRecord {
   id: number;
   evidenceId: string;
   eventId: string;
@@ -142,20 +156,12 @@ export interface MemoryV2EvidenceRecord {
   occurredAt: number;
 }
 
-export interface MemoryV2HeadRecord {
+export interface MemoryV3HeadRecord extends MemoryIdentityRecord {
   id: number;
   streamId: string;
   eventId: string;
   revision: number;
   state: MemoryHeadState;
-  assertionType: MemoryAssertionType;
-  subjectType: MemorySubjectType;
-  subjectKey: string;
-  sourceContextKey: string;
-  audiencePolicy: MemoryAudiencePolicy;
-  audienceContextKeys: string;
-  audienceSnapshots: string;
-  sensitivity: MemorySensitivity;
   payloadId: string | null;
   contentHash: string | null;
   importance: number;
@@ -168,33 +174,26 @@ export interface MemoryV2HeadRecord {
   updatedAt: number;
 }
 
-export interface MemoryV2EmbeddingRecord {
+export interface MemoryV3LexicalDocumentRecord {
   id: number;
-  embeddingKey: string;
-  streamId: string;
-  eventId: string;
-  revision: number;
-  canonicalModel: string;
-  modelRevision: number;
-  contentHash: string;
-  dimensions: number;
-  vector: string;
-  createdAt: number;
-}
-
-export interface MemoryV2FtsRecord {
   streamId: string;
   eventId: string;
   revision: number;
   contentHash: string;
   canonicalText: string;
   tokenCount: number;
-  termFrequencies: string;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface MemoryV2WorkRecord {
+export interface MemoryV3LexicalTermRecord {
+  id: number;
+  term: string;
+  streamId: string;
+  frequency: number;
+}
+
+export interface MemoryV3WorkRecord {
   id: number;
   workKey: string;
   workType: MemoryWorkType;
@@ -220,7 +219,7 @@ export interface MemoryV2WorkRecord {
   completedAt: number | null;
 }
 
-export interface MemoryV2CursorRecord {
+export interface MemoryV3CursorRecord {
   id: number;
   laneKey: string;
   subjectKey: string;
@@ -234,7 +233,7 @@ export interface MemoryV2CursorRecord {
   updatedAt: number;
 }
 
-export interface MemoryV2SuppressionRecord {
+export interface MemoryV3SuppressionRecord {
   id: number;
   suppressionKey: string;
   subjectKey: string | null;
@@ -247,7 +246,7 @@ export interface MemoryV2SuppressionRecord {
   createdAt: number;
 }
 
-export interface MemoryV2AuditRecord {
+export interface MemoryV3AuditRecord {
   id: number;
   auditId: string;
   idempotencyKey: string;
@@ -265,8 +264,11 @@ export interface MemoryLedgerItem {
   streamId: string;
   revision: number;
   assertionType: MemoryAssertionType;
+  kind: MemoryFactKind | null;
+  topicKey: string;
   subjectType: MemorySubjectType;
   subjectKey: string;
+  subjectDisplayName: string | null;
   sourceContextKey: string;
   audiencePolicy: MemoryAudiencePolicy;
   audienceContextKeys: string[];
@@ -281,11 +283,8 @@ export interface MemoryLedgerItem {
   validFrom: number | null;
   validUntil: number | null;
   expiresAt: number | null;
-  embeddingModel: string | null;
-  embeddingModelRevision: number | null;
-  embedding: number[] | null;
-  ftsScore: number | null;
-  evidence: MemoryV2EvidenceRecord[];
+  lexicalScore: number | null;
+  evidence: MemoryV3EvidenceRecord[];
   updatedAt: number;
 }
 
@@ -323,74 +322,76 @@ export interface MemoryLedgerCounts {
   retracted: number;
   forgotten: number;
   stranded: number;
-  ftsRows: number;
-  embeddingRows: number;
+  lexicalDocuments: number;
+  lexicalTerms: number;
   orphanEvidence: number;
-  staleFts: number;
-  inactiveFts: number;
-  staleEmbedding: number;
-  inactiveEmbedding: number;
+  staleLexicalDocuments: number;
+  inactiveLexicalDocuments: number;
   strandedByReason: {
     payload: number;
     evidence: number;
     audience: number;
-    embedding: number;
-    fts: number;
+    lexical: number;
   };
 }
 
+export interface MemorySearchMetrics {
+  searches: number;
+  recentReads: number;
+  returnedItems: number;
+  rejectedCalls: number;
+  lastSearchAt: number | null;
+}
+
 export interface MemoryStatusSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   available: boolean;
   enabled: boolean;
   maintenance: boolean;
   readEnabled: boolean;
   writeEnabled: boolean;
   extractConfigured: boolean;
-  embedConfigured: boolean;
   extractModel: string;
-  embedModel: string;
+  toolReady: boolean;
   jobs: MemoryQueueSummary;
   counts: MemoryLedgerCounts;
+  searchMetrics: MemorySearchMetrics;
   providerRoutes: MemoryProviderRouteStats[];
   lastMaintenanceAt: number | null;
   extract: MemoryOperationSnapshot;
-  embed: MemoryOperationSnapshot;
 }
 
 export interface MemoryProbeResult {
-  target: 'memory.embedding' | 'memory.extract';
+  target: 'memory.extract';
   ok: boolean;
   checkedAt: number;
   latencyMs: number | null;
   canonicalModel: string | null;
   schemaValid: boolean;
-  dimensions: number | null;
   error: string | null;
   snapshot: MemoryStatusSnapshot;
 }
 
 export interface MemoryStatusServiceLike {
   getSnapshot(): Promise<MemoryStatusSnapshot>;
-  probeEmbedding(): Promise<MemoryProbeResult>;
   probeExtraction(): Promise<MemoryProbeResult>;
 }
 
 declare module 'koishi' {
   interface Tables {
-    memory_v2_meta: MemoryV2MetaRecord;
-    memory_v2_principal: MemoryV2PrincipalRecord;
-    memory_v2_context: MemoryV2ContextRecord;
-    memory_v2_event: MemoryV2EventRecord;
-    memory_v2_payload: MemoryV2PayloadRecord;
-    memory_v2_evidence: MemoryV2EvidenceRecord;
-    memory_v2_head: MemoryV2HeadRecord;
-    memory_v2_embedding: MemoryV2EmbeddingRecord;
-    memory_v2_fts: MemoryV2FtsRecord;
-    memory_v2_work: MemoryV2WorkRecord;
-    memory_v2_cursor: MemoryV2CursorRecord;
-    memory_v2_suppression: MemoryV2SuppressionRecord;
-    memory_v2_audit: MemoryV2AuditRecord;
+    memory_v3_meta: MemoryV3MetaRecord;
+    memory_v3_principal: MemoryV3PrincipalRecord;
+    memory_v3_context: MemoryV3ContextRecord;
+    memory_v3_event: MemoryV3EventRecord;
+    memory_v3_payload: MemoryV3PayloadRecord;
+    memory_v3_evidence: MemoryV3EvidenceRecord;
+    memory_v3_head: MemoryV3HeadRecord;
+    memory_v3_lexical_document: MemoryV3LexicalDocumentRecord;
+    memory_v3_lexical_term: MemoryV3LexicalTermRecord;
+    memory_v3_work: MemoryV3WorkRecord;
+    memory_v3_cursor: MemoryV3CursorRecord;
+    memory_v3_suppression: MemoryV3SuppressionRecord;
+    memory_v3_audit: MemoryV3AuditRecord;
   }
 
   interface Context {

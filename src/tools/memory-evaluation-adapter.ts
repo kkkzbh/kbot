@@ -18,7 +18,7 @@ import {
   resolve,
 } from 'node:path';
 import type { Context } from 'koishi';
-import type { MemoryAddress, MemoryV2AuditRecord } from '../types/memory.js';
+import type { MemoryAddress, MemoryV3AuditRecord } from '../types/memory.js';
 import type {
   MemoryEvaluationAdapter,
   MemoryEvaluationAnswerJudge,
@@ -47,10 +47,10 @@ import {
 import {
   ModelConfigService,
   ModelRuntimeClient,
+  OpenAiConnectionExecutor,
   readModelConfigDocument,
   type ModelConnectionExecutor,
 } from '../plugins/model-config/index.js';
-import { OpenAiConnectionExecutor } from '../plugins/model-runtime/openai-executor.js';
 
 const EVALUATION_TMP_ROOT = '/var/tmp';
 const EVALUATION_TMP_PREFIX = 'qqbot-memory-eval-runtime-';
@@ -176,13 +176,13 @@ async function createRuntime(): Promise<EvaluationRuntime> {
     transactionOpen = true;
     for (const statement of MEMORY_LEDGER_SQLITE_DDL) sqlite.exec(statement);
     const existing = sqlite.prepare(
-      'SELECT "value" FROM "memory_v2_meta" WHERE "key" = ?',
+      'SELECT "value" FROM "memory_v3_meta" WHERE "key" = ?',
     ).get('schemaVersion');
     if (existing) {
-      throw new Error('Ephemeral Memory V2 schema metadata must begin empty.');
+      throw new Error('Ephemeral Memory V3 schema metadata must begin empty.');
     }
     sqlite.prepare(
-      'INSERT INTO "memory_v2_meta" ("key", "value", "updatedAt") VALUES (?, ?, ?)',
+      'INSERT INTO "memory_v3_meta" ("key", "value", "updatedAt") VALUES (?, ?, ?)',
     ).run('schemaVersion', String(MEMORY_LEDGER_SCHEMA_VERSION), Date.now());
     sqlite.exec('COMMIT');
     transactionOpen = false;
@@ -221,7 +221,7 @@ async function createRuntime(): Promise<EvaluationRuntime> {
   }
 }
 
-function parseRecallAudit(audit: MemoryV2AuditRecord | null): RecallAuditDetail {
+function parseRecallAudit(audit: MemoryV3AuditRecord | null): RecallAuditDetail {
   if (!audit?.detailJson) {
     throw new Error('Memory evaluation recall audit is missing.');
   }
@@ -258,10 +258,10 @@ function parseRecallAudit(audit: MemoryV2AuditRecord | null): RecallAuditDetail 
   return { selected };
 }
 
-class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
+class QqbotMemoryV3EvaluationAdapter implements MemoryEvaluationAdapter {
   readonly descriptor = {
     contractVersion: 1 as const,
-    runtime: 'qqbot-memory-v2' as const,
+    runtime: 'qqbot-memory-v3' as const,
     isolation: 'ephemeral' as const,
     adapterName: 'sqlite-runtime',
     adapterVersion: '1.0.0',
@@ -368,6 +368,8 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
         const speakerId = externalUserId(event.actorSubjectKey);
         const result = await runtime.store.ingestGroupArtifact({
           address,
+          kind: 'identity',
+          topicKey: event.memoryKey,
           content: event.content,
           retrievalText: event.retrievalText,
           evidenceMessageIds: [event.eventKey],
@@ -411,6 +413,8 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
         const actorId = externalUserId(event.actorSubjectKey);
         const result = await runtime.store.ingestAssistantCommitment({
           address,
+          kind: 'identity',
+          topicKey: event.memoryKey,
           content: event.content,
           retrievalText: event.retrievalText,
           evidenceMessageIds: [event.eventKey],
@@ -438,7 +442,7 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
               id: event.eventKey,
               role: 'ai',
               text: event.content,
-              speakerId: null,
+              speakerId: address.botSelfId,
               speakerName: null,
               ownerUserKey: null,
               isTarget: false,
@@ -465,6 +469,8 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
         const result = await runtime.store.appendAssertion({
           idempotencyKey: `evaluation:${digest(`${input.scenarioKey}:${event.memoryKey}`)}`,
           assertionType: runtimeAssertionType(event.assertionType),
+          kind: 'identity',
+          topicKey: event.memoryKey,
           subjectType: 'user',
           subjectKey: runtimeUserKey(event.ownerSubjectKey),
           actorKey: runtimeUserKey(event.actorSubjectKey),
@@ -491,7 +497,6 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
             excerpt: event.content,
             occurredAt: address.observedAt,
           }],
-          embeddingIdentity: null,
           createdAt: address.observedAt,
         });
         streamId = result.streamId;
@@ -554,8 +559,6 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
       {
         topK: input.limit,
         promptBudgetTokens: 100_000,
-        embeddingIdentity: null,
-        queryEmbedding: null,
         now: this.baseTime + input.occurredOffsetMs,
       },
     );
@@ -615,7 +618,7 @@ class QqbotMemoryV2EvaluationAdapter implements MemoryEvaluationAdapter {
 }
 
 export async function createMemoryEvaluationAdapter(): Promise<MemoryEvaluationAdapter> {
-  return new QqbotMemoryV2EvaluationAdapter();
+  return new QqbotMemoryV3EvaluationAdapter();
 }
 
 type AnswerJudgeRuntime = {

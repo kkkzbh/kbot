@@ -157,7 +157,7 @@ async function listEvaluationRuntimeDirectories(): Promise<Set<string>> {
   );
 }
 
-describe('built Memory V2 evaluation runtime', () => {
+describe('built Memory V3 evaluation runtime', () => {
   it('executes the production-owned ephemeral SQLite adapter and cleans its database', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'qqbot-memory-eval-runtime-test-'));
     temporaryDirectories.push(directory);
@@ -191,7 +191,7 @@ describe('built Memory V2 evaluation runtime', () => {
           audiencePolicy: 'sourceContext',
           audienceContextKeys: [],
           captureAudienceSubjectKeys: ['syn_u_owner', 'syn_u_peer'],
-          sensitivity: 'personal',
+          sensitivity: 'public',
           content: 'runtime-evaluation-pineapple',
           retrievalText: 'runtime-evaluation-pineapple',
           occurredOffsetMs: 1_000,
@@ -248,7 +248,7 @@ describe('built Memory V2 evaluation runtime', () => {
           audiencePolicy: 'sourceContext',
           audienceContextKeys: [],
           captureAudienceSubjectKeys: ['syn_u_owner', 'syn_u_peer'],
-          sensitivity: 'personal',
+          sensitivity: 'public',
           content: 'timeline-marker old',
           retrievalText: 'timeline-marker old',
           occurredOffsetMs: 1_300,
@@ -267,7 +267,7 @@ describe('built Memory V2 evaluation runtime', () => {
           audiencePolicy: 'sourceContext',
           audienceContextKeys: [],
           captureAudienceSubjectKeys: ['syn_u_owner', 'syn_u_peer'],
-          sensitivity: 'personal',
+          sensitivity: 'public',
           content: 'timeline-marker new',
           retrievalText: 'timeline-marker new',
           occurredOffsetMs: 1_400,
@@ -303,20 +303,6 @@ describe('built Memory V2 evaluation runtime', () => {
           qtype: 'groupArtifact',
           dimension: 'recall',
           occurredOffsetMs: 2_100,
-        },
-        {
-          queryKey: 'syn_q_assistant_commitment',
-          requesterSubjectKey: 'syn_u_owner',
-          contextKey: 'syn_c_direct',
-          channelType: 'direct',
-          currentAudienceSubjectKeys: ['syn_u_owner'],
-          query: 'cobalt',
-          relevantMemoryKeys: ['syn_a_assistant_commitment'],
-          forbiddenMemoryKeys: [],
-          expectedOrder: [],
-          qtype: 'singleHop',
-          dimension: 'recall',
-          occurredOffsetMs: 2_200,
         },
         {
           queryKey: 'syn_q_temporal',
@@ -382,7 +368,7 @@ describe('built Memory V2 evaluation runtime', () => {
       };
     };
     expect(report.counts.acceptedAssertions).toBe(5);
-    expect(report.counts.searchHits).toBeGreaterThanOrEqual(5);
+    expect(report.counts.searchHits).toBeGreaterThanOrEqual(4);
     expect(report.counts.explanations).toBe(report.counts.searchHits);
     expect(report.retrieval.recallAt10).toBe(1);
     expect(report.retrieval.evidenceRecallAt10).toBe(1);
@@ -478,7 +464,7 @@ describe('built Memory V2 evaluation runtime', () => {
         },
       })).resolves.toMatchObject({
         accepted: false,
-        reasonCodes: ['memory_group_artifact_evidence_untrusted'],
+        reasonCodes: ['memory_domain_attribution_invalid'],
       });
     } finally {
       await evaluationAdapter?.close();

@@ -5,7 +5,7 @@ import type {
 } from '../src/plugins/model-config/index.js';
 import {
   OpenAiConnectionExecutor,
-} from '../src/plugins/model-runtime/openai-executor.js';
+} from '../src/plugins/model-config/index.js';
 import {
   toManagedOpenAIModel,
 } from '../src/plugins/model-runtime/managed-model.js';
@@ -191,49 +191,6 @@ describe('managed OpenAI-compatible executor', () => {
     });
   });
 
-  it('normalizes embeddings and rejects invalid vector cardinality as a typed parse error', async () => {
-    const successful = createExecutor(mockFetch(async () => jsonResponse({
-      data: [
-        { embedding: [0.1, 0.2] },
-        { embedding: [0.3, 0.4] },
-      ],
-    })));
-    const target = createTarget({
-      modelType: 'embedding',
-      requestMode: null,
-      structuredOutputProtocol: null,
-      capabilities: {
-        chat: false,
-        embedding: true,
-        vision: false,
-        tools: false,
-        structuredOutput: false,
-      },
-    });
-
-    await expect(successful.execute({
-      operation: 'embedding',
-      target,
-      payload: { inputs: ['first', 'second'] },
-    })).resolves.toEqual({
-      vectors: [[0.1, 0.2], [0.3, 0.4]],
-    });
-
-    const invalid = createExecutor(mockFetch(async () => jsonResponse({
-      data: [{ embedding: [0.1] }],
-    })));
-    await expect(invalid.execute({
-      operation: 'embedding',
-      target,
-      payload: { inputs: ['first', 'second'] },
-    })).rejects.toMatchObject({
-      code: 'upstream_failed',
-      stage: 'parse',
-      upstreamStatus: 200,
-      providerCode: 'invalid_response',
-    });
-  });
-
   it('preserves provider status and safe error code without exposing response bodies', async () => {
     const executor = createExecutor(mockFetch(async () => jsonResponse(
       {
@@ -348,13 +305,10 @@ function createTarget(
       connectionId: 'primary',
       displayName: 'Chat',
       transportModel: 'provider-model',
-      modelType: 'chat',
       contextSize: 128_000,
       requestMode: 'chat_completions',
       structuredOutputProtocol: 'native_chat_json_schema',
       capabilities: {
-        chat: true,
-        embedding: false,
         vision: true,
         tools: true,
         structuredOutput: true,

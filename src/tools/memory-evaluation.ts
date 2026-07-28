@@ -311,7 +311,7 @@ const judgeResultSchema = z.object({
 
 const adapterDescriptorSchema = z.object({
   contractVersion: z.literal(1),
-  runtime: z.literal('qqbot-memory-v2'),
+  runtime: z.literal('qqbot-memory-v3'),
   isolation: z.literal('ephemeral'),
   adapterName: z.string().regex(SAFE_LABEL),
   adapterVersion: z.string().regex(/^[0-9]+(?:\.[0-9]+){0,2}$/u),

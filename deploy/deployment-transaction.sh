@@ -50,7 +50,7 @@ deployment_transaction_configure() {
     *) echo "[installer] invalid deployment transaction verify scope: ${verify_scope}" >&2; return 1 ;;
   esac
   case "${purpose}" in
-    ordinary|memory-v2) ;;
+    ordinary|memory-v3) ;;
     *) echo "[installer] invalid deployment transaction purpose: ${purpose}" >&2; return 1 ;;
   esac
   case "${activation_mode}" in
@@ -147,7 +147,7 @@ deployment_transaction_load_existing() {
     return 2
   fi
   case "${phase}" in
-    offline-inhibited|offline-snapshot-ready|app-swap-intent|app-previous-moved|offline-app-swapped|installed-stopped|offline-restore-verification|runtime-bootstrap|runtime-probes|runtime-backfill|runtime-final) ;;
+    offline-inhibited|offline-snapshot-ready|app-swap-intent|app-previous-moved|offline-app-swapped|installed-stopped|offline-restore-verification|runtime-bootstrap|runtime-final) ;;
     *) echo "[installer] invalid persisted deployment phase: ${phase:-missing}" >&2; return 2 ;;
   esac
   case "${snapshot_complete}" in 0|1) ;; *) return 2 ;; esac
@@ -604,8 +604,7 @@ deployment_transaction_transfer_runtime_ownership() {
 deployment_transaction_mark_runtime_phase() {
   local next_phase="$1"
   case "${DEPLOYMENT_TRANSACTION_PHASE:-}:${next_phase}" in
-    runtime-bootstrap:runtime-probes|runtime-bootstrap:runtime-final|runtime-probes:runtime-backfill|runtime-backfill:runtime-final) ;;
-    runtime-probes:runtime-probes|runtime-backfill:runtime-backfill|runtime-final:runtime-final) ;;
+    runtime-bootstrap:runtime-final|runtime-final:runtime-final) ;;
     *) echo "[installer] invalid deployment transaction runtime transition: ${DEPLOYMENT_TRANSACTION_PHASE:-unset} -> ${next_phase}" >&2; return 1 ;;
   esac
   DEPLOYMENT_TRANSACTION_PHASE="${next_phase}"
@@ -662,7 +661,7 @@ deployment_transaction_execute_activated_failure() {
       DEPLOYMENT_TRANSACTION_FAILURE_ACTION="keep-installed-stopped"
       "${stop_stack_callback}"
       ;;
-    runtime-bootstrap|runtime-probes|runtime-backfill|runtime-final)
+    runtime-bootstrap|runtime-final)
       DEPLOYMENT_TRANSACTION_FAILURE_ACTION="stop-and-roll-forward"
       "${stop_stack_callback}"
       ;;

@@ -33,7 +33,6 @@ export interface ModelPageConfigurationLoadResult {
 export const MODEL_SETTING_WORKLOAD_ORDER = [
   'main.chat',
   'memory.extract',
-  'memory.embedding',
   'naturalTrigger.decision',
   'affinity.analysis',
   'agent.subagent.default',
@@ -89,18 +88,13 @@ export function nextCatalogModelId(
 export function createCatalogModelProfile(args: {
   connection: ModelConfigDraft['connections'][number];
   entry: ModelCatalogEntry;
-  modelType: ModelDefinition['modelType'];
   contextSize: number;
   existingIds: readonly string[];
 }): ModelDefinition {
-  const { connection, entry, modelType } = args;
-  const requestMode = modelType === 'embedding'
-    ? null
-    : entry.requestMode
-      ?? (connection.adapter === 'codexBridge' ? 'responses' : 'chat_completions');
-  const structuredOutputProtocol = modelType === 'chat'
-    ? entry.structuredOutputProtocol
-    : null;
+  const { connection, entry } = args;
+  const requestMode = entry.requestMode
+    ?? (connection.adapter === 'codexBridge' ? 'responses' : 'chat_completions');
+  const structuredOutputProtocol = entry.structuredOutputProtocol;
   if (
     structuredOutputProtocol
     && requestMode
@@ -117,16 +111,13 @@ export function createCatalogModelProfile(args: {
     connectionId: connection.id,
     displayName: entry.displayName,
     transportModel: entry.transportModel,
-    modelType,
     contextSize: args.contextSize,
     requestMode,
     structuredOutputProtocol,
     capabilities: {
-      chat: modelType === 'chat',
-      embedding: modelType === 'embedding',
-      vision: modelType === 'chat' && tags.has('vision'),
-      tools: modelType === 'chat' && tags.has('tools'),
-      structuredOutput: modelType === 'chat' && structuredOutputProtocol !== null,
+      vision: tags.has('vision'),
+      tools: tags.has('tools'),
+      structuredOutput: structuredOutputProtocol !== null,
     },
     timeoutMs: 180_000,
     requestDefaults: {},
@@ -285,6 +276,15 @@ export function isModelCompatible(
     && supportsWorkloadProtocol(workload, model);
 }
 
+export function compatibleConnectionIds(
+  draft: ModelConfigDraft,
+  workload: ModelWorkload,
+): ReadonlySet<string> {
+  return new Set(draft.models
+    .filter((model) => isModelCompatible(workload, model))
+    .map((model) => model.connectionId));
+}
+
 export function structuredOutputProtocolsForRequestMode(
   requestMode: ChatRequestMode,
 ): readonly StructuredOutputProtocol[] {
@@ -317,9 +317,6 @@ export function withStructuredOutputProtocol(
   model: ModelDefinition,
   protocol: ModelDefinition['structuredOutputProtocol'],
 ): ModelDefinition {
-  if (model.modelType !== 'chat' || model.requestMode === null) {
-    throw new Error('只有 chat model 可以设置 structured output protocol。');
-  }
   if (
     protocol !== null
     && !structuredOutputProtocolsForRequestMode(model.requestMode).includes(protocol)

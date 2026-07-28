@@ -1010,6 +1010,7 @@ async function prepareAutomationExecutionContext(
   const stickerArtifacts = resolveStickerCapabilityArtifacts(sourceRoom.preset?.trim() || null);
   const currentState = ((session as Session & { state?: Record<string, unknown> }).state ?? {}) as Record<string, unknown>;
   currentState.qqSticker = stickerArtifacts.state as unknown as Record<string, unknown>;
+  currentState.qqbotExecutionRoute = 'automation';
   (session as Session & { state?: Record<string, unknown> }).state = currentState;
 
   const voiceRuntime = createVoiceRuntimeConfigFromEnv();

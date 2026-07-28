@@ -2,9 +2,8 @@ import type { Context, Session } from 'koishi';
 import type {
   MemoryAddress,
   MemoryLedgerItem,
-  MemoryV2AuditRecord,
+  MemoryV3AuditRecord,
 } from '../../types/memory.js';
-import type { ModelRuntimeClient } from '../model-config/index.js';
 import type { MemoryRuntimeConfig } from './config.js';
 import {
   resolveCurrentMemoryAudience,
@@ -12,7 +11,7 @@ import {
 } from './address.js';
 import { buildMemoryReferenceBlock } from './format.js';
 import type { MemoryStatusService } from './status.js';
-import type { MemoryEmbeddingIdentity, MemoryStore } from './store.js';
+import type { MemoryStore } from './store.js';
 
 function commandAddress(session: Session): MemoryAddress | null {
   const userId = session.userId?.trim();
@@ -53,15 +52,6 @@ function commandAddress(session: Session): MemoryAddress | null {
   };
 }
 
-function embeddingIdentity(modelRuntime: ModelRuntimeClient): MemoryEmbeddingIdentity | null {
-  const binding = modelRuntime.resolve('memory.embedding');
-  if (!binding.target) return null;
-  return {
-    canonicalModel: binding.target.canonicalModel,
-    modelRevision: binding.revision,
-  };
-}
-
 function maintenanceMessage(runtime: MemoryRuntimeConfig): string | null {
   return runtime.maintenance ? '记忆系统处于维护模式，此操作暂不可用。' : null;
 }
@@ -70,7 +60,7 @@ function assertOperational(runtime: MemoryRuntimeConfig): string | undefined {
   return maintenanceMessage(runtime) ?? undefined;
 }
 
-function parseWhy(row: MemoryV2AuditRecord | null): string {
+function parseWhy(row: MemoryV3AuditRecord | null): string {
   if (!row?.detailJson) return '上一轮没有长期记忆召回记录。';
   const detail = JSON.parse(row.detailJson) as { selected?: Array<{ streamId: string; revision: number; reasonCode: string; score: number }> };
   if (!detail.selected?.length) return '上一轮没有实际注入长期记忆。';
@@ -109,7 +99,6 @@ export function registerMemoryCommands(
   store: MemoryStore,
   statusService: MemoryStatusService,
   runtime: MemoryRuntimeConfig,
-  modelRuntime: ModelRuntimeClient,
 ): void {
   ctx.command('memory', '长期记忆管理');
 
@@ -119,7 +108,7 @@ export function registerMemoryCommands(
       `memory v${snapshot.schemaVersion}: ${snapshot.enabled ? 'enabled' : 'disabled'}${snapshot.maintenance ? ' / maintenance' : ''}`,
       `read/write: ${snapshot.readEnabled ? 'on' : 'off'} / ${snapshot.writeEnabled ? 'on' : 'off'}`,
       `extract: ${snapshot.extractConfigured ? snapshot.extractModel : 'disabled'}`,
-      `embedding: ${snapshot.embedConfigured ? snapshot.embedModel : 'disabled'}`,
+      `tool: ${snapshot.toolReady ? 'ready' : 'unavailable'}`,
       `ledger: active ${snapshot.counts.active}, review ${snapshot.counts.pendingReview}, stranded ${snapshot.counts.stranded}`,
       `work: pending ${snapshot.jobs.pending}, leased ${snapshot.jobs.leased}, dead ${snapshot.jobs.deadLetter}`,
     ].join('\n');
@@ -133,7 +122,6 @@ export function registerMemoryCommands(
     const address = await resolveCurrentMemoryAudience(session, baseAddress);
     const rows = await store.listForContext(
       address,
-      null,
       address.observedAt,
     );
     return buildMemoryReferenceBlock(rows.slice(0, 20), 1600) ?? '当前没有可展示的长期记忆。';
@@ -161,7 +149,6 @@ export function registerMemoryCommands(
       streamId: streamId.trim(),
       actor: { userKey: address.userKey, isDirect: true },
       decision,
-      embeddingIdentity: decision === 'approve' ? embeddingIdentity(modelRuntime) : null,
     });
     return decision === 'approve' ? '已批准该记忆。' : '已拒绝并清除该记忆内容。';
   });
@@ -172,8 +159,6 @@ export function registerMemoryCommands(
     const address = commandAddress(session);
     if (!address || !streamId?.trim()) return '缺少记忆 streamId。';
     const explicit = String(contexts ?? '').split(',').map((item) => item.trim()).filter(Boolean);
-    const identity = embeddingIdentity(modelRuntime);
-    if (!identity) return 'memory.embedding 尚未配置，无法更新记忆 revision。';
     const audienceSnapshots = explicit.length
       ? await resolveExplicitMemoryAudiences(session, address, explicit)
       : {};
@@ -183,7 +168,6 @@ export function registerMemoryCommands(
       audiencePolicy: explicit.length ? 'explicitContexts' : 'subjectAllContexts',
       audienceContextKeys: explicit,
       audienceSnapshots,
-      embeddingIdentity: identity,
     });
     return '已记录记忆主体的跨上下文授权。';
   });

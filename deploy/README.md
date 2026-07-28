@@ -93,15 +93,14 @@ already have committed new writes.
 
 Before the first offline mutation, the installer disables `qqbot.target` and
 atomically persists `/opt/qqbot/shared/deployment-transaction.state`. The
-target remains disabled across reboots while bootstrap verification, the
-three extraction and three embedding probes, and the final `stranded=0` gate
-are incomplete. A later installer invocation resumes the recorded phase even
-when the database already reports schema V2. Offline interruptions restore
-the paired snapshot; runtime-owned interruptions keep the V2 application and
-database paired and continue roll-forward. Only the final successful verifier
-re-enables `qqbot.target` and clears the transaction record.
+target remains disabled across reboots while the application/database swap and
+runtime verification are incomplete. A later installer invocation resumes the
+recorded phase even when the database already reports schema V3. Offline
+interruptions restore the paired snapshot; runtime-owned interruptions keep the
+V3 application and database paired and continue roll-forward. Only the final
+successful verifier re-enables `qqbot.target` and clears the transaction record.
 
-`qqbot-koishi.service` publishes a private process-bound Memory V2 readiness
+`qqbot-koishi.service` publishes a private process-bound Memory V3 readiness
 marker under `/run/qqbot` after strict schema and live model-binding startup
 validation. Host verification requires the marker PID to match systemd's
 current `MainPID`; an HTTP listener without the Memory plugin is not considered

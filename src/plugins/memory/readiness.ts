@@ -15,7 +15,6 @@ export interface MemoryReadinessMarker {
   schemaVersion: typeof MEMORY_LEDGER_SCHEMA_VERSION;
   appliedModelRevision: number;
   extractionModel: string;
-  embeddingModel: string;
   readyAt: number;
 }
 
@@ -61,7 +60,6 @@ export function publishMemoryReadinessMarker(
     schemaVersion: MEMORY_LEDGER_SCHEMA_VERSION,
     appliedModelRevision: input.appliedModelRevision,
     extractionModel: input.extractionModel,
-    embeddingModel: input.embeddingModel,
     readyAt: Date.now(),
   };
   const temporaryPath = `${path}.tmp.${process.pid}`;

@@ -122,7 +122,7 @@ function writeCanonicalModelConfig(
   writeFileSync(
     path,
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       savedRevision: 1,
       appliedRevision: 1,
       updatedAt: '2026-07-26T00:00:00.000Z',
@@ -143,13 +143,10 @@ function writeCanonicalModelConfig(
           connectionId,
           displayName: 'Test chat model',
           transportModel: 'provider-model',
-          modelType: 'chat',
           contextSize: 131072,
           requestMode: 'chat_completions',
           structuredOutputProtocol: 'native_chat_json_schema',
           capabilities: {
-            chat: true,
-            embedding: false,
             vision: true,
             tools: true,
             structuredOutput: true,
@@ -161,7 +158,6 @@ function writeCanonicalModelConfig(
       bindings: [
         mainBinding,
         { workload: 'memory.extract', mode: 'disabled' },
-        { workload: 'memory.embedding', mode: 'disabled' },
         { workload: 'affinity.analysis', mode: 'inheritMain' },
         { workload: 'naturalTrigger.decision', mode: 'disabled' },
         { workload: 'agent.subagent.default', mode: 'inheritInvocation' },

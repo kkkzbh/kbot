@@ -169,6 +169,18 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     riskLevel: 'low',
     source: 'project',
   }),
+  buildCatalogEntry({
+    toolName: 'memory_search',
+    title: '记忆检索',
+    category: 'builtin',
+    description: '按需检索已经通过权限、归因和完整性校验的长期记忆。',
+    compatibility: 'compatible',
+    compatibilityNote: '主 Agent 与自动化可用；运行时会硬拒绝所有 Sub-Agent 调用。',
+    hardDependencies: [],
+    relatedTools: [],
+    riskLevel: 'low',
+    source: 'project',
+  }),
   buildAgentOnlyCatalogEntry({
     toolName: 'qqbot_attachment_replay',
     title: '回放附件引用',

@@ -5,9 +5,6 @@ export interface Config {
   maintenance?: boolean;
   readEnabled?: boolean;
   writeEnabled?: boolean;
-  queryTopK?: number;
-  promptBudgetTokens?: number;
-  embedBatchSize?: number;
   extractIdleMs?: number;
   extractMessageBatch?: number;
   archiveDays?: number;
@@ -19,12 +16,9 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.object({
   enabled: Schema.boolean().description('是否启用本地长期记忆。'),
-  maintenance: Schema.boolean().description('记忆维护模式：只允许 schema/status 检查，关闭召回、提炼、审核、worker 和 backfill。'),
+  maintenance: Schema.boolean().description('记忆维护模式：只允许 schema/status 检查，关闭检索、提炼、审核和 worker。'),
   readEnabled: Schema.boolean().description('是否启用长期记忆召回。'),
   writeEnabled: Schema.boolean().description('是否启用长期记忆提炼写入。'),
-  queryTopK: Schema.natural().description('长期记忆召回条数上限。'),
-  promptBudgetTokens: Schema.natural().description('长期记忆注入 prompt 预算。'),
-  embedBatchSize: Schema.natural().description('单批 embedding 条数。'),
   extractIdleMs: Schema.natural().role('time').description('会话静默多久后触发记忆提炼。'),
   extractMessageBatch: Schema.natural().description('提炼时读取的最近消息条数。'),
   archiveDays: Schema.natural().description('低风险 episode 归档天数。'),
@@ -39,9 +33,6 @@ export interface MemoryRuntimeConfig {
   maintenance: boolean;
   readEnabled: boolean;
   writeEnabled: boolean;
-  queryTopK: number;
-  promptBudgetTokens: number;
-  embedBatchSize: number;
   extractIdleMs: number;
   extractMessageBatch: number;
   archiveDays: number;
@@ -77,9 +68,6 @@ export function toRuntimeConfig(config: Config): MemoryRuntimeConfig {
     maintenance: requireBooleanConfig(config, 'maintenance'),
     readEnabled: requireBooleanConfig(config, 'readEnabled'),
     writeEnabled: requireBooleanConfig(config, 'writeEnabled'),
-    queryTopK: requireNaturalConfig(config, 'queryTopK', 1),
-    promptBudgetTokens: requireNaturalConfig(config, 'promptBudgetTokens', 200),
-    embedBatchSize: requireNaturalConfig(config, 'embedBatchSize', 1),
     extractIdleMs: requireNaturalConfig(config, 'extractIdleMs', 10_000),
     extractMessageBatch: requireNaturalConfig(config, 'extractMessageBatch', 4),
     archiveDays: requireNaturalConfig(config, 'archiveDays', 7),

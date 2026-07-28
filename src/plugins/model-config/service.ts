@@ -774,27 +774,6 @@ function assertStableIdentities(
     }
   }
 
-  const currentModels = new Map(
-    current.models.map((model) => [
-      modelIdentity(model.connectionId, model.id),
-      model,
-    ]),
-  );
-  for (const model of draft.models) {
-    const previous = currentModels.get(
-      modelIdentity(model.connectionId, model.id),
-    );
-    if (previous && previous.modelType !== model.modelType) {
-      throw new ModelConfigError({
-        code: 'immutable_identity',
-        operation: 'save',
-        stage: 'validate',
-        connectionId: model.connectionId,
-        modelId: model.id,
-        message: `model ${model.connectionId}/${model.id} cannot change model type`,
-      });
-    }
-  }
 }
 
 function modelIdentity(connectionId: string, modelId: string): string {

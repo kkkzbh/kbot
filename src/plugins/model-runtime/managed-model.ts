@@ -11,10 +11,9 @@ import type {
 export function toManagedOpenAIModel(
   model: ModelDefinition,
 ): ManagedOpenAIModel {
-  const capabilities: ChatLunaModelCapability[] = [];
-  if (model.capabilities.chat) {
-    capabilities.push(ChatLunaModelCapability.TextInput);
-  }
+  const capabilities: ChatLunaModelCapability[] = [
+    ChatLunaModelCapability.TextInput,
+  ];
   if (model.capabilities.tools) {
     capabilities.push(ChatLunaModelCapability.ToolCall);
   }
@@ -24,14 +23,12 @@ export function toManagedOpenAIModel(
   return {
     id: model.id,
     transportModel: model.transportModel,
-    type: model.modelType === 'embedding' ? 'embeddings' : 'llm',
+    type: 'llm',
     contextSize: model.contextSize,
     capabilities,
     requestMode: model.requestMode === 'chat_completions'
       ? 'chatCompletions'
-      : model.requestMode === 'responses'
-        ? 'responses'
-        : undefined,
+      : 'responses',
     timeoutMs: model.timeoutMs,
     requestDefaults: {
       ...(model.requestDefaults.temperature === undefined

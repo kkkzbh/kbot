@@ -59,13 +59,10 @@ const modelDraft = {
     connectionId: 'openai',
     displayName: 'GPT Test',
     transportModel: 'gpt-test',
-    modelType: 'chat' as const,
     contextSize: 128_000,
     requestMode: 'responses' as const,
     structuredOutputProtocol: 'native_responses_json_schema' as const,
     capabilities: {
-      chat: true,
-      embedding: false,
       vision: true,
       tools: true,
       structuredOutput: true,
@@ -76,7 +73,6 @@ const modelDraft = {
   bindings: [
     { workload: 'main.chat', mode: 'dedicated' as const, connectionId: 'openai', modelId: 'gpt-test' },
     { workload: 'memory.extract', mode: 'disabled' as const },
-    { workload: 'memory.embedding', mode: 'disabled' as const },
     { workload: 'affinity.analysis', mode: 'inheritMain' as const },
     { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
     { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
@@ -174,7 +170,7 @@ describe('admin shared contracts', () => {
 
   it('shares strict aggregate, CAS mutation, and OAuth poll contracts', () => {
     const aggregate = modelAdminAggregateSchema.parse({
-      schemaVersion: 2,
+      schemaVersion: 3,
       savedRevision: 2,
       appliedRevision: 1,
       pending: true,

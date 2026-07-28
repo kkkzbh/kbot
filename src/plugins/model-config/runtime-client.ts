@@ -33,43 +33,41 @@ export interface ManagedStructuredOutput {
   readonly strict: boolean;
 }
 
+export interface ManagedToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly strict: boolean;
+}
+
+export interface ManagedToolCall {
+  readonly name: string;
+  readonly arguments: string;
+}
+
 export interface ManagedChatRequest {
   readonly messages: readonly ManagedChatMessage[];
   readonly structuredOutput?: ManagedStructuredOutput | null;
+  readonly tools?: readonly ManagedToolDefinition[];
+  readonly toolChoice?: string | null;
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
 }
 
-export interface ManagedEmbeddingRequest {
-  readonly inputs: readonly string[];
-}
-
 export interface ManagedChatResponse {
   readonly text: string;
+  readonly toolCalls?: readonly ManagedToolCall[];
   readonly raw?: unknown;
 }
 
-export interface ManagedEmbeddingResponse {
-  readonly vectors: readonly (readonly number[])[];
+export interface ModelRuntimeExecutionRequest {
+  readonly operation: 'chat';
+  readonly target: ResolvedModelTarget;
+  readonly payload: ManagedChatRequest;
+  readonly signal?: AbortSignal;
 }
 
-export type ModelRuntimeExecutionRequest =
-  | {
-      readonly operation: 'chat';
-      readonly target: ResolvedModelTarget;
-      readonly payload: ManagedChatRequest;
-      readonly signal?: AbortSignal;
-    }
-  | {
-      readonly operation: 'embedding';
-      readonly target: ResolvedModelTarget;
-      readonly payload: ManagedEmbeddingRequest;
-      readonly signal?: AbortSignal;
-    };
-
-export type ModelRuntimeExecutionResponse =
-  | ManagedChatResponse
-  | ManagedEmbeddingResponse;
+export type ModelRuntimeExecutionResponse = ManagedChatResponse;
 
 export interface ModelConnectionExecutor {
   execute(
@@ -84,13 +82,6 @@ export interface ModelConnectionExecutorRegistry {
 export interface ExecuteManagedChatInput {
   workload: ModelWorkload;
   request: ManagedChatRequest;
-  context?: ResolveModelBindingContext;
-  signal?: AbortSignal;
-}
-
-export interface ExecuteManagedEmbeddingInput {
-  workload: ModelWorkload;
-  request: ManagedEmbeddingRequest;
   context?: ResolveModelBindingContext;
   signal?: AbortSignal;
 }
@@ -139,6 +130,32 @@ export class ModelRuntimeClient {
     ) {
       throw invalidRuntimeRequest(input.workload, 'structuredOutput is invalid');
     }
+    if (input.request.tools !== undefined) {
+      if (
+        !Array.isArray(input.request.tools)
+        || input.request.tools.length === 0
+        || input.request.tools.some((tool) => (
+          typeof tool.name !== 'string'
+          || tool.name.trim().length === 0
+          || typeof tool.description !== 'string'
+          || typeof tool.parameters !== 'object'
+          || tool.parameters === null
+          || Array.isArray(tool.parameters)
+          || typeof tool.strict !== 'boolean'
+        ))
+      ) {
+        throw invalidRuntimeRequest(input.workload, 'tools are invalid');
+      }
+      const names = new Set(input.request.tools.map((tool) => tool.name));
+      if (
+        input.request.toolChoice
+        && !names.has(input.request.toolChoice)
+      ) {
+        throw invalidRuntimeRequest(input.workload, 'toolChoice references a missing tool');
+      }
+    } else if (input.request.toolChoice) {
+      throw invalidRuntimeRequest(input.workload, 'toolChoice requires tools');
+    }
     if (
       workloadRequiresNativeStructuredOutput(input.workload)
       && !input.request.structuredOutput
@@ -185,50 +202,10 @@ export class ModelRuntimeClient {
     return response as ManagedChatResponse;
   }
 
-  async executeEmbedding(
-    input: ExecuteManagedEmbeddingInput,
-  ): Promise<ManagedEmbeddingResponse> {
-    if (
-      !Array.isArray(input.request.inputs)
-      || input.request.inputs.length === 0
-      || input.request.inputs.some(
-        (value) => typeof value !== 'string' || value.length === 0,
-      )
-    ) {
-      throw invalidRuntimeRequest(
-        input.workload,
-        'embedding requests require non-empty inputs',
-      );
-    }
-    const response = await this.execute(
-      input.workload,
-      'embedding',
-      input.request,
-      input.context,
-      input.signal,
-    );
-    if (
-      typeof response !== 'object'
-      || response === null
-      || !('vectors' in response)
-      || !Array.isArray(response.vectors)
-      || response.vectors.some(
-        (vector) => (
-          !Array.isArray(vector)
-          || vector.some((value) => typeof value !== 'number' || !Number.isFinite(value))
-        ),
-      )
-      || response.vectors.length !== input.request.inputs.length
-    ) {
-      throw invalidRuntimeResponse(input.workload, 'embedding');
-    }
-    return response as ManagedEmbeddingResponse;
-  }
-
   private async execute(
     workload: ModelWorkload,
-    operation: 'chat' | 'embedding',
-    payload: ManagedChatRequest | ManagedEmbeddingRequest,
+    operation: 'chat',
+    payload: ManagedChatRequest,
     context: ResolveModelBindingContext | undefined,
     signal: AbortSignal | undefined,
   ): Promise<ModelRuntimeExecutionResponse> {
@@ -242,20 +219,8 @@ export class ModelRuntimeClient {
         message: `model workload is disabled: ${workload}`,
       });
     }
-    if (!resolved.target.model.capabilities[operation]) {
-      throw new ModelConfigError({
-        code: 'runtime_operation_invalid',
-        operation: 'execute',
-        stage: 'validate',
-        workload,
-        connectionId: resolved.target.connection.id,
-        modelId: resolved.target.model.id,
-        message: `${workload} model does not support ${operation}`,
-      });
-    }
     if (
-      operation === 'chat'
-      && 'structuredOutput' in payload
+      'structuredOutput' in payload
       && payload.structuredOutput
       && !resolved.target.model.capabilities.structuredOutput
     ) {
@@ -270,8 +235,22 @@ export class ModelRuntimeClient {
       });
     }
     if (
-      operation === 'chat'
-      && 'messages' in payload
+      'tools' in payload
+      && payload.tools
+      && !resolved.target.model.capabilities.tools
+    ) {
+      throw new ModelConfigError({
+        code: 'runtime_operation_invalid',
+        operation: 'execute',
+        stage: 'validate',
+        workload,
+        connectionId: resolved.target.connection.id,
+        modelId: resolved.target.model.id,
+        message: `${workload} model does not support tools`,
+      });
+    }
+    if (
+      'messages' in payload
       && containsImage(payload.messages)
       && !resolved.target.model.capabilities.vision
     ) {
@@ -300,18 +279,10 @@ export class ModelRuntimeClient {
     }
 
     try {
-      if (operation === 'chat') {
-        return await executor.execute({
-          operation,
-          target: resolved.target,
-          payload: payload as ManagedChatRequest,
-          signal,
-        });
-      }
       return await executor.execute({
         operation,
         target: resolved.target,
-        payload: payload as ManagedEmbeddingRequest,
+        payload,
         signal,
       });
     } catch (error) {
@@ -369,7 +340,7 @@ function invalidRuntimeRequest(
 
 function invalidRuntimeResponse(
   workload: ModelWorkload,
-  operation: 'chat' | 'embedding',
+  operation: 'chat',
 ): ModelConfigError {
   return new ModelConfigError({
     code: 'runtime_operation_invalid',

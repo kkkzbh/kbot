@@ -29,7 +29,7 @@ describe('canonical model config schema', () => {
     if (result.success) return;
     expect(result.error.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        path: ['bindings', 3, 'mode'],
+        path: ['bindings', 2, 'mode'],
         message: 'disabled is not allowed for affinity.analysis',
       }),
     ]));
@@ -94,11 +94,9 @@ describe('canonical model config schema', () => {
     expect(modelConfigDraftSchema.safeParse(dangling).success).toBe(false);
 
     const wrongCapability = createValidModelConfigDraft();
-    const embedding = wrongCapability.models.find(
-      (model) => model.id === 'primary-embedding',
-    );
-    if (!embedding) throw new Error('fixture is missing primary-embedding');
-    embedding.capabilities.embedding = false;
+    const main = wrongCapability.models.find((model) => model.id === 'primary-chat');
+    if (!main) throw new Error('fixture is missing primary-chat');
+    main.capabilities.tools = false;
     expect(modelConfigDraftSchema.safeParse(wrongCapability).success).toBe(false);
   });
 
@@ -160,28 +158,6 @@ describe('canonical model config schema', () => {
     codexModel.structuredOutputProtocol = 'native_responses_json_schema';
     expect(modelConfigDraftSchema.safeParse(codexResponses).success).toBe(true);
 
-    const codexEmbedding = createValidModelConfigDraft();
-    const codexEmbeddingModel = configureBridgeConnection(codexEmbedding, 'codexBridge');
-    configureAsEmbedding(codexEmbeddingModel);
-    const codexEmbeddingResult = modelConfigDraftSchema.safeParse(codexEmbedding);
-    expect(codexEmbeddingResult.success).toBe(false);
-    if (codexEmbeddingResult.success) return;
-    expect(codexEmbeddingResult.error.issues.map((issue) => issue.message)).toContain(
-      'codexBridge only supports chat model profiles',
-    );
-
-    const copilotEmbedding = createValidModelConfigDraft();
-    const copilotEmbeddingModel = configureBridgeConnection(
-      copilotEmbedding,
-      'copilotBridge',
-    );
-    configureAsEmbedding(copilotEmbeddingModel);
-    const copilotEmbeddingResult = modelConfigDraftSchema.safeParse(copilotEmbedding);
-    expect(copilotEmbeddingResult.success).toBe(false);
-    if (copilotEmbeddingResult.success) return;
-    expect(copilotEmbeddingResult.error.issues.map((issue) => issue.message)).toContain(
-      'copilotBridge only supports chat model profiles',
-    );
   });
 
   it('requires the main chat typed reply protocol', () => {
@@ -391,26 +367,6 @@ describe('ModelRuntimeClient', () => {
     });
   });
 
-  it('normalizes embedding transport responses and verifies vector cardinality', async () => {
-    const executor: ModelConnectionExecutor = {
-      async execute(request) {
-        if (request.operation === 'chat') return { text: 'unused' };
-        return {
-          vectors: request.payload.inputs.map((_, index) => [index, index + 1]),
-        };
-      },
-    };
-    const client = new ModelRuntimeClient(createRuntimeSnapshot(), new Map([
-      ['primary', executor],
-    ]));
-
-    await expect(client.executeEmbedding({
-      workload: 'memory.embedding',
-      request: { inputs: ['first', 'second'] },
-    })).resolves.toEqual({
-      vectors: [[0, 1], [1, 2]],
-    });
-  });
 });
 
 describe('ModelConfigError serialization', () => {
@@ -481,20 +437,6 @@ function configureBridgeConnection(
   };
   connection.catalogDriver = adapter;
   return model;
-}
-
-function configureAsEmbedding(model: ModelDefinition): void {
-  model.modelType = 'embedding';
-  model.requestMode = null;
-  model.structuredOutputProtocol = null;
-  model.capabilities = {
-    chat: false,
-    embedding: true,
-    vision: false,
-    tools: false,
-    structuredOutput: false,
-  };
-  model.requestDefaults = {};
 }
 
 function createRuntimeSnapshot(): ModelRuntimeSnapshot {

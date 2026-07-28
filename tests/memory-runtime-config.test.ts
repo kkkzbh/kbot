@@ -29,9 +29,6 @@ function featureConfig(): Config {
     maintenance: false,
     readEnabled: true,
     writeEnabled: true,
-    queryTopK: 4,
-    promptBudgetTokens: 800,
-    embedBatchSize: 8,
     extractIdleMs: 10_000,
     extractMessageBatch: 8,
     archiveDays: 30,
@@ -49,10 +46,10 @@ describe('memory runtime config', () => {
 
   it('fails directly when a required feature setting is absent', () => {
     const config = featureConfig();
-    delete config.embedBatchSize;
+    delete config.extractIdleMs;
 
     expect(() => toRuntimeConfig(config)).toThrow(
-      '长期记忆配置缺失或非法：embedBatchSize。',
+      '长期记忆配置缺失或非法：extractIdleMs。',
     );
   });
 });

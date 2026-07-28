@@ -231,8 +231,6 @@ function createRuntime(
         model: {
           id: 'vision',
           capabilities: {
-            chat: true,
-            embedding: false,
             vision: true,
             tools: false,
             structuredOutput: true,
