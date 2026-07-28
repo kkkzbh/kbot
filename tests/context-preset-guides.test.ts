@@ -26,7 +26,7 @@ describe('context preset block guides', () => {
     }
   });
 
-  it('shows the provider message shape and both token accounting stages', () => {
+  it('shows the provider message shape for a recent conversation round', () => {
     expect(chatHistoryExample.messages).toEqual([
       {
         role: 'user',
@@ -37,7 +37,5 @@ describe('context preset block guides', () => {
         content: '八点，可以。',
       },
     ]);
-    expect(chatHistoryExample.historyBudgetTokens).toBe(23);
-    expect(chatHistoryExample.finalCropTokens).toBe(38);
   });
 });

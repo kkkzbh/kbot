@@ -56,6 +56,7 @@ type BlockAnchor = Extract<Anchor, { type: 'block' }>;
 type HistoryAnchor = Extract<Anchor, { type: 'chatHistory' }>;
 type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemory'>;
 type EditableContextPresetBlock = Exclude<ContextPresetBlock, { type: 'longMemory' }>;
+type TokenLimitChoice = 'auto' | '1024' | '2048' | '4096' | '8192' | 'custom';
 
 const router = useRouter();
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
@@ -74,10 +75,19 @@ const loading = ref(false);
 const savingContext = ref(false);
 const savingRole = ref(false);
 const mutating = ref(false);
-const previewing = ref(false);
 const draggingBlockId = ref<string | null>(null);
+const customTokenLimitBlockId = ref('');
 let previewTimer: number | undefined;
 let previewSequence = 0;
+
+const tokenLimitOptions: Array<{ label: string; value: TokenLimitChoice }> = [
+  { label: '自动', value: 'auto' },
+  { label: '1K', value: '1024' },
+  { label: '2K', value: '2048' },
+  { label: '4K', value: '4096' },
+  { label: '8K', value: '8192' },
+  { label: '自定义', value: 'custom' },
+];
 
 const blockLabels: Record<ResolvedContextBlock['type'], string> = {
   role: '角色提示',
@@ -119,12 +129,16 @@ const selectedResolvedBlock = computed(() => (
 const selectedStoredBlock = computed<ContextPresetBlock | null>(() => (
   contextDraft.value?.blocks.find((block) => block.id === selectedBlockId.value) ?? null
 ));
+const selectedBlockType = computed<ResolvedContextBlock['type'] | null>(() => {
+  const type = selectedResolvedBlock.value?.type ?? selectedStoredBlock.value?.type ?? null;
+  return type === 'longMemory' ? null : type;
+});
 const selectedBudgetBlock = computed<BudgetedContextBlock | null>(() => {
   const block = selectedStoredBlock.value;
   return block && 'budgetPriority' in block ? block as BudgetedContextBlock : null;
 });
 const selectedBlockGuide = computed(() => {
-  const type = selectedResolvedBlock.value?.type;
+  const type = selectedBlockType.value;
   if (!type || type === 'role') return null;
   return contextBlockGuides[type as GuidedContextBlockType];
 });
@@ -137,6 +151,29 @@ const selectedBudgetLimitLabel = computed(() => {
   if (block.type === 'authorsNote') return '作者注 Token 上限';
   if (block.type === 'knowledge') return '知识 Token 上限';
   return 'Scratchpad Token 上限';
+});
+const selectedTokenLimitChoice = computed<TokenLimitChoice>({
+  get() {
+    const block = selectedBudgetBlock.value;
+    if (!block) return 'auto';
+    if (customTokenLimitBlockId.value === block.id) return 'custom';
+    if (block.maxTokens === null) return 'auto';
+    const preset = String(block.maxTokens);
+    return preset === '1024' || preset === '2048' || preset === '4096' || preset === '8192'
+      ? preset
+      : 'custom';
+  },
+  set(choice) {
+    const block = selectedBudgetBlock.value;
+    if (!block) return;
+    if (choice === 'custom') {
+      customTokenLimitBlockId.value = block.id;
+      if (block.maxTokens === null) block.maxTokens = 1024;
+      return;
+    }
+    if (customTokenLimitBlockId.value === block.id) customTokenLimitBlockId.value = '';
+    block.maxTokens = choice === 'auto' ? null : Number(choice);
+  },
 });
 
 const selectedRoleBlock = computed<RoleContextBlock | null>(() => (
@@ -292,12 +329,14 @@ async function selectContext(value: string | number | boolean | undefined): Prom
   }
 }
 
-async function requestPreview(): Promise<void> {
+async function requestPreview(scheduledSequence?: number): Promise<void> {
   const definition = contextDraft.value;
   if (!definition) return;
-  const sequence = ++previewSequence;
-  previewing.value = true;
-  preview.value = null;
+  if (scheduledSequence === undefined && previewTimer !== undefined) {
+    window.clearTimeout(previewTimer);
+    previewTimer = undefined;
+  }
+  const sequence = scheduledSequence ?? ++previewSequence;
   previewError.value = null;
   try {
     const result = await previewContextPreset(clone(definition));
@@ -312,16 +351,17 @@ async function requestPreview(): Promise<void> {
       message: errorText(error),
       details: apiErrorDetails(error),
     };
-  } finally {
-    if (sequence === previewSequence) previewing.value = false;
   }
 }
 
 function schedulePreview(): void {
-  preview.value = null;
   previewError.value = null;
   if (previewTimer !== undefined) window.clearTimeout(previewTimer);
-  previewTimer = window.setTimeout(() => void requestPreview(), 220);
+  const sequence = ++previewSequence;
+  previewTimer = window.setTimeout(() => {
+    previewTimer = undefined;
+    void requestPreview(sequence);
+  }, 220);
 }
 
 async function saveContext(): Promise<boolean> {
@@ -953,7 +993,7 @@ onBeforeUnmount(() => {
           <span>{{ previewError.message }}</span>
           <code v-if="previewErrorMeta()">{{ previewErrorMeta() }}</code>
         </div>
-        <div v-else-if="previewing || !preview" class="stack-loading">
+        <div v-else-if="!preview" class="stack-loading">
           正在解析草稿…
         </div>
         <div v-else class="context-stack">
@@ -983,7 +1023,7 @@ onBeforeUnmount(() => {
           </article>
         </div>
 
-        <div v-if="!previewError && !previewing && preview" class="add-block-tray">
+        <div v-if="!previewError && preview" class="add-block-tray">
           <button
             v-for="type in addableTypes"
             :key="type"
@@ -997,7 +1037,7 @@ onBeforeUnmount(() => {
 
       <section class="editor-panel panel">
         <div class="panel-head editor-head">
-          <h2>{{ selectedResolvedBlock ? blockLabels[selectedResolvedBlock.type] : '选择一个块' }}</h2>
+          <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
           <div class="block-tools">
             <el-button v-if="canDuplicateSelected" size="small" @click="duplicateSelectedBlock">
               复制
@@ -1008,13 +1048,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="selectedResolvedBlock" class="editor-body">
+        <div v-if="selectedBlockType" class="editor-body">
           <section v-if="selectedBlockGuide" class="block-guide">
             <p class="guide-summary">{{ selectedBlockGuide.summary }}</p>
-            <template v-if="selectedResolvedBlock.type === 'chatHistory'">
-              <p class="history-mechanism">
-                历史消息按原顺序作为独立 role/content 进入模型请求。当前输入由“当前输入”区块单独加入；群聊用户消息带参与者标记，私聊不带。
-              </p>
+            <template v-if="selectedBlockType === 'chatHistory'">
               <div class="history-example">
                 <div
                   v-for="message in chatHistoryExample.messages"
@@ -1024,18 +1061,11 @@ onBeforeUnmount(() => {
                   <span :class="['history-role', `is-${message.role}`]">{{ message.role }}</span>
                   <code>{{ message.content }}</code>
                 </div>
-                <div class="history-token-line">
-                  <span>历史区块计数约 {{ chatHistoryExample.historyBudgetTokens }} token</span>
-                  <span>最终裁剪计数约 {{ chatHistoryExample.finalCropTokens }} token</span>
-                </div>
               </div>
-              <p class="history-token-note">
-                这里只计算两条无 name、工具和媒体的示例消息，不含其他区块。最终裁剪计数包含 ChatLuna 当前的 message framing 与 reply priming；具体 tokenizer 与 Provider 最终 usage 可能不同。
-              </p>
             </template>
           </section>
 
-          <template v-if="selectedResolvedBlock.source === 'runtime'">
+          <template v-if="selectedResolvedBlock?.source === 'runtime'">
             <div class="runtime-actions">
               <span>此区块由运行时生成，没有预设配置项。</span>
               <el-button
@@ -1054,29 +1084,21 @@ onBeforeUnmount(() => {
                   <el-switch v-model="selectedBudgetBlock.enabled" />
                 </el-form-item>
                 <el-form-item :label="selectedBudgetLimitLabel">
-                  <div class="inline-field">
-                    <template v-if="selectedBudgetBlock.maxTokens === null">
-                      <span class="budget-mode">
-                        {{ selectedBudgetBlock.type === 'agentScratchpad' ? '不设上限' : '使用可用空间' }}
-                      </span>
-                      <el-button @click="setBlockMaxTokens(1024)">设置上限</el-button>
-                    </template>
-                    <template v-else>
-                      <el-input-number
-                        :model-value="selectedBudgetBlock.maxTokens"
-                        :min="1"
-                        @change="setBlockMaxTokens"
-                      />
-                      <el-button @click="setBlockMaxTokens(undefined)">改为自动</el-button>
-                    </template>
+                  <div class="token-limit-control">
+                    <el-segmented
+                      v-model="selectedTokenLimitChoice"
+                      :options="tokenLimitOptions"
+                    />
+                    <el-input-number
+                      v-if="selectedTokenLimitChoice === 'custom'"
+                      class="custom-token-limit"
+                      :model-value="selectedBudgetBlock.maxTokens"
+                      :min="1"
+                      controls-position="right"
+                      @change="setBlockMaxTokens"
+                    />
                   </div>
                 </el-form-item>
-                <p v-if="selectedBudgetBlock.type === 'chatHistory'" class="field-note wide">
-                  只限制聊天历史。系统从最新完整轮次向前取，达到上限后停止；最终仍可能被模型整体上下文裁剪。
-                </p>
-                <p v-else-if="selectedBudgetBlock.type === 'agentScratchpad'" class="field-note wide">
-                  只限制本次 Agent 的中间步骤和工具结果；设置上限后，超限会直接结束本次请求。
-                </p>
               </div>
 
               <template v-if="selectedRoleBlock">
@@ -1581,14 +1603,6 @@ onBeforeUnmount(() => {
   line-height: 1.7;
 }
 
-.history-mechanism {
-  max-width: 800px;
-  margin: 7px 0 0;
-  color: #59657a;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
 .history-example {
   max-width: 800px;
   margin-top: 14px;
@@ -1617,7 +1631,7 @@ onBeforeUnmount(() => {
   color: #3159a7;
   background: #e9f0ff;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -1629,30 +1643,10 @@ onBeforeUnmount(() => {
 .history-message code {
   min-width: 0;
   color: #253148;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.65;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.history-token-line {
-  display: flex;
-  gap: 8px 18px;
-  flex-wrap: wrap;
-  padding: 9px 12px;
-  border-top: 1px solid #dce3ee;
-  color: #45536a;
-  background: #fff;
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.history-token-note {
-  max-width: 800px;
-  margin: 7px 0 0;
-  color: #7d8798;
-  font-size: 10px;
-  line-height: 1.6;
 }
 
 .runtime-actions {
@@ -1701,12 +1695,20 @@ onBeforeUnmount(() => {
   grid-column: 1 / -1;
 }
 
-.budget-mode {
-  min-height: 32px;
-  display: inline-flex;
+.token-limit-control {
+  width: 100%;
+  display: flex;
   align-items: center;
-  color: #45536a;
-  font-size: 11px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.token-limit-control .el-segmented {
+  max-width: 100%;
+}
+
+.custom-token-limit {
+  width: 160px;
 }
 
 .form-grid {
@@ -1800,7 +1802,6 @@ onBeforeUnmount(() => {
   .workbench-grid {
     grid-template-columns: 204px minmax(0, 1fr);
   }
-
 }
 
 @media (max-width: 820px) {
@@ -1868,6 +1869,14 @@ onBeforeUnmount(() => {
   .history-message {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  .token-limit-control .el-segmented {
+    width: 100%;
+  }
+
+  .custom-token-limit {
+    width: 100%;
   }
 
   .editor-body {

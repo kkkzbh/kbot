@@ -30,8 +30,6 @@ export const chatHistoryExample = {
       content: '八点，可以。',
     },
   ] satisfies ChatHistoryExampleMessage[],
-  historyBudgetTokens: 23,
-  finalCropTokens: 38,
 } as const;
 
 export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuide> = {
