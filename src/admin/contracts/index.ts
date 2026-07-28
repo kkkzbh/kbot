@@ -105,7 +105,7 @@ export const operationalEventActionRequestSchema = z.object({
   action: z.enum(['acknowledge', 'retry']),
 });
 
-export const settingsSectionSchema = z.enum(['basic', 'features']);
+export const settingsSectionSchema = z.enum(['features']);
 
 export const voiceFeatureSettingKeys = [
   'QQ_VOICE_INPUT_ENABLED',
@@ -135,10 +135,16 @@ export const memoryFeatureSettingKeys = [
   'MEMORY_JOB_LOCK_TIMEOUT_MS',
 ] as const;
 
-export const dedicatedFeatureSettingKeys = [
-  ...voiceFeatureSettingKeys,
-  ...fileSystemToolSettingKeys,
-  ...memoryFeatureSettingKeys,
+export const naturalTriggerFeatureSettingKeys = [
+  'CHAT_NATURAL_TRIGGER_ENABLED',
+  'CHAT_NATURAL_TRIGGER_GROUPS',
+  'CHAT_NATURAL_TRIGGER_ALIASES',
+] as const;
+
+export const runtimeFeatureSettingKeys = [
+  'QQBOT_REALTIME_MESSAGE_ENABLED',
+  'QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT',
+  'QQBOT_REPLY_INTERRUPT_ENABLED',
 ] as const;
 
 export const settingsChangeSchema = z.object({

@@ -49,7 +49,7 @@ export type ManagedEnvField = {
   key: string;
   label: string;
   type: 'toggle' | 'text' | 'secret' | 'number';
-  section: 'features' | 'basic';
+  section: 'features';
 };
 
 type ExecResult = {
@@ -279,7 +279,7 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'MEMORY_ARCHIVE_DAYS', label: '记忆归档天数', type: 'number', section: 'features' },
   { key: 'MEMORY_MAX_JOB_RETRIES', label: '记忆任务重试', type: 'number', section: 'features' },
   { key: 'MEMORY_JOB_LOCK_TIMEOUT_MS', label: '记忆任务锁超时', type: 'number', section: 'features' },
-  { key: 'CHAT_NATURAL_TRIGGER_ALIASES', label: '触发别名', type: 'text', section: 'basic' },
+  { key: 'CHAT_NATURAL_TRIGGER_ALIASES', label: '触发别名', type: 'text', section: 'features' },
 ];
 
 export const ADMIN_ENV_KEYS = new Set(ADMIN_ENV_FIELDS.map((field) => field.key));

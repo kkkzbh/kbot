@@ -5,7 +5,6 @@ import { ElMessage } from 'element-plus';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import {
   Award,
-  Blocks,
   BookOpenCheck,
   ChevronDown,
   Cpu,
@@ -16,12 +15,12 @@ import {
   HeartHandshake,
   KeyRound,
   LayoutDashboard,
+  MessageCircleMore,
   MonitorPlay,
   RotateCw,
   School,
   ScrollText,
   ShieldCheck,
-  SlidersHorizontal,
   UserRoundCog,
   Volume2,
 } from '@lucide/vue';
@@ -59,6 +58,7 @@ const groups: NavGroup[] = [
     { key: 'models', label: '模型配置', path: '/intelligence/models', icon: Cpu },
     { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
+    { key: 'natural-trigger', label: '自然触发', path: '/intelligence/natural-trigger', icon: MessageCircleMore },
   ] },
   { label: '策略与权限', items: [{ key: 'policies', label: '功能与工具策略', path: '/policies', icon: ShieldCheck }] },
   { label: '扩展服务', items: [
@@ -78,10 +78,6 @@ const groups: NavGroup[] = [
     { key: 'genshin', label: '原神服务', path: '/extensions/genshin', icon: Gamepad2 },
     { key: 'tts', label: '语音服务', path: '/extensions/tts', icon: Volume2 },
   ] },
-  { label: '系统设置', items: [
-    { key: 'basic', label: '基础设置', path: '/system/basic', icon: SlidersHorizontal },
-    { key: 'features', label: '功能设置', path: '/system/features', icon: Blocks },
-  ] },
 ];
 
 const route = useRoute();
@@ -100,8 +96,7 @@ const filteredCommands = computed(() => {
     .filter((item) => !query || `${item.label} ${item.group}`.toLowerCase().includes(query));
 });
 const restartReasonLabels: Record<string, string> = {
-  basic: '基础设置',
-  features: '功能设置',
+  features: '运行功能配置',
   model: '模型配置',
   preset: '上下文预设',
   tts: '语音服务',

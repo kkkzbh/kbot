@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fileSystemToolSettingKeys } from '@contracts';
+import {
+  fileSystemToolSettingKeys,
+  runtimeFeatureSettingKeys,
+} from '@contracts';
 import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
@@ -47,6 +50,15 @@ const {
   load: loadFileSystemSettings,
   save: saveFileSystemSettings,
 } = useManagedFeatureSettings(fileSystemToolSettingKeys);
+const {
+  fields: runtimeFields,
+  draft: runtimeDraft,
+  clearSecrets: runtimeClearSecrets,
+  loading: runtimeLoading,
+  hasChanges: hasRuntimeChanges,
+  load: loadRuntimeSettings,
+  save: saveRuntimeSettings,
+} = useManagedFeatureSettings(runtimeFeatureSettingKeys);
 const memorySearchPolicy = computed(() =>
   state.value?.tools.catalog.find((tool: any) => tool.toolName === 'memory_search') ?? null);
 const featureOverrideDuplicate = computed(() => hasFeatureOverride(
@@ -69,6 +81,7 @@ async function load() {
   const [result] = await Promise.all([
     rawApi<any>('/policies'),
     loadFileSystemSettings(),
+    loadRuntimeSettings(),
   ]);
   state.value = result;
   featureOverrides.value = result.featureOverrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
@@ -103,6 +116,7 @@ async function save() {
       rawApi('/policies/features', { method: 'PATCH', body: rawJsonBody({ overrides: featureOverrides.value.map(({ featureKey,scopeKind,scopeId,enabled }) => ({ featureKey,scopeKind,scopeId,enabled })) }) }),
       rawApi('/policies/tools', { method: 'PATCH', body: rawJsonBody({ overrides: toolOverrides.value.map(({ toolName,routeProfile,scopeKind,scopeId,enabled }) => ({ toolName,routeProfile,scopeKind,scopeId,enabled })) }) }),
       hasFileSystemChanges.value ? saveFileSystemSettings() : Promise.resolve(false),
+      hasRuntimeChanges.value ? saveRuntimeSettings() : Promise.resolve(false),
     ]);
     ElMessage.success('功能与工具策略已保存');
     await load();
@@ -126,7 +140,7 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="!state || fileSystemLoading" @click="load">重新载入</el-button></template></PageHeader>
+  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="!state || fileSystemLoading || runtimeLoading" @click="load">重新载入</el-button></template></PageHeader>
   <article v-if="state" class="panel policy-panel">
     <el-tabs v-model="activeTab" class="policy-tabs">
       <el-tab-pane label="功能策略" name="features" />
@@ -134,12 +148,25 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <el-tab-pane label="会话数据" name="conversations" />
     </el-tabs>
     <template v-if="activeTab==='features'">
+      <section class="domain-settings">
+        <div class="panel-head subhead">
+          <div>
+            <h2>运行体验</h2>
+            <p>设置实时消息注入和生成期间的回复中断。</p>
+          </div>
+        </div>
+        <ManagedSettingsGrid
+          v-model="runtimeDraft"
+          v-model:clear-secrets="runtimeClearSecrets"
+          :fields="runtimeFields"
+        />
+      </section>
       <div class="panel-head subhead"><div><h2>功能范围覆盖</h2><p>未列出的范围继承 env 全局配置</p></div><el-button size="small" @click="openFeatureDialog">添加覆盖</el-button></div>
       <el-table v-if="featureOverrides.length" :data="featureOverrides" style="width:100%"><el-table-column prop="featureKey" label="功能" min-width="240" /><el-table-column prop="scopeKind" label="范围类型" width="140" /><el-table-column prop="scopeId" label="范围 ID" min-width="160" /><el-table-column label="启用" width="90"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="scope"><el-button text type="danger" @click="featureOverrides.splice(scope.$index,1)">移除</el-button></template></el-table-column></el-table>
       <EmptyState v-else title="没有功能覆盖" description="所有会话当前继承全局功能设置。" />
     </template>
     <template v-else-if="activeTab==='tools'">
-      <section class="file-system-settings">
+      <section class="domain-settings">
         <div class="panel-head subhead">
           <div>
             <h2>文件系统工具</h2>
@@ -183,8 +210,8 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 .policy-tabs :deep(.el-tabs__header){margin:0}
 .subhead{border-top:0}
 .policy-panel :deep(.el-table__cell){font-size:11px}
-.file-system-settings{padding:0 20px 18px;border-bottom:1px solid var(--line)}
-.file-system-settings .panel-head{padding-right:0;padding-left:0}
+.domain-settings{padding:0 20px 18px;border-bottom:1px solid var(--line)}
+.domain-settings .panel-head{padding-right:0;padding-left:0}
 .core-tool-row{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:16px 20px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#f8fafc}
 .core-tool-copy{display:grid;gap:3px;min-width:0}
 .core-tool-copy strong{font-size:14px;color:var(--ink)}

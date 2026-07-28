@@ -724,7 +724,7 @@ describe('independent admin API plugin', () => {
 
     const patchCtx = createKoaCtx({
       origin: 'https://admin.example.com',
-      params: { section: 'basic' },
+      params: { section: 'features' },
       body: { changes: [{ key: 'CHAT_NATURAL_TRIGGER_ALIASES', value: '小Q' }] },
     });
     await patchSettings(patchCtx);
@@ -736,7 +736,7 @@ describe('independent admin API plugin', () => {
     });
     await restart(restartCtx);
 
-    expect(restartForApplyReasons).toHaveBeenCalledWith(['basic']);
+    expect(restartForApplyReasons).toHaveBeenCalledWith(['features']);
     expect(restartCtx.status).toBe(200);
     expect(restartCtx.body).toEqual({
       targets: [{
@@ -1029,7 +1029,7 @@ describe('independent admin API plugin', () => {
 
     const badOrigin = createKoaCtx({
       origin: 'https://evil.example.com',
-      params: { section: 'basic' },
+      params: { section: 'features' },
       body: { changes: [{ key: 'CHAT_NATURAL_TRIGGER_ALIASES', value: '小Q' }] },
     });
     await patchSettings(badOrigin);

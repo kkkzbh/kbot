@@ -55,7 +55,7 @@ describe('resolveApplyRestartUnits', () => {
       'qqbot-koishi.service',
     ]);
     expect(resolveApplyRestartUnits(
-      ['basic'],
+      ['features'],
       resolveManagedServiceUnits('/tmp/qqbot/.env.server'),
     )).toEqual(['qqbot-koishi.service']);
   });

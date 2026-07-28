@@ -4,15 +4,11 @@ import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import { rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
-import {
-  dedicatedFeatureSettingKeys,
-  type SettingsField,
-  type SettingsSection,
-} from '@contracts';
+import type { SettingsField } from '@contracts';
 
-type SettingsMode = 'all' | 'system' | 'campus-auth' | 'hbu-jw' | 'zyh' | 'second-class' | 'chaoxing' | 'genshin';
+type SettingsMode = 'campus-auth' | 'hbu-jw' | 'zyh' | 'second-class' | 'chaoxing' | 'genshin';
 
-const props = defineProps<{ section: SettingsSection; mode: SettingsMode }>();
+const props = defineProps<{ mode: SettingsMode }>();
 const fields = ref<SettingsField[]>([]);
 const draft = reactive<Record<string, string>>({});
 const original = reactive<Record<string, string>>({});
@@ -21,9 +17,7 @@ const loading = ref(false);
 const saving = ref(false);
 const runtime = useRuntimeStore();
 
-const extensionPrefixes = ['HBU_', 'CAMPUS_', 'ZYH_', 'CHAOXING_', 'GENSHIN_'];
-const dedicatedFeatureKeys = new Set<string>(dedicatedFeatureSettingKeys);
-const modePrefixes: Partial<Record<SettingsMode, string[]>> = {
+const modePrefixes: Record<SettingsMode, string[]> = {
   'campus-auth': ['CAMPUS_AUTH_'],
   'hbu-jw': ['HBU_JW_'],
   zyh: ['ZYH_'],
@@ -33,10 +27,7 @@ const modePrefixes: Partial<Record<SettingsMode, string[]>> = {
 };
 const visibleFields = computed(() => fields.value.filter((field) => {
   const prefixes = modePrefixes[props.mode];
-  if (prefixes) return prefixes.some((prefix) => field.key.startsWith(prefix));
-  const extension = extensionPrefixes.some((prefix) => field.key.startsWith(prefix));
-  if (props.mode === 'system') return !extension && !dedicatedFeatureKeys.has(field.key);
-  return true;
+  return prefixes.some((prefix) => field.key.startsWith(prefix));
 }));
 const grouped = computed(() => {
   const result = new Map<string, SettingsField[]>();
@@ -54,15 +45,13 @@ function groupName(key: string) {
   if (key.startsWith('ZYH_')) return '志愿汇';
   if (key.startsWith('CHAOXING_')) return '学习通';
   if (key.startsWith('GENSHIN_')) return '原神服务';
-  if (key.startsWith('CHAT_NATURAL_')) return '自然触发';
-  if (key.startsWith('QQBOT_')) return '运行体验';
-  return '基础参数';
+  throw new Error(`扩展设置字段没有所属分组：${key}`);
 }
 
 async function load() {
   loading.value = true;
   try {
-    const result = await rawApi<any>(`/settings/${props.section}`);
+    const result = await rawApi<any>('/settings/features');
     fields.value = result.fields;
     for (const field of result.fields) {
       draft[field.key] = field.value ?? '';
@@ -86,7 +75,7 @@ async function save() {
   if (!changes.length) { ElMessage.info('当前页面没有变更'); return; }
   saving.value = true;
   try {
-    const result = await rawApi<any>(`/settings/${props.section}`, { method: 'PATCH', body: rawJsonBody({ changes }) });
+    const result = await rawApi<any>('/settings/features', { method: 'PATCH', body: rawJsonBody({ changes }) });
     runtime.updateApply(result);
     ElMessage.success('配置已原子写入，重启后生效');
     await load();
@@ -95,7 +84,7 @@ async function save() {
 }
 
 function handleSave() { save(); }
-watch(() => [props.section, props.mode], load);
+watch(() => props.mode, load);
 onMounted(() => { load(); window.addEventListener('admin-save', handleSave); });
 onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
 </script>
