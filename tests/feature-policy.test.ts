@@ -12,7 +12,7 @@ vi.mock('koishi', () => {
   };
 });
 
-import { apply, PRIVATE_DEFAULT_SCOPE_ID } from '../src/plugins/feature-policy/index.js';
+import { apply } from '../src/plugins/feature-policy/index.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -33,7 +33,6 @@ function createDatabase(seed: Record<string, Row[]> = {}) {
   const tables = new Map<string, Row[]>(
     Object.entries(seed).map(([table, rows]) => [table, rows.map(row => ({ ...row }))]),
   );
-  let nextOverrideId = 1;
 
   const ensure = (table: string): Row[] => {
     if (!tables.has(table)) tables.set(table, []);
@@ -58,9 +57,6 @@ function createDatabase(seed: Record<string, Row[]> = {}) {
     async create(table: string, row: Record<string, unknown>) {
       const rows = ensure(table);
       const next = { ...row } as Row;
-      if (table === 'feature_scope_override' && next.id == null) {
-        next.id = nextOverrideId++;
-      }
       rows.push(next);
       return { ...next };
     },
@@ -122,78 +118,30 @@ describe('feature policy service', () => {
         'chathub_room',
         'chathub_room_group_member',
         'chathub_user',
-        'feature_scope_override',
       ]),
     );
+    expect(tables).not.toContain('feature_scope_override');
   });
 
-  it('resolves defaults and scoped overrides', async () => {
+  it('resolves runtime feature settings without scope overrides', async () => {
     vi.stubEnv('QQ_VOICE_INPUT_ENABLED', 'true');
+    vi.stubEnv('QQBOT_REALTIME_MESSAGE_ENABLED', 'true');
     const { ctx } = createHarness();
     const service = ctx.featurePolicy as NonNullable<typeof ctx.featurePolicy>;
-
-    await service.saveFeatureOverrides([
-      {
-        featureKey: 'QQ_VOICE_INPUT_ENABLED',
-        scopeKind: 'private_default',
-        scopeId: PRIVATE_DEFAULT_SCOPE_ID,
-        enabled: false,
-      },
-      {
-        featureKey: 'QQ_VOICE_INPUT_ENABLED',
-        scopeKind: 'group',
-        scopeId: '10001',
-        enabled: false,
-      },
-    ]);
 
     await expect(
       service.resolveFeatureEnabled(
         { isDirect: true, userId: 'u1', channelId: 'p1' } as any,
         'QQ_VOICE_INPUT_ENABLED',
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
 
     await expect(
       service.resolveFeatureEnabled(
         { isDirect: false, userId: 'u1', guildId: '10001', channelId: '10001' } as any,
         'QQ_VOICE_INPUT_ENABLED',
       ),
-    ).resolves.toBe(false);
-
-  });
-
-  it('supports realtime-message defaults and group-only overrides', async () => {
-    vi.stubEnv('QQBOT_REALTIME_MESSAGE_ENABLED', 'false');
-    const { ctx } = createHarness();
-    const service = ctx.featurePolicy as NonNullable<typeof ctx.featurePolicy>;
-
-    await expect(
-      service.resolveFeatureEnabled(
-        { isDirect: false, userId: 'u1', guildId: '10001', channelId: '10001' } as any,
-        'QQBOT_REALTIME_MESSAGE_ENABLED',
-      ),
-    ).resolves.toBe(false);
-
-    await expect(
-      service.saveFeatureOverrides([
-        {
-          featureKey: 'QQBOT_REALTIME_MESSAGE_ENABLED',
-          scopeKind: 'private_default',
-          scopeId: PRIVATE_DEFAULT_SCOPE_ID,
-          enabled: true,
-        },
-      ]),
-    ).rejects.toThrow('实时消息不支持私聊默认作用域');
-
-    await service.saveFeatureOverrides([
-      {
-        featureKey: 'QQBOT_REALTIME_MESSAGE_ENABLED',
-        scopeKind: 'group',
-        scopeId: '10001',
-        enabled: true,
-      },
-    ]);
+    ).resolves.toBe(true);
 
     await expect(
       service.resolveFeatureEnabled(
@@ -210,7 +158,7 @@ describe('feature policy service', () => {
     ).resolves.toBe(false);
   });
 
-  it('lists console scopes and clears conversations by room target', async () => {
+  it('lists admin groups and clears conversations by room target', async () => {
     const { ctx, database } = createHarness({
       chathub_room: [
         { roomId: 1, roomName: '私聊房间', conversationId: 'conv-private', visibility: 'private', updatedTime: 10 },
@@ -225,9 +173,8 @@ describe('feature policy service', () => {
     });
     const service = ctx.featurePolicy as NonNullable<typeof ctx.featurePolicy>;
 
-    await expect(service.listAdminFeatureScopes()).resolves.toEqual([
-      expect.objectContaining({ scopeKind: 'private_default', scopeId: PRIVATE_DEFAULT_SCOPE_ID }),
-      expect.objectContaining({ scopeKind: 'group', scopeId: '20002', roomId: 2 }),
+    await expect(service.listAdminGroupScopes()).resolves.toEqual([
+      expect.objectContaining({ groupId: '20002', roomId: 2 }),
     ]);
 
     const targets = await service.listConversationTargets();
@@ -249,16 +196,6 @@ describe('feature policy service', () => {
 
   it('deletes private and group rooms with related records', async () => {
     const { ctx, database } = createHarness({
-      feature_scope_override: [
-        {
-          id: 1,
-          featureKey: 'QQ_VOICE_INPUT_ENABLED',
-          scopeKind: 'group',
-          scopeId: '20002',
-          enabled: 1,
-          updatedAt: 1,
-        },
-      ],
       chathub_user: [
         { userId: 'u1', defaultRoomId: 1, groupId: '0' },
         { userId: 'u2', defaultRoomId: 99, groupId: '0' },
@@ -312,9 +249,6 @@ describe('feature policy service', () => {
     await expect(database.get('chathub_room_group_member', { roomId: 2 })).resolves.toEqual([]);
     await expect(database.get('chatluna_message', { conversationId: 'conv-group' })).resolves.toEqual([]);
     await expect(database.get('chatluna_conversation', { id: 'conv-group' })).resolves.toEqual([]);
-    await expect(database.get('feature_scope_override', { id: 1 })).resolves.toEqual([
-      expect.objectContaining({ id: 1, scopeId: '20002' }),
-    ]);
   });
 
   it('rejects invalid room delete targets', async () => {

@@ -134,7 +134,6 @@ defineExpose({ refresh: load });
   <article class="panel service-panel">
     <div class="panel-head">
       <h2>服务管理</h2>
-      <el-button size="small" :loading="loading" @click="load()">刷新状态</el-button>
     </div>
     <div v-if="loadError" class="panel-error" role="alert">
       <div><strong>服务状态加载失败</strong><p>{{ loadError }}</p></div>

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { AdminAccessPolicy, AdminHttpError } from '../src/plugins/admin-api/access-policy.js';
+import {
+  AdminAccessPolicy,
+  AdminHttpError,
+} from '../src/plugins/shared/internal-access-policy.js';
 
 describe('admin Tailnet access policy', () => {
   it('accepts the configured Tailnet and SSH forwarding origins', () => {

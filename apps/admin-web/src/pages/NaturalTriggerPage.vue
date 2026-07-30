@@ -4,17 +4,21 @@ import {
   onBeforeUnmount,
   onMounted,
   ref,
+  watch,
 } from 'vue';
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   naturalTriggerAdminResponseSchema,
   naturalTriggerConfigPutSchema,
+  runtimeFeatureSettingKeys,
   type NaturalTriggerAdminResponse,
 } from '@contracts';
-import PageHeader from '@/components/PageHeader.vue';
 import { ApiError, api, jsonBody } from '@/api/client';
+import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import { useRuntimeStore } from '@/stores/runtime';
+import { useManagedFeatureSettings } from './managed-settings';
 
 type NaturalTriggerConfig = NaturalTriggerAdminResponse['config'];
 
@@ -24,11 +28,22 @@ const saved = ref<NaturalTriggerAdminResponse | null>(null);
 const draft = ref<NaturalTriggerConfig | null>(null);
 const loading = ref(false);
 const saving = ref(false);
+const {
+  fields: runtimeFields,
+  draft: runtimeDraft,
+  clearSecrets: runtimeClearSecrets,
+  hasChanges: hasRuntimeChanges,
+  load: loadRuntimeSettings,
+  save: saveRuntimeSettings,
+} = useManagedFeatureSettings(runtimeFeatureSettingKeys);
 
-const hasUnsavedChanges = computed(() => Boolean(
+const hasNaturalTriggerChanges = computed(() => Boolean(
   saved.value
   && draft.value
   && JSON.stringify(saved.value.config) !== JSON.stringify(draft.value),
+));
+const hasUnsavedChanges = computed(() => (
+  hasNaturalTriggerChanges.value || hasRuntimeChanges.value
 ));
 const selectedGroupOptions = computed(() => {
   const options = new Map(
@@ -90,7 +105,11 @@ async function load(): Promise<void> {
   if (loading.value) return;
   loading.value = true;
   try {
-    hydrate(await api('/natural-trigger', naturalTriggerAdminResponseSchema));
+    const [result] = await Promise.all([
+      api('/natural-trigger', naturalTriggerAdminResponseSchema),
+      loadRuntimeSettings(),
+    ]);
+    hydrate(result);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '自然触发配置加载失败');
   } finally {
@@ -99,13 +118,10 @@ async function load(): Promise<void> {
 }
 
 async function discardChanges(): Promise<void> {
-  if (!hasUnsavedChanges.value) {
-    await load();
-    return;
-  }
+  if (!hasUnsavedChanges.value) return;
   try {
     await ElMessageBox.confirm(
-      '当前自然触发草稿尚未保存。',
+      '当前自然触发与运行体验配置尚未保存。',
       '放弃变更？',
       {
         type: 'warning',
@@ -120,18 +136,26 @@ async function discardChanges(): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!saved.value || !draft.value || !hasUnsavedChanges.value) return;
+  if (
+    !saved.value
+    || !draft.value
+    || !hasUnsavedChanges.value
+    || runtime.restartInProgress
+  ) return;
   saving.value = true;
   try {
-    const result = await api('/natural-trigger', naturalTriggerAdminResponseSchema, {
-      method: 'PUT',
-      body: jsonBody(naturalTriggerConfigPutSchema, {
-        expectedRevision: saved.value.savedRevision,
-        config: draft.value,
-      }),
-    });
-    hydrate(result);
-    ElMessage.success('自然触发配置已保存，重启后生效');
+    if (hasNaturalTriggerChanges.value) {
+      const result = await api('/natural-trigger', naturalTriggerAdminResponseSchema, {
+        method: 'PUT',
+        body: jsonBody(naturalTriggerConfigPutSchema, {
+          expectedRevision: saved.value.savedRevision,
+          config: draft.value,
+        }),
+      });
+      hydrate(result);
+    }
+    if (hasRuntimeChanges.value) await saveRuntimeSettings();
+    ElMessage.success('自然触发配置已保存，可从右上角重启使其生效。');
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       try {
@@ -166,7 +190,7 @@ onBeforeRouteLeave(async () => {
   if (!hasUnsavedChanges.value) return true;
   try {
     await ElMessageBox.confirm(
-      '当前自然触发草稿尚未保存，离开页面会丢失修改。',
+      '当前自然触发与运行体验配置尚未保存，离开页面会丢失修改。',
       '离开自然触发？',
       {
         type: 'warning',
@@ -184,39 +208,43 @@ function handleSave(): void {
   void save();
 }
 
+function refreshPageWhenVisible(): void {
+  if (
+    document.visibilityState === 'visible'
+    && !hasUnsavedChanges.value
+    && !saving.value
+    && !runtime.restartInProgress
+  ) {
+    void load();
+  }
+}
+
+watch(
+  () => runtime.restartGeneration,
+  () => {
+    if (!hasUnsavedChanges.value) void load();
+  },
+);
+
 onMounted(() => {
   void load();
   window.addEventListener('admin-save', handleSave);
   window.addEventListener('beforeunload', beforeUnload);
+  window.addEventListener('focus', refreshPageWhenVisible);
+  document.addEventListener('visibilitychange', refreshPageWhenVisible);
 });
 onBeforeUnmount(() => {
   window.removeEventListener('admin-save', handleSave);
   window.removeEventListener('beforeunload', beforeUnload);
+  window.removeEventListener('focus', refreshPageWhenVisible);
+  document.removeEventListener('visibilitychange', refreshPageWhenVisible);
 });
 </script>
 
 <template>
-  <PageHeader
-    :saving="saving"
-    :save-disabled="!hasUnsavedChanges || !draft"
-    save-label="保存自然触发"
-    @save="save"
-  >
-    <template #actions>
-      <el-button :loading="loading" @click="discardChanges">
-        {{ hasUnsavedChanges ? '放弃变更' : '刷新状态' }}
-      </el-button>
-    </template>
-  </PageHeader>
-
   <el-skeleton v-if="loading && !draft" :rows="10" animated />
 
   <template v-else-if="draft && saved">
-    <section v-if="hasUnsavedChanges || saved.pending" class="trigger-status">
-      <el-tag v-if="hasUnsavedChanges" type="warning">有未保存修改</el-tag>
-      <el-tag v-else type="warning">等待重启</el-tag>
-    </section>
-
     <section class="form-section">
       <h2 class="section-title">启用范围</h2>
       <el-form label-position="top" class="settings-grid">
@@ -363,6 +391,15 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="form-section">
+      <h2 class="section-title">运行体验</h2>
+      <ManagedSettingsGrid
+        v-model="runtimeDraft"
+        v-model:clear-secrets="runtimeClearSecrets"
+        :fields="runtimeFields"
+      />
+    </section>
+
+    <section class="form-section">
       <h2 class="section-title">节流与保护</h2>
       <el-form label-position="top" class="settings-grid">
         <el-form-item label="最小回复间隔（秒）">
@@ -410,17 +447,19 @@ onBeforeUnmount(() => {
         </el-form-item>
       </el-form>
     </section>
+
+    <PendingChangesBar
+      v-if="hasUnsavedChanges"
+      :saving="saving"
+      :disabled="runtime.restartInProgress"
+      save-label="保存自然触发"
+      @discard="discardChanges"
+      @save="save"
+    />
   </template>
 </template>
 
 <style scoped>
-.trigger-status {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  margin-bottom: 16px;
-}
-
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

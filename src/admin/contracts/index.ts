@@ -22,6 +22,7 @@ import {
 } from '../../plugins/natural-trigger-config/types.js';
 
 export * from './memory.js';
+export * from './agent.js';
 
 export type AdminJsonValue =
   | null
@@ -164,7 +165,7 @@ export const naturalTriggerAdminResponseSchema = z.object({
   decisionBinding: naturalTriggerDecisionBindingSchema,
   voiceInputEnabled: z.boolean(),
   restartRequired: z.boolean(),
-  reasons: z.array(z.enum(['features', 'tts', 'naturalTrigger'])),
+  reasons: z.array(z.enum(['features', 'tts', 'naturalTrigger', 'model'])),
 }).strict();
 export type NaturalTriggerAdminResponse = z.infer<typeof naturalTriggerAdminResponseSchema>;
 
@@ -255,19 +256,6 @@ export const modelCatalogResponseSchema = z.object({
 
 export const modelOAuthPollRequestSchema = z.object({
   attemptId: z.string().trim().min(1),
-}).strict();
-
-export const modelApplyRequestSchema = z.object({
-  expectedRevision: z.number().int().positive(),
-}).strict();
-
-export const modelApplyResponseSchema = z.object({
-  accepted: z.literal(true),
-  savedRevision: z.number().int().positive(),
-  target: z.object({
-    unit: z.literal('qqbot-koishi.service'),
-    previousInvocationId: z.string().nullable(),
-  }).strict(),
 }).strict();
 
 export const stickerIndexMaintenanceResponseSchema = z.object({
@@ -525,7 +513,6 @@ export const ttsSampleRequestSchema = z.object({
   style: z.enum(['white', 'black']),
 });
 
-export const featureOverridesRequestSchema = z.object({ overrides: z.array(z.unknown()) });
 export const toolOverridesRequestSchema = z.object({ overrides: z.array(z.unknown()) });
 export const affinitySettingsRequestSchema = z.object({
   settings: z.object({
@@ -580,8 +567,6 @@ export type ModelConnectionAuthState = z.infer<typeof modelConnectionAuthStateSc
 export type ModelConnectionProbeResponse = z.infer<typeof modelConnectionProbeResponseSchema>;
 export type ModelCatalogEntry = z.infer<typeof modelCatalogEntrySchema>;
 export type ModelCatalogResponse = z.infer<typeof modelCatalogResponseSchema>;
-export type ModelApplyRequest = z.infer<typeof modelApplyRequestSchema>;
-export type ModelApplyResponse = z.infer<typeof modelApplyResponseSchema>;
 export type StickerIndexMaintenanceResponse = z.infer<typeof stickerIndexMaintenanceResponseSchema>;
 export type {
   ModelConfigAggregate,

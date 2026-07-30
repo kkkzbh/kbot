@@ -42,6 +42,12 @@ non-loopback browser origin must arrive through Tailscale Serve with its
 `Tailscale-User-Login` identity header. Host and Origin checks remain separate
 authorization boundaries for routing and mutations.
 
+The ChatLuna Agent Console is mounted at `/koishi-console`, with its WebSocket
+API at `/koishi-console/status`. A dedicated guard applies the same Host,
+loopback transport, and Tailscale identity checks to both HTTP and WebSocket
+traffic. Public Cloudflare bind hostnames cannot reach Console terminal, file,
+or MCP configuration capabilities.
+
 Install the Cloudflare Tunnel token on the server before deploying the HBU JW public bind page:
 
 ```bash
@@ -129,7 +135,7 @@ qqbot.target
   cloudflared-qqbot-genshin.service
 ```
 
-PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot, the independent admin workspace at `/`, and its authenticated HTTP API. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
+PMHQ starts the QQ client container. LLBot connects to PMHQ and exposes OneBot WebSocket on `127.0.0.1:3001`. Koishi connects to LLBot and serves the bot, the independent admin workspace at `/`, its authenticated HTTP API, and the guarded internal ChatLuna Agent Console at `/koishi-console`. The Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-hbu-jw.token` and exposes the HBU JW bind page through `jw.kkkzbh.cn`.
 The Genshin Cloudflare Tunnel unit uses `/etc/cloudflared/qqbot-genshin.token` and exposes the bind page through `genshin.kkkzbh.cn`.
 
 Quadlet is the only PMHQ lifecycle owner. Its healthcheck delays systemd readiness until `/health` succeeds, kills an unhealthy container, and lets systemd restart it. The dedicated `/opt/qqbot/shared/.env.pmhq` contains only PMHQ container environment values and is regenerated with mode `0600` during deploy. Podman's global restart-policy helper does not start PMHQ.

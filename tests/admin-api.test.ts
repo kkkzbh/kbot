@@ -121,6 +121,46 @@ function createScheduledRestartHandle(): ScheduledRestartHandle {
   };
 }
 
+function stubSuccessfulModelTransport(): void {
+  vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(JSON.stringify('tools' in body
+      ? {
+          output: [{
+            type: 'function_call',
+            name: 'qqbot_capability_probe',
+            arguments: '{"marker":"ok"}',
+          }],
+        }
+      : {
+          output: [{
+            content: [{ type: 'output_text', text: '{"ok":true}' }],
+          }],
+        }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }));
+}
+
+async function saveModelConfiguration(server: {
+  put: { mock: { calls: any[][] } };
+}): Promise<void> {
+  const saveModels = server.put.mock.calls.find(
+    (call) => call[0] === '/api/admin/v1/models',
+  )?.[1];
+  const request = createKoaCtx({
+    origin: 'https://admin.example.com',
+    body: {
+      expectedRevision: 2,
+      draft: createModelDraft(),
+      secretOperations: [{ connectionId: 'openai', operation: 'retain' }],
+    },
+  });
+  await saveModels?.(request);
+  expect(request.status, JSON.stringify(request.body)).toBe(200);
+}
+
 function createModelConfigService() {
   let draft = createModelDraft();
   let savedRevision = 2;
@@ -592,6 +632,7 @@ describe('independent admin API plugin', () => {
     const getPaths = server.get.mock.calls.map((call) => call[0]);
     const postPaths = server.post.mock.calls.map((call) => call[0]);
     const putPaths = server.put.mock.calls.map((call) => call[0]);
+    const patchPaths = server.patch.mock.calls.map((call) => call[0]);
     expect(getPaths).toContain('/api/admin/v1/overview');
     expect(getPaths).toContain('/api/admin/v1/events');
     expect(getPaths).toContain('/api/admin/v1/events/summary');
@@ -602,6 +643,8 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/logs');
     expect(getPaths).toContain('/api/admin/v1/models');
     expect(getPaths).toContain('/api/admin/v1/natural-trigger');
+    expect(getPaths).toContain('/api/admin/v1/agent');
+    expect(getPaths).toContain('/api/admin/v1/agent/skills/:id/content');
     expect(getPaths).toContain('/api/admin/v1/context-presets');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
@@ -622,7 +665,7 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/events/acknowledge-all');
     expect(postPaths).toContain('/api/admin/v1/events/:id/action');
     expect(postPaths).toContain('/api/admin/v1/apply/restart');
-    expect(postPaths).toContain('/api/admin/v1/models/apply');
+    expect(postPaths).not.toContain('/api/admin/v1/models/apply');
     expect(postPaths).toContain('/api/admin/v1/models/maintenance/sticker-index');
     expect(postPaths).toContain('/api/admin/v1/models/connections/:id/probe');
     expect(postPaths).toContain('/api/admin/v1/models/connections/:id/catalog');
@@ -633,6 +676,10 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/context-presets/preview');
     expect(postPaths).toContain('/api/admin/v1/role-presets');
     expect(postPaths).toContain('/api/admin/v1/memory/reviews/:streamId');
+    expect(postPaths).toContain('/api/admin/v1/agent/mcp/reload');
+    expect(postPaths).toContain('/api/admin/v1/agent/skills/reload');
+    expect(postPaths).toContain('/api/admin/v1/agent/sub-agents');
+    expect(postPaths).toContain('/api/admin/v1/agent/trigger/tasks');
     expect(postPaths).toContain('/api/admin/v1/memory/forget');
     expect(postPaths).not.toContain('/api/admin/v1/memory/backfill');
     expect(postPaths).toContain('/api/admin/v1/memory/probe/:workload');
@@ -641,7 +688,14 @@ describe('independent admin API plugin', () => {
     expect(postPaths).not.toContain('/api/admin/v1/memory/mutations');
     expect(putPaths).toContain('/api/admin/v1/models');
     expect(putPaths).toContain('/api/admin/v1/natural-trigger');
+    expect(putPaths).toContain('/api/admin/v1/agent/mcp/server');
+    expect(putPaths).toContain('/api/admin/v1/agent/skills/:id/config');
+    expect(putPaths).toContain('/api/admin/v1/agent/computer');
+    expect(putPaths).toContain('/api/admin/v1/agent/tools/:name');
+    expect(putPaths).toContain('/api/admin/v1/agent/trigger/tasks/:id');
     expect(putPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
+    expect(patchPaths).toContain('/api/admin/v1/policies/tools');
+    expect(patchPaths).not.toContain('/api/admin/v1/policies/features');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();
@@ -815,10 +869,8 @@ describe('independent admin API plugin', () => {
 
   it('serves and saves the typed natural trigger aggregate', async () => {
     const featurePolicy = {
-      listAdminFeatureScopes: vi.fn(async () => [
+      listAdminGroupScopes: vi.fn(async () => [
         {
-          scopeKind: 'group',
-          scopeId: '100',
           groupId: '100',
           roomId: 1,
           roomName: '测试群',
@@ -1042,18 +1094,20 @@ describe('independent admin API plugin', () => {
     const superviseScheduledRestart = vi
       .spyOn(AdminRuntimeManager.prototype, 'superviseScheduledRestart')
       .mockResolvedValue({ state: 'restart_observed', job: null });
+    stubSuccessfulModelTransport();
     const { server, modelConfig } = createRuntime(createTempDir());
-    const applyModels = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/models/apply',
+    await saveModelConfiguration(server);
+    const restart = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/apply/restart',
     )?.[1];
 
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
-      body: { expectedRevision: 2 },
+      body: {},
     });
-    await applyModels(request);
+    await restart(request);
 
-    expect(modelConfig.reserveApply).toHaveBeenCalledWith(2);
+    expect(modelConfig.reserveApply).toHaveBeenCalledWith(3);
     expect(getServiceStatus).toHaveBeenCalledWith('qqbot-koishi.service');
     expect(scheduleRestart).toHaveBeenCalledWith('qqbot-koishi.service');
     expect(superviseScheduledRestart).toHaveBeenCalledWith(
@@ -1064,12 +1118,11 @@ describe('independent admin API plugin', () => {
     expect(reservation?.release).not.toHaveBeenCalled();
     expect(request.status).toBe(200);
     expect(request.body).toEqual({
-      accepted: true,
-      savedRevision: 2,
-      target: {
+      targets: [{
         unit: 'qqbot-koishi.service',
         previousInvocationId: 'before-model-apply',
-      },
+      }],
+      apply: { restartRequired: false, reasons: [] },
     });
   });
 
@@ -1101,16 +1154,18 @@ describe('independent admin API plugin', () => {
       reason: 'job_failed',
       job: null,
     });
+    stubSuccessfulModelTransport();
     const { server, modelConfig } = createRuntime(createTempDir());
-    const applyModels = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/models/apply',
+    await saveModelConfiguration(server);
+    const restart = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/apply/restart',
     )?.[1];
 
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
-      body: { expectedRevision: 2 },
+      body: {},
     });
-    await applyModels(request);
+    await restart(request);
 
     const reservation = await modelConfig.reserveApply.mock.results[0]?.value;
     await vi.waitFor(() => expect(reservation?.release).toHaveBeenCalledOnce());
@@ -1147,16 +1202,18 @@ describe('independent admin API plugin', () => {
         cause: new Error('token=must-not-surface'),
       }),
     );
+    stubSuccessfulModelTransport();
     const { server, modelConfig } = createRuntime(createTempDir());
-    const applyModels = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/models/apply',
+    await saveModelConfiguration(server);
+    const restart = server.post.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/apply/restart',
     )?.[1];
 
     const request = createKoaCtx({
       origin: 'https://admin.example.com',
-      body: { expectedRevision: 2 },
+      body: {},
     });
-    await applyModels(request);
+    await restart(request);
 
     const reservation = await modelConfig.reserveApply.mock.results[0]?.value;
     expect(reservation?.release).toHaveBeenCalledOnce();
@@ -1170,40 +1227,11 @@ describe('independent admin API plugin', () => {
           stage: 'schedule',
           targetUnit: 'qqbot-koishi.service',
           transientUnit: 'qqbot-koishi-service-restart-123',
-          savedRevision: 2,
+          savedRevision: 3,
         },
       },
     });
     expect(JSON.stringify(request.body)).not.toContain('must-not-surface');
-  });
-
-  it('rejects a stale model apply revision before scheduling a restart', async () => {
-    const scheduleRestart = vi
-      .spyOn(AdminRuntimeManager.prototype, 'scheduleRestart');
-    const { server } = createRuntime(createTempDir());
-    const applyModels = server.post.mock.calls.find(
-      (call) => call[0] === '/api/admin/v1/models/apply',
-    )?.[1];
-
-    const request = createKoaCtx({
-      origin: 'https://admin.example.com',
-      body: { expectedRevision: 1 },
-    });
-    await applyModels(request);
-
-    expect(request.status).toBe(409);
-    expect(request.body).toMatchObject({
-      error: {
-        code: 'conflict',
-        details: {
-          operation: 'apply',
-          stage: 'compare',
-          expectedRevision: 1,
-          actualRevision: 2,
-        },
-      },
-    });
-    expect(scheduleRestart).not.toHaveBeenCalled();
   });
 
   it('serves root and nested SPA routes from explicit router handlers', async () => {

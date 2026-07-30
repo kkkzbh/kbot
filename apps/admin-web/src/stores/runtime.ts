@@ -25,6 +25,8 @@ export const useRuntimeStore = defineStore('runtime', {
     openEventCount: 0,
     restartRequired: false,
     restartReasons: [] as string[],
+    restartInProgress: false,
+    restartGeneration: 0,
     shellState: 'loading' as 'loading' | 'ready' | 'error',
     shellError: '',
   }),
@@ -46,6 +48,13 @@ export const useRuntimeStore = defineStore('runtime', {
     markOverviewFailed(message: string) {
       this.shellState = 'error';
       this.shellError = message;
+    },
+    beginRestart() {
+      this.restartInProgress = true;
+    },
+    finishRestart(completed: boolean) {
+      this.restartInProgress = false;
+      if (completed) this.restartGeneration += 1;
     },
   },
 });

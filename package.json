@@ -41,6 +41,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@koishijs/plugin-console": "5.30.11",
     "@koishijs/plugin-database-sqlite": "4.7.0",
     "@koishijs/plugin-http": "0.6.3",
     "@koishijs/plugin-proxy-agent": "0.3.3",
@@ -77,6 +78,7 @@
   "devDependencies": {
     "@types/node": "^25.3.0",
     "@types/qrcode": "^1.5.6",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-vue": "^6.0.5",
     "typescript": "^5.9.3",
     "vite": "^8.0.1",

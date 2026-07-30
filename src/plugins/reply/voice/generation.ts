@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Context, h, Logger, Schema, type Session, type Universal } from 'koishi';
 import type { FeaturePolicyServiceLike } from '../../../types/feature-policy.js';
-import type { ScopedFeatureKey } from '../../../types/feature-policy.js';
 import {
   createStickerHistoryLine,
   resolveStickerSelection,
@@ -1888,8 +1887,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   };
 
   const resolveReplyRunMode = async (session: SessionWithVoiceState): Promise<ReplyRunMode> => {
-    const replyInterruptFeatureKey = 'QQBOT_REPLY_INTERRUPT_ENABLED' as ScopedFeatureKey;
-    const replyInterruptEnabled = await featurePolicy.resolveFeatureEnabled(session, replyInterruptFeatureKey);
+    const replyInterruptEnabled = await featurePolicy.resolveFeatureEnabled(
+      session,
+      'QQBOT_REPLY_INTERRUPT_ENABLED',
+    );
     return replyInterruptEnabled ? 'interrupt' : 'queue';
   };
 

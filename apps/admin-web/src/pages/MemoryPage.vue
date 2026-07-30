@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useRoute, useRouter } from 'vue-router';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import {
   memoryAssertionsResponseSchema,
   memoryArchiveRequestSchema,
@@ -17,10 +17,11 @@ import {
   type MemoryAssertionItem,
   type MemoryOverviewResponse,
 } from '@contracts';
-import PageHeader from '@/components/PageHeader.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import { api, jsonBody } from '@/api/client';
+import { useRuntimeStore } from '@/stores/runtime';
 import { isMemoryDialogCancellation } from './memory-page-state';
 import { useManagedFeatureSettings } from './managed-settings';
 
@@ -29,6 +30,7 @@ type MemoryBinding = MemoryOverviewResponse['bindings']['extraction'];
 
 const route = useRoute();
 const router = useRouter();
+const runtime = useRuntimeStore();
 const activeView = ref<ViewId>(route.query.tab === 'reviews' ? 'reviews' : 'assertions');
 const overview = ref<MemoryOverviewResponse | null>(null);
 const rows = ref<MemoryAssertionItem[]>([]);
@@ -47,9 +49,11 @@ const {
   fields: memorySettingsFields,
   draft: memorySettingsDraft,
   clearSecrets: memorySettingsClearSecrets,
+  hasChanges: hasUnsavedChanges,
   load: loadMemorySettings,
   save: saveMemorySettings,
 } = useManagedFeatureSettings(memoryFeatureSettingKeys);
+let refreshTimer: number | undefined;
 
 const runtimeLabel = computed(() => {
   const status = overview.value?.status;
@@ -119,7 +123,20 @@ async function refresh(): Promise<void> {
   }
 }
 
+async function refreshData(): Promise<void> {
+  loading.value = true;
+  try {
+    await Promise.all([loadOverview(), loadRows()]);
+    loadError.value = '';
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '记忆数据加载失败';
+  } finally {
+    loading.value = false;
+  }
+}
+
 async function save(): Promise<void> {
+  if (!hasUnsavedChanges.value || runtime.restartInProgress) return;
   saving.value = true;
   try {
     const changed = await saveMemorySettings();
@@ -127,12 +144,26 @@ async function save(): Promise<void> {
       ElMessage.info('当前页面没有变更');
       return;
     }
-    ElMessage.success('长期记忆配置已保存，重启后生效');
+    ElMessage.success('长期记忆配置已保存，可从右上角重启使其生效。');
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '长期记忆配置保存失败');
   } finally {
     saving.value = false;
   }
+}
+
+async function discardChanges(): Promise<void> {
+  if (!hasUnsavedChanges.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃尚未保存的长期记忆配置。',
+      '放弃未保存修改？',
+      { type: 'warning', confirmButtonText: '放弃修改', cancelButtonText: '继续编辑' },
+    );
+  } catch {
+    return;
+  }
+  await loadMemorySettings();
 }
 
 function handleSave(): void {
@@ -168,7 +199,7 @@ async function forget(row: MemoryAssertionItem): Promise<void> {
       }),
     });
     ElMessage.success(`已遗忘 ${result.forgotten} 条记忆`);
-    await refresh();
+    await refreshData();
   } finally {
     activeOperation.value = '';
   }
@@ -198,7 +229,7 @@ async function review(row: MemoryAssertionItem, decision: 'approve' | 'reject'):
       },
     );
     ElMessage.success(decision === 'approve' ? '候选已批准' : '候选已拒绝');
-    await refresh();
+    await refreshData();
   } finally {
     activeOperation.value = '';
   }
@@ -228,7 +259,7 @@ async function archive(row: MemoryAssertionItem): Promise<void> {
       }),
     });
     ElMessage.success('记忆已归档');
-    await refresh();
+    await refreshData();
   } finally {
     activeOperation.value = '';
   }
@@ -288,6 +319,38 @@ function stateLabel(state: MemoryAssertionItem['state']): string {
   }[state];
 }
 
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (!hasUnsavedChanges.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+function refreshPageWhenVisible(): void {
+  if (
+    document.visibilityState === 'visible'
+    && !hasUnsavedChanges.value
+    && !saving.value
+    && !activeOperation.value
+    && !runtime.restartInProgress
+  ) {
+    void refresh();
+  }
+}
+
+onBeforeRouteLeave(async () => {
+  if (!hasUnsavedChanges.value) return true;
+  try {
+    await ElMessageBox.confirm(
+      '长期记忆配置仍有未保存修改。',
+      '离开长期记忆？',
+      { type: 'warning', confirmButtonText: '放弃并离开', cancelButtonText: '继续编辑' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+});
+
 watch(activeView, async () => {
   page.current = 1;
   filters.state = '';
@@ -299,29 +362,31 @@ watch(activeView, async () => {
   });
   await loadRows();
 });
+watch(
+  () => runtime.restartGeneration,
+  () => {
+    if (!hasUnsavedChanges.value) void refresh();
+  },
+);
 
 onMounted(() => {
   void refresh();
   window.addEventListener('admin-save', handleSave);
+  window.addEventListener('beforeunload', beforeUnload);
+  window.addEventListener('focus', refreshPageWhenVisible);
+  document.addEventListener('visibilitychange', refreshPageWhenVisible);
+  refreshTimer = window.setInterval(refreshPageWhenVisible, 15_000);
 });
-onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
+onBeforeUnmount(() => {
+  window.removeEventListener('admin-save', handleSave);
+  window.removeEventListener('beforeunload', beforeUnload);
+  window.removeEventListener('focus', refreshPageWhenVisible);
+  document.removeEventListener('visibilitychange', refreshPageWhenVisible);
+  window.clearInterval(refreshTimer);
+});
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save">
-    <template #actions>
-      <el-button @click="router.push('/intelligence/models')">模型配置</el-button>
-      <el-button
-        :loading="activeOperation === 'probe:memory.extract'"
-        :disabled="overview?.status.maintenance"
-        @click="probe"
-      >
-        探测提炼
-      </el-button>
-      <el-button :loading="loading" @click="refresh">刷新</el-button>
-    </template>
-  </PageHeader>
-
   <article v-if="loadError" class="load-error" role="alert">
     <span>{{ loadError }}</span>
     <el-button size="small" @click="refresh">重试</el-button>
@@ -360,7 +425,19 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
     </section>
 
     <section class="form-section memory-settings">
-      <h2 class="section-title">长期记忆配置</h2>
+      <div class="memory-settings-head">
+        <h2 class="section-title">长期记忆配置</h2>
+        <div>
+          <el-button @click="router.push('/intelligence/models')">模型配置</el-button>
+          <el-button
+            :loading="activeOperation === 'probe:memory.extract'"
+            :disabled="overview.status.maintenance"
+            @click="probe"
+          >
+            探测提炼
+          </el-button>
+        </div>
+      </div>
       <ManagedSettingsGrid
         v-model="memorySettingsDraft"
         v-model:clear-secrets="memorySettingsClearSecrets"
@@ -504,10 +581,18 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       @current-change="page.current = $event; loadRows()"
     />
   </section>
+  <PendingChangesBar
+    v-if="hasUnsavedChanges"
+    :saving="saving"
+    :disabled="runtime.restartInProgress"
+    save-label="保存记忆配置"
+    @discard="discardChanges"
+    @save="save"
+  />
 </template>
 
 <style scoped>
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0c7c7;border-radius:10px;background:#fff6f6;color:#a53a3a;font-size:11px}.runtime-strip{display:grid;grid-template-columns:.9fr 1.7fr .9fr 1fr 1.3fr 1fr;margin-bottom:14px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.runtime-strip>div{display:flex;min-width:0;min-height:62px;align-items:center;justify-content:space-between;gap:10px;padding:0 14px;border-right:1px solid var(--line)}.runtime-strip>div:last-child{border-right:0}.runtime-strip span{flex:none;color:var(--muted);font-size:9px}.runtime-strip strong{overflow:hidden;color:#24324a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.runtime-strip strong.danger{color:#d44b58}.memory-settings{margin-bottom:14px}.records-panel{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line)}.filters{display:flex;min-width:0;align-items:center;gap:8px}.filters .el-input{width:150px}.filters .el-select{width:130px}.review-rule{border-radius:0}.record-list{min-height:180px}.record-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(280px,2fr) minmax(190px,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.record-identity,.record-content,.record-scope{min-width:0}.record-identity{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center}.record-identity code,.record-identity small{grid-column:1/-1}.record-row strong{color:#344057;font-size:11px}.record-row code,.record-row small{display:block;overflow:hidden;color:var(--muted);font:9px/1.45 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.record-content p{display:-webkit-box;overflow:hidden;margin:0 0 6px;color:#48556b;font-size:11px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:3}.record-content .content-cleared{color:#a56b6b;font-style:italic}.record-scope{display:flex;flex-direction:column;gap:4px}.record-actions{display:flex;justify-content:flex-end;gap:6px}.record-actions :deep(.el-button+.el-button){margin-left:0}.pagination{justify-content:flex-end;padding:12px 14px}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0c7c7;border-radius:10px;background:#fff6f6;color:#a53a3a;font-size:11px}.runtime-strip{display:grid;grid-template-columns:.9fr 1.7fr .9fr 1fr 1.3fr 1fr;margin-bottom:14px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.runtime-strip>div{display:flex;min-width:0;min-height:62px;align-items:center;justify-content:space-between;gap:10px;padding:0 14px;border-right:1px solid var(--line)}.runtime-strip>div:last-child{border-right:0}.runtime-strip span{flex:none;color:var(--muted);font-size:9px}.runtime-strip strong{overflow:hidden;color:#24324a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.runtime-strip strong.danger{color:#d44b58}.memory-settings{margin-bottom:14px}.memory-settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.memory-settings-head>div{display:flex;gap:8px}.memory-settings-head :deep(.el-button+.el-button){margin-left:0}.records-panel{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fff}.records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 14px;border-bottom:1px solid var(--line)}.filters{display:flex;min-width:0;align-items:center;gap:8px}.filters .el-input{width:150px}.filters .el-select{width:130px}.review-rule{border-radius:0}.record-list{min-height:180px}.record-row{display:grid;grid-template-columns:minmax(145px,.8fr) minmax(280px,2fr) minmax(190px,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-bottom:1px solid var(--line)}.record-identity,.record-content,.record-scope{min-width:0}.record-identity{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center}.record-identity code,.record-identity small{grid-column:1/-1}.record-row strong{color:#344057;font-size:11px}.record-row code,.record-row small{display:block;overflow:hidden;color:var(--muted);font:9px/1.45 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.record-content p{display:-webkit-box;overflow:hidden;margin:0 0 6px;color:#48556b;font-size:11px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:3}.record-content .content-cleared{color:#a56b6b;font-style:italic}.record-scope{display:flex;flex-direction:column;gap:4px}.record-actions{display:flex;justify-content:flex-end;gap:6px}.record-actions :deep(.el-button+.el-button){margin-left:0}.pagination{justify-content:flex-end;padding:12px 14px}
 @media(max-width:1050px){.runtime-strip{grid-template-columns:repeat(3,1fr)}.runtime-strip>div:nth-child(3){border-right:0}.runtime-strip>div:nth-child(-n+3){border-bottom:1px solid var(--line)}.records-toolbar{align-items:stretch;flex-direction:column}.filters{flex-wrap:wrap}.filters .el-input,.filters .el-select{flex:1 1 150px;width:auto}.record-row{grid-template-columns:minmax(135px,.8fr) minmax(240px,2fr) auto}.record-scope{grid-column:1/3;grid-row:2}.record-actions{grid-column:3;grid-row:1/3}}
 @media(max-width:720px){.runtime-strip{grid-template-columns:1fr 1fr}.runtime-strip>div{min-height:54px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.runtime-strip>div:nth-child(2n){border-right:0}.runtime-strip>div:nth-last-child(-n+2){border-bottom:0}.record-row{grid-template-columns:1fr auto;gap:12px}.record-content,.record-scope{grid-column:1/-1}.record-scope{grid-row:auto}.record-actions{grid-column:2;grid-row:1}.pagination{overflow:auto;justify-content:flex-start}}
 </style>

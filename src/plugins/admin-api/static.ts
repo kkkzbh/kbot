@@ -2,7 +2,11 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
 import type { Context, Logger } from 'koishi';
 import type {} from '@koishijs/plugin-server';
-import { AdminAccessPolicy, AdminHttpError, createRequestId } from './access-policy.js';
+import {
+  AdminAccessPolicy,
+  AdminHttpError,
+  createRequestId,
+} from '../shared/internal-access-policy.js';
 
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',

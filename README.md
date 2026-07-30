@@ -103,7 +103,9 @@ Server voice input is intentionally disabled by default. If voice output is enab
 
 ## Independent Admin Workspace
 
-The Koishi process serves the standalone SPA directly at `/`; the SPA uses the same-origin `/api/admin/v1` runtime API and has no Koishi Console dependency. Bot-owned HTTP routes such as `/api/**`, campus binding pages, and Storage remain owned by their respective plugins.
+The Koishi process serves the standalone SPA directly at `/`; the SPA uses the same-origin `/api/admin/v1` runtime API and has no Koishi Console dependency. The official Console required by ChatLuna Agent lives at the internal `/koishi-console` path with its WebSocket API at `/koishi-console/status`. Bot-owned HTTP routes such as `/api/**`, campus binding pages, and Storage remain owned by their respective plugins.
+
+`/intelligence/agent` is the permanent ChatLuna Agent management surface. It calls the project-owned REST boundary for MCP, Skills, Computer, Sub-Agent, Runtime Tool, and Agent Trigger configuration. Agent writes are delegated to the upstream runtime service, whose canonical document is `${CHATLUNA_AGENT_DATA_DIR}/agents/config.json`; managed environment saves do not mirror or overwrite that document.
 
 Configure the browser-facing origin explicitly before startup:
 
@@ -112,7 +114,7 @@ QQBOT_ADMIN_ORIGIN=https://actual-admin-origin.example
 QQBOT_ADMIN_SSH_ORIGIN=http://127.0.0.1:5140
 ```
 
-`QQBOT_ADMIN_ORIGIN` must match the Tailnet browser Origin. `QQBOT_ADMIN_SSH_ORIGIN` must match the browser Origin produced by the SSH local forward. The API validates both Hosts on every request and both Origins on every mutation. Production binds Koishi to loopback and publishes the admin workspace through its Tailnet-only Tailscale Serve endpoint. Secret fields only expose whether a value is configured.
+`QQBOT_ADMIN_ORIGIN` must match the Tailnet browser Origin. `QQBOT_ADMIN_SSH_ORIGIN` must match the browser Origin produced by the SSH local forward. The API validates both Hosts on every request and both Origins on every mutation. Production binds Koishi to loopback and publishes the admin workspace through its Tailnet-only Tailscale Serve endpoint. Console applies the same Host, loopback transport, and Tailscale identity checks, so only local access, SSH tunnels, and the controlled Tailnet endpoint can reach it; public Cloudflare bind hosts are rejected. Secret fields only expose whether a value is configured.
 
 ## Runtime Helpers
 

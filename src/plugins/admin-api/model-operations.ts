@@ -16,7 +16,7 @@ import {
   OpenAiConnectionExecutor,
   type RuntimeConnection,
 } from '../model-config/index.js';
-import { AdminHttpError } from './access-policy.js';
+import { AdminHttpError } from '../shared/internal-access-policy.js';
 
 type OAuthAction = 'start' | 'poll' | 'logout';
 const CAPABILITY_VERIFICATION_TTL_MS = 60 * 60 * 1_000;

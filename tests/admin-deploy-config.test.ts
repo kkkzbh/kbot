@@ -9,6 +9,7 @@ function validate(overrides: NodeJS.ProcessEnv = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      KOISHI_HOST: '127.0.0.1',
       QQBOT_ADMIN_ORIGIN: 'https://admin.qqbot.example',
       QQBOT_ADMIN_SSH_ORIGIN: 'http://127.0.0.1:5140',
       ...overrides,
@@ -21,7 +22,7 @@ describe('admin deployment configuration', () => {
     const result = validate();
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('browser and SSH origins verified');
+    expect(result.stdout).toContain('loopback bind, browser origin, and SSH origin verified');
   });
 
   it('rejects origins with paths', () => {
@@ -40,5 +41,14 @@ describe('admin deployment configuration', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('must use http://127.0.0.1');
+  });
+
+  it('rejects a non-loopback Koishi listener', () => {
+    const result = validate({
+      KOISHI_HOST: '0.0.0.0',
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('KOISHI_HOST must bind to a loopback address');
   });
 });

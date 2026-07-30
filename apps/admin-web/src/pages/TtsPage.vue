@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { ElMessage } from 'element-plus';
-import PageHeader from '@/components/PageHeader.vue';
+import { onBeforeRouteLeave } from 'vue-router';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import { apiAudio, rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 
@@ -22,6 +23,11 @@ const sampleLoading = ref(false);
 const runtime = useRuntimeStore();
 const healthClass = computed(() => state.value?.health.status === 'ok' ? 'ok' : state.value?.health.status === 'unreachable' ? 'error' : 'warn');
 const localEntries = computed(() => Object.entries(localDraft).filter(([key]) => key !== 'VOICE_TTS_API_KEY'));
+const pendingChanges = computed(() => collectChanges());
+const hasUnsavedChanges = computed(() => (
+  pendingChanges.value.botChanges.length > 0
+  || pendingChanges.value.localChanges.length > 0
+));
 
 function labelFor(key: string) {
   return key.replace(/^VOICE_TTS_/, '').split('_').map((part) => part[0] + part.slice(1).toLowerCase()).join(' ');
@@ -51,7 +57,7 @@ async function load() {
   finally { loading.value = false; }
 }
 
-async function save() {
+function collectChanges(): { botChanges: any[]; localChanges: any[] } {
   const botChanges: any[] = [];
   const localChanges: any[] = [];
   for (const field of state.value?.botFields ?? []) {
@@ -66,13 +72,34 @@ async function save() {
   if (clearLocalSecret.value) localChanges.push({ key: 'VOICE_TTS_API_KEY', clear: true });
   else if (localDraft.VOICE_TTS_API_KEY) localChanges.push({ key: 'VOICE_TTS_API_KEY', value: localDraft.VOICE_TTS_API_KEY });
   for (const [key, value] of localEntries.value) if (value !== localOriginal[key]) localChanges.push({ key, value });
-  if (!botChanges.length && !localChanges.length) { ElMessage.info('当前页面没有变更'); return; }
+  return { botChanges, localChanges };
+}
+
+async function discardChanges(): Promise<void> {
+  if (!hasUnsavedChanges.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃尚未保存的语音服务配置。',
+      '放弃未保存修改？',
+      { type: 'warning', confirmButtonText: '放弃修改', cancelButtonText: '继续编辑' },
+    );
+  } catch {
+    return;
+  }
+  await load();
+}
+
+async function save() {
+  if (!hasUnsavedChanges.value || runtime.restartInProgress) return;
   saving.value = true;
   try {
+    const { botChanges, localChanges } = pendingChanges.value;
     const result = await rawApi<any>('/tts', { method: 'PATCH', body: rawJsonBody({ botChanges, localChanges }) });
     hydrate(result.tts);
     runtime.updateApply(result.apply);
-    ElMessage.success('TTS 配置已保存');
+    ElMessage.success(result.apply.restartRequired
+      ? 'TTS 配置已保存，可从右上角重启使其生效。'
+      : 'TTS 配置已保存并生效。');
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : 'TTS 保存失败'); }
   finally { saving.value = false; }
 }
@@ -100,16 +127,47 @@ async function sample() {
   finally { sampleLoading.value = false; }
 }
 
-function handleSave() { save(); }
-onMounted(() => { load(); window.addEventListener('admin-save', handleSave); });
-onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if (sampleUrl.value) URL.revokeObjectURL(sampleUrl.value); });
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (!hasUnsavedChanges.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+onBeforeRouteLeave(async () => {
+  if (!hasUnsavedChanges.value) return true;
+  try {
+    await ElMessageBox.confirm(
+      '语音服务仍有未保存修改。',
+      '离开语音服务？',
+      { type: 'warning', confirmButtonText: '放弃并离开', cancelButtonText: '继续编辑' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+function handleSave() { void save(); }
+onMounted(() => {
+  void load();
+  window.addEventListener('admin-save', handleSave);
+  window.addEventListener('beforeunload', beforeUnload);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('admin-save', handleSave);
+  window.removeEventListener('beforeunload', beforeUnload);
+  if (sampleUrl.value) URL.revokeObjectURL(sampleUrl.value);
+});
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="loading" @click="probe">健康探测</el-button></template></PageHeader>
   <template v-if="state">
     <section class="tts-status panel">
-      <div><i class="status-dot" :class="healthClass" /><strong>{{ state.health.status }}</strong></div>
+      <div class="health-summary">
+        <i class="status-dot" :class="healthClass" />
+        <strong>{{ state.health.status }}</strong>
+        <el-button size="small" :loading="loading" @click="probe">健康探测</el-button>
+      </div>
       <dl><div><dt>Latency</dt><dd>{{ state.health.latencyMs == null ? '—' : `${state.health.latencyMs} ms` }}</dd></div><div><dt>Device</dt><dd>{{ state.health.device || state.localGateway.resolved.device }}</dd></div><div><dt>Upstream</dt><dd>{{ state.health.running == null ? 'unknown' : state.health.running ? 'running' : 'stopped' }}</dd></div></dl>
     </section>
     <section class="form-section">
@@ -132,9 +190,17 @@ onBeforeUnmount(() => { window.removeEventListener('admin-save', handleSave); if
       <el-input v-model="sampleText" type="textarea" :rows="3" maxlength="500" show-word-limit />
       <div class="sample-actions"><el-segmented v-model="sampleStyle" :options="[{label:'白祥',value:'white'},{label:'黑祥',value:'black'}]" /><el-button type="primary" :loading="sampleLoading" @click="sample">生成试听</el-button><audio id="tts-player" :src="sampleUrl" controls /></div>
     </section>
+    <PendingChangesBar
+      v-if="hasUnsavedChanges"
+      :saving="saving"
+      :disabled="runtime.restartInProgress"
+      save-label="保存语音配置"
+      @discard="discardChanges"
+      @save="save"
+    />
   </template>
 </template>
 
 <style scoped>
-.tts-status{display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:960px;margin-bottom:16px;padding:18px 22px}.tts-status>div{display:flex;align-items:center;gap:12px}.tts-status strong{display:block;font-size:14px;text-transform:uppercase}.tts-status dl{display:flex;gap:32px;margin:0}.tts-status dl div{min-width:80px}.tts-status dt{color:#939baa;font-size:9px}.tts-status dd{margin:4px 0 0;font-size:12px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.section-head{display:flex;align-items:flex-start;justify-content:space-between}.section-head .section-title{margin-bottom:4px}.sample-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.sample-actions audio{height:34px;max-width:320px}@media(max-width:760px){.tts-status{align-items:flex-start;flex-direction:column}.tts-status dl{width:100%;justify-content:space-between;gap:8px}.settings-grid{grid-template-columns:1fr}.sample-actions{align-items:stretch;flex-direction:column}.sample-actions audio{max-width:100%}}
+.tts-status{display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:960px;margin-bottom:16px;padding:18px 22px}.health-summary{display:flex;align-items:center;gap:12px}.health-summary .el-button{margin-left:4px}.tts-status strong{display:block;font-size:14px;text-transform:uppercase}.tts-status dl{display:flex;gap:32px;margin:0}.tts-status dl div{min-width:80px}.tts-status dt{color:#939baa;font-size:9px}.tts-status dd{margin:4px 0 0;font-size:12px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.section-head{display:flex;align-items:flex-start;justify-content:space-between}.section-head .section-title{margin-bottom:4px}.sample-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.sample-actions audio{height:34px;max-width:320px}@media(max-width:760px){.tts-status{align-items:flex-start;flex-direction:column}.tts-status dl{width:100%;justify-content:space-between;gap:8px}.settings-grid{grid-template-columns:1fr}.sample-actions{align-items:stretch;flex-direction:column}.sample-actions audio{max-width:100%}}
 </style>

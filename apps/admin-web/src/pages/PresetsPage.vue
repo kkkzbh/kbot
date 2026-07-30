@@ -10,6 +10,7 @@ import {
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ApiError } from '@/api/client';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import {
   createContextPreset,
   createRolePreset,
@@ -492,6 +493,11 @@ async function saveDirtyResources(): Promise<void> {
   if (roleDirty.value && !await saveRole()) return;
   if (contextDirty.value && !await saveContext()) return;
   if (fragmentPolicyDirty.value) await saveFragmentPolicy();
+}
+
+async function discardDirtyResources(): Promise<void> {
+  if (!hasDirtyResources.value || !await confirmDiscard()) return;
+  if (selectedContextId.value) await loadContext(selectedContextId.value);
 }
 
 async function createContext(): Promise<void> {
@@ -1001,35 +1007,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="context-workbench">
-    <header class="workbench-toolbar">
-      <h1>上下文预设</h1>
-      <div class="workbench-actions">
-        <el-button @click="createContext">新建</el-button>
-        <el-button
-          :disabled="!contextDetail || contextDetail.source !== 'runtime' || contextDetail.hasOverride"
-          :loading="mutating"
-          @click="removeCurrentContext"
-        >
-          删除
-        </el-button>
-        <el-button
-          v-if="contextDetail?.hasOverride"
-          :loading="mutating"
-          @click="revertCurrentContext"
-        >
-          恢复 bundled
-        </el-button>
-        <el-button
-          type="primary"
-          :disabled="!contextDirty"
-          :loading="savingContext"
-          @click="saveContext"
-        >
-          保存上下文
-        </el-button>
-      </div>
-    </header>
-
     <section class="preset-bar panel">
       <div class="preset-picker">
         <span class="picker-label">上下文预设</span>
@@ -1049,9 +1026,9 @@ onBeforeUnmount(() => {
             <span>{{ item.displayName }}</span>
           </el-option>
         </el-select>
-        <span v-if="contextDirty" class="resource-meta">未保存</span>
       </div>
       <div class="preset-actions-inline">
+        <el-button @click="createContext">新建</el-button>
         <el-button
           :type="contextCatalog?.globalDefaultContextPresetId === selectedContextId ? 'success' : 'default'"
           :disabled="!selectedContextId || contextCatalog?.globalDefaultContextPresetId === selectedContextId"
@@ -1059,6 +1036,20 @@ onBeforeUnmount(() => {
           @click="makeDefault"
         >
           {{ contextCatalog?.globalDefaultContextPresetId === selectedContextId ? '当前全局默认' : '设为全局默认' }}
+        </el-button>
+        <el-button
+          v-if="contextDetail?.hasOverride"
+          :loading="mutating"
+          @click="revertCurrentContext"
+        >
+          恢复 bundled
+        </el-button>
+        <el-button
+          :disabled="!contextDetail || contextDetail.source !== 'runtime' || contextDetail.hasOverride"
+          :loading="mutating"
+          @click="removeCurrentContext"
+        >
+          删除
         </el-button>
       </div>
     </section>
@@ -1318,9 +1309,6 @@ onBeforeUnmount(() => {
                     />
                   </div>
                   <div class="role-actions">
-                    <el-button type="primary" :disabled="!roleDirty" :loading="savingRole" @click="saveRole">
-                      保存共享角色
-                    </el-button>
                     <el-button @click="forkRole">另存为新角色</el-button>
                     <el-button
                       v-if="roleDetail?.hasOverride"
@@ -1511,37 +1499,22 @@ onBeforeUnmount(() => {
     <div v-else-if="!loading" class="panel empty-workbench">
       当前没有可编辑的上下文预设。
     </div>
+    <PendingChangesBar
+      v-if="hasDirtyResources"
+      :saving="savingContext || savingRole"
+      :disabled="mutating"
+      message="上下文预设有未保存修改"
+      save-label="保存全部"
+      @discard="discardDirtyResources"
+      @save="saveDirtyResources"
+    />
   </div>
 </template>
 
 <style scoped>
 .context-workbench {
   min-width: 0;
-  --workbench-height: clamp(560px, calc(100vh - 238px), 760px);
-}
-
-.workbench-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 2px 0 14px;
-}
-
-.workbench-toolbar h1 {
-  margin: 0;
-  color: #182033;
-  font-size: 28px;
-  line-height: 1.15;
-  letter-spacing: -.04em;
-}
-
-.workbench-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
+  --workbench-height: clamp(560px, calc(100vh - 180px), 820px);
 }
 
 .preset-bar {
@@ -1581,11 +1554,6 @@ onBeforeUnmount(() => {
   color: #657083;
   font-size: 11px;
   font-weight: 700;
-}
-
-.resource-meta {
-  color: #8a93a2;
-  font-size: 11px;
 }
 
 .workbench-grid {
@@ -2103,16 +2071,6 @@ onBeforeUnmount(() => {
     --workbench-height: auto;
   }
 
-  .workbench-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .workbench-actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
   .preset-bar,
   .preset-picker {
     align-items: stretch;
@@ -2149,8 +2107,7 @@ onBeforeUnmount(() => {
 
   .preset-actions-inline,
   .block-tools,
-  .role-actions,
-  .workbench-actions {
+  .role-actions {
     width: 100%;
     align-items: stretch;
     flex-direction: column;

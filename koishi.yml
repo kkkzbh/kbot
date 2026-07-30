@@ -10,6 +10,16 @@ plugins:
     server:0b8t2q:
       host: ${{ env.KOISHI_HOST || '127.0.0.1' }}
       port: ${{ +env.KOISHI_PORT || 5140 }}
+    ./dist/plugins/console-access:agent-console-access:
+      uiPath: /koishi-console
+      apiPath: /koishi-console/status
+      allowedOrigins:
+        - ${{ env.QQBOT_ADMIN_ORIGIN }}
+        - ${{ env.QQBOT_ADMIN_SSH_ORIGIN }}
+    console:agent-console:
+      uiPath: /koishi-console
+      apiPath: /koishi-console/status
+      open: false
     database-sqlite:8jr5yp:
       path: ${{ env.SQLITE_PATH || './data/koishi.db' }}
     ./dist/plugins/model-runtime:model-runtime:

@@ -103,7 +103,9 @@ LLONEBOT_DATA_DIR=./.runtime/llonebot
 
 ## 独立管理端
 
-管理工作台由 Koishi 进程直接通过根路径 `/` 提供静态 SPA，并通过同源 `/api/admin/v1` 访问运行时能力。它不依赖 Koishi Console。`/api/**`、校园绑定页和 Storage 等机器人 HTTP 路由继续由各自插件处理。
+管理工作台由 Koishi 进程直接通过根路径 `/` 提供静态 SPA，并通过同源 `/api/admin/v1` 访问运行时能力。自有 Admin SPA 不依赖 Koishi Console。ChatLuna Agent 所需的官方 Console 位于内部路径 `/koishi-console`，WebSocket API 位于 `/koishi-console/status`。`/api/**`、校园绑定页和 Storage 等机器人 HTTP 路由继续由各自插件处理。
+
+`/intelligence/agent` 是 ChatLuna Agent 的长期管理入口，通过项目自有 REST 边界管理 MCP、Skills、Computer、Sub-Agent、Runtime Tool 与 Agent Trigger。配置写入统一委托给上游 runtime service，规范文件为 `${CHATLUNA_AGENT_DATA_DIR}/agents/config.json`；托管环境变量保存不会同步覆盖该文件。
 
 启动前必须显式配置浏览器实际使用的 Origin：
 
@@ -112,7 +114,7 @@ QQBOT_ADMIN_ORIGIN=https://实际管理端域名
 QQBOT_ADMIN_SSH_ORIGIN=http://127.0.0.1:5140
 ```
 
-`QQBOT_ADMIN_ORIGIN` 必须匹配 Tailnet 浏览器 Origin，`QQBOT_ADMIN_SSH_ORIGIN` 必须匹配 SSH 本地转发产生的浏览器 Origin。Admin API 会校验两个 Host；所有变更请求还会校验两个 Origin。生产环境中的 Koishi 只监听 loopback，管理台通过 Tailnet-only Tailscale Serve 入口发布。Secret 字段只返回是否已配置。
+`QQBOT_ADMIN_ORIGIN` 必须匹配 Tailnet 浏览器 Origin，`QQBOT_ADMIN_SSH_ORIGIN` 必须匹配 SSH 本地转发产生的浏览器 Origin。Admin API 会校验两个 Host；所有变更请求还会校验两个 Origin。生产环境中的 Koishi 只监听 loopback，管理台通过 Tailnet-only Tailscale Serve 入口发布。Console 复用同一组 Host、loopback 与 Tailscale 身份校验，只允许本机、SSH Tunnel 和受控 Tailnet 访问；Cloudflare 公共绑定域名无法访问 Console。Secret 字段只返回是否已配置。
 
 ## 运行辅助脚本
 

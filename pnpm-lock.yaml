@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@koishijs/plugin-console':
+        specifier: 5.30.11
+        version: 5.30.11(koishi@4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))
       '@koishijs/plugin-database-sqlite':
         specifier: 4.7.0
         version: 4.7.0(koishi@4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))(minato@3.7.0(cordis@3.18.1))
@@ -111,6 +114,9 @@ importers:
       '@types/qrcode':
         specifier: ^1.5.6
         version: 1.5.6
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
       '@vitejs/plugin-vue':
         specifier: ^6.0.5
         version: 6.0.5(vite@8.0.1(@types/node@25.3.0)(esbuild@0.27.3)(tsx@4.21.0)(yaml@2.8.2))(vue@3.5.39(typescript@5.9.3))
@@ -695,6 +701,11 @@ packages:
     peerDependencies:
       koishi: ^4.17.9
 
+  '@koishijs/console@5.30.11':
+    resolution: {integrity: sha512-F/NpSBmFUGcLTTwHLOt3OOaqMFD53aeoJL83Nwq4ZmudEpVQAA/uJusflvXadjf61HjHCu+DQArkPj0HGG7dhA==}
+    peerDependencies:
+      koishi: ^4.18.9
+
   '@koishijs/core@4.18.11':
     resolution: {integrity: sha512-qzc1A14Y5C04a3/yDyz+xaQ90Uz9TeUUvScQuhOiuJNGKg9HUeFKqoNN/2IX5/vgAHauxJJi6eJcN2ZrLt4HeA==}
 
@@ -705,6 +716,15 @@ packages:
     resolution: {integrity: sha512-0cJyHwtnFjtOx7jgIXOSuVjDriL12rv8CXsqSw+aqQyt0iuD8ChDqfwhiOFRsuVvq89ZS9PhxmZ0l+YqQ5ZrPg==}
     peerDependencies:
       '@koishijs/core': 4.18.11
+
+  '@koishijs/plugin-console@5.30.11':
+    resolution: {integrity: sha512-K8CpYU4C+vfrX9VhFndS5jmJ9EqLxUYf7KKsM2RNxxQJ1NMk/hLyLQ82HPIY36lbyIbZsA0Mgxl6WIuewZKgQA==}
+    peerDependencies:
+      '@koishijs/client': ^5.30.11
+      koishi: ^4.18.9
+    peerDependenciesMeta:
+      '@koishijs/client':
+        optional: true
 
   '@koishijs/plugin-database-sqlite@4.7.0':
     resolution: {integrity: sha512-93np6iNo1iXWY32NzYFxQVnf04ljPJKWJqeRF153LvBwGab6xBAdANqj2SXvO2FjL8VjFrG0suEYdyRrE7Z14w==}
@@ -1228,6 +1248,7 @@ packages:
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
+    deprecated: Potential CWE-502 - Update to 1.3.1 or higher
 
   '@vitejs/plugin-vue@5.2.4':
     resolution: {integrity: sha512-7Yx/SXSOcQq5HiiV3orevHUFn+pmMB4cgbEkDYgnkUWb0WfeQ/wa2yFv6D5ICiCQOVpjA7vYDXrC7AGO8yjDHA==}
@@ -3009,6 +3030,12 @@ packages:
 
   uuid@10.0.0:
     resolution: {integrity: sha512-8XkAphELsDnEGrDxUOHB3RGvXz6TeuYSGEZBOjtTtPm2lwhGBjLgOzLHB63IUWfBpNucQjND6d3AOudO+H3RWQ==}
+    deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
+    hasBin: true
+
+  uuid@8.3.2:
+    resolution: {integrity: sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==}
+    deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
     hasBin: true
 
   vary@1.1.2:
@@ -3809,6 +3836,10 @@ snapshots:
     dependencies:
       koishi: 4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)
 
+  '@koishijs/console@5.30.11(koishi@4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))':
+    dependencies:
+      koishi: 4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)
+
   '@koishijs/core@4.18.11':
     dependencies:
       '@koishijs/i18n-utils': 1.0.1
@@ -3832,6 +3863,17 @@ snapshots:
       dotenv: 16.6.1
       js-yaml: 4.1.1
       ns-require: 1.1.4
+
+  '@koishijs/plugin-console@5.30.11(koishi@4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))':
+    dependencies:
+      '@koishijs/console': 5.30.11(koishi@4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))
+      koishi: 4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1)
+      open: 8.4.2
+      uuid: 8.3.2
+      ws: 8.21.1
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@koishijs/plugin-database-sqlite@4.7.0(koishi@4.18.11(@cordisjs/plugin-http@0.6.3(cordis@3.18.1))(cordis@3.18.1))(minato@3.7.0(cordis@3.18.1))':
     dependencies:
@@ -6310,6 +6352,8 @@ snapshots:
   urlpattern-polyfill@10.0.0: {}
 
   uuid@10.0.0: {}
+
+  uuid@8.3.2: {}
 
   vary@1.1.2: {}
 

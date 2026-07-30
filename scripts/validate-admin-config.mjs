@@ -31,10 +31,15 @@ function requireOrigin(name, placeholder) {
   return origin;
 }
 
+const koishiHost = String(process.env.KOISHI_HOST ?? '').trim().toLowerCase();
+if (!['127.0.0.1', '::1', 'localhost'].includes(koishiHost)) {
+  fail('KOISHI_HOST must bind to a loopback address');
+}
+
 requireOrigin('QQBOT_ADMIN_ORIGIN', 'https://admin.example.com');
 const sshOrigin = requireOrigin('QQBOT_ADMIN_SSH_ORIGIN');
 if (sshOrigin.protocol !== 'http:' || sshOrigin.hostname !== '127.0.0.1') {
   fail('QQBOT_ADMIN_SSH_ORIGIN must use http://127.0.0.1 with the forwarded local port');
 }
 
-console.log('[admin-config] browser and SSH origins verified');
+console.log('[admin-config] loopback bind, browser origin, and SSH origin verified');

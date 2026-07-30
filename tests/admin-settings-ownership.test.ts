@@ -12,10 +12,26 @@ describe('admin settings ownership', () => {
     const router = readFileSync(resolve(process.cwd(), 'apps/admin-web/src/router.ts'), 'utf8');
 
     expect(app).toContain("label: '自然触发', path: '/intelligence/natural-trigger'");
+    expect(app).toContain("label: 'Agent 能力', path: '/intelligence/agent'");
     expect(app).not.toContain("label: '系统设置'");
     expect(router).toContain("path: '/intelligence/natural-trigger'");
+    expect(router).toContain("path: '/intelligence/agent'");
     expect(router).not.toContain("path: '/system/basic'");
     expect(router).not.toContain("path: '/system/features'");
+  });
+
+  it('owns Agent management in QQBot Admin without a Console navigation path', () => {
+    const agentPage = readFileSync(resolve(
+      process.cwd(),
+      'apps/admin-web/src/pages/AgentPage.vue',
+    ), 'utf8');
+
+    expect(agentPage).toContain("rawApi<AgentAdminState>('/agent')");
+    expect(agentPage).toContain("label: 'Runtime Tools'");
+    expect(agentPage).toContain("label: 'Agent 调度'");
+    expect(agentPage).toContain('to="/policies"');
+    expect(agentPage).not.toContain('/koishi-console');
+    expect(agentPage).not.toContain('ctx.console');
   });
 
   it('assigns every retired generic field to a domain workspace', () => {
@@ -40,9 +56,12 @@ describe('admin settings ownership', () => {
     expect(naturalTriggerPage).toContain(
       "/intelligence/models?workload=naturalTrigger.decision",
     );
-    expect(policiesPage).not.toContain('CHAT_NATURAL_TRIGGER_ENABLED');
-    expect(policiesPage).toContain(
+    expect(naturalTriggerPage).toContain(
       'useManagedFeatureSettings(runtimeFeatureSettingKeys)',
     );
+    expect(policiesPage).not.toContain('CHAT_NATURAL_TRIGGER_ENABLED');
+    expect(policiesPage).not.toContain('runtimeFeatureSettingKeys');
+    expect(policiesPage).not.toContain('功能策略');
+    expect(policiesPage).not.toContain('功能范围覆盖');
   });
 });

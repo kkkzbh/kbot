@@ -2,15 +2,12 @@ import { Context, Logger, type Session } from 'koishi';
 import type {
   ClearConversationHistoryResult,
   ClearConversationHistoryTarget,
-  AdminFeatureScope,
+  AdminGroupScope,
   ConversationTarget,
   DeleteConversationRoomResult,
   DeleteConversationRoomTarget,
-  FeatureOverrideInput,
   FeaturePolicyServiceLike,
-  FeatureScopeKind,
-  FeatureScopeOverrideRecord,
-  ScopedFeatureKey,
+  RuntimeFeatureKey,
 } from '../../types/feature-policy.js';
 
 export const name = 'feature-policy';
@@ -18,14 +15,12 @@ export const inject = ['database'];
 
 const logger = new Logger(name);
 
-export const SCOPED_FEATURE_KEYS = [
+export const RUNTIME_FEATURE_KEYS = [
   'QQBOT_REALTIME_MESSAGE_ENABLED',
   'QQ_VOICE_INPUT_ENABLED',
   'QQ_VOICE_OUTPUT_ENABLED',
   'QQBOT_REPLY_INTERRUPT_ENABLED',
-] as const satisfies readonly ScopedFeatureKey[];
-
-export const PRIVATE_DEFAULT_SCOPE_ID = 'private-default';
+] as const satisfies readonly RuntimeFeatureKey[];
 
 function registerChatLunaRoomTableModels(model: { extend?: (...args: any[]) => unknown } | undefined): void {
   if (typeof model?.extend !== 'function') return;
@@ -111,12 +106,11 @@ type ChatLunaMessageRow = {
 type DatabaseLike = {
   get(table: string, query: Record<string, unknown>): Promise<any[]>;
   set(table: string, query: Record<string, unknown>, data: Record<string, unknown>): Promise<unknown>;
-  create(table: string, row: Record<string, unknown>): Promise<Record<string, unknown>>;
   remove(table: string, query: Record<string, unknown>): Promise<unknown>;
 };
 
-function isScopedFeatureKey(value: string): value is ScopedFeatureKey {
-  return (SCOPED_FEATURE_KEYS as readonly string[]).includes(value);
+function isRuntimeFeatureKey(value: string): value is RuntimeFeatureKey {
+  return (RUNTIME_FEATURE_KEYS as readonly string[]).includes(value);
 }
 
 function toNumber(value: unknown): number | null {
@@ -145,7 +139,7 @@ function requireBooleanEnv(key: string): boolean {
   return raw === 'true';
 }
 
-function defaultFeatureEnabled(featureKey: ScopedFeatureKey): boolean {
+function runtimeFeatureEnabled(featureKey: RuntimeFeatureKey): boolean {
   switch (featureKey) {
     case 'QQBOT_REALTIME_MESSAGE_ENABLED':
       return requireBooleanEnv('QQBOT_REALTIME_MESSAGE_ENABLED');
@@ -160,11 +154,6 @@ function defaultFeatureEnabled(featureKey: ScopedFeatureKey): boolean {
   }
 }
 
-function normalizeGroupScopeId(session: Session): string | null {
-  const groupId = normalizeText(session.guildId) || normalizeText(session.channelId);
-  return groupId || null;
-}
-
 function formatRoomName(room: Pick<RoomRow, 'roomName' | 'roomId' | 'visibility'>, fallbackPrefix: string): string {
   const name = normalizeText(room.roomName);
   if (name) return name;
@@ -172,62 +161,18 @@ function formatRoomName(room: Pick<RoomRow, 'roomName' | 'roomId' | 'visibility'
   return roomId ? `${fallbackPrefix} #${roomId}` : fallbackPrefix;
 }
 
-function validateScopeKind(value: string): asserts value is FeatureScopeKind {
-  if (value !== 'private_default' && value !== 'group') {
-    throw new Error(`不支持这个作用域类型：${value}`);
-  }
-}
-
-function validateOverrideInput(input: FeatureOverrideInput): FeatureOverrideInput {
-  const featureKey = normalizeText(input.featureKey);
-  const scopeKind = normalizeText(input.scopeKind);
-  const scopeId = normalizeText(input.scopeId);
-  if (!isScopedFeatureKey(featureKey)) {
-    throw new Error(`不支持这个功能项：${featureKey}`);
-  }
-  validateScopeKind(scopeKind);
-  if (!scopeId) {
-    throw new Error('作用域标识不能为空。');
-  }
-  if (
-    scopeKind === 'private_default'
-    && featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED'
-  ) {
-    throw new Error('实时消息不支持私聊默认作用域。');
-  }
-
-  return {
-    featureKey,
-    scopeKind,
-    scopeId,
-    enabled: Boolean(input.enabled),
-  };
-}
-
 class FeaturePolicyService implements FeaturePolicyServiceLike {
   constructor(private readonly database: DatabaseLike) {}
 
-  async resolveFeatureEnabled(session: Session, featureKey: ScopedFeatureKey): Promise<boolean> {
-    if (!isScopedFeatureKey(featureKey)) {
+  async resolveFeatureEnabled(session: Session, featureKey: RuntimeFeatureKey): Promise<boolean> {
+    if (!isRuntimeFeatureKey(featureKey)) {
       throw new Error(`不支持这个功能项：${featureKey}`);
     }
-
-    const defaultEnabled = defaultFeatureEnabled(featureKey);
-    if (session.isDirect) {
-      if (featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED') {
-        return false;
-      }
-      const override = await this.getOverride(featureKey, 'private_default', PRIVATE_DEFAULT_SCOPE_ID);
-      return override ?? defaultEnabled;
-    }
-
-    const groupScopeId = normalizeGroupScopeId(session);
-    if (!groupScopeId) return defaultEnabled;
-    const override = await this.getOverride(featureKey, 'group', groupScopeId);
-    return override ?? defaultEnabled;
+    if (session.isDirect && featureKey === 'QQBOT_REALTIME_MESSAGE_ENABLED') return false;
+    return runtimeFeatureEnabled(featureKey);
   }
 
-  async listAdminFeatureScopes(): Promise<AdminFeatureScope[]> {
+  async listAdminGroupScopes(): Promise<AdminGroupScope[]> {
     const [rooms, groupMembers] = await Promise.all([
       this.database.get('chathub_room', {} as Record<string, never>) as Promise<RoomRow[]>,
       this.database.get('chathub_room_group_member', {} as Record<string, never>) as Promise<RoomGroupMemberRow[]>,
@@ -240,7 +185,7 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
       roomById.set(roomId, room);
     }
 
-    const groupScopes = new Map<string, AdminFeatureScope>();
+    const groupScopes = new Map<string, AdminGroupScope>();
     for (const member of groupMembers) {
       const groupId = normalizeText(member.groupId);
       const roomId = toPositiveInteger(member.roomId);
@@ -248,12 +193,10 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
       const room = roomById.get(roomId);
       if (!room) continue;
 
-      const candidate: AdminFeatureScope = {
-        scopeKind: 'group',
-        scopeId: groupId,
+      const candidate: AdminGroupScope = {
+        groupId,
         roomId,
         roomName: formatRoomName(room, '群房间'),
-        groupId,
         conversationId: normalizeText(room.conversationId) || null,
         visibility: normalizeText(room.visibility) || null,
         updatedAt: toNumber(room.updatedTime),
@@ -264,23 +207,11 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
       }
     }
 
-    return [
-      {
-        scopeKind: 'private_default',
-        scopeId: PRIVATE_DEFAULT_SCOPE_ID,
-        roomId: null,
-        roomName: '所有私聊',
-        groupId: null,
-        conversationId: null,
-        visibility: 'private',
-        updatedAt: null,
-      },
-      ...[...groupScopes.values()].sort((left, right) => {
-        const timeDelta = (right.updatedAt ?? 0) - (left.updatedAt ?? 0);
-        if (timeDelta !== 0) return timeDelta;
-        return left.scopeId.localeCompare(right.scopeId, 'zh-CN');
-      }),
-    ];
+    return [...groupScopes.values()].sort((left, right) => {
+      const timeDelta = (right.updatedAt ?? 0) - (left.updatedAt ?? 0);
+      if (timeDelta !== 0) return timeDelta;
+      return left.groupId.localeCompare(right.groupId, 'zh-CN');
+    });
   }
 
   async listConversationTargets(): Promise<ConversationTarget[]> {
@@ -345,55 +276,6 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
         return left.scopeId.localeCompare(right.scopeId, 'zh-CN');
       }),
     ];
-  }
-
-  async getFeatureOverrides(): Promise<FeatureScopeOverrideRecord[]> {
-    const rows = (await this.database.get('feature_scope_override', {} as Record<string, never>)) as FeatureScopeOverrideRecord[];
-    return rows
-      .filter((row) => isScopedFeatureKey(normalizeText(row.featureKey)))
-      .sort((left, right) => {
-        const scopeDelta = `${left.scopeKind}:${left.scopeId}`.localeCompare(`${right.scopeKind}:${right.scopeId}`, 'zh-CN');
-        if (scopeDelta !== 0) return scopeDelta;
-        return left.featureKey.localeCompare(right.featureKey, 'zh-CN');
-      });
-  }
-
-  async saveFeatureOverrides(overrides: FeatureOverrideInput[]): Promise<FeatureScopeOverrideRecord[]> {
-    const normalized = overrides.map(validateOverrideInput);
-    const desired = new Map<string, FeatureOverrideInput>();
-    for (const item of normalized) {
-      desired.set(this.buildKey(item.featureKey, item.scopeKind, item.scopeId), item);
-    }
-
-    const existing = await this.getFeatureOverrides();
-    const existingByKey = new Map(existing.map((row) => [this.buildKey(row.featureKey, row.scopeKind, row.scopeId), row]));
-    const now = Date.now();
-
-    for (const row of existing) {
-      const key = this.buildKey(row.featureKey, row.scopeKind, row.scopeId);
-      if (!desired.has(key)) {
-        await this.database.remove('feature_scope_override', { id: row.id });
-      }
-    }
-
-    for (const item of desired.values()) {
-      const key = this.buildKey(item.featureKey, item.scopeKind, item.scopeId);
-      const row = existingByKey.get(key);
-      const patch = {
-        featureKey: item.featureKey,
-        scopeKind: item.scopeKind,
-        scopeId: item.scopeId,
-        enabled: item.enabled ? 1 : 0,
-        updatedAt: now,
-      };
-      if (row?.id) {
-        await this.database.set('feature_scope_override', { id: row.id }, patch);
-      } else {
-        await this.database.create('feature_scope_override', patch);
-      }
-    }
-
-    return this.getFeatureOverrides();
   }
 
   async clearConversationHistory(target: ClearConversationHistoryTarget): Promise<ClearConversationHistoryResult> {
@@ -500,25 +382,6 @@ class FeaturePolicyService implements FeaturePolicyServiceLike {
       updatedAt: toNumber(room.updatedTime),
     };
   }
-
-  private async getOverride(
-    featureKey: ScopedFeatureKey,
-    scopeKind: FeatureScopeKind,
-    scopeId: string,
-  ): Promise<boolean | null> {
-    const rows = (await this.database.get('feature_scope_override', {
-      featureKey,
-      scopeKind,
-      scopeId,
-    })) as FeatureScopeOverrideRecord[];
-    const row = rows[0];
-    if (!row?.id) return null;
-    return Number(row.enabled ?? 0) === 1;
-  }
-
-  private buildKey(featureKey: ScopedFeatureKey, scopeKind: FeatureScopeKind, scopeId: string): string {
-    return `${featureKey}:${scopeKind}:${scopeId}`;
-  }
 }
 
 export function apply(ctx: Context): void {
@@ -530,21 +393,6 @@ export function apply(ctx: Context): void {
   const model = (ctx as { model?: { extend?: (...args: any[]) => unknown } }).model;
   if (typeof model?.extend === 'function') {
     registerChatLunaRoomTableModels(model);
-    model.extend(
-      'feature_scope_override',
-      {
-        id: 'unsigned',
-        featureKey: 'string',
-        scopeKind: 'string',
-        scopeId: 'string',
-        enabled: 'unsigned',
-        updatedAt: 'double',
-      },
-      {
-        autoInc: true,
-        indexes: [['featureKey', 'scopeKind', 'scopeId'], ['scopeKind', 'scopeId']],
-      },
-    );
   }
 
   const service = new FeaturePolicyService(database);

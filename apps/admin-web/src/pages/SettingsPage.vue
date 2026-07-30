@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
-import PageHeader from '@/components/PageHeader.vue';
+import { onBeforeRouteLeave } from 'vue-router';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import { rawApi, rawJsonBody } from '@/api/client';
 import { useRuntimeStore } from '@/stores/runtime';
 import type { SettingsField } from '@contracts';
@@ -37,6 +38,8 @@ const grouped = computed(() => {
   }
   return [...result.entries()];
 });
+const pendingChanges = computed(() => collectChanges());
+const hasUnsavedChanges = computed(() => pendingChanges.value.length > 0);
 
 function groupName(key: string) {
   if (key.startsWith('HBU_JW_')) return '河北大学教务';
@@ -62,7 +65,7 @@ async function load() {
   } finally { loading.value = false; }
 }
 
-async function save() {
+function collectChanges(): any[] {
   const changes: any[] = [];
   for (const field of visibleFields.value) {
     if (field.type === 'secret') {
@@ -72,25 +75,70 @@ async function save() {
       changes.push({ key: field.key, value: draft[field.key] });
     }
   }
-  if (!changes.length) { ElMessage.info('当前页面没有变更'); return; }
+  return changes;
+}
+
+async function discardChanges() {
+  if (!hasUnsavedChanges.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃当前页面尚未保存的配置修改。',
+      '放弃未保存修改？',
+      { type: 'warning', confirmButtonText: '放弃修改', cancelButtonText: '继续编辑' },
+    );
+  } catch {
+    return;
+  }
+  await load();
+}
+
+async function save() {
+  if (!hasUnsavedChanges.value || runtime.restartInProgress) return;
   saving.value = true;
   try {
+    const changes = pendingChanges.value;
     const result = await rawApi<any>('/settings/features', { method: 'PATCH', body: rawJsonBody({ changes }) });
     runtime.updateApply(result);
-    ElMessage.success('配置已原子写入，重启后生效');
     await load();
+    ElMessage.success('配置已保存，可从右上角重启使其生效。');
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '配置保存失败'); }
   finally { saving.value = false; }
 }
 
-function handleSave() { save(); }
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (!hasUnsavedChanges.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+onBeforeRouteLeave(async () => {
+  if (!hasUnsavedChanges.value) return true;
+  try {
+    await ElMessageBox.confirm(
+      '当前页面仍有未保存修改。',
+      '离开当前页面？',
+      { type: 'warning', confirmButtonText: '放弃并离开', cancelButtonText: '继续编辑' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+function handleSave() { void save(); }
 watch(() => props.mode, load);
-onMounted(() => { load(); window.addEventListener('admin-save', handleSave); });
-onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
+onMounted(() => {
+  void load();
+  window.addEventListener('admin-save', handleSave);
+  window.addEventListener('beforeunload', beforeUnload);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('admin-save', handleSave);
+  window.removeEventListener('beforeunload', beforeUnload);
+});
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="loading" @click="load">放弃变更</el-button></template></PageHeader>
   <el-skeleton v-if="loading && !fields.length" :rows="9" animated />
   <template v-else>
     <section v-for="[group,items] in grouped" :key="group" class="form-section">
@@ -106,6 +154,13 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
         </el-form-item>
       </el-form>
     </section>
+    <PendingChangesBar
+      v-if="hasUnsavedChanges"
+      :saving="saving"
+      :disabled="runtime.restartInProgress"
+      @discard="discardChanges"
+      @save="save"
+    />
   </template>
 </template>
 

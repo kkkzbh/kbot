@@ -46,10 +46,12 @@ describe('runtime startup contract', () => {
     expect(packageJson.scripts.start).toBe('bash ./scripts/run-koishi-with-env.sh');
     expect(packageJson.scripts['start:local']).toBe('QQBOT_ENV_FILE=.env.local bash ./scripts/run-koishi-with-env.sh');
     expect(packageJson.scripts['start:server']).toBe('QQBOT_ENV_FILE=.env.server bash ./scripts/run-koishi-with-env.sh');
+    expect(packageJson.dependencies['@koishijs/plugin-console']).toBe('5.30.11');
 
     expect(runScript).toContain('./scripts/ensure-chatluna-build.sh --check');
     expect(runScript).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
     expect(runScript).toContain('exec pnpm exec koishi start koishi.yml');
+    expect(runScript).not.toContain('sync-chatluna-agent-config');
     expect(runScript).not.toContain('pnpm build');
     expect(runScript).not.toContain('./scripts/ensure-chatluna-build.sh\npnpm');
     expect(smokeScript).toContain('./scripts/ensure-chatluna-build.sh --check');
@@ -63,12 +65,26 @@ describe('runtime startup contract', () => {
     expect(smokeScript).toContain('await modelConfig.createInitial({');
     expect(smokeScript).toContain('writeNaturalTriggerConfigDocumentAtomic');
     expect(smokeScript).toContain("'./dist/plugins/model-runtime:model-runtime'");
+    expect(smokeScript).toContain("'./dist/plugins/prompt-fragment-policy:prompt-fragment-policy'");
+    expect(smokeScript).toContain("'./dist/plugins/console-access:agent-console-access'");
+    expect(smokeScript).toContain("'console:agent-console'");
+    expect(smokeScript).toContain("'chatluna-agent:computer-agent'");
+    expect(smokeScript).toContain("join(process.env.CHATLUNA_AGENT_DATA_DIR, 'agents/config.json')");
+    expect(smokeScript).toContain("const requiredTools = ['skill', 'file_read', 'bash'];");
+    expect(smokeScript).toContain('public Console WebSocket remained open');
     expect(smokeScript).not.toMatch(/export CHATLUNA_(?:ACTIVE_TAB|PLATFORM|BASE_URL|API_KEY|DEFAULT_MODEL|[A-Z]+_DEFAULT_MODEL|SEARCH_SERVICE_SUMMARY_MODEL)=/u);
     expect(ci).not.toContain('OPENAI_API_KEY');
     expect(ci).not.toContain('OPENAI_MODEL');
     expect(existsSync(resolve(process.cwd(), 'scripts/deepseek-json-probe.mjs'))).toBe(false);
     expect(koishi).toContain('./dist/plugins/model-runtime:model-runtime:');
     expect(koishi).toContain('./dist/plugins/natural-trigger-config:natural-trigger-config:');
+    expect(koishi).toContain('./dist/plugins/console-access:agent-console-access:');
+    expect(koishi).toContain('console:agent-console:');
+    expect(koishi).toContain('uiPath: /koishi-console');
+    expect(koishi).toContain('apiPath: /koishi-console/status');
+    expect(koishi).toContain('open: false');
+    expect(koishi.indexOf('./dist/plugins/console-access:agent-console-access:'))
+      .toBeLessThan(koishi.indexOf('console:agent-console:'));
     expect(koishi).toContain("configPath: ${{ env.QQBOT_MODEL_CONFIG_PATH || './.runtime/model-config.json' }}");
     expect(koishi).toContain("kekPath: ${{ env.QQBOT_MODEL_CONFIG_KEK_PATH || './.runtime/model-config.kek' }}");
     expect(koishi).toContain('bundledContextPresetDir: ${{ env.CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR }}');

@@ -13,18 +13,11 @@ export interface PolicyScopeOption extends PolicyScopeSelection {
   label: string;
 }
 
-export interface FeatureOverrideDraft {
-  featureKey: string;
-  enabled: boolean;
-}
-
 export interface ToolOverrideDraft {
   toolName: string;
   routeProfile: string;
   enabled: boolean;
 }
-
-export interface FeatureOverrideInput extends FeatureOverrideDraft, PolicyScopeSelection {}
 
 export interface ToolOverrideInput extends ToolOverrideDraft, PolicyScopeSelection {}
 
@@ -49,13 +42,6 @@ export function createPolicyScopeOptions(
   return [...options.values()];
 }
 
-export function createFeatureOverrideDraft(): FeatureOverrideDraft {
-  return {
-    featureKey: 'QQBOT_REALTIME_MESSAGE_ENABLED',
-    enabled: true,
-  };
-}
-
 export function createToolOverrideDraft(): ToolOverrideDraft {
   return {
     toolName: '',
@@ -64,26 +50,11 @@ export function createToolOverrideDraft(): ToolOverrideDraft {
   };
 }
 
-export function canAddFeatureOverride(scope: PolicyScopeSelection | null): boolean {
-  return scope !== null;
-}
-
 export function canAddToolOverride(
   draft: ToolOverrideDraft,
   scope: PolicyScopeSelection | null,
 ): boolean {
   return draft.toolName.length > 0 && scope !== null;
-}
-
-export function hasFeatureOverride(
-  overrides: FeatureOverrideInput[],
-  draft: FeatureOverrideDraft,
-  scope: PolicyScopeSelection | null,
-): boolean {
-  if (!scope) return false;
-  return overrides.some((override) =>
-    override.featureKey === draft.featureKey
-    && policyScopeKey(override) === policyScopeKey(scope));
 }
 
 export function hasToolOverride(
@@ -96,16 +67,6 @@ export function hasToolOverride(
     override.toolName === draft.toolName
     && override.routeProfile === draft.routeProfile
     && policyScopeKey(override) === policyScopeKey(scope));
-}
-
-export function buildFeatureOverride(
-  draft: FeatureOverrideDraft,
-  scope: PolicyScopeSelection | null,
-): FeatureOverrideInput {
-  if (!scope) {
-    throw new Error('添加功能覆盖前必须选择范围');
-  }
-  return { ...draft, ...scope };
 }
 
 export function buildToolOverride(

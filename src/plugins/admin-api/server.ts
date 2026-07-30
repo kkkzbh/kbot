@@ -1,4 +1,4 @@
-import { constants as fsConstants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants, existsSync } from 'node:fs';
 import {
   access,
   copyFile,
@@ -42,7 +42,6 @@ import {
   resolveConfiguredTtsBaseUrl,
   resolveTtsEnvFilePath,
 } from './tts.js';
-
 const execFile = promisify(execFileCallback);
 
 export type ManagedEnvField = {
@@ -198,7 +197,6 @@ const LOCAL_ENV_FILE_BASENAME = '.env.local';
 const SERVER_ENV_FILE_BASENAME = '.env.server';
 const RUNTIME_ENV_FILE_BASENAME = '.env.runtime';
 const LOCAL_RUNTIME_ENV_RELATIVE = join('.runtime', RUNTIME_ENV_FILE_BASENAME);
-const CHATLUNA_AGENT_CONFIG_RELATIVE = join('data', 'chatluna', 'agent', 'config.json');
 
 export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'QQBOT_REALTIME_MESSAGE_ENABLED', label: '实时消息', type: 'toggle', section: 'features' },
@@ -394,10 +392,11 @@ function ensureManagedKey(key: string): void {
   }
 }
 
-function expandHomePath(value: string): string {
-  if (value === '~') return homedir();
-  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
-  return value;
+function normalizeManagedScopePath(value: string): string {
+  const normalized = value.trim();
+  if (normalized === '~') return homedir();
+  if (normalized.startsWith('~/')) return join(homedir(), normalized.slice(2));
+  return normalized;
 }
 
 function normalizeManagedGroupList(value: string): string {
@@ -411,7 +410,7 @@ function normalizeManagedGroupList(value: string): string {
 function normalizeManagedEnvValue(key: string, value: string | null | undefined): string | null | undefined {
   if (value == null) return value;
   if (key === 'CHATLUNA_COMMON_FS_SCOPE_PATH') {
-    return expandHomePath(value.trim());
+    return normalizeManagedScopePath(value);
   }
   if (
     key === 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS' ||
@@ -429,95 +428,6 @@ function normalizeManagedEnvValue(key: string, value: string | null | undefined)
     return normalizeManagedGroupList(value);
   }
   return value;
-}
-
-function isExplicitTrue(value: string | undefined): boolean {
-  return String(value ?? '').trim().toLowerCase() === 'true';
-}
-
-function readManagedEnvPatchFromFileSync(filePath: string | null | undefined): Partial<Record<string, string>> {
-  if (!filePath || !existsSync(filePath)) return {};
-  return readManagedEnvPatchFromContent(readFileSync(filePath, 'utf8'));
-}
-
-function buildManagedAgentComputerConfig(env: Record<string, string>) {
-  return {
-    defaultProvider: 'local',
-    idleTimeoutMs: 600000,
-    local: {
-      enabled: isExplicitTrue(env.CHATLUNA_COMMON_FS),
-      sandboxMode: 'workspace-write',
-      approvalMode: 'never',
-      dangerouslySkipPermissions: true,
-      preferredShell: 'auto',
-      scopePath: String(normalizeManagedEnvValue('CHATLUNA_COMMON_FS_SCOPE_PATH', env.CHATLUNA_COMMON_FS_SCOPE_PATH) ?? ''),
-      writableRoots: [],
-      readOnlyRoots: [],
-      denyRoots: [],
-      ignores: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/dist/**',
-        '**/build/**',
-        '**/.yarn/**',
-        '**/coverage/**',
-        '**/.next/**',
-        '**/.nuxt/**',
-        '**/out/**',
-        '**/.cache/**',
-        '**/.vscode/**',
-        '**/.idea/**',
-        '**/temp/**',
-        '**/tmp/**',
-      ],
-      allowedCommands: [],
-      blockedCommands: [],
-      commandTimeoutMs: 30000,
-      networkPolicy: 'allow',
-    },
-    e2b: {
-      enabled: false,
-      apiKey: '',
-      template: 'base',
-      desktopTemplate: '',
-      timeoutMs: 300000,
-      keepAlive: true,
-    },
-    openTerminal: {
-      enabled: false,
-      baseUrl: '',
-      apiKey: '',
-      deploymentMode: 'unknown',
-      userIsolation: false,
-    },
-  };
-}
-
-function readJsonRecordSync(filePath: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-export function syncManagedChatLunaAgentConfig(rootDir: string, env: Record<string, string>): string {
-  const configPath = join(rootDir, CHATLUNA_AGENT_CONFIG_RELATIVE);
-  const existing = existsSync(configPath) ? readJsonRecordSync(configPath) : {};
-  const next = {
-    ...existing,
-    version: typeof existing.version === 'number' ? existing.version : 4,
-    computer: buildManagedAgentComputerConfig(env),
-  };
-  const nextContent = `${JSON.stringify(next, null, 2)}\n`;
-  const currentContent = existsSync(configPath) ? readFileSync(configPath, 'utf8') : null;
-  if (currentContent === nextContent) return configPath;
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, nextContent, 'utf8');
-  return configPath;
 }
 
 export function parseEnvLines(content: string): EnvLine[] {
@@ -1016,14 +926,6 @@ export class AdminRuntimeManager {
     };
   }
 
-  syncManagedChatLunaAgentConfig(env?: Record<string, string>): string {
-    const mergedEnv = env ?? mergeManagedEnvRecords(
-      readManagedEnvPatchFromFileSync(this.envFiles.baseFilePath),
-      readManagedEnvPatchFromFileSync(this.envFiles.overrideFilePath),
-    );
-    return syncManagedChatLunaAgentConfig(this.rootDir, mergedEnv);
-  }
-
   async saveEnv(patch: EnvPatch): Promise<Record<string, string>> {
     const normalizedPatch = Object.fromEntries(
       Object.entries(patch).map(([key, value]) => [key, normalizeManagedEnvValue(key, value)]),
@@ -1037,12 +939,10 @@ export class AdminRuntimeManager {
       backupDir: resolveBackupDirectory(this.rootDir, this.envFiles.editTarget),
       fs: this.fs,
     });
-    const env = mergeManagedEnvRecords(
+    return mergeManagedEnvRecords(
       readManagedEnvPatchFromContent(baseContent),
       readManagedEnvPatchFromContent(nextTargetContent),
     );
-    this.syncManagedChatLunaAgentConfig(env);
-    return env;
   }
 
   async saveTtsSettings(input: SaveTtsSettingsRequest): Promise<SaveTtsSettingsResponse> {

@@ -482,63 +482,6 @@ describe('admin manager', () => {
     });
   });
 
-  it('syncs chatluna-agent local computer config from managed env saves', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await manager.saveEnv({
-      CHATLUNA_COMMON_FS: 'true',
-      CHATLUNA_COMMON_FS_SCOPE_PATH: '~/system',
-    });
-
-    const config = JSON.parse(readFileSync(join(dir, 'data/chatluna/agent/config.json'), 'utf8'));
-    expect(config).toMatchObject({
-      version: 4,
-      computer: {
-        defaultProvider: 'local',
-        local: {
-          enabled: true,
-          approvalMode: 'never',
-          dangerouslySkipPermissions: true,
-          networkPolicy: 'allow',
-          scopePath: join(homedir(), 'system'),
-        },
-        e2b: {
-          enabled: false,
-        },
-        openTerminal: {
-          enabled: false,
-        },
-      },
-    });
-  });
-
-  it('preserves non-computer agent config fields when syncing managed computer config', async () => {
-    const dir = createTempDir();
-    const envFilePath = join(dir, '.env.local');
-    const agentConfigPath = join(dir, 'data/chatluna/agent/config.json');
-    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
-    mkdirSync(join(dir, 'data/chatluna/agent'), { recursive: true });
-    writeFileSync(agentConfigPath, JSON.stringify({
-      version: 4,
-      mcp: { mcpServers: { demo: { command: 'echo', args: ['1'] } }, tools: {} },
-    }, null, 2), 'utf8');
-
-    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
-    await manager.saveEnv({
-      CHATLUNA_COMMON_FS: 'true',
-    });
-
-    const config = JSON.parse(readFileSync(agentConfigPath, 'utf8'));
-    expect(config.mcp).toEqual({
-      mcpServers: { demo: { command: 'echo', args: ['1'] } },
-      tools: {},
-    });
-    expect(config.computer.local.enabled).toBe(true);
-  });
-
   it('reads state from .env.server when that is the active runtime env file', async () => {
     const dir = createTempDir();
     writeFileSync(join(dir, '.env.server'), 'QQBOT_REPLY_INTERRUPT_ENABLED=true\n', 'utf8');

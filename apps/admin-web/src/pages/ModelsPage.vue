@@ -20,8 +20,6 @@ import {
   connectionIdSchema,
   emptyRequestSchema,
   modelAdminAggregateSchema,
-  modelApplyRequestSchema,
-  modelApplyResponseSchema,
   modelCatalogResponseSchema,
   modelConfigPutSchema,
   modelConnectionAuthStateSchema,
@@ -34,8 +32,10 @@ import {
   type ModelConfigDraft,
   type ModelConnectionAuthState,
 } from '@contracts';
-import PageHeader from '@/components/PageHeader.vue';
 import { ApiError, api, jsonBody } from '@/api/client';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
+import { useRuntimeStore } from '@/stores/runtime';
+import { refreshRuntimeOverview } from '@/stores/runtime-refresh';
 import {
   allowedBindingModes,
   buildModelConfigPutInput,
@@ -100,6 +100,7 @@ const WORKLOAD_DETAILS: Record<string, {
 };
 
 const route = useRoute();
+const runtime = useRuntimeStore();
 const requestedWorkload = computed(() => typeof route.query.workload === 'string'
   ? route.query.workload
   : '');
@@ -118,7 +119,6 @@ const connectionQuery = ref('');
 const modelLoadError = ref<string | null>(null);
 const loading = ref(false);
 const saving = ref(false);
-const applying = ref(false);
 const operationBusy = ref<string | null>(null);
 const catalogByConnection = reactive<Record<string, ModelCatalogResponse | undefined>>({});
 const probeByConnection = reactive<Record<string, {
@@ -245,24 +245,28 @@ async function load(): Promise<void> {
   }
 }
 
-async function refreshSavedState(): Promise<void> {
-  if (applying.value) return;
-  if (hasUnsavedChanges.value) {
-    try {
-      await ElMessageBox.confirm(
-        '刷新会丢弃整个模型配置草稿，包括尚未保存的连接、档案、绑定和密钥操作。',
-        '放弃未保存修改？',
-        { type: 'warning', confirmButtonText: '放弃并刷新', cancelButtonText: '继续编辑' },
-      );
-    } catch {
-      return;
-    }
+async function discardChanges(): Promise<void> {
+  if (!hasUnsavedChanges.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃尚未保存的认证、模型、绑定和密钥修改。',
+      '放弃未保存修改？',
+      { type: 'warning', confirmButtonText: '放弃修改', cancelButtonText: '继续编辑' },
+    );
+  } catch {
+    return;
   }
   await load();
 }
 
 async function save(): Promise<void> {
-  if (!saved.value || !draft.value || saving.value || applying.value) return;
+  if (
+    !saved.value
+    || !draft.value
+    || !hasUnsavedChanges.value
+    || saving.value
+    || runtime.restartInProgress
+  ) return;
   saving.value = true;
   try {
     const input = buildModelConfigPutInput(saved.value, draft.value, secretDrafts);
@@ -271,7 +275,8 @@ async function save(): Promise<void> {
       body: jsonBody(modelConfigPutSchema, input),
     });
     hydrate(aggregate);
-    ElMessage.success(`模型配置已保存为 revision ${aggregate.savedRevision}，等待重启应用。`);
+    await refreshRuntimeOverview();
+    ElMessage.success('模型配置已保存，可从右上角重启使其生效。');
   } catch (error) {
     if (isStaleRevisionConflict(error)) {
       try {
@@ -289,70 +294,6 @@ async function save(): Promise<void> {
     ElMessage.error(errorMessage(error, '模型配置保存失败'));
   } finally {
     saving.value = false;
-  }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-async function waitUntilApplied(expectedRevision: number): Promise<void> {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
-    await delay(1_000);
-    try {
-      const aggregate = await api('/models', modelAdminAggregateSchema);
-      if (aggregate.appliedRevision >= expectedRevision) {
-        hydrate(aggregate);
-        return;
-      }
-    } catch {
-      // Koishi is expected to be temporarily unavailable while systemd restarts it.
-    }
-  }
-  throw new Error(`Koishi 重启后没有在 90 秒内应用 revision ${expectedRevision}。`);
-}
-
-async function applySavedRevision(): Promise<void> {
-  if (!saved.value || applying.value) return;
-  if (hasUnsavedChanges.value) {
-    ElMessage.warning('请先保存或放弃当前草稿，再重启应用已保存 revision。');
-    return;
-  }
-  if (!saved.value.pending) {
-    ElMessage.info('saved revision 已经在运行中。');
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      `将重启 qqbot-koishi.service 并应用 revision ${saved.value.savedRevision}，管理页面会短暂断开。`,
-      '重启应用模型配置？',
-      { type: 'warning', confirmButtonText: '重启应用', cancelButtonText: '取消' },
-    );
-  } catch {
-    return;
-  }
-
-  const expectedRevision = saved.value.savedRevision;
-  if (document.activeElement instanceof HTMLElement) {
-    document.activeElement.blur();
-  }
-  applying.value = true;
-  try {
-    try {
-      await api('/models/apply', modelApplyResponseSchema, {
-        method: 'POST',
-        body: jsonBody(modelApplyRequestSchema, { expectedRevision }),
-      });
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      // The accepted response may be interrupted by the service restart.
-    }
-    await waitUntilApplied(expectedRevision);
-    ElMessage.success(`revision ${expectedRevision} 已进入运行时。`);
-  } catch (error) {
-    ElMessage.error(errorMessage(error, '模型配置应用失败'));
-  } finally {
-    applying.value = false;
   }
 }
 
@@ -939,16 +880,12 @@ function openOAuthVerification(): void {
 }
 
 function beforeUnload(event: BeforeUnloadEvent): void {
-  if (!hasUnsavedChanges.value && !applying.value) return;
+  if (!hasUnsavedChanges.value) return;
   event.preventDefault();
   event.returnValue = '';
 }
 
 onBeforeRouteLeave(async () => {
-  if (applying.value) {
-    ElMessage.warning('正在重启并确认模型 revision，请等待应用完成。');
-    return false;
-  }
   if (!hasUnsavedChanges.value) return true;
   try {
     await ElMessageBox.confirm(
@@ -966,6 +903,17 @@ function handleSave(): void {
   void save();
 }
 
+function refreshPageWhenVisible(): void {
+  if (
+    document.visibilityState === 'visible'
+    && !hasUnsavedChanges.value
+    && !saving.value
+    && !runtime.restartInProgress
+  ) {
+    void load();
+  }
+}
+
 watch(
   [selectedConnectionId, canOperateSelectedConnection],
   ([connectionId, canOperate]) => {
@@ -973,53 +921,29 @@ watch(
   },
   { flush: 'post' },
 );
+watch(
+  () => runtime.restartGeneration,
+  () => {
+    if (!hasUnsavedChanges.value) void load();
+  },
+);
 
 onMounted(() => {
   void load();
   window.addEventListener('admin-save', handleSave);
   window.addEventListener('beforeunload', beforeUnload);
+  window.addEventListener('focus', refreshPageWhenVisible);
+  document.addEventListener('visibilitychange', refreshPageWhenVisible);
 });
 onBeforeUnmount(() => {
   window.removeEventListener('admin-save', handleSave);
   window.removeEventListener('beforeunload', beforeUnload);
+  window.removeEventListener('focus', refreshPageWhenVisible);
+  document.removeEventListener('visibilitychange', refreshPageWhenVisible);
 });
 </script>
 
 <template>
-  <PageHeader
-    :saving="saving"
-    :save-disabled="!hasUnsavedChanges || !draft || applying"
-    save-label="保存模型配置"
-    @save="save"
-  >
-    <template #actions>
-      <el-button
-        :loading="loading"
-        :disabled="applying"
-        :title="hasUnsavedChanges ? '放弃整个 aggregate draft 并重新读取' : '读取最新服务端 revision'"
-        @click="refreshSavedState"
-      >
-        {{ hasUnsavedChanges ? '放弃修改' : '刷新状态' }}
-      </el-button>
-      <el-button
-        type="warning"
-        plain
-        :loading="applying"
-        :disabled="!saved?.pending || hasUnsavedChanges"
-        @click="applySavedRevision"
-      >
-        重启应用
-      </el-button>
-    </template>
-  </PageHeader>
-
-  <div v-if="applying" class="apply-lock" role="status" aria-live="assertive">
-    <div>
-      <strong>正在应用模型配置</strong>
-      <span>Koishi 重启期间页面已锁定，正在确认目标 revision 进入运行时。</span>
-    </div>
-  </div>
-
   <section v-if="modelLoadError" class="panel load-error">
     <div><strong>模型配置加载失败</strong><p>{{ modelLoadError }}</p></div>
     <el-button type="primary" plain :loading="loading" @click="load">重试加载</el-button>
@@ -1030,33 +954,6 @@ onBeforeUnmount(() => {
   </section>
 
   <template v-if="saved && draft">
-    <section class="revision-bar panel">
-      <div>
-        <span>已保存版本</span>
-        <strong>{{ saved.savedRevision }}</strong>
-      </div>
-      <div>
-        <span>运行版本</span>
-        <strong>{{ saved.appliedRevision }}</strong>
-      </div>
-      <div>
-        <span>草稿</span>
-        <el-tag :type="hasUnsavedChanges ? 'warning' : 'success'" effect="light">
-          {{ hasUnsavedChanges ? '有未保存修改' : '与 saved 同步' }}
-        </el-tag>
-      </div>
-      <div class="revision-state">
-        <span>运行状态</span>
-        <el-tag :type="saved.pending ? 'warning' : 'success'" effect="dark">
-          {{ saved.pending ? '等待重启' : '已应用' }}
-        </el-tag>
-      </div>
-      <div class="revision-time">
-        <span>更新时间</span>
-        <strong>{{ new Date(saved.updatedAt).toLocaleString() }}</strong>
-      </div>
-    </section>
-
     <section class="panel connections-panel">
       <div class="panel-head">
         <div>
@@ -1133,7 +1030,7 @@ onBeforeUnmount(() => {
             type="warning"
             :closable="false"
             show-icon
-            :title="`连接操作只针对已保存 revision ${saved?.savedRevision}；请先保存或放弃当前连接与凭据修改。`"
+            title="请先保存或放弃当前认证及凭据修改，再执行连接操作。"
           />
 
           <el-form label-position="top" class="connection-form">
@@ -1446,6 +1343,13 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <PendingChangesBar
+      v-if="hasUnsavedChanges"
+      :saving="saving"
+      :disabled="runtime.restartInProgress"
+      @discard="discardChanges"
+      @save="save"
+    />
   </template>
 
   <el-dialog v-model="createConnectionOpen" title="新增认证配置" width="min(520px, 92vw)">
@@ -1476,8 +1380,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.apply-lock{position:fixed;inset:0;z-index:3000;display:grid;place-items:center;padding:24px;background:rgba(246,248,252,.82);backdrop-filter:blur(3px)}.apply-lock>div{display:grid;gap:7px;max-width:420px;padding:20px 24px;border:1px solid #d7dfec;border-radius:12px;background:#fff;box-shadow:0 16px 50px rgba(43,58,86,.16);text-align:center}.apply-lock strong{color:#344056;font-size:14px}.apply-lock span{color:#768196;font-size:10px;line-height:1.6}
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.revision-bar{display:grid;grid-template-columns:repeat(3,minmax(120px,.7fr)) minmax(220px,1.2fr) minmax(180px,1fr);align-items:center;margin-bottom:16px;overflow:hidden}.revision-bar>div{min-width:0;min-height:64px;display:flex;align-items:flex-start;justify-content:center;flex-direction:column;gap:5px;padding:12px 16px;border-right:1px solid var(--line)}.revision-bar>div:last-child{border-right:0}.revision-bar span{color:#8590a2;font-size:9px;text-transform:uppercase}.revision-bar strong{overflow:hidden;max-width:100%;color:#2f3b50;font-family:"SFMono-Regular",Consolas,monospace;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.revision-state{align-items:flex-start!important}.binding-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,2fr);gap:24px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row.binding-target{background:#f2f6ff;box-shadow:inset 3px 0 #416de0}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong{display:block;color:#344056;font-size:12px}.binding-controls{display:grid;grid-template-columns:minmax(130px,.75fr) minmax(160px,1fr) minmax(180px,1.3fr);gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.remove-binding{position:absolute;right:8px;top:4px}.connections-layout{height:500px;display:grid;grid-template-columns:260px minmax(0,1fr)}.connection-list{min-height:0;overflow-y:auto;padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:nowrap}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.secret-card,.oauth-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-title,.oauth-title{display:flex;align-items:center;gap:8px;min-width:0}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.subsection-title h4{min-width:0;margin:0;color:#354156;font-size:13px;white-space:nowrap}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__header){display:flex;align-items:center;min-height:40px;height:auto;line-height:1.2}.models-section :deep(.el-collapse-item__title){min-width:0;display:block;flex:1}.models-section :deep(.el-collapse-item__arrow){flex:none;margin-left:8px;transition:transform .18s ease}.models-section :deep(.el-collapse-item__arrow.is-active){transform:rotate(90deg)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden}.model-title strong{min-width:0;overflow:hidden;color:#374357;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.model-title .el-tag{flex:none}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.binding-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,2fr);gap:24px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row.binding-target{background:#f2f6ff;box-shadow:inset 3px 0 #416de0}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong{display:block;color:#344056;font-size:12px}.binding-controls{display:grid;grid-template-columns:minmax(130px,.75fr) minmax(160px,1fr) minmax(180px,1.3fr);gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.remove-binding{position:absolute;right:8px;top:4px}.connections-layout{height:500px;display:grid;grid-template-columns:260px minmax(0,1fr)}.connection-list{min-height:0;overflow-y:auto;padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:nowrap}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.secret-card,.oauth-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-title,.oauth-title{display:flex;align-items:center;gap:8px;min-width:0}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.subsection-title h4{min-width:0;margin:0;color:#354156;font-size:13px;white-space:nowrap}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__header){display:flex;align-items:center;min-height:40px;height:auto;line-height:1.2}.models-section :deep(.el-collapse-item__title){min-width:0;display:block;flex:1}.models-section :deep(.el-collapse-item__arrow){flex:none;margin-left:8px;transition:transform .18s ease}.models-section :deep(.el-collapse-item__arrow.is-active){transform:rotate(90deg)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden}.model-title strong{min-width:0;overflow:hidden;color:#374357;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.model-title .el-tag{flex:none}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
 @media(prefers-reduced-motion:reduce){.models-section :deep(.el-collapse-item__arrow){transition:none}}
-@media(max-width:1100px){.revision-bar{grid-template-columns:repeat(3,1fr)}.revision-bar>div:nth-child(3){border-right:0}.revision-bar>div:nth-child(n+4){border-top:1px solid var(--line)}.revision-state{grid-column:span 2}.binding-row{grid-template-columns:minmax(180px,.7fr) minmax(0,2fr)}}@media(max-width:760px){.load-error{align-items:flex-start;flex-direction:column}.revision-bar{grid-template-columns:repeat(2,minmax(0,1fr))}.revision-bar>div{border-top:1px solid var(--line)}.revision-bar>div:nth-child(odd){border-right:1px solid var(--line)}.revision-bar>div:nth-child(even){border-right:0}.revision-state,.revision-time{grid-column:1/-1}.binding-row{grid-template-columns:1fr;padding:14px}.binding-controls{grid-template-columns:1fr}.connections-layout{height:auto;grid-template-columns:1fr}.connection-list{max-height:280px;overflow:auto;border-right:0;border-bottom:1px solid var(--line)}.connection-editor{overflow:visible;scrollbar-gutter:auto;padding:18px 14px}.editor-title,.subsection-title{flex-direction:column}.editor-title>div:last-child{justify-content:flex-start}.connection-form,.model-form{grid-template-columns:1fr}.connection-form .span-2,.model-form .span-2{grid-column:auto}.secret-card,.oauth-card{grid-template-columns:1fr}.secret-card>.el-input,.oauth-attempt{grid-column:auto}.oauth-actions{justify-content:flex-start}.oauth-attempt{align-items:flex-start;flex-wrap:wrap}}
+@media(max-width:1100px){.binding-row{grid-template-columns:minmax(180px,.7fr) minmax(0,2fr)}}@media(max-width:760px){.load-error{align-items:flex-start;flex-direction:column}.binding-row{grid-template-columns:1fr;padding:14px}.binding-controls{grid-template-columns:1fr}.connections-layout{height:auto;grid-template-columns:1fr}.connection-list{max-height:280px;overflow:auto;border-right:0;border-bottom:1px solid var(--line)}.connection-editor{overflow:visible;scrollbar-gutter:auto;padding:18px 14px}.editor-title,.subsection-title{flex-direction:column}.editor-title>div:last-child{justify-content:flex-start}.connection-form,.model-form{grid-template-columns:1fr}.connection-form .span-2,.model-form .span-2{grid-column:auto}.secret-card,.oauth-card{grid-template-columns:1fr}.secret-card>.el-input,.oauth-attempt{grid-column:auto}.oauth-actions{justify-content:flex-start}.oauth-attempt{align-items:flex-start;flex-wrap:wrap}}
 </style>

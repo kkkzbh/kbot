@@ -1,42 +1,32 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import {
-  fileSystemToolSettingKeys,
-  runtimeFeatureSettingKeys,
-} from '@contracts';
-import PageHeader from '@/components/PageHeader.vue';
+import { onBeforeRouteLeave } from 'vue-router';
+import { fileSystemToolSettingKeys } from '@contracts';
 import EmptyState from '@/components/EmptyState.vue';
 import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
+import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import { rawApi, rawJsonBody } from '@/api/client';
+import { useRuntimeStore } from '@/stores/runtime';
 import { useManagedFeatureSettings } from './managed-settings';
 import {
-  buildFeatureOverride,
   buildToolOverride,
-  canAddFeatureOverride,
   canAddToolOverride,
   createPolicyScopeOptions,
-  createFeatureOverrideDraft,
   createToolOverrideDraft,
-  hasFeatureOverride,
   hasToolOverride,
-  type FeatureOverrideInput,
   type PolicyScopeOption,
   type ToolOverrideInput,
 } from './policy-page-state';
 
 const state = ref<any | null>(null);
-const featureOverrides = ref<any[]>([]);
 const toolOverrides = ref<any[]>([]);
-const activeTab = ref('features');
+const savedToolOverridesText = ref('[]');
+const activeTab = ref('tools');
 const saving = ref(false);
-const addFeatureOpen = ref(false);
 const addToolOpen = ref(false);
-const featureDraft = reactive(createFeatureOverrideDraft());
 const toolDraft = reactive(createToolOverrideDraft());
-const featureScope = ref<PolicyScopeOption | null>(null);
 const toolScope = ref<PolicyScopeOption | null>(null);
-const featureScopeOptions = computed(() => createPolicyScopeOptions(state.value?.featureScopes || []));
 const toolScopeOptions = computed(() => createPolicyScopeOptions(
   state.value?.tools.defaultScopes || [],
   state.value?.tools.scopes || [],
@@ -45,62 +35,49 @@ const {
   fields: fileSystemFields,
   draft: fileSystemDraft,
   clearSecrets: fileSystemClearSecrets,
-  loading: fileSystemLoading,
   hasChanges: hasFileSystemChanges,
   load: loadFileSystemSettings,
   save: saveFileSystemSettings,
 } = useManagedFeatureSettings(fileSystemToolSettingKeys);
-const {
-  fields: runtimeFields,
-  draft: runtimeDraft,
-  clearSecrets: runtimeClearSecrets,
-  loading: runtimeLoading,
-  hasChanges: hasRuntimeChanges,
-  load: loadRuntimeSettings,
-  save: saveRuntimeSettings,
-} = useManagedFeatureSettings(runtimeFeatureSettingKeys);
 const memorySearchPolicy = computed(() =>
   state.value?.tools.catalog.find((tool: any) => tool.toolName === 'memory_search') ?? null);
-const featureOverrideDuplicate = computed(() => hasFeatureOverride(
-  featureOverrides.value as FeatureOverrideInput[],
-  featureDraft,
-  featureScope.value,
-));
 const toolOverrideDuplicate = computed(() => hasToolOverride(
   toolOverrides.value as ToolOverrideInput[],
   toolDraft,
   toolScope.value,
 ));
-const featureOverrideReady = computed(() =>
-  canAddFeatureOverride(featureScope.value) && !featureOverrideDuplicate.value);
 const toolOverrideReady = computed(() =>
   canAddToolOverride(toolDraft, toolScope.value) && !toolOverrideDuplicate.value);
-const featureKeys = ['QQBOT_REALTIME_MESSAGE_ENABLED','QQ_VOICE_INPUT_ENABLED','QQ_VOICE_OUTPUT_ENABLED','QQBOT_REPLY_INTERRUPT_ENABLED'];
+const runtime = useRuntimeStore();
+const serializedToolOverrides = computed(() => JSON.stringify(
+  toolOverrides.value.map(({ toolName, routeProfile, scopeKind, scopeId, enabled }) => ({
+    toolName,
+    routeProfile,
+    scopeKind,
+    scopeId,
+    enabled,
+  })),
+));
+const toolOverridesChanged = computed(() => (
+  serializedToolOverrides.value !== savedToolOverridesText.value
+));
+const hasUnsavedChanges = computed(() => (
+  toolOverridesChanged.value || hasFileSystemChanges.value
+));
 
 async function load() {
   const [result] = await Promise.all([
     rawApi<any>('/policies'),
     loadFileSystemSettings(),
-    loadRuntimeSettings(),
   ]);
   state.value = result;
-  featureOverrides.value = result.featureOverrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
   toolOverrides.value = result.tools.overrides.map((item: any) => ({ ...item, enabled: Boolean(item.enabled) }));
+  savedToolOverridesText.value = serializedToolOverrides.value;
 }
 
-function addFeature() {
-  featureOverrides.value.push(buildFeatureOverride(featureDraft, featureScope.value));
-  addFeatureOpen.value = false;
-}
 function addTool() {
   toolOverrides.value.push(buildToolOverride(toolDraft, toolScope.value));
   addToolOpen.value = false;
-}
-
-function openFeatureDialog() {
-  Object.assign(featureDraft, createFeatureOverrideDraft());
-  featureScope.value = null;
-  addFeatureOpen.value = true;
 }
 
 function openToolDialog() {
@@ -110,18 +87,34 @@ function openToolDialog() {
 }
 
 async function save() {
+  if (!hasUnsavedChanges.value || runtime.restartInProgress) return;
   saving.value = true;
   try {
-    await Promise.all([
-      rawApi('/policies/features', { method: 'PATCH', body: rawJsonBody({ overrides: featureOverrides.value.map(({ featureKey,scopeKind,scopeId,enabled }) => ({ featureKey,scopeKind,scopeId,enabled })) }) }),
-      rawApi('/policies/tools', { method: 'PATCH', body: rawJsonBody({ overrides: toolOverrides.value.map(({ toolName,routeProfile,scopeKind,scopeId,enabled }) => ({ toolName,routeProfile,scopeKind,scopeId,enabled })) }) }),
-      hasFileSystemChanges.value ? saveFileSystemSettings() : Promise.resolve(false),
-      hasRuntimeChanges.value ? saveRuntimeSettings() : Promise.resolve(false),
-    ]);
-    ElMessage.success('功能与工具策略已保存');
+    if (toolOverridesChanged.value) {
+      await rawApi('/policies/tools', {
+        method: 'PATCH',
+        body: rawJsonBody({ overrides: JSON.parse(serializedToolOverrides.value) }),
+      });
+    }
+    if (hasFileSystemChanges.value) await saveFileSystemSettings();
+    ElMessage.success('工具策略已保存');
     await load();
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '策略保存失败'); }
   finally { saving.value = false; }
+}
+
+async function discardChanges(): Promise<void> {
+  if (!hasUnsavedChanges.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃尚未保存的工具权限与文件系统配置。',
+      '放弃未保存修改？',
+      { type: 'warning', confirmButtonText: '放弃修改', cancelButtonText: '继续编辑' },
+    );
+  } catch {
+    return;
+  }
+  await load();
 }
 
 async function conversationAction(target: any, action: 'clear'|'delete') {
@@ -131,38 +124,49 @@ async function conversationAction(target: any, action: 'clear'|'delete') {
     body: rawJsonBody({ roomId: target.roomId, conversationId: target.conversationId }),
   });
   ElMessage.success(action === 'clear' ? `已清理 ${result.result.deletedMessages} 条消息` : '会话与房间已删除');
-  await load();
+  const latest = await rawApi<any>('/policies');
+  if (state.value) state.value.conversationTargets = latest.conversationTargets;
 }
 
-function handleSave() { save(); }
-onMounted(() => { load(); window.addEventListener('admin-save', handleSave); });
-onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (!hasUnsavedChanges.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+onBeforeRouteLeave(async () => {
+  if (!hasUnsavedChanges.value) return true;
+  try {
+    await ElMessageBox.confirm(
+      '工具策略仍有未保存修改。',
+      '离开策略配置？',
+      { type: 'warning', confirmButtonText: '放弃并离开', cancelButtonText: '继续编辑' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+function handleSave() { void save(); }
+onMounted(() => {
+  void load();
+  window.addEventListener('admin-save', handleSave);
+  window.addEventListener('beforeunload', beforeUnload);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('admin-save', handleSave);
+  window.removeEventListener('beforeunload', beforeUnload);
+});
 </script>
 
 <template>
-  <PageHeader :saving="saving" @save="save"><template #actions><el-button :loading="!state || fileSystemLoading || runtimeLoading" @click="load">重新载入</el-button></template></PageHeader>
   <article v-if="state" class="panel policy-panel">
     <el-tabs v-model="activeTab" class="policy-tabs">
-      <el-tab-pane label="功能策略" name="features" />
       <el-tab-pane label="工具策略" name="tools" />
       <el-tab-pane label="会话数据" name="conversations" />
     </el-tabs>
-    <template v-if="activeTab==='features'">
-      <section class="domain-settings">
-        <div class="panel-head subhead">
-          <h2>运行体验</h2>
-        </div>
-        <ManagedSettingsGrid
-          v-model="runtimeDraft"
-          v-model:clear-secrets="runtimeClearSecrets"
-          :fields="runtimeFields"
-        />
-      </section>
-      <div class="panel-head subhead"><h2>功能范围覆盖</h2><el-button size="small" @click="openFeatureDialog">添加覆盖</el-button></div>
-      <el-table v-if="featureOverrides.length" :data="featureOverrides" style="width:100%"><el-table-column prop="featureKey" label="功能" min-width="240" /><el-table-column prop="scopeKind" label="范围类型" width="140" /><el-table-column prop="scopeId" label="范围 ID" min-width="160" /><el-table-column label="启用" width="90"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="scope"><el-button text type="danger" @click="featureOverrides.splice(scope.$index,1)">移除</el-button></template></el-table-column></el-table>
-      <EmptyState v-else title="没有功能覆盖" />
-    </template>
-    <template v-else-if="activeTab==='tools'">
+    <template v-if="activeTab==='tools'">
       <section class="domain-settings">
         <div class="panel-head subhead">
           <h2>文件系统工具</h2>
@@ -192,8 +196,15 @@ onBeforeUnmount(() => window.removeEventListener('admin-save', handleSave));
       <el-table :data="state.conversationTargets" style="width:100%"><el-table-column prop="roomName" label="会话" min-width="180" /><el-table-column prop="scopeKind" label="类型" width="90" /><el-table-column prop="scopeId" label="Scope" min-width="130" /><el-table-column prop="conversationId" label="Conversation ID" min-width="220"><template #default="scope"><span class="mono">{{ scope.row.conversationId }}</span></template></el-table-column><el-table-column label="操作" width="180"><template #default="scope"><el-button size="small" @click="conversationAction(scope.row,'clear')">清空</el-button><el-button size="small" type="danger" plain @click="conversationAction(scope.row,'delete')">删除</el-button></template></el-table-column></el-table>
     </template>
   </article>
+  <PendingChangesBar
+    v-if="hasUnsavedChanges"
+    :saving="saving"
+    :disabled="runtime.restartInProgress"
+    save-label="保存策略"
+    @discard="discardChanges"
+    @save="save"
+  />
 
-  <el-dialog v-model="addFeatureOpen" title="添加功能覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="功能"><el-select v-model="featureDraft.featureKey" style="width:100%"><el-option v-for="key in featureKeys" :key="key" :value="key" /></el-select></el-form-item><el-form-item label="范围" :error="featureOverrideDuplicate ? '该范围已有此功能覆盖' : ''"><el-select v-model="featureScope" value-key="key" placeholder="请选择范围" style="width:100%"><el-option v-for="scope in featureScopeOptions" :key="scope.key" :label="scope.label" :value="scope" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="featureDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addFeatureOpen=false">取消</el-button><el-button type="primary" :disabled="!featureOverrideReady" @click="addFeature">添加</el-button></template></el-dialog>
   <el-dialog v-model="addToolOpen" title="添加工具覆盖" width="min(520px, calc(100vw - 32px))"><el-form label-position="top"><el-form-item label="工具"><el-select v-model="toolDraft.toolName" filterable style="width:100%"><el-option v-for="tool in state?.tools.catalog" :key="tool.toolName" :label="tool.title || tool.toolName" :value="tool.toolName" /></el-select></el-form-item><el-form-item label="Route"><el-select v-model="toolDraft.routeProfile" style="width:100%"><el-option v-for="route in state?.tools.routeProfiles" :key="route" :value="route" /></el-select></el-form-item><el-form-item label="范围" :error="toolOverrideDuplicate ? '该范围已有此工具与 Route 覆盖' : ''"><el-select v-model="toolScope" value-key="key" placeholder="请选择范围" style="width:100%"><el-option v-for="scope in toolScopeOptions" :key="scope.key" :label="scope.label" :value="scope" /></el-select></el-form-item><el-form-item label="启用"><el-switch v-model="toolDraft.enabled" /></el-form-item></el-form><template #footer><el-button @click="addToolOpen=false">取消</el-button><el-button type="primary" :disabled="!toolOverrideReady" @click="addTool">添加</el-button></template></el-dialog>
 </template>
 

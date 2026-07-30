@@ -13,7 +13,6 @@ import {
   adminLogsQuerySchema,
   connectionIdSchema,
   conversationTargetRequestSchema,
-  featureOverridesRequestSchema,
   memoryAssertionsResponseSchema,
   memoryArchiveRequestSchema,
   memoryArchiveResponseSchema,
@@ -29,8 +28,6 @@ import {
   memoryReviewsResponseSchema,
   emptyRequestSchema,
   modelAdminAggregateSchema,
-  modelApplyRequestSchema,
-  modelApplyResponseSchema,
   modelCatalogResponseSchema,
   modelConfigPutSchema,
   modelConnectionAuthStateSchema,
@@ -76,6 +73,7 @@ import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
 import type { StickerMaintenanceService } from '../../types/model-config.js';
 import type {
   AdminApplyReason,
+  AdminApplyRestartTarget,
   EnvPatch,
 } from '../../types/admin.js';
 import type { CopilotOAuthBridgeService } from '../copilot-oauth/index.js';
@@ -116,7 +114,9 @@ import {
   AdminAccessPolicy,
   AdminHttpError,
   createRequestId,
-} from './access-policy.js';
+} from '../shared/internal-access-policy.js';
+import type { ChatLunaAgentAdminService } from './chatluna-agent-admin.js';
+import { registerAgentAdminRoutes } from './agent-routes.js';
 
 type DatabaseLike = {
   get: (table: string, query: Record<string, unknown>, cursor?: unknown) => Promise<any[]>;
@@ -127,6 +127,7 @@ type DatabaseLike = {
 };
 
 export type AdminRuntimeServices = {
+  agent: ChatLunaAgentAdminService;
   memoryStatus?: MemoryStatusServiceLike;
   memoryAdmin?: MemoryAdminService;
   featurePolicy?: FeaturePolicyServiceLike;
@@ -592,9 +593,9 @@ async function readNaturalTriggerAdminAggregate(
   applyState: AdminApplyState,
   modelOperations: ModelConnectionOperations,
 ) {
-  const [state, scopes, modelAggregate, env] = await Promise.all([
+  const [state, groupScopes, modelAggregate, env] = await Promise.all([
     Promise.resolve(options.naturalTriggerConfig.getState()),
-    requireService(options.services.featurePolicy, 'feature policy').listAdminFeatureScopes(),
+    requireService(options.services.featurePolicy, 'feature policy').listAdminGroupScopes(),
     readModelAdminAggregate(options.modelConfig, modelOperations),
     options.manager.getManagedEnv(),
   ]);
@@ -618,10 +619,9 @@ async function readNaturalTriggerAdminAggregate(
     && supportsWorkloadProtocol('naturalTrigger.decision', model),
   );
   const apply = applyState.snapshot();
-  const groupOptions = scopes
-    .filter((scope) => scope.scopeKind === 'group' && scope.groupId)
+  const groupOptions = groupScopes
     .map((scope) => ({
-      groupId: scope.groupId!,
+      groupId: scope.groupId,
       roomName: scope.roomName,
       updatedAt: scope.updatedAt ?? 0,
     }))
@@ -686,6 +686,77 @@ function requireService<T>(service: T | undefined, name: string): T {
   return service;
 }
 
+async function scheduleModelRevisionApply(
+  options: RegisterAdminApiOptions,
+  expectedRevision: number,
+  onRestartNotObserved: () => void,
+): Promise<AdminApplyRestartTarget> {
+  const reservation = await modelConfigDomain(
+    () => options.modelConfig.reserveApply(expectedRevision),
+  );
+  let status: Awaited<ReturnType<AdminRuntimeManager['getServiceStatus']>>;
+  try {
+    status = await options.manager.getServiceStatus('qqbot-koishi.service');
+  } catch (error) {
+    await reservation.release();
+    throw new AdminHttpError(
+      503,
+      'service_unavailable',
+      '读取 qqbot-koishi.service 当前状态失败。',
+      {
+        operation: 'apply',
+        stage: 'inspect_service',
+        savedRevision: reservation.savedRevision,
+        diagnostic: safeOperationDiagnostic(error),
+      },
+    );
+  }
+
+  let restartJob: Awaited<ReturnType<AdminRuntimeManager['scheduleRestart']>>;
+  try {
+    restartJob = await options.manager.scheduleRestart('qqbot-koishi.service');
+  } catch (error) {
+    await reservation.release();
+    throw new AdminHttpError(
+      503,
+      'service_unavailable',
+      '调度 qqbot-koishi.service 重启任务失败，模型配置未应用。',
+      {
+        savedRevision: reservation.savedRevision,
+        ...restartJobErrorDetails(error),
+      },
+    );
+  }
+
+  void (async () => {
+    const outcome = await options.manager.superviseScheduledRestart(
+      restartJob,
+      status.controllerState.invocationId,
+    );
+    if (outcome.state !== 'safe_to_release') return;
+    await reservation.release();
+    onRestartNotObserved();
+    options.logger.warn(
+      'model config apply revision %d restart job %s ended as %s; reservation released',
+      reservation.savedRevision,
+      restartJob.transientUnit,
+      outcome.reason,
+    );
+  })().catch((error: unknown) => {
+    onRestartNotObserved();
+    options.logger.error(
+      'model config apply revision %d restart supervision failed; reservation remains locked: %s',
+      reservation.savedRevision,
+      safeOperationDiagnostic(error),
+    );
+  });
+
+  return {
+    unit: 'qqbot-koishi.service',
+    previousInvocationId: status.controllerState.invocationId,
+  };
+}
+
 export function registerAdminApi(options: RegisterAdminApiOptions): void {
   const apiPath = normalizeBasePath(options.apiPath);
   const applyState = new AdminApplyState();
@@ -723,6 +794,8 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       }
     });
   };
+
+  registerAgentAdminRoutes(register, options.services.agent, options.logger);
 
   register('get', '/overview', async () => {
     const [services, modelAggregate, tts, memoryStatus, affinity, eventSummary] = await Promise.all([
@@ -785,10 +858,34 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
       return { targets: [], apply: pending };
     }
     try {
-      const targets = await options.manager.restartForApplyReasons(pending.reasons);
-      applyState.clear(pending.reasons);
+      const targets: AdminApplyRestartTarget[] = [];
+      if (pending.reasons.includes('model')) {
+        if (pending.reasons.includes('tts')) {
+          targets.push(...await options.manager.restartForApplyReasons(['tts']));
+          applyState.clear(['tts']);
+        }
+        const koishiReasons = pending.reasons.filter((reason) => reason !== 'tts');
+        applyState.clear(koishiReasons);
+        const aggregate = options.modelConfig.getAggregate();
+        try {
+          targets.push(await scheduleModelRevisionApply(
+            options,
+            aggregate.savedRevision,
+            () => {
+              for (const reason of koishiReasons) applyState.mark(reason);
+            },
+          ));
+        } catch (error) {
+          for (const reason of koishiReasons) applyState.mark(reason);
+          throw error;
+        }
+      } else {
+        targets.push(...await options.manager.restartForApplyReasons(pending.reasons));
+        applyState.clear(pending.reasons);
+      }
       return { targets, apply: applyState.snapshot() };
     } catch (error) {
+      if (error instanceof AdminHttpError) throw error;
       throw new AdminHttpError(
         503,
         'service_unavailable',
@@ -864,77 +961,10 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     });
     await modelConfigDomain(() => modelOperations.verifyBindings(input));
     const aggregate = await modelConfigDomain(() => options.modelConfig.put(input));
+    applyState.mark('model');
     return modelAdminAggregateSchema.parse({
       ...aggregate,
       connectionStates: await modelOperations.getAuthStates(aggregate),
-    });
-  }, { mutation: true });
-  register('post', '/models/apply', async (koaCtx) => {
-    const input = parseInput(modelApplyRequestSchema, koaCtx.request.body);
-    const reservation = await modelConfigDomain(
-      () => options.modelConfig.reserveApply(input.expectedRevision),
-    );
-    let status: Awaited<ReturnType<AdminRuntimeManager['getServiceStatus']>>;
-    try {
-      status = await options.manager.getServiceStatus('qqbot-koishi.service');
-    } catch (error) {
-      await reservation.release();
-      throw new AdminHttpError(
-        503,
-        'service_unavailable',
-        '读取 qqbot-koishi.service 当前状态失败。',
-        {
-          operation: 'apply',
-          stage: 'inspect_service',
-          savedRevision: reservation.savedRevision,
-          diagnostic: safeOperationDiagnostic(error),
-        },
-      );
-    }
-    let restartJob: Awaited<ReturnType<AdminRuntimeManager['scheduleRestart']>>;
-    try {
-      restartJob = await options.manager.scheduleRestart('qqbot-koishi.service');
-    } catch (error) {
-      await reservation.release();
-      throw new AdminHttpError(
-        503,
-        'service_unavailable',
-        '调度 qqbot-koishi.service 重启任务失败，模型配置未应用。',
-        {
-          savedRevision: reservation.savedRevision,
-          ...restartJobErrorDetails(error),
-        },
-      );
-    }
-
-    void (async () => {
-      const outcome = await options.manager.superviseScheduledRestart(
-        restartJob,
-        status.controllerState.invocationId,
-      );
-      if (outcome.state !== 'safe_to_release') return;
-      await reservation.release();
-      options.logger.warn(
-        'model config apply revision %d restart job %s ended as %s; reservation released',
-        reservation.savedRevision,
-        restartJob.transientUnit,
-        outcome.reason,
-      );
-    })().catch((error: unknown) => {
-      options.logger.error(
-        'model config apply revision %d restart supervision failed; reservation remains locked: %s',
-        reservation.savedRevision,
-        safeOperationDiagnostic(error),
-      );
-    });
-
-    return modelApplyResponseSchema.parse({
-      accepted: true,
-      savedRevision: reservation.savedRevision,
-      target: {
-        unit: 'qqbot-koishi.service',
-        previousInvocationId: status.controllerState.invocationId,
-      },
     });
   }, { mutation: true });
   register('post', '/models/maintenance/sticker-index', async (koaCtx) => {
@@ -1132,19 +1162,12 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
   register('get', '/policies', async () => {
     const featurePolicy = requireService(options.services.featurePolicy, 'feature policy');
     const toolPolicy = requireService(options.services.toolPolicy, 'tool policy');
-    const [featureScopes, featureOverrides, conversationTargets, tools] = await Promise.all([
-      featurePolicy.listAdminFeatureScopes(),
-      featurePolicy.getFeatureOverrides(),
+    const [conversationTargets, tools] = await Promise.all([
       featurePolicy.listConversationTargets(),
       toolPolicy.getToolPolicyState(),
     ]);
-    return { featureScopes, featureOverrides, conversationTargets, tools };
+    return { conversationTargets, tools };
   });
-  register('patch', '/policies/features', async (koaCtx) => {
-    const input = parseInput(featureOverridesRequestSchema, koaCtx.request.body);
-    const service = requireService(options.services.featurePolicy, 'feature policy');
-    return { overrides: await domain(() => service.saveFeatureOverrides(input.overrides as any)) };
-  }, { mutation: true });
   register('patch', '/policies/tools', async (koaCtx) => {
     const input = parseInput(toolOverridesRequestSchema, koaCtx.request.body);
     const service = requireService(options.services.toolPolicy, 'tool policy');

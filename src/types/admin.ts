@@ -3,8 +3,6 @@ import type {
   ClearConversationHistoryTarget,
   DeleteConversationRoomResult,
   DeleteConversationRoomTarget,
-  FeatureOverrideInput,
-  FeatureScopeOverrideRecord,
 } from './feature-policy.js';
 import type {
   ToolOverrideInput,
@@ -20,7 +18,7 @@ export type ServiceAction = 'start' | 'stop' | 'restart' | 'enable';
 
 export type BotServiceRuntimeState = 'healthy' | 'degraded' | 'stopped' | 'unknown';
 
-export type AdminApplyReason = 'features' | 'tts' | 'naturalTrigger';
+export type AdminApplyReason = 'features' | 'tts' | 'naturalTrigger' | 'model';
 
 export type BotServiceUnit =
   | 'qqbot.target'
@@ -301,14 +299,6 @@ export interface CodexAuthPollResponse extends CodexAuthState {}
 export interface CodexAuthStatusResponse extends CodexAuthState {}
 export interface CodexAuthCancelResponse extends CodexAuthState {}
 export interface CodexAuthLogoutResponse extends CodexAuthState {}
-
-export interface SaveFeatureOverridesRequest {
-  overrides: FeatureOverrideInput[];
-}
-
-export interface SaveFeatureOverridesResponse {
-  overrides: FeatureScopeOverrideRecord[];
-}
 
 export interface SaveToolOverridesRequest {
   overrides: ToolOverrideInput[];

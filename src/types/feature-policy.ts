@@ -1,37 +1,18 @@
 import 'koishi';
 import type { Session } from 'koishi';
 
-export type ScopedFeatureKey =
+export type RuntimeFeatureKey =
   | 'QQBOT_REALTIME_MESSAGE_ENABLED'
   | 'QQ_VOICE_INPUT_ENABLED'
   | 'QQ_VOICE_OUTPUT_ENABLED'
   | 'QQBOT_REPLY_INTERRUPT_ENABLED';
 
-export type FeatureScopeKind = 'private_default' | 'group';
 export type ConversationTargetScopeKind = 'private' | 'group';
 
-export interface FeatureScopeOverrideRecord {
-  id: number;
-  featureKey: ScopedFeatureKey;
-  scopeKind: FeatureScopeKind;
-  scopeId: string;
-  enabled: number;
-  updatedAt: number;
-}
-
-export interface FeatureOverrideInput {
-  featureKey: ScopedFeatureKey;
-  scopeKind: FeatureScopeKind;
-  scopeId: string;
-  enabled: boolean;
-}
-
-export interface AdminFeatureScope {
-  scopeKind: FeatureScopeKind;
-  scopeId: string;
-  roomId: number | null;
+export interface AdminGroupScope {
+  groupId: string;
+  roomId: number;
   roomName: string;
-  groupId: string | null;
   conversationId: string | null;
   visibility: string | null;
   updatedAt: number | null;
@@ -77,21 +58,15 @@ export interface DeleteConversationRoomResult {
 }
 
 export interface FeaturePolicyServiceLike {
-  resolveFeatureEnabled(session: Session, featureKey: ScopedFeatureKey): Promise<boolean>;
-  listAdminFeatureScopes(): Promise<AdminFeatureScope[]>;
+  resolveFeatureEnabled(session: Session, featureKey: RuntimeFeatureKey): Promise<boolean>;
+  listAdminGroupScopes(): Promise<AdminGroupScope[]>;
   listConversationTargets(): Promise<ConversationTarget[]>;
-  getFeatureOverrides(): Promise<FeatureScopeOverrideRecord[]>;
-  saveFeatureOverrides(overrides: FeatureOverrideInput[]): Promise<FeatureScopeOverrideRecord[]>;
   clearConversationHistory(target: ClearConversationHistoryTarget): Promise<ClearConversationHistoryResult>;
   deleteConversationRoom(target: DeleteConversationRoomTarget): Promise<DeleteConversationRoomResult>;
   resolvePrivateConversationTarget(session: Session): Promise<ConversationTarget | null>;
 }
 
 declare module 'koishi' {
-  interface Tables {
-    feature_scope_override: FeatureScopeOverrideRecord;
-  }
-
   interface Context {
     featurePolicy?: FeaturePolicyServiceLike;
   }

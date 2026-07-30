@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import {
   Award,
+  Bot,
   BookOpenCheck,
   ChevronDown,
   Cpu,
@@ -28,8 +29,8 @@ import type { BotServiceStatus, BotServiceUnit } from '@contracts';
 import {
   useRuntimeStore,
   type ApplyState,
-  type RuntimeOverviewState,
 } from '@/stores/runtime';
+import { refreshRuntimeOverview } from '@/stores/runtime-refresh';
 import { rawApi, rawJsonBody } from '@/api/client';
 
 type NavItem = {
@@ -59,8 +60,9 @@ const groups: NavGroup[] = [
     { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
     { key: 'natural-trigger', label: '自然触发', path: '/intelligence/natural-trigger', icon: MessageCircleMore },
+    { key: 'agent', label: 'Agent 能力', path: '/intelligence/agent', icon: Bot },
   ] },
-  { label: '策略与权限', items: [{ key: 'policies', label: '功能与工具策略', path: '/policies', icon: ShieldCheck }] },
+  { label: '策略与权限', items: [{ key: 'policies', label: '工具策略', path: '/policies', icon: ShieldCheck }] },
   { label: '扩展服务', items: [
     { key: 'affinity', label: '关系事件', path: '/extensions/affinity', icon: HeartHandshake },
     {
@@ -86,7 +88,6 @@ const runtime = useRuntimeStore();
 const mobileOpen = ref(false);
 const commandOpen = ref(false);
 const commandQuery = ref('');
-const restartBusy = ref(false);
 const expandedBranches = reactive<Record<string, boolean>>({});
 const filteredCommands = computed(() => {
   const query = commandQuery.value.trim().toLowerCase();
@@ -103,7 +104,7 @@ const restartReasonLabels: Record<string, string> = {
   tts: '语音服务',
 };
 const restartTitle = computed(() => runtime.restartReasons.length
-  ? `点击应用：${runtime.restartReasons.map((reason) => restartReasonLabels[reason] ?? reason).join(' · ')}`
+  ? `重启以应用：${runtime.restartReasons.map((reason) => restartReasonLabels[reason] ?? reason).join(' · ')}`
   : '配置等待重启');
 const currentModelLabel = computed(() => {
   const separatorIndex = runtime.currentModel.lastIndexOf('/');
@@ -116,16 +117,6 @@ const restartUnitLabels: Partial<Record<BotServiceUnit, string>> = {
   'qqbot-voice-tts.service': '语音服务',
 };
 let runtimeTimer: number | undefined;
-
-async function loadRuntimeSummary(): Promise<void> {
-  try {
-    runtime.updateOverview(await rawApi<RuntimeOverviewState>('/overview'));
-  } catch (error) {
-    runtime.markOverviewFailed(
-      error instanceof Error ? error.message : '运行摘要加载失败',
-    );
-  }
-}
 
 function isActive(item: NavItem): boolean {
   return item.path === route.path;
@@ -181,9 +172,10 @@ async function waitForRestartTargets(targets: ApplyRestartTarget[]): Promise<voi
 }
 
 async function applyPendingRestart(): Promise<void> {
-  if (!runtime.restartRequired || restartBusy.value) return;
-  restartBusy.value = true;
+  if (!runtime.restartRequired || runtime.restartInProgress) return;
+  runtime.beginRestart();
   let submitted = false;
+  let completed = false;
   try {
     const result = await rawApi<ApplyRestartResponse>('/apply/restart', {
       method: 'POST',
@@ -196,15 +188,25 @@ async function applyPendingRestart(): Promise<void> {
       return;
     }
     await waitForRestartTargets(result.targets);
+    await refreshRuntimeOverview();
+    completed = true;
     const labels = result.targets.map((target) => restartUnitLabels[target.unit] ?? target.unit);
     ElMessage.success(`${labels.join('、')} 已重启，配置已生效`);
   } catch (error) {
     const message = error instanceof Error ? error.message : '智能重启失败';
-    if (submitted) ElMessage.warning(message);
-    else ElMessage.error(message);
+    if (submitted) {
+      await refreshRuntimeOverview();
+      ElMessage.warning(message);
+    } else {
+      ElMessage.error(message);
+    }
   } finally {
-    restartBusy.value = false;
+    runtime.finishRestart(completed);
   }
+}
+
+function refreshRuntimeWhenVisible(): void {
+  if (document.visibilityState === 'visible') void refreshRuntimeOverview();
 }
 
 function handleKeyboard(event: KeyboardEvent) {
@@ -220,11 +222,15 @@ function handleKeyboard(event: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeyboard);
-  void loadRuntimeSummary();
-  runtimeTimer = window.setInterval(loadRuntimeSummary, 10_000);
+  window.addEventListener('focus', refreshRuntimeWhenVisible);
+  document.addEventListener('visibilitychange', refreshRuntimeWhenVisible);
+  void refreshRuntimeOverview();
+  runtimeTimer = window.setInterval(() => void refreshRuntimeOverview(), 10_000);
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyboard);
+  window.removeEventListener('focus', refreshRuntimeWhenVisible);
+  document.removeEventListener('visibilitychange', refreshRuntimeWhenVisible);
   window.clearInterval(runtimeTimer);
 });
 watch(() => route.path, activateRouteBranch, { immediate: true });
@@ -278,15 +284,15 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
             {{ runtime.shellState === 'loading' ? '加载中' : runtime.shellState === 'error' ? '状态不可用' : currentModelLabel }}
           </span>
           <button
-            v-if="runtime.restartRequired || restartBusy"
+            v-if="runtime.restartRequired || runtime.restartInProgress"
             class="restart-chip"
-            :class="{ busy: restartBusy }"
-            :disabled="restartBusy"
-            :title="restartBusy ? '正在重启待应用配置涉及的服务' : restartTitle"
+            :class="{ busy: runtime.restartInProgress }"
+            :disabled="runtime.restartInProgress"
+            :title="runtime.restartInProgress ? '正在重启待应用配置涉及的服务' : restartTitle"
             @click="applyPendingRestart"
           >
             <RotateCw :size="13" :stroke-width="2" />
-            <span>{{ restartBusy ? '重启中' : '待重启' }}</span>
+            <span>{{ runtime.restartInProgress ? '重启中' : '重启' }}</span>
           </button>
           <span class="topbar-health"><i class="status-dot ok" />运行中</span>
         </div>

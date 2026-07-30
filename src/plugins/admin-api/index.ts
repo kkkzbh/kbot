@@ -15,7 +15,7 @@ import type { MemoryAdminService } from '../memory/index.js';
 import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
 import type { StickerMaintenanceService } from '../../types/model-config.js';
 import { AdminRuntimeManager } from './server.js';
-import { AdminAccessPolicy } from './access-policy.js';
+import { AdminAccessPolicy } from '../shared/internal-access-policy.js';
 import { AdminLogService } from './logs.js';
 import { registerAdminApi, type AdminRuntimeServices } from './http-api.js';
 import { registerAdminStatic } from './static.js';
@@ -25,6 +25,10 @@ import {
   ModelContextSnapshotStore,
   type ModelContextPayload,
 } from './model-context.js';
+import {
+  ChatLunaAgentAdminService,
+  type ChatLunaAgentRuntimeService,
+} from './chatluna-agent-admin.js';
 
 export const name = 'admin-api';
 export const inject = {
@@ -32,6 +36,7 @@ export const inject = {
     'server',
     'database',
     'chatluna',
+    'chatluna_agent',
     'modelConfig',
     'naturalTriggerConfig',
     'promptFragmentPolicy',
@@ -63,6 +68,7 @@ type RuntimeContext = Context & {
     preset: PresetService;
     platform: PlatformService;
   };
+  chatluna_agent: ChatLunaAgentRuntimeService;
   modelConfig: ModelConfigService;
   naturalTriggerConfig: NaturalTriggerConfigService;
   promptFragmentPolicy: PromptFragmentPolicyServiceLike;
@@ -97,6 +103,7 @@ export function apply(ctx: Context, config: Config): void {
   });
   ctx.setInterval(() => contextSnapshots.prunePending(), 30_000);
   const services: AdminRuntimeServices = {
+    agent: new ChatLunaAgentAdminService(runtimeCtx.chatluna_agent),
     database: ctx.database as unknown as AdminRuntimeServices['database'],
     get memoryStatus() { return runtimeCtx.memoryStatus; },
     get memoryAdmin() { return runtimeCtx.memoryAdmin; },
@@ -116,8 +123,6 @@ export function apply(ctx: Context, config: Config): void {
     stopRuntimeEventCapture();
     logs.dispose();
   });
-
-  manager.syncManagedChatLunaAgentConfig();
 
   registerAdminApi({
     ctx: runtimeCtx,
