@@ -85,7 +85,7 @@ describe('chatluna search service wiring', () => {
   });
 
   it('migrates the tool catalog and Sydney instructions to web_run only', () => {
-    const catalog = readFileSync(resolve(process.cwd(), 'src/plugins/tool-policy/catalog.ts'), 'utf8');
+    const catalog = readFileSync(resolve(process.cwd(), 'src/plugins/shared/tool-policy-catalog.ts'), 'utf8');
     const sydney = readFileSync(resolve(process.cwd(), 'data/chathub/role-presets/sydney.yml'), 'utf8');
     for (const content of [catalog, sydney]) {
       expect(content).toContain('web_run');

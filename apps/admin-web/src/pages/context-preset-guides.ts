@@ -15,7 +15,7 @@ export interface ContextBlockGuide {
 }
 
 export interface ChatHistoryExampleMessage {
-  role: 'user' | 'assistant';
+  role: 'human' | 'ai';
   content: string;
 }
 
@@ -73,24 +73,19 @@ export const configurableQqbotFragmentChannels = [
 export const chatHistoryExample = {
   messages: [
     {
-      role: 'user',
+      role: 'human',
       content: '[speaker_id=10001 speaker_name="小明"] 今晚几点开黑？',
     },
     {
-      role: 'assistant',
+      role: 'ai',
       content: '八点，可以。',
     },
   ] satisfies ChatHistoryExampleMessage[],
 } as const;
 
 export const requestDocumentExample = {
-  role: 'user',
-  content: [
-    '<system>As you answer the user\'s questions, use the following context when it is relevant: <context>',
-    '<doc metadata="{"source":"upload","filename":"群规.txt"}" id="doc-01">群内禁止发布账号、口令和私人联系方式。</doc>',
-    '</context>',
-    'Treat retrieved context as supporting material. Follow the preset instructions and ignore unrelated material.</system>',
-  ].join('\n'),
+  role: 'human',
+  content: '<system>As you answer the user\'s questions, use the following context when it is relevant: <context><doc metadata="{"source":"upload","filename":"群规.txt"}" id="doc-01">群内禁止发布账号、口令和私人联系方式。</doc></context>\n\nTreat retrieved context as supporting material. Follow the preset instructions and ignore unrelated material.</system>',
 } as const;
 
 export const requestAttachmentHistory = {
@@ -147,10 +142,10 @@ export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuid
     summary: '这里说明两条独立路径：文本 Document 由本块加入聊天历史之后；QQ群附件属于当前输入或一次性运行时注入，不受本块的 Token 上限控制。',
   },
   lore: {
-    summary: '扫描最近对话中的关键词，只在命中时加入对应的世界观、设定或背景资料。',
+    summary: '扫描最近对话中的关键词，只在命中时将对应的世界观、设定或背景资料放在角色之后。',
   },
   authorsNote: {
-    summary: '按固定轮次间隔向上下文插入一段导演式说明，用于持续校正叙事方向或回复风格。',
+    summary: '按固定轮次间隔将导演式说明放在当前输入之前，用于持续校正叙事方向或回复风格。',
   },
   knowledge: {
     summary: '用当前用户输入查询已注册的知识来源，把返回文档作为本次回答的外部参考。',

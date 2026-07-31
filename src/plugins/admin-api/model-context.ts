@@ -243,8 +243,18 @@ function snapshotMessage(
     id: message.id,
     index,
     role: message.role,
-    ...(message.purpose ? { purpose: message.purpose } : {}),
+    ...(message.name ? { name: message.name } : {}),
     content: sanitizeContextValue(message.content),
+    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolCalls
+      ? {
+          toolCalls: message.toolCalls.map((call) => ({
+            ...(call.id ? { id: call.id } : {}),
+            name: call.name,
+            ...(call.args === undefined ? {} : { args: sanitizeContextValue(call.args) }),
+          })),
+        }
+      : {}),
     stage: message.stage,
     source: message.source.name,
     ...(message.source.path ? { sourcePath: message.source.path } : {}),
@@ -299,13 +309,24 @@ function buildSnapshot(payload: ResolvedModelContextPayload): ContextSnapshot {
     const id = trace.messageId ?? trace.id;
     const final = finalById.get(id);
     const assembled = assembledById.get(id);
+    const semantic = final?.message ?? assembled?.message;
     const included = trace.status === 'included';
     messages.push({
       id,
       index: trace.finalOrder ?? trace.assembledOrder ?? final?.index ?? assembled?.index ?? messages.length,
       role: trace.role,
-      ...(trace.purpose ? { purpose: trace.purpose } : {}),
+      ...(semantic?.name ? { name: semantic.name } : {}),
       content: sanitizeContextValue(trace.content),
+      ...(semantic?.toolCallId ? { toolCallId: semantic.toolCallId } : {}),
+      ...(semantic?.toolCalls
+        ? {
+            toolCalls: semantic.toolCalls.map((call) => ({
+              ...(call.id ? { id: call.id } : {}),
+              name: call.name,
+              ...(call.args === undefined ? {} : { args: sanitizeContextValue(call.args) }),
+            })),
+          }
+        : {}),
       stage: trace.stage,
       source: trace.source.name,
       ...(trace.source.path ? { sourcePath: trace.source.path } : {}),

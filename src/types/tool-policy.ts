@@ -14,6 +14,8 @@ export type ToolCompatibility = 'compatible' | 'conditional' | 'incompatible';
 export type ToolRiskLevel = 'low' | 'medium' | 'high';
 export type ToolCatalogSource = 'project' | 'chatluna_runtime';
 export type ToolCategoryKey = 'builtin' | 'file' | 'web' | 'geo';
+export type ToolManagement = 'editable' | 'locked_off';
+export type ToolCatalogVisibility = 'standalone' | 'plugin' | 'internal';
 
 export interface ToolCatalogEntry {
   toolName: string;
@@ -26,6 +28,10 @@ export interface ToolCatalogEntry {
   relatedTools: string[];
   riskLevel: ToolRiskLevel;
   source: ToolCatalogSource;
+  pluginId?: string;
+  management: ToolManagement;
+  managementNote?: string;
+  visibility: ToolCatalogVisibility;
   registered?: boolean;
   availableRoutes: ToolRouteProfile[];
   defaultEnabledByRoute: Record<ToolRouteProfile, boolean>;

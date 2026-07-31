@@ -30,6 +30,10 @@ function createRuntime(): ChatLunaAgentRuntimeService {
       items: {},
       githubToken: 'github-secret',
     },
+    tool: {
+      items: {},
+      registry: {},
+    },
     computer: {
       defaultProvider: 'local' as const,
       idleTimeoutMs: 600_000,
@@ -161,10 +165,12 @@ function createRuntime(): ChatLunaAgentRuntimeService {
     removeMcpServer: vi.fn(),
     saveMcpTool: vi.fn(),
     saveSkillsConfig: vi.fn(),
+    saveConfig: vi.fn(),
+    saveComputerConfig: vi.fn(),
+    saveToolConfig: vi.fn(),
     setSkillMode: vi.fn(),
     removeSkill: vi.fn(),
     importSkills: vi.fn(),
-    saveComputerConfig: vi.fn(),
     skills: {
       listSkills: () => [],
       getSkillContent: vi.fn(),
@@ -193,15 +199,19 @@ describe('ChatLuna Agent Admin boundary', () => {
       headerKeys: ['Authorization', 'X-Tenant'],
     });
     expect(state.skills.githubTokenConfigured).toBe(true);
-    expect(state.plugins.catalog).toHaveLength(1);
+    expect(state.plugins.catalog).toHaveLength(6);
     expect(state.plugins.catalog[0]).toMatchObject({
-      id: 'computer',
-      displayName: 'Computer',
+      id: 'workspace',
+      displayName: 'Workspace',
       state: 'active',
       contents: { mcpServers: [], skills: [], tools: ['bash', 'file_read'] },
     });
-    expect(state.plugins.catalog[0].computer.config.e2b.apiKeyConfigured).toBe(true);
-    expect(state.plugins.catalog[0].computer.config.openTerminal.apiKeyConfigured).toBe(true);
+    expect(state.plugins.catalog[0].computer?.config.e2b.apiKeyConfigured).toBe(true);
+    expect(state.plugins.catalog[0].computer?.config.openTerminal.apiKeyConfigured).toBe(true);
+    expect(state.plugins.catalog.find((plugin) => plugin.id === 'interaction')).toMatchObject({
+      state: 'inactive',
+      configurable: false,
+    });
     expect(state.tools.catalog.map((tool) => tool.name)).toEqual([
       'bash',
       'file_read',
@@ -213,7 +223,6 @@ describe('ChatLuna Agent Admin boundary', () => {
     expect(serialized).not.toContain('e2b-secret');
     expect(serialized).not.toContain('terminal-secret');
     expect(serialized).not.toContain('subAgents');
-    expect(serialized).not.toContain('trigger');
   });
 
   it('applies explicit MCP secret mutations while preserving configured values', async () => {
@@ -323,5 +332,150 @@ describe('ChatLuna Agent Admin boundary', () => {
         },
       },
     });
+  });
+
+  it('updates one native Tool while preserving its complete permission item', async () => {
+    const runtime = createRuntime();
+    const service = new ChatLunaAgentAdminService(runtime);
+
+    await service.saveTool('file_read', { enabled: false, main: false });
+
+    expect(runtime.saveToolConfig).toHaveBeenCalledWith({
+      items: {
+        file_read: {
+          enabled: false,
+          main: false,
+          chatluna: true,
+          character: true,
+          characterGroup: true,
+          characterPrivate: true,
+          characterGroupMode: 'all',
+          characterPrivateMode: 'all',
+          characterGroupIds: [],
+          characterPrivateIds: [],
+          subAgents: { mode: 'all', allow: [], deny: [] },
+          authority: 3,
+        },
+      },
+      registry: {},
+    });
+  });
+
+  it('rejects enabling a Tool that the product policy locks off', async () => {
+    const runtime = createRuntime();
+    const data = runtime.getConsoleData();
+    data.status.tool.catalog.question = {
+      ...data.status.tool.catalog.skill,
+      name: 'question',
+    };
+    runtime.getConsoleData = () => data;
+    const service = new ChatLunaAgentAdminService(runtime);
+
+    await expect(service.saveTool('question', { enabled: true, main: true }))
+      .rejects.toEqual(expect.objectContaining<Partial<AdminHttpError>>({
+        status: 409,
+        code: 'conflict',
+      }));
+    expect(runtime.saveToolConfig).not.toHaveBeenCalled();
+  });
+
+  it('updates Workspace tools and computer backends as one Plugin state', async () => {
+    const runtime = createRuntime();
+    const service = new ChatLunaAgentAdminService(runtime);
+
+    await service.savePluginState('workspace', false);
+
+    expect(runtime.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      computer: expect.objectContaining({
+        local: expect.objectContaining({ enabled: false }),
+        e2b: expect.objectContaining({ enabled: false }),
+        openTerminal: expect.objectContaining({ enabled: false }),
+      }),
+      tool: expect.objectContaining({
+        items: expect.objectContaining({
+          file_read: expect.objectContaining({ enabled: false, main: false }),
+          bash: expect.objectContaining({ enabled: false, main: false }),
+        }),
+      }),
+    }));
+  });
+
+  it('updates Workspace backend settings without rewriting Tool settings', async () => {
+    const runtime = createRuntime();
+    const service = new ChatLunaAgentAdminService(runtime);
+
+    await service.saveWorkspaceConfig({
+      config: {
+        defaultProvider: 'e2b',
+        idleTimeoutMs: 900_000,
+        local: {
+          enabled: false,
+          sandboxMode: 'read-only',
+          approvalMode: 'never',
+          dangerouslySkipPermissions: false,
+          preferredShell: 'auto',
+          scopePath: '/opt/qqbot/app',
+          readOnlyRoots: ['/opt/qqbot/data'],
+          denyRoots: ['/opt/qqbot/shared'],
+          ignores: ['**/.git/**'],
+          allowedCommands: ['git status'],
+          blockedCommands: ['curl'],
+          commandTimeoutMs: 45_000,
+          networkPolicy: 'block',
+        },
+        e2b: {
+          enabled: true,
+          template: 'base',
+          desktopTemplate: '',
+          timeoutMs: 300_000,
+          keepAlive: true,
+        },
+        openTerminal: {
+          enabled: false,
+          baseUrl: '',
+          deploymentMode: 'unknown',
+          userIsolation: false,
+        },
+      },
+      e2bApiKey: { operation: 'keep' },
+      openTerminalApiKey: { operation: 'keep' },
+    });
+
+    expect(runtime.saveComputerConfig).toHaveBeenCalledWith({
+      defaultProvider: 'e2b',
+      idleTimeoutMs: 900_000,
+      local: {
+        enabled: false,
+        sandboxMode: 'read-only',
+        approvalMode: 'never',
+        dangerouslySkipPermissions: false,
+        preferredShell: 'auto',
+        scopePath: '/opt/qqbot/app',
+        readOnlyRoots: ['/opt/qqbot/data'],
+        denyRoots: ['/opt/qqbot/shared'],
+        ignores: ['**/.git/**'],
+        allowedCommands: ['git status'],
+        blockedCommands: ['curl'],
+        commandTimeoutMs: 45_000,
+        networkPolicy: 'block',
+      },
+      e2b: {
+        enabled: true,
+        template: 'base',
+        desktopTemplate: '',
+        timeoutMs: 300_000,
+        keepAlive: true,
+        apiKey: 'e2b-secret',
+      },
+      openTerminal: {
+        enabled: false,
+        baseUrl: '',
+        deploymentMode: 'unknown',
+        userIsolation: false,
+        apiKey: 'terminal-secret',
+      },
+    });
+    expect(runtime.saveToolConfig).not.toHaveBeenCalled();
+    expect(runtime.saveConfig).not.toHaveBeenCalled();
   });
 });

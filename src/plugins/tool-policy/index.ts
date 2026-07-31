@@ -21,7 +21,7 @@ import {
   TOOL_CATALOG_MAP,
   TOOL_DEFAULT_SCOPES,
   TOOL_ROUTE_PROFILES,
-} from './catalog.js';
+} from '../shared/tool-policy-catalog.js';
 import { normalizeReplyChatMode } from '../shared/reply-chat-mode.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
 
@@ -39,8 +39,6 @@ const FILE_SYSTEM_GROUP_RESTRICTED_TOOLS = new Set([
   'grep',
 ]);
 const FILE_SYSTEM_ALLOWED_GROUPS_ENV = 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS';
-
-type DatabaseRow = Record<string, unknown>;
 
 type DatabaseLike = {
   get(table: string, query: Record<string, unknown>): Promise<any[]>;
@@ -263,6 +261,7 @@ export class ToolPolicyService implements ToolPolicyServiceLike {
     const allowed = known.filter((toolName) => {
       const tool = catalogMap.get(toolName);
       if (!tool) return false;
+      if (tool.management === 'locked_off') return false;
       if (!tool.availableRoutes.includes(options.routeProfile)) return false;
 
       let enabled = tool.defaultEnabledByRoute[options.routeProfile];
@@ -512,8 +511,12 @@ export class ToolPolicyService implements ToolPolicyServiceLike {
 
   private validateOverrideInput(input: ToolOverrideInput): ToolOverrideInput {
     const normalized = normalizeOverrideInput(input);
-    if (!this.getRuntimeCatalogMap().has(normalized.toolName)) {
+    const tool = this.getRuntimeCatalogMap().get(normalized.toolName);
+    if (!tool) {
       throw new Error(`不支持这个工具：${normalized.toolName}`);
+    }
+    if (normalized.enabled && tool.management === 'locked_off') {
+      throw new Error(tool.managementNote ?? `工具 ${normalized.toolName} 已锁定为关闭。`);
     }
     return normalized;
   }
@@ -646,13 +649,12 @@ export function apply(ctx: Context): void {
       throw new Error('tool-policy requires chatluna registerToolMaskResolver and runtime tool registry during startup.');
     }
     getToolRegistry();
-    disposeToolMaskResolver = registerResolver(name, async ({ session, room }: ToolMaskArg) => {
-      const resolvedRoom = room
+    disposeToolMaskResolver = registerResolver(name, async ({ session, conversation }: ToolMaskArg) => {
+      const resolvedRoom = conversation
         ? ({
-            roomId: (room as DatabaseRow).roomId as number | string | null | undefined,
-            conversationId: (room as DatabaseRow).conversationId as string | null | undefined,
-            groupId: (room as DatabaseRow).groupId as string | null | undefined,
-            chatMode: (room as DatabaseRow).chatMode as string | null | undefined,
+            roomId: conversation.legacyRoomId,
+            conversationId: conversation.id,
+            chatMode: conversation.chatMode,
           } satisfies RoomLike)
         : null;
       const normalizedChatMode = normalizeReplyChatMode(resolvedRoom?.chatMode);
@@ -677,11 +679,9 @@ export function apply(ctx: Context): void {
 }
 type ToolMaskArg = {
   session: Session;
-  room?: {
-    roomId?: number | string | null;
-    conversationId?: string | null;
-    groupId?: string | null;
-    chatMode?: string | null;
-    [key: string]: unknown;
+  conversation?: {
+    id: string;
+    legacyRoomId?: number | null;
+    chatMode: string;
   };
 };

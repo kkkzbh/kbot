@@ -56,7 +56,7 @@ const groups: NavGroup[] = [
   ] },
   { label: '对话智能', items: [
     { key: 'models', label: '模型配置', path: '/intelligence/models', icon: Cpu },
-    { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
+    { key: 'context-presets', label: '上下文', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
     { key: 'natural-trigger', label: '自然触发', path: '/intelligence/natural-trigger', icon: MessageCircleMore },
     { key: 'agent', label: 'Agent', path: '/intelligence/agent', icon: Bot },
@@ -98,7 +98,7 @@ const restartReasonLabels: Record<string, string> = {
   features: '运行功能配置',
   naturalTrigger: '自然触发配置',
   model: '模型配置',
-  preset: '上下文预设',
+  preset: '上下文',
   tts: '语音服务',
 };
 const restartTitle = computed(() => runtime.restartReasons.length

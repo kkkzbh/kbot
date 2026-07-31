@@ -67,6 +67,16 @@ export const agentMcpToolPutSchema = z.object({
   selector: stringListSchema.default([]),
 }).strict();
 
+export const agentToolPutSchema = z.object({
+  enabled: z.boolean(),
+  main: z.boolean(),
+}).strict();
+export type AgentToolPut = z.infer<typeof agentToolPutSchema>;
+
+export const agentPluginStatePutSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
+
 export const agentSkillsSettingsPutSchema = z.object({
   dirs: stringListSchema,
   githubToken: agentSecretUpdateSchema,
@@ -329,7 +339,8 @@ export interface AgentToolAdmin {
 }
 
 export interface AgentPluginAdmin {
-  id: 'computer';
+  id: string;
+  kind: 'workspace' | 'tool-bundle';
   displayName: string;
   version: string;
   shortDescription: string;
@@ -338,13 +349,16 @@ export interface AgentPluginAdmin {
   category: string;
   capabilities: string[];
   builtIn: boolean;
+  configurable: boolean;
+  removable: boolean;
+  lockedReason?: string;
   state: 'active' | 'inactive' | 'error';
   contents: {
     mcpServers: string[];
     skills: string[];
     tools: string[];
   };
-  computer: {
+  computer?: {
     config: AgentComputerAdminConfig;
     status: AgentComputerStatus;
   };

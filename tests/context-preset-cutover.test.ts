@@ -87,7 +87,7 @@ function expectedRole(preset: ReturnType<typeof legacyPreset>) {
     schemaVersion: 1,
     id: preset.id,
     displayName: preset.displayName,
-    messages: preset.messages,
+    messages: preset.messages.map(({ role, content }) => ({ role, content })),
   };
 }
 
@@ -99,6 +99,19 @@ function expectedContext(preset: ReturnType<typeof legacyPreset>) {
     aliases: preset.aliases,
     blocks: [
       { id: 'role', type: 'role', rolePresetId: preset.id },
+      {
+        id: 'lore',
+        type: 'lore',
+        enabled: true,
+        budgetPriority: 310,
+        maxTokens: 640,
+        prompt: 'lore prompt',
+        defaults: { scanDepth: 3 },
+        entries: [
+          { keywords: ['alpha'], content: 'after character' },
+          { keywords: ['beta'], content: 'before scenario' },
+        ],
+      },
       {
         id: 'chat-history',
         type: 'chatHistory',
@@ -114,38 +127,6 @@ function expectedContext(preset: ReturnType<typeof legacyPreset>) {
         maxTokens: null,
       },
       {
-        id: 'lore-after-character-definitions',
-        type: 'lore',
-        enabled: true,
-        budgetPriority: 310,
-        maxTokens: 320,
-        anchor: { type: 'role', position: 'afterCharacterDefinitions' },
-        prompt: 'lore prompt',
-        defaults: { scanDepth: 3 },
-        entries: [{ keywords: ['alpha'], content: 'after character' }],
-      },
-      {
-        id: 'lore-before-scenario',
-        type: 'lore',
-        enabled: true,
-        budgetPriority: 311,
-        maxTokens: 320,
-        anchor: { type: 'role', position: 'beforeScenario' },
-        prompt: 'lore prompt',
-        defaults: { scanDepth: 3 },
-        entries: [{ keywords: ['beta'], content: 'before scenario' }],
-      },
-      {
-        id: 'authors-note',
-        type: 'authorsNote',
-        enabled: true,
-        budgetPriority: 330,
-        maxTokens: null,
-        anchor: { type: 'chatHistory', depth: 2 },
-        content: 'author note',
-        insertFrequency: 3,
-      },
-      {
         id: 'knowledge',
         type: 'knowledge',
         enabled: true,
@@ -153,6 +134,15 @@ function expectedContext(preset: ReturnType<typeof legacyPreset>) {
         maxTokens: null,
         sources: ['memory://facts'],
         prompt: 'knowledge prompt',
+      },
+      {
+        id: 'authors-note',
+        type: 'authorsNote',
+        enabled: true,
+        budgetPriority: 330,
+        maxTokens: null,
+        content: 'author note',
+        insertFrequency: 3,
       },
       { id: 'current-input', type: 'currentInput', inputFormat: 'User: {prompt}' },
       {
@@ -277,17 +267,14 @@ function run(
 }
 
 describe('context preset cutover', () => {
-  it('preserves the legacy global Lore budget across every anchored block', async () => {
+  it('preserves the legacy global Lore budget in the fixed Lore block', async () => {
     const { migratePresetDefinition } = await import(pathToFileURL(SCRIPT).href);
     const configured = migratePresetDefinition(legacyPreset('configured')).contextPreset;
     const configuredLore = configured.blocks.filter((block: { type: string }) => (
       block.type === 'lore'
     ));
-    expect(configuredLore).toHaveLength(2);
-    expect(configuredLore.reduce((
-      total: number,
-      block: { maxTokens: number },
-    ) => total + block.maxTokens, 0)).toBe(640);
+    expect(configuredLore).toHaveLength(1);
+    expect(configuredLore[0].maxTokens).toBe(640);
 
     const defaulted = legacyPreset('defaulted');
     Reflect.deleteProperty(defaulted.lore.defaults, 'tokenLimit');
@@ -295,9 +282,9 @@ describe('context preset cutover', () => {
     const defaultLore = migratedDefault.blocks.filter((block: { type: string }) => (
       block.type === 'lore'
     ));
-    expect(defaultLore).toHaveLength(2);
+    expect(defaultLore).toHaveLength(1);
     expect(defaultLore.map((block: { maxTokens: number }) => block.maxTokens))
-      .toEqual([150, 150]);
+      .toEqual([300]);
   });
 
   it('builds a self-contained Node entrypoint with its SQLite backup helper', () => {

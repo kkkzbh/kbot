@@ -77,7 +77,7 @@ vi.mock('koishi', () => {
 
 import { apply, inject as automationInject } from '../src/plugins/automation/index.js';
 import { apply as applySticker } from '../src/plugins/sticker/index.js';
-import { TOOL_CATALOG } from '../src/plugins/tool-policy/catalog.js';
+import { TOOL_CATALOG } from '../src/plugins/shared/tool-policy-catalog.js';
 import {
   createTestModelRuntime,
   type TestModelRuntimeOptions,

@@ -11,6 +11,7 @@ import {
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
+  Boxes,
   ChevronRight,
   Monitor,
   RotateCw,
@@ -22,12 +23,14 @@ import {
   agentComputerConfigPutSchema,
   agentMcpServerPutSchema,
   agentMcpToolPutSchema,
+  agentPluginStatePutSchema,
   agentSkillConfigPutSchema,
   agentSkillContentPutSchema,
   agentSkillGithubImportSchema,
   agentSkillModePutSchema,
   agentSkillsSettingsPutSchema,
   agentToolPolicyPutSchema,
+  agentToolPutSchema,
   fileSystemToolSettingKeys,
   type AgentAdminState,
   type AgentComputerAdminConfig,
@@ -41,6 +44,7 @@ import {
 } from '@contracts';
 import { jsonBody, rawApi } from '@/api/client';
 import AgentPluginDetail from '@/components/AgentPluginDetail.vue';
+import AgentToolPluginDetail from '@/components/AgentToolPluginDetail.vue';
 import EmptyState from '@/components/EmptyState.vue';
 import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
 import PendingChangesBar from '@/components/PendingChangesBar.vue';
@@ -59,6 +63,21 @@ import {
 type SectionName = 'mcp' | 'tools' | 'skills' | 'plugins';
 type SecretDraft = { value: string; clear: boolean; configured: boolean };
 type SecretRowDraft = { name: string; value: string; configured: boolean };
+type ToolRow = {
+  name: string;
+  title: string;
+  description: string;
+  source: string;
+  registered: boolean;
+  enabled: boolean;
+  main: boolean;
+  routes: Array<'agent' | 'automation'>;
+  pluginId?: string;
+  management: 'editable' | 'locked_off';
+  managementNote?: string;
+  visibility: 'standalone' | 'plugin' | 'internal';
+  mcpTool?: AgentMcpToolAdmin;
+};
 type McpServerDraft = {
   oldName?: string;
   name: string;
@@ -148,7 +167,7 @@ const computerSecretsText = computed(() => JSON.stringify({
 }));
 const computerDraftModel = computed({
   get: () => {
-    if (!computerDraft.value) throw new Error('Computer Plugin detail requires a draft.');
+    if (!computerDraft.value) throw new Error('Workspace Plugin detail requires a draft.');
     return computerDraft.value;
   },
   set: (value: AgentComputerAdminConfig) => {
@@ -196,21 +215,26 @@ const filteredPlugins = computed(() => {
       .toLowerCase().includes(query)
   ));
 });
-const toolRows = computed(() => {
+const allToolRows = computed(() => {
   const runtimeTools = new Map(
     (state.value?.tools.catalog ?? []).map((tool) => [tool.name, tool]),
   );
   const mcpTools = new Map(
     (state.value?.mcp.tools ?? []).map((tool) => [tool.name, tool]),
   );
-  const rows = (policy.value?.catalog ?? []).map((entry) => ({
+  const rows: ToolRow[] = (policy.value?.catalog ?? []).map((entry) => ({
     name: entry.toolName,
     title: entry.title || entry.toolName,
     description: entry.description,
     source: entry.source,
     registered: entry.registered ?? runtimeTools.has(entry.toolName),
     enabled: runtimeTools.get(entry.toolName)?.enabled ?? false,
+    main: runtimeTools.get(entry.toolName)?.main ?? false,
     routes: entry.availableRoutes,
+    pluginId: entry.pluginId,
+    management: entry.management,
+    managementNote: entry.managementNote,
+    visibility: entry.visibility,
     mcpTool: mcpTools.get(entry.toolName),
   }));
   for (const tool of runtimeTools.values()) {
@@ -222,21 +246,50 @@ const toolRows = computed(() => {
       source: 'chatluna_runtime' as const,
       registered: true,
       enabled: tool.enabled,
+      main: tool.main,
       routes: ['agent' as const],
+      management: 'locked_off' as const,
+      managementNote: '未纳入 QQBot Tool catalog，按 fail-closed 策略不可启用。',
+      visibility: 'standalone' as const,
       mcpTool: mcpTools.get(tool.name),
     });
   }
+  return rows.sort((a, b) => a.title.localeCompare(b.title));
+});
+const toolRows = computed(() => {
   const query = toolQuery.value.trim().toLowerCase();
-  return rows
-    .filter((tool) => !query || `${tool.title} ${tool.name} ${tool.description}`
-      .toLowerCase().includes(query))
-    .sort((a, b) => a.title.localeCompare(b.title));
+  return allToolRows.value.filter((tool) => (
+    !query || `${tool.title} ${tool.name} ${tool.description}`.toLowerCase().includes(query)
+  ));
+});
+const visibleToolRows = computed(() => toolRows.value.filter(
+  (tool) => tool.visibility === 'standalone',
+));
+const pluginToolRows = computed(() => {
+  if (!pluginEditing.value) return [];
+  return allToolRows.value
+    .filter((tool) => tool.pluginId === pluginEditing.value?.id)
+    .map((tool) => ({
+      ...tool,
+      ...(tool.management === 'locked_off'
+        ? { lockedReason: tool.managementNote ?? '产品策略锁定关闭。' }
+        : {}),
+    }));
+});
+const skillLoader = computed(() => allToolRows.value.find((tool) => tool.name === 'skill'));
+const workspacePlugin = computed(() => {
+  const plugin = pluginEditing.value;
+  if (!plugin || plugin.kind !== 'workspace' || !plugin.computer) return null;
+  return plugin as AgentPluginAdmin & {
+    kind: 'workspace';
+    computer: NonNullable<AgentPluginAdmin['computer']>;
+  };
 });
 
 function sectionCount(section: SectionName): number {
   if (!state.value) return 0;
   if (section === 'mcp') return state.value.mcp.servers.length;
-  if (section === 'tools') return toolRows.value.length;
+  if (section === 'tools') return visibleToolRows.value.length;
   if (section === 'skills') return state.value.skills.catalog.length;
   return state.value.plugins.catalog.length;
 }
@@ -587,6 +640,12 @@ async function removeSkill(skill: AgentSkillAdmin): Promise<void> {
 
 function openPlugin(plugin: AgentPluginAdmin): void {
   pluginEditing.value = plugin;
+  if (plugin.kind !== 'workspace' || !plugin.computer) {
+    computerDraft.value = null;
+    savedComputerDraftText.value = '';
+    savedComputerSecretsText.value = '';
+    return;
+  }
   computerDraft.value = structuredClone(toRaw(plugin.computer.config));
   computerE2bKey.value = {
     value: '',
@@ -622,11 +681,11 @@ function computerConfigBody(
   });
 }
 
-async function saveComputerPlugin(): Promise<void> {
+async function saveWorkspacePlugin(): Promise<void> {
   if (!computerDraft.value || pending.value) return;
   pending.value = 'computer-plugin';
   try {
-    await rawApi('/agent/plugins/computer', {
+    await rawApi('/agent/plugins/workspace', {
       method: 'PUT',
       body: computerConfigBody(
         computerDraft.value,
@@ -634,46 +693,57 @@ async function saveComputerPlugin(): Promise<void> {
         secretUpdate(computerOpenTerminalKey.value),
       ),
     });
-    ElMessage.success('Computer Plugin 已保存');
+    ElMessage.success('Workspace Plugin 已保存');
     await refreshAgent();
-    const updated = state.value?.plugins.catalog.find((plugin) => plugin.id === 'computer');
+    const updated = state.value?.plugins.catalog.find((plugin) => plugin.id === 'workspace');
     if (updated) openPlugin(updated);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : 'Computer Plugin 保存失败');
+    ElMessage.error(error instanceof Error ? error.message : 'Workspace Plugin 保存失败');
   } finally {
     pending.value = '';
   }
 }
 
-function setComputerDraftEnabled(draft: AgentComputerAdminConfig, enabled: boolean): void {
-  if (!enabled) {
-    draft.local.enabled = false;
-    draft.e2b.enabled = false;
-    draft.openTerminal.enabled = false;
-    return;
+async function setPluginEnabled(plugin: AgentPluginAdmin, enabled: boolean): Promise<void> {
+  if (!plugin.configurable) return;
+  await runAction(
+    `plugin-${plugin.id}`,
+    enabled ? `${plugin.displayName} 已启动` : `${plugin.displayName} 已停止`,
+    () => rawApi(`/agent/plugins/${encodeURIComponent(plugin.id)}`, {
+      method: 'PATCH',
+      body: jsonBody(agentPluginStatePutSchema, { enabled }),
+    }),
+  );
+  if (plugin.kind === 'workspace') {
+    const updated = state.value?.plugins.catalog.find((item) => item.id === plugin.id);
+    if (updated) openPlugin(updated);
   }
-  if (draft.defaultProvider === 'local') draft.local.enabled = true;
-  if (draft.defaultProvider === 'e2b') draft.e2b.enabled = true;
-  if (draft.defaultProvider === 'open-terminal') draft.openTerminal.enabled = true;
 }
 
-async function setComputerPluginEnabled(plugin: AgentPluginAdmin, enabled: boolean): Promise<void> {
-  const draft = structuredClone(toRaw(plugin.computer.config));
-  setComputerDraftEnabled(draft, enabled);
+async function toggleTool(name: string, enabled: boolean): Promise<void> {
+  const tool = allToolRows.value.find((row) => row.name === name);
+  if (!tool || tool.management === 'locked_off' || !tool.registered) return;
+  if (tool.mcpTool) {
+    await runAction(
+      `tool-${name}`,
+      enabled ? `${tool.title} 已启动` : `${tool.title} 已停止`,
+      () => rawApi(`/agent/mcp/tools/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        body: jsonBody(agentMcpToolPutSchema, {
+          enabled,
+          timeout: tool.mcpTool?.timeout,
+          selector: tool.mcpTool?.selector ?? [],
+        }),
+      }),
+    );
+    return;
+  }
   await runAction(
-    'computer-plugin-toggle',
-    enabled ? 'Computer Plugin 已启动' : 'Computer Plugin 已停止',
-    () => rawApi('/agent/plugins/computer', {
-      method: 'PUT',
-      body: computerConfigBody(
-        draft,
-        plugin.computer.config.e2b.apiKeyConfigured
-          ? { operation: 'keep' }
-          : { operation: 'clear' },
-        plugin.computer.config.openTerminal.apiKeyConfigured
-          ? { operation: 'keep' }
-          : { operation: 'clear' },
-      ),
+    `tool-${name}`,
+    enabled ? `${tool.title} 已启动` : `${tool.title} 已停止`,
+    () => rawApi(`/agent/tools/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      body: jsonBody(agentToolPutSchema, { enabled, main: enabled }),
     }),
   );
 }
@@ -681,7 +751,7 @@ async function setComputerPluginEnabled(plugin: AgentPluginAdmin, enabled: boole
 async function closePlugin(): Promise<void> {
   if (computerDirty.value) {
     try {
-      await ElMessageBox.confirm('Computer 仍有未保存修改。', '返回 Plugin？', {
+      await ElMessageBox.confirm('Workspace 仍有未保存修改。', '返回 Plugin？', {
         type: 'warning',
         confirmButtonText: '放弃并返回',
         cancelButtonText: '继续编辑',
@@ -704,7 +774,7 @@ async function navigateFromPlugin(section: 'mcp' | 'tools' | 'skills'): Promise<
 
 async function probeComputerBackend(type: 'local' | 'e2b' | 'open-terminal'): Promise<void> {
   await runAction(`probe-${type}`, `${type} backend 探测完成`, async () => {
-    await rawApi(`/agent/plugins/computer/backends/${type}/probe`, { method: 'POST' });
+    await rawApi(`/agent/plugins/workspace/backends/${type}/probe`, { method: 'POST' });
   });
 }
 
@@ -736,7 +806,7 @@ onBeforeRouteLeave(async () => {
 
 function handleSave(): void {
   if (pluginEditing.value && computerDirty.value) {
-    void saveComputerPlugin();
+    void saveWorkspacePlugin();
     return;
   }
   if (activeSection.value === 'tools') void saveToolPolicy();
@@ -758,16 +828,30 @@ onBeforeUnmount(() => {
 
 <template>
   <AgentPluginDetail
-    v-if="pluginEditing && computerDraft"
+    v-if="workspacePlugin && computerDraft"
     v-model:draft="computerDraftModel"
     v-model:e2b-key="computerE2bKey"
     v-model:open-terminal-key="computerOpenTerminalKey"
-    :plugin="pluginEditing"
+    :plugin="workspacePlugin"
+    :tools="pluginToolRows"
     :pending="pending"
     :dirty="computerDirty"
     @back="closePlugin"
-    @save="saveComputerPlugin"
+    @save="saveWorkspacePlugin"
+    @toggle-plugin="setPluginEnabled(workspacePlugin, $event)"
     @probe="probeComputerBackend"
+    @toggle-tool="toggleTool"
+    @navigate="navigateFromPlugin"
+  />
+
+  <AgentToolPluginDetail
+    v-else-if="pluginEditing"
+    :plugin="pluginEditing"
+    :tools="pluginToolRows"
+    :pending="pending"
+    @back="closePlugin"
+    @toggle-plugin="setPluginEnabled(pluginEditing, $event)"
+    @toggle-tool="toggleTool"
     @navigate="navigateFromPlugin"
   />
 
@@ -848,21 +932,29 @@ onBeforeUnmount(() => {
             <el-input v-model="toolQuery" clearable placeholder="搜索 Tools" class="section-search" />
           </div>
 
-          <div v-if="toolRows.length" class="quiet-list">
-            <article v-for="tool in toolRows" :key="tool.name" class="quiet-row">
+          <div v-if="visibleToolRows.length" class="quiet-list">
+            <article v-for="tool in visibleToolRows" :key="tool.name" class="quiet-row">
               <div class="row-select">
                 <span class="row-icon"><Wrench :size="17" /></span>
                 <span class="row-main">
                   <span class="row-title"><strong>{{ tool.title }}</strong><small class="mono">{{ tool.name }}</small></span>
                   <span class="row-description">{{ tool.description }}</span>
+                  <small v-if="tool.managementNote" class="row-error">{{ tool.managementNote }}</small>
                 </span>
               </div>
               <div class="row-state">
-                <span class="status-line"><i :class="tool.registered && tool.enabled ? 'ok' : ''" />{{ tool.registered ? (tool.enabled ? '运行中' : '已停用') : '未注册' }}</span>
+                <span class="status-line"><i :class="tool.registered && tool.enabled && tool.main ? 'ok' : ''" />{{ tool.registered ? (tool.enabled && tool.main ? 'Agent 中启用' : '已停用') : '未注册' }}</span>
                 <small>{{ tool.routes.join(' · ') }}</small>
               </div>
+              <el-switch
+                :model-value="tool.enabled && tool.main"
+                :disabled="!tool.registered || tool.management === 'locked_off'"
+                :loading="pending === `tool-${tool.name}`"
+                :aria-label="`${tool.enabled && tool.main ? '停止' : '启动'} ${tool.title}`"
+                @change="toggleTool(tool.name, Boolean($event))"
+              />
               <div v-if="tool.mcpTool" class="row-actions">
-                <el-button text @click="openMcpTool(tool.mcpTool)">配置</el-button>
+                <el-button text @click="openMcpTool(tool.mcpTool)">详细设置</el-button>
               </div>
             </article>
           </div>
@@ -894,7 +986,7 @@ onBeforeUnmount(() => {
 
           <details class="settings-fold">
             <summary>
-              <span>文件与 Shell 边界</span>
+              <span>Workspace 边界</span>
               <small>访问范围与工作目录</small>
             </summary>
             <div class="fold-body">
@@ -922,6 +1014,21 @@ onBeforeUnmount(() => {
               <el-button type="primary" @click="skillImportOpen = true">从 GitHub 导入</el-button>
             </div>
           </div>
+
+          <article v-if="skillLoader" class="loader-row">
+            <div>
+              <strong>Skill Loader</strong>
+              <span>description mode 的 Skills 需要此 Tool 才会进入模型上下文。</span>
+            </div>
+            <span class="status-line"><i :class="skillLoader.registered && skillLoader.enabled && skillLoader.main ? 'ok' : ''" />{{ skillLoader.registered ? (skillLoader.enabled && skillLoader.main ? '已注入' : '未注入') : '未注册' }}</span>
+            <el-switch
+              :model-value="skillLoader.enabled && skillLoader.main"
+              :disabled="!skillLoader.registered"
+              :loading="pending === 'tool-skill'"
+              aria-label="启用 Skill Loader"
+              @change="toggleTool('skill', Boolean($event))"
+            />
+          </article>
 
           <div v-if="filteredSkills.length" class="quiet-list">
             <article v-for="skill in filteredSkills" :key="skill.id" class="quiet-row">
@@ -957,7 +1064,7 @@ onBeforeUnmount(() => {
           <div class="section-head">
             <div>
               <h2>Plugin</h2>
-              <p>将 MCP 与 Skills 作为一个能力包接入 Agent。</p>
+              <p>将 MCP、Skills 与 Tools 作为一个能力包接入 Agent。</p>
             </div>
             <el-input v-model="pluginQuery" clearable placeholder="搜索 Plugin" class="section-search" />
           </div>
@@ -965,7 +1072,7 @@ onBeforeUnmount(() => {
           <div v-if="filteredPlugins.length" class="quiet-list">
             <article v-for="plugin in filteredPlugins" :key="plugin.id" class="quiet-row plugin-row">
               <button type="button" class="row-select" @click="openPlugin(plugin)">
-                <span class="row-icon"><Monitor :size="17" /></span>
+                <span class="row-icon"><Boxes v-if="plugin.kind === 'tool-bundle'" :size="17" /><Monitor v-else :size="17" /></span>
                 <span class="row-main">
                   <span class="row-title"><strong>{{ plugin.displayName }}</strong><small>{{ plugin.category }}</small></span>
                   <span class="row-description">{{ plugin.shortDescription }}</span>
@@ -976,10 +1083,11 @@ onBeforeUnmount(() => {
                 <span class="status-line"><i :class="plugin.state === 'active' ? 'ok' : plugin.state === 'error' ? 'bad' : ''" />{{ plugin.state === 'active' ? '运行中' : plugin.state === 'error' ? '异常' : '已停止' }}</span>
               </div>
               <el-switch
-                :model-value="plugin.state !== 'inactive'"
-                :loading="pending === 'computer-plugin-toggle'"
+                :model-value="plugin.state === 'active'"
+                :disabled="!plugin.configurable"
+                :loading="pending === `plugin-${plugin.id}`"
                 :aria-label="`${plugin.state === 'inactive' ? '启动' : '停止'} ${plugin.displayName}`"
-                @change="setComputerPluginEnabled(plugin, Boolean($event))"
+                @change="setPluginEnabled(plugin, Boolean($event))"
               />
               <ChevronRight class="row-chevron" :size="16" />
             </article>
@@ -1067,6 +1175,7 @@ onBeforeUnmount(() => {
 .agent-tabs{display:flex;gap:28px;border-bottom:1px solid var(--line)}.agent-tabs button{position:relative;display:flex;align-items:baseline;gap:6px;margin:0;padding:0 0 12px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:13px;cursor:pointer}.agent-tabs button small{font-size:10px}.agent-tabs button::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;background:var(--accent);content:"";opacity:0;transform:scaleX(.45);transition:opacity .16s ease,transform .16s ease}.agent-tabs button.active{color:var(--ink);font-weight:650}.agent-tabs button.active::after{opacity:1;transform:scaleX(1)}
 .agent-surface{min-height:420px;padding:28px 0 40px}.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:18px}.section-head h2{margin:0;font-size:17px;letter-spacing:-.02em}.section-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.section-actions :deep(.el-button){display:inline-flex;align-items:center;gap:6px;margin-left:0}.section-search{width:220px}
 .quiet-list{border-top:1px solid var(--line)}.quiet-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:12px;min-height:70px;padding:9px 6px;border-bottom:1px solid var(--line);transition:background-color .14s ease}.quiet-row:hover{background:color-mix(in srgb,var(--surface) 88%,var(--accent) 12%)}.quiet-list.compact .quiet-row{min-height:56px}.row-select{display:flex;align-items:center;gap:12px;min-width:0;padding:3px 0;border:0;background:transparent;color:inherit;text-align:left}.row-select:is(button){cursor:pointer}.row-icon{display:grid;width:38px;height:38px;flex:0 0 38px;place-items:center;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink)}
+.loader-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:16px;margin-bottom:20px;padding:13px 6px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.loader-row>div{display:flex;min-width:0;flex-direction:column;gap:4px}.loader-row strong{font-size:13px}.loader-row span{color:var(--muted);font-size:11px}
 .row-main{display:flex;min-width:0;flex-direction:column;gap:4px}.row-title{display:flex;align-items:baseline;gap:9px;min-width:0}.row-title strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.row-title small,.row-meta{color:var(--muted);font-size:10px}.row-description{overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.row-error{overflow:hidden;color:#a85252;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.row-state{display:flex;min-width:82px;flex-direction:column;align-items:flex-end;color:var(--muted);font-size:11px}.row-state small{margin-top:3px}.status-line{display:flex;align-items:center;gap:6px;white-space:nowrap}.status-line i{width:7px;height:7px;border-radius:50%;background:#b5bcc5}.status-line i.ok{background:#3a8b68}.status-line i.bad{background:#c45d5d}.row-actions{display:flex;align-items:center;flex:0 0 auto}.row-actions :deep(.el-button){margin-left:0}.row-chevron{color:var(--muted)}.mono{font-family:var(--font-mono,ui-monospace,monospace)}
 .settings-fold{margin-top:24px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.settings-fold+.settings-fold{margin-top:-1px}.settings-fold summary{display:flex;align-items:center;justify-content:space-between;padding:16px 4px;cursor:pointer;list-style:none;font-size:13px;font-weight:650}.settings-fold summary::-webkit-details-marker{display:none}.settings-fold summary small{color:var(--muted);font-size:11px;font-weight:400}.fold-body{padding:2px 4px 20px}.fold-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.fold-head p,.fold-empty{margin:0;color:var(--muted);font-size:12px}.settings-fold :deep(.settings-grid){padding-bottom:4px}
 .load-error{display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding:10px 12px;border-left:2px solid #c45d5d;background:#fff7f7;color:#8f4444;font-size:12px}

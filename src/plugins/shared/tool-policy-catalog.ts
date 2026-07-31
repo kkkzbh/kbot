@@ -10,9 +10,16 @@ export const PRIVATE_DEFAULT_SCOPE_ID = 'private-default';
 const ALL_ROUTES = ['agent', 'automation'] as const;
 const AGENT_ONLY_ROUTES = ['agent'] as const;
 
-function buildCatalogEntry(entry: Omit<ToolCatalogEntry, 'availableRoutes' | 'defaultEnabledByRoute'>): ToolCatalogEntry {
+type ToolCatalogInput = Omit<
+  ToolCatalogEntry,
+  'availableRoutes' | 'defaultEnabledByRoute' | 'management' | 'visibility'
+> & Partial<Pick<ToolCatalogEntry, 'management' | 'visibility'>>;
+
+function buildCatalogEntry(entry: ToolCatalogInput): ToolCatalogEntry {
   return {
     ...entry,
+    management: entry.management ?? 'editable',
+    visibility: entry.visibility ?? (entry.pluginId ? 'plugin' : 'standalone'),
     availableRoutes: [...ALL_ROUTES],
     defaultEnabledByRoute: {
       agent: true,
@@ -22,10 +29,12 @@ function buildCatalogEntry(entry: Omit<ToolCatalogEntry, 'availableRoutes' | 'de
 }
 
 function buildAgentOnlyCatalogEntry(
-  entry: Omit<ToolCatalogEntry, 'availableRoutes' | 'defaultEnabledByRoute'>,
+  entry: ToolCatalogInput,
 ): ToolCatalogEntry {
   return {
     ...entry,
+    management: entry.management ?? 'editable',
+    visibility: entry.visibility ?? (entry.pluginId ? 'plugin' : 'standalone'),
     availableRoutes: [...AGENT_ONLY_ROUTES],
     defaultEnabledByRoute: {
       agent: true,
@@ -35,16 +44,32 @@ function buildAgentOnlyCatalogEntry(
 }
 
 function buildAgentOnlyDisabledCatalogEntry(
-  entry: Omit<ToolCatalogEntry, 'availableRoutes' | 'defaultEnabledByRoute'>,
+  entry: ToolCatalogInput,
 ): ToolCatalogEntry {
   return {
     ...entry,
+    management: entry.management ?? 'editable',
+    visibility: entry.visibility ?? (entry.pluginId ? 'plugin' : 'standalone'),
     availableRoutes: [...AGENT_ONLY_ROUTES],
     defaultEnabledByRoute: {
       agent: false,
       automation: false,
     },
   };
+}
+
+function buildLockedCatalogEntry(entry: ToolCatalogInput): ToolCatalogEntry {
+  return {
+    ...buildCatalogEntry({ ...entry, management: 'locked_off' }),
+    defaultEnabledByRoute: {
+      agent: false,
+      automation: false,
+    },
+  };
+}
+
+function buildAgentOnlyLockedCatalogEntry(entry: ToolCatalogInput): ToolCatalogEntry {
+  return buildAgentOnlyDisabledCatalogEntry({ ...entry, management: 'locked_off' });
 }
 
 export const TOOL_ROUTE_PROFILES: ToolRouteProfileInfo[] = [
@@ -77,6 +102,110 @@ export const TOOL_DEFAULT_SCOPES: ToolScopeTarget[] = [
   },
 ];
 
+export interface AgentToolPluginDefinition {
+  id: string;
+  displayName: string;
+  shortDescription: string;
+  longDescription: string;
+  category: string;
+  capabilities: string[];
+  toolNames: string[];
+  kind: 'workspace' | 'tool-bundle';
+  lockedReason?: string;
+}
+
+export const AGENT_TOOL_PLUGINS: AgentToolPluginDefinition[] = [
+  {
+    id: 'workspace',
+    displayName: 'Workspace',
+    shortDescription: '文件、Shell 与会话附件上下文。',
+    longDescription: 'Workspace 管理 Agent 的文件系统、命令执行、附件回放与实时会话上下文能力。',
+    category: 'Agent Runtime',
+    capabilities: ['Read and edit files', 'Run shell commands', 'Read conversation artifacts'],
+    toolNames: [
+      'file_read',
+      'file_write',
+      'file_edit',
+      'file_publish',
+      'grep',
+      'glob',
+      'bash',
+      'qqbot_attachment_replay',
+      'realtime_message_history',
+    ],
+    kind: 'workspace',
+  },
+  {
+    id: 'automation',
+    displayName: 'Automation',
+    shortDescription: '创建与管理定时、周期和被动触发任务。',
+    longDescription: 'Automation 统一管理 trigger 与现有自动化任务操作；后续 runtime 收敛为单一 trigger 接口。',
+    category: 'Agent Workflow',
+    capabilities: ['Scheduled tasks', 'Passive triggers'],
+    toolNames: [
+      'trigger',
+      'automation_create',
+      'automation_list',
+      'automation_update',
+      'automation_pause',
+      'automation_resume',
+      'automation_delete',
+    ],
+    kind: 'tool-bundle',
+  },
+  {
+    id: 'interaction',
+    displayName: 'Interaction',
+    shortDescription: '在 Agent 执行期间向用户提问或请求确认。',
+    longDescription: '当前 QQBot 回复流程不需要暂停 Agent run 等待交互输入。',
+    category: 'Agent Workflow',
+    capabilities: ['Structured questions', 'Open-ended confirmation'],
+    toolNames: ['question', 'user_confirm'],
+    kind: 'tool-bundle',
+    lockedReason: '当前机器人场景不使用执行中交互，保持关闭。',
+  },
+  {
+    id: 'hbu-course-guidance',
+    displayName: 'HBU Course Guidance',
+    shortDescription: '河北大学选课信息与推荐验证。',
+    longDescription: '选课能力由确定性的 QQBot 命令链路负责，不进入 Agent tool loop。',
+    category: 'Campus Command',
+    capabilities: ['Course context', 'Live offerings', 'Recommendation validation'],
+    toolNames: [
+      'hbu_jw_course_guidance_context',
+      'hbu_jw_course_offerings',
+      'hbu_jw_validate_course_recommendation',
+    ],
+    kind: 'tool-bundle',
+    lockedReason: '纯命令触发能力，不允许 Agent 调用。',
+  },
+  {
+    id: 'codeforces',
+    displayName: 'Codeforces',
+    shortDescription: '用户资料、Rating、提交和比赛查询。',
+    longDescription: 'Codeforces 正在迁移到确定性的 QQBot 命令链路，Agent tools 保持关闭。',
+    category: 'Command Service',
+    capabilities: ['Profile cards', 'Rating history', 'Submissions', 'Contests'],
+    toolNames: ['cf_user_profile', 'cf_user_rating', 'cf_user_submissions', 'cf_contests'],
+    kind: 'tool-bundle',
+    lockedReason: '已确定迁移为纯命令触发，Agent 调用保持关闭。',
+  },
+  {
+    id: 'web',
+    displayName: 'Web',
+    shortDescription: '搜索、网页读取、PDF 截图与天气查询。',
+    longDescription: 'Web 通过一个统一工具向 Agent 提供可追溯的网络读取能力。',
+    category: 'Agent Runtime',
+    capabilities: ['Search', 'Read pages', 'Inspect PDFs'],
+    toolNames: ['web_run'],
+    kind: 'tool-bundle',
+  },
+];
+
+export const AGENT_TOOL_PLUGIN_MAP = new Map(
+  AGENT_TOOL_PLUGINS.map((plugin) => [plugin.id, plugin]),
+);
+
 export const LEGACY_TOOL_NAME_ALIASES: Record<string, string | null> = {
   built_user_toast: null,
   file_update: 'file_edit',
@@ -85,6 +214,47 @@ export const LEGACY_TOOL_NAME_ALIASES: Record<string, string | null> = {
 };
 
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
+  buildCatalogEntry({
+    toolName: 'trigger',
+    title: '自动化触发器',
+    category: 'builtin',
+    description: '统一管理定时、周期和被动触发任务。',
+    compatibility: 'compatible',
+    compatibilityNote: 'Automation Plugin 的统一 Agent 入口。',
+    hardDependencies: [],
+    relatedTools: ['automation_create', 'automation_list', 'automation_update', 'automation_pause', 'automation_resume', 'automation_delete'],
+    riskLevel: 'medium',
+    source: 'chatluna_runtime',
+    pluginId: 'automation',
+  }),
+  buildAgentOnlyLockedCatalogEntry({
+    toolName: 'question',
+    title: '结构化提问',
+    category: 'builtin',
+    description: '在 Agent run 中向用户展示选项并等待回答。',
+    compatibility: 'incompatible',
+    compatibilityNote: '当前 QQBot 回复流程不等待执行中交互。',
+    hardDependencies: [],
+    relatedTools: ['user_confirm'],
+    riskLevel: 'low',
+    source: 'chatluna_runtime',
+    pluginId: 'interaction',
+    managementNote: '当前机器人场景不使用执行中交互，保持关闭。',
+  }),
+  buildAgentOnlyLockedCatalogEntry({
+    toolName: 'user_confirm',
+    title: '用户确认',
+    category: 'builtin',
+    description: '在 Agent run 中等待用户自由输入或确认。',
+    compatibility: 'incompatible',
+    compatibilityNote: '当前 QQBot 回复流程不等待执行中交互。',
+    hardDependencies: [],
+    relatedTools: ['question'],
+    riskLevel: 'low',
+    source: 'chatluna_runtime',
+    pluginId: 'interaction',
+    managementNote: '当前机器人场景不使用执行中交互，保持关闭。',
+  }),
   buildAgentOnlyCatalogEntry({
     toolName: 'automation_create',
     title: '创建自动化任务',
@@ -96,6 +266,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['automation_list', 'automation_update', 'automation_pause', 'automation_resume', 'automation_delete'],
     riskLevel: 'medium',
     source: 'project',
+    pluginId: 'automation',
   }),
   buildAgentOnlyCatalogEntry({
     toolName: 'automation_list',
@@ -108,6 +279,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['automation_create', 'automation_update', 'automation_pause', 'automation_resume', 'automation_delete'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'automation',
   }),
   buildAgentOnlyCatalogEntry({
     toolName: 'automation_update',
@@ -120,6 +292,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['automation_list', 'automation_create', 'automation_pause', 'automation_resume', 'automation_delete'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'automation',
   }),
   buildAgentOnlyCatalogEntry({
     toolName: 'automation_pause',
@@ -132,6 +305,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['automation_list', 'automation_update', 'automation_resume', 'automation_delete'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'automation',
   }),
   buildAgentOnlyCatalogEntry({
     toolName: 'automation_resume',
@@ -144,6 +318,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['automation_list', 'automation_update', 'automation_pause', 'automation_delete'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'automation',
   }),
   buildAgentOnlyCatalogEntry({
     toolName: 'automation_delete',
@@ -156,6 +331,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['automation_list', 'automation_update', 'automation_pause', 'automation_resume'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'automation',
   }),
   buildCatalogEntry({
     toolName: 'realtime_message_history',
@@ -168,6 +344,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: [],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'memory_search',
@@ -192,6 +369,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['realtime_message_history'],
     riskLevel: 'medium',
     source: 'project',
+    pluginId: 'workspace',
   }),
   buildAgentOnlyDisabledCatalogEntry({
     toolName: 'skill',
@@ -204,6 +382,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['agentcli'],
     riskLevel: 'medium',
     source: 'chatluna_runtime',
+    visibility: 'internal',
   }),
   buildAgentOnlyDisabledCatalogEntry({
     toolName: 'agentcli',
@@ -216,90 +395,119 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['skill'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    visibility: 'internal',
   }),
-  buildAgentOnlyCatalogEntry({
+  buildAgentOnlyLockedCatalogEntry({
+    toolName: 'task',
+    title: 'Sub-Agent Task',
+    category: 'builtin',
+    description: '启动、查看或继续 Sub-Agent 任务。',
+    compatibility: 'incompatible',
+    compatibilityNote: '当前产品阶段关闭 Sub-Agents。',
+    hardDependencies: [],
+    relatedTools: [],
+    riskLevel: 'high',
+    source: 'chatluna_runtime',
+    visibility: 'internal',
+    managementNote: 'Sub-Agents 暂时关闭，Main Agent 不允许调用 task。',
+  }),
+  buildAgentOnlyLockedCatalogEntry({
     toolName: 'hbu_jw_course_guidance_context',
     title: '河北大学选课指导上下文',
     category: 'builtin',
     description: '查询当前绑定用户的实时培养方案、完成进度、当前选课与完成度卡片。',
-    compatibility: 'compatible',
-    compatibilityNote: '仅用于 Agent 选课指导链路，必须作为三个教务指导工具的第一步。',
+    compatibility: 'incompatible',
+    compatibilityNote: '选课指导由纯命令链路执行。',
     hardDependencies: [],
     relatedTools: ['hbu_jw_course_offerings', 'hbu_jw_validate_course_recommendation'],
     riskLevel: 'medium',
     source: 'project',
+    pluginId: 'hbu-course-guidance',
+    managementNote: '纯命令触发能力，不允许 Agent 调用。',
   }),
-  buildAgentOnlyCatalogEntry({
+  buildAgentOnlyLockedCatalogEntry({
     toolName: 'hbu_jw_course_offerings',
     title: '河北大学实时开课',
     category: 'builtin',
     description: '查询当前选课轮次中经过服务端过滤的实时可选班次。',
-    compatibility: 'compatible',
-    compatibilityNote: '仅用于 Agent 选课指导链路，必须在选课指导上下文之后调用。',
+    compatibility: 'incompatible',
+    compatibilityNote: '选课指导由纯命令链路执行。',
     hardDependencies: [],
     relatedTools: ['hbu_jw_course_guidance_context', 'hbu_jw_validate_course_recommendation'],
     riskLevel: 'medium',
     source: 'project',
+    pluginId: 'hbu-course-guidance',
+    managementNote: '纯命令触发能力，不允许 Agent 调用。',
   }),
-  buildAgentOnlyCatalogEntry({
+  buildAgentOnlyLockedCatalogEntry({
     toolName: 'hbu_jw_validate_course_recommendation',
     title: '河北大学选课推荐验证',
     category: 'builtin',
     description: '重新查询余量和选课结果，验证推荐班次及预计方案完成度。',
-    compatibility: 'compatible',
-    compatibilityNote: '仅用于 Agent 选课指导链路；valid=true 是输出推荐方案的必要条件。',
+    compatibility: 'incompatible',
+    compatibilityNote: '选课指导由纯命令链路执行。',
     hardDependencies: [],
     relatedTools: ['hbu_jw_course_guidance_context', 'hbu_jw_course_offerings'],
     riskLevel: 'medium',
     source: 'project',
+    pluginId: 'hbu-course-guidance',
+    managementNote: '纯命令触发能力，不允许 Agent 调用。',
   }),
-  buildCatalogEntry({
+  buildLockedCatalogEntry({
     toolName: 'cf_user_profile',
     title: 'Codeforces 用户分数卡',
     category: 'web',
     description: '查询 Codeforces 用户资料、rating、rank、做题统计，并返回带头像的分数卡图片。',
-    compatibility: 'compatible',
-    compatibilityNote: '只读查询工具，适合 agent 和 automation 路由。',
+    compatibility: 'incompatible',
+    compatibilityNote: '已确定迁移为纯命令触发。',
     hardDependencies: [],
     relatedTools: ['cf_user_rating', 'cf_user_submissions', 'cf_contests'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'codeforces',
+    managementNote: '已确定迁移为纯命令触发，Agent 调用保持关闭。',
   }),
-  buildCatalogEntry({
+  buildLockedCatalogEntry({
     toolName: 'cf_user_rating',
     title: 'Codeforces Rating 历史图',
     category: 'web',
     description: '查询 Codeforces 用户 rating 历史，并返回带节点分数标注的曲线图。',
-    compatibility: 'compatible',
-    compatibilityNote: '只读查询工具，适合 agent 和 automation 路由。',
+    compatibility: 'incompatible',
+    compatibilityNote: '已确定迁移为纯命令触发。',
     hardDependencies: [],
     relatedTools: ['cf_user_profile', 'cf_user_submissions', 'cf_contests'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'codeforces',
+    managementNote: '已确定迁移为纯命令触发，Agent 调用保持关闭。',
   }),
-  buildCatalogEntry({
+  buildLockedCatalogEntry({
     toolName: 'cf_user_submissions',
     title: 'Codeforces 最近提交',
     category: 'web',
     description: '查询 Codeforces 用户最近提交记录、题号、 verdict 和提交时间。',
-    compatibility: 'compatible',
-    compatibilityNote: '只读查询工具，适合 agent 和 automation 路由。',
+    compatibility: 'incompatible',
+    compatibilityNote: '已确定迁移为纯命令触发。',
     hardDependencies: [],
     relatedTools: ['cf_user_profile', 'cf_user_rating', 'cf_contests'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'codeforces',
+    managementNote: '已确定迁移为纯命令触发，Agent 调用保持关闭。',
   }),
-  buildCatalogEntry({
+  buildLockedCatalogEntry({
     toolName: 'cf_contests',
     title: 'Codeforces 比赛列表',
     category: 'web',
     description: '查询 Codeforces 即将开始、正在进行或最近结束的比赛。',
-    compatibility: 'compatible',
-    compatibilityNote: '只读查询工具，适合 agent 和 automation 路由。',
+    compatibility: 'incompatible',
+    compatibilityNote: '已确定迁移为纯命令触发。',
     hardDependencies: [],
     relatedTools: ['cf_user_profile', 'cf_user_rating', 'cf_user_submissions'],
     riskLevel: 'low',
     source: 'project',
+    pluginId: 'codeforces',
+    managementNote: '已确定迁移为纯命令触发，Agent 调用保持关闭。',
   }),
   buildCatalogEntry({
     toolName: 'file_read',
@@ -312,6 +520,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_write', 'file_edit', 'grep', 'glob', 'bash'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'file_write',
@@ -324,6 +533,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_read', 'file_edit', 'file_publish', 'bash'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'file_edit',
@@ -336,6 +546,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_read', 'file_write', 'file_publish', 'bash'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'file_publish',
@@ -348,6 +559,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_read', 'file_write', 'file_edit'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'grep',
@@ -360,6 +572,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_read', 'glob', 'bash'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'glob',
@@ -372,6 +585,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_read', 'grep', 'bash'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'bash',
@@ -384,6 +598,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: ['file_read', 'file_write', 'file_edit', 'grep', 'glob'],
     riskLevel: 'high',
     source: 'chatluna_runtime',
+    pluginId: 'workspace',
   }),
   buildCatalogEntry({
     toolName: 'web_run',
@@ -396,6 +611,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     relatedTools: [],
     riskLevel: 'medium',
     source: 'chatluna_runtime',
+    pluginId: 'web',
   }),
 ];
 

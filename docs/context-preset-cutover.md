@@ -1,7 +1,7 @@
 # Context and role preset production cutover
 
 This runbook applies to the single production instance on `km6`. The release
-splits every Preset V2 resource into a shared Role Preset V1 and an outer
+splits every Preset V2 resource into a Role Preset V1 and an outer
 Context Preset V1 while keeping all persisted preset IDs unchanged.
 
 ## Preconditions
@@ -22,8 +22,8 @@ Context Preset V1 while keeping all persisted preset IDs unchanged.
   command line.
 
 The migration reads preset-reference columns only. It rejects aliases in
-persisted references, unknown IDs, malformed catalogs, unsafe anchors, and
-non-YAML catalog entries.
+persisted references, unknown IDs, malformed catalogs, invalid legacy
+positions, and non-YAML catalog entries.
 
 ## 1. Build and upload the coordinated release
 
@@ -200,9 +200,9 @@ Verify through the authenticated Admin workspace:
 - navigation opens `/intelligence/context-presets`;
 - all five Context Presets and all five Role Presets load;
 - `sakiko` remains the global default;
-- each initial Context references the same-ID shared Role;
-- draft preview resolves the contiguous stack and both Runtime blocks;
-- an invalid anchor returns a typed error with `blockId` and `stage`;
+- each initial Context references the same-ID Role;
+- draft preview keeps Lore after Role and Authors note before Current input;
+- invalid block placement returns a typed error with `blockId` and `stage`;
 - saving a Role changes every referencing Context without changing their
   revisions;
 - “另存为新角色” creates a separate Role and leaves the Context draft dirty;

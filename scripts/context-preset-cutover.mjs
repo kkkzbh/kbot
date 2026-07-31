@@ -34,7 +34,7 @@ const FILE_PATTERN = /\.ya?ml$/i;
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const LEGACY_DEFAULT_LORE_TOKEN_LIMIT = 300;
 const CUTOVER_STATE_FILENAME = '.context-role-v1-cutover.json';
-const ROLE_ANCHORS = new Set([
+const LEGACY_ROLE_POSITIONS = new Set([
   'beforeCharacterDefinitions',
   'afterCharacterDefinitions',
   'beforeScenario',
@@ -314,28 +314,21 @@ function stripUndefined(value) {
     .map(([key, item]) => [key, stripUndefined(item)]));
 }
 
-function loreGroups(preset) {
+function normalizeLoreEntries(preset) {
   const defaultPosition = preset.lore.defaults.insertPosition
     ?? 'afterCharacterDefinitions';
-  if (!ROLE_ANCHORS.has(defaultPosition)) {
-    throw new Error(`Invalid Lore default anchor in ${preset.id}: ${defaultPosition}`);
+  if (!LEGACY_ROLE_POSITIONS.has(defaultPosition)) {
+    throw new Error(`Invalid legacy Lore default position in ${preset.id}: ${defaultPosition}`);
   }
-  const groups = new Map();
-  for (const entry of preset.lore.entries) {
+  return preset.lore.entries.map((entry) => {
     const position = entry.insertPosition ?? defaultPosition;
-    if (!ROLE_ANCHORS.has(position)) {
-      throw new Error(`Invalid Lore entry anchor in ${preset.id}: ${position}`);
+    if (!LEGACY_ROLE_POSITIONS.has(position)) {
+      throw new Error(`Invalid legacy Lore entry position in ${preset.id}: ${position}`);
     }
     const normalized = { ...entry };
     delete normalized.insertPosition;
-    const entries = groups.get(position) ?? [];
-    entries.push(stripUndefined(normalized));
-    groups.set(position, entries);
-  }
-  const hasConfig = Object.keys(preset.lore.defaults).length > 0
-    || preset.promptConfig.loreBooksPrompt != null;
-  if (groups.size === 0 && hasConfig) groups.set(defaultPosition, []);
-  return groups;
+    return stripUndefined(normalized);
+  });
 }
 
 export function migratePresetDefinition(input) {
@@ -344,25 +337,31 @@ export function migratePresetDefinition(input) {
   const loreDefaults = { ...preset.lore.defaults };
   delete loreDefaults.tokenLimit;
   delete loreDefaults.insertPosition;
-  const groupedLore = [...loreGroups(preset)];
+  const loreEntries = normalizeLoreEntries(preset);
   const loreTokenLimit = preset.lore.defaults.tokenLimit
     ?? LEGACY_DEFAULT_LORE_TOKEN_LIMIT;
   if (!Number.isInteger(loreTokenLimit) || loreTokenLimit <= 0) {
     throw new Error(`Invalid Lore tokenLimit in ${preset.id}: ${loreTokenLimit}`);
   }
-  if (groupedLore.length > loreTokenLimit) {
-    throw new Error(
-      `Lore tokenLimit ${loreTokenLimit} cannot preserve ${groupedLore.length} anchored groups in ${preset.id}.`,
-    );
-  }
-  const loreBaseBudget = groupedLore.length === 0
-    ? 0
-    : Math.floor(loreTokenLimit / groupedLore.length);
-  const loreBudgetRemainder = groupedLore.length === 0
-    ? 0
-    : loreTokenLimit % groupedLore.length;
   const blocks = [
     { id: 'role', type: 'role', rolePresetId: preset.id },
+  ];
+  const hasLore = loreEntries.length > 0
+    || Object.keys(preset.lore.defaults).length > 0
+    || prompt.loreBooksPrompt != null;
+  if (hasLore) {
+    blocks.push({
+      id: 'lore',
+      type: 'lore',
+      enabled: true,
+      budgetPriority: 310,
+      maxTokens: loreTokenLimit,
+      prompt: prompt.loreBooksPrompt ?? null,
+      defaults: stripUndefined(loreDefaults),
+      entries: loreEntries,
+    });
+  }
+  blocks.push(
     {
       id: 'chat-history',
       type: 'chatHistory',
@@ -377,38 +376,7 @@ export function migratePresetDefinition(input) {
       budgetPriority: 50,
       maxTokens: null,
     },
-  ];
-  let priority = 310;
-  for (const [groupIndex, [position, entries]] of groupedLore.entries()) {
-    blocks.push({
-      id: `lore-${position.replace(/[A-Z]/g, (part) => `-${part.toLowerCase()}`)}`,
-      type: 'lore',
-      enabled: true,
-      budgetPriority: priority,
-      maxTokens: loreBaseBudget + (groupIndex < loreBudgetRemainder ? 1 : 0),
-      anchor: { type: 'role', position },
-      prompt: prompt.loreBooksPrompt ?? null,
-      defaults: stripUndefined(loreDefaults),
-      entries,
-    });
-    priority += 1;
-  }
-  if (preset.authorsNote != null) {
-    const note = assertObject(preset.authorsNote, `Preset V2 authorsNote in ${preset.id}`);
-    const position = note.insertPosition ?? 'inChat';
-    blocks.push({
-      id: 'authors-note',
-      type: 'authorsNote',
-      enabled: true,
-      budgetPriority: 330,
-      maxTokens: null,
-      anchor: position === 'inChat'
-        ? { type: 'chatHistory', depth: note.insertDepth ?? 0 }
-        : { type: 'role', position },
-      content: note.content,
-      insertFrequency: note.insertFrequency ?? 0,
-    });
-  }
+  );
   if (preset.knowledge != null) {
     const knowledge = assertObject(preset.knowledge, `Preset V2 knowledge in ${preset.id}`);
     blocks.push({
@@ -419,6 +387,22 @@ export function migratePresetDefinition(input) {
       maxTokens: null,
       sources: knowledge.sources,
       prompt: knowledge.prompt ?? null,
+    });
+  }
+  if (preset.authorsNote != null) {
+    const note = assertObject(preset.authorsNote, `Preset V2 authorsNote in ${preset.id}`);
+    const position = note.insertPosition ?? 'inChat';
+    if (position !== 'inChat' && !LEGACY_ROLE_POSITIONS.has(position)) {
+      throw new Error(`Invalid legacy AuthorsNote position in ${preset.id}: ${position}`);
+    }
+    blocks.push({
+      id: 'authors-note',
+      type: 'authorsNote',
+      enabled: true,
+      budgetPriority: 330,
+      maxTokens: null,
+      content: note.content,
+      insertFrequency: note.insertFrequency ?? 0,
     });
   }
   blocks.push(
@@ -443,7 +427,11 @@ export function migratePresetDefinition(input) {
       schemaVersion: 1,
       id: preset.id,
       displayName: preset.displayName,
-      messages: preset.messages,
+      messages: preset.messages.map((message) => {
+        const normalized = { ...message };
+        delete normalized.purpose;
+        return normalized;
+      }),
     })),
     contextPreset: ContextPresetDefinitionV1Schema.parse(stripUndefined({
       schemaVersion: 1,

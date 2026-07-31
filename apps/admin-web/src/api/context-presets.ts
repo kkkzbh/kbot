@@ -7,6 +7,8 @@ import {
   contextPresetPreviewRequestSchema,
   contextPresetPreviewResponseSchema,
   contextPresetUpdateRequestSchema,
+  contextSnapshotResponseSchema,
+  contextTargetsResponseSchema,
   emptyResponseSchema,
   promptFragmentPolicyPutRequestSchema,
   promptFragmentPolicyResetRequestSchema,
@@ -21,6 +23,9 @@ import {
   type ContextPresetDefinitionV1,
   type ContextPresetDetailResponse,
   type ContextPresetPreviewResponse,
+  type ContextSnapshot,
+  type ContextSnapshotResponse,
+  type ContextTarget,
   type ResolvedContextBlock,
   type PromptFragmentPolicyConfig,
   type PromptFragmentPolicyState,
@@ -36,6 +41,9 @@ export type {
   ContextPresetDefinitionV1,
   ContextPresetDetailResponse,
   ContextPresetPreviewResponse,
+  ContextSnapshot,
+  ContextSnapshotResponse,
+  ContextTarget,
   ResolvedContextBlock,
   PromptFragmentPolicyConfig,
   PromptFragmentPolicyState,
@@ -73,6 +81,20 @@ export type RolePresetMessage = RolePresetDefinitionV1['messages'][number];
 
 export async function listContextPresets(): Promise<ContextPresetCatalogResponse> {
   return api('/context-presets', contextPresetCatalogResponseSchema);
+}
+
+export async function listContextTargets(): Promise<ContextTarget[]> {
+  const response = await api('/model-context/targets', contextTargetsResponseSchema);
+  return response.targets;
+}
+
+export async function getContextSnapshot(
+  conversationId: string,
+): Promise<ContextSnapshotResponse> {
+  return api(
+    `/model-context/snapshots/${encodeURIComponent(conversationId)}`,
+    contextSnapshotResponseSchema,
+  );
 }
 
 export async function getContextPreset(id: string): Promise<ContextPresetDetailResponse> {

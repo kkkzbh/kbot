@@ -17,6 +17,7 @@ function contextPayload(options: {
   conversationId?: string;
   model?: string;
   content?: ModelContextPayload['assembledMessages'][number]['content'];
+  message?: Partial<ModelContextPayload['assembledMessages'][number]>;
   createdAt?: Date;
 } = {}): ModelContextPayload {
   const requestId = options.requestId ?? 'request-1';
@@ -48,6 +49,7 @@ function contextPayload(options: {
       tokenEstimate: 120,
       stage: 'input',
       source: { kind: 'input', name: 'current input' },
+      ...options.message,
     }],
     finalMessages: [{
       id: `${conversationId}-message`,
@@ -56,6 +58,7 @@ function contextPayload(options: {
       tokenEstimate: 120,
       stage: 'input',
       source: { kind: 'input', name: 'current input' },
+      ...options.message,
     }],
     trace: [],
     tools: [{
@@ -125,6 +128,17 @@ describe('model context snapshot store', () => {
         type: 'text',
         text: 'data:text/plain;base64,c2Vuc2l0aXZlLWJ5dGVz',
       }],
+      message: {
+        name: 'assistant',
+        toolCalls: [{
+          id: 'call-1',
+          name: 'lookup',
+          args: {
+            query: 'visible',
+            apiKey: 'tool-call-secret',
+          },
+        }],
+      },
     }));
     store.ingestUsage(usagePayload());
 
@@ -148,6 +162,7 @@ describe('model context snapshot store', () => {
     expect(serialized).not.toContain('query-secret');
     expect(serialized).not.toContain('header-secret');
     expect(serialized).not.toContain('tool-secret');
+    expect(serialized).not.toContain('tool-call-secret');
     expect(serialized).not.toContain('sensitive-bytes');
     expect(result.snapshot?.messages[0].content).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -159,6 +174,14 @@ describe('model context snapshot store', () => {
         },
       }),
     ]));
+    expect(result.snapshot?.messages[0]).toMatchObject({
+      name: 'assistant',
+      toolCalls: [{
+        id: 'call-1',
+        name: 'lookup',
+        args: { query: 'visible' },
+      }],
+    });
   });
 
   it('correlates repeated request ids by provider call id and expires unmatched usage', () => {

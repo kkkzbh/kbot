@@ -34,7 +34,8 @@ describe('admin settings ownership', () => {
     expect(agentPage).toContain("{ name: 'plugins', label: 'Plugin' }");
     expect(agentPage).toContain("rawApi<AgentToolPolicyState>('/agent/tools/policy')");
     expect(agentPage).toContain('useManagedFeatureSettings(fileSystemToolSettingKeys)');
-    expect(agentPage).toContain("rawApi('/agent/plugins/computer'");
+    expect(agentPage).toContain("rawApi('/agent/plugins/workspace'");
+    expect(agentPage).toContain("rawApi(`/agent/tools/${encodeURIComponent(name)}`");
     expect(agentPage).not.toContain('/policies');
     expect(agentPage).not.toContain('sub-agents');
     expect(agentPage).not.toContain('Agent 调度');

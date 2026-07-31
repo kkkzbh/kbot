@@ -41,7 +41,7 @@ import {
   CF_USER_SUBMISSIONS_TOOL,
   inject,
 } from '../src/plugins/oj-tools/index.js';
-import { TOOL_CATALOG } from '../src/plugins/tool-policy/catalog.js';
+import { TOOL_CATALOG } from '../src/plugins/shared/tool-policy-catalog.js';
 
 describe('oj-tools plugin', () => {
   it('declares the expected injections', () => {
@@ -113,6 +113,10 @@ describe('oj-tools plugin', () => {
       CF_USER_RATING_TOOL,
       CF_USER_SUBMISSIONS_TOOL,
     ]);
-    expect(cfEntries.every((entry) => entry.defaultEnabledByRoute.agent && entry.defaultEnabledByRoute.automation)).toBe(true);
+    expect(cfEntries.every((entry) => (
+      entry.management === 'locked_off'
+      && !entry.defaultEnabledByRoute.agent
+      && !entry.defaultEnabledByRoute.automation
+    ))).toBe(true);
   });
 });

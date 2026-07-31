@@ -14,7 +14,7 @@ vi.mock('koishi', () => {
 });
 
 import { apply, inject } from '../src/plugins/tool-policy/index.js';
-import { GLOBAL_DEFAULT_SCOPE_ID, PRIVATE_DEFAULT_SCOPE_ID, TOOL_CATALOG } from '../src/plugins/tool-policy/catalog.js';
+import { GLOBAL_DEFAULT_SCOPE_ID, PRIVATE_DEFAULT_SCOPE_ID, TOOL_CATALOG } from '../src/plugins/shared/tool-policy-catalog.js';
 import type { ToolCatalogEntry } from '../src/types/tool-policy.js';
 
 type Row = Record<string, any>;
@@ -90,6 +90,10 @@ function createHarness(
           glob: { name: 'glob' },
           bash: { name: 'bash' },
           web_run: { name: 'web_run' },
+          question: { name: 'question' },
+          task: { name: 'task' },
+          hbu_jw_course_guidance_context: { name: 'hbu_jw_course_guidance_context' },
+          cf_user_profile: { name: 'cf_user_profile' },
           unknown_runtime_tool: { name: 'unknown_runtime_tool' },
         }),
       },
@@ -297,11 +301,18 @@ describe('tool policy service', () => {
       fileToolAllowedGroups: '1091330365',
     });
     await runReady();
+    await ctx.toolPolicy.saveToolOverrides([{
+      toolName: 'web_run',
+      routeProfile: 'automation',
+      scopeKind: 'global_default',
+      scopeId: GLOBAL_DEFAULT_SCOPE_ID,
+      enabled: false,
+    }]);
     expect(registerToolMaskResolver).toHaveBeenCalledTimes(1);
     const resolver = registerToolMaskResolver.mock.calls[0]?.[1] as
       | ((arg: {
           session: { isDirect: boolean; userId: string; guildId: string; channelId: string };
-          room: { roomId: number; conversationId: string; chatMode?: string };
+          conversation?: { id: string; legacyRoomId?: number; chatMode: string };
         }) => Promise<unknown>)
       | undefined;
     expect(resolver).toBeTypeOf('function');
@@ -312,7 +323,6 @@ describe('tool policy service', () => {
     await expect(
       resolver({
         session: { isDirect: false, userId: 'u1', guildId: '1091330365', channelId: '1091330365' },
-        room: { roomId: 115, conversationId: 'conv-group' },
       }),
     ).resolves.toEqual({
       mode: 'allow',
@@ -328,7 +338,7 @@ describe('tool policy service', () => {
     await expect(
       resolver({
         session: { isDirect: false, userId: 'u1', guildId: '1091330365', channelId: '1091330365' },
-        room: { roomId: 115, conversationId: 'conv-group', chatMode: 'plugin' },
+        conversation: { id: 'conv-group', legacyRoomId: 115, chatMode: 'plugin' },
       }),
     ).resolves.toEqual({
       mode: 'allow',
@@ -340,6 +350,42 @@ describe('tool policy service', () => {
         deny: [],
       },
     });
+
+    await expect(
+      resolver({
+        session: { isDirect: false, userId: 'u1', guildId: '1091330365', channelId: '1091330365' },
+        conversation: { id: 'conv-automation', legacyRoomId: 115, chatMode: 'automation' },
+      }),
+    ).resolves.toEqual({
+      mode: 'allow',
+      allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep'],
+      deny: [],
+      toolCallMask: {
+        mode: 'allow',
+        allow: ['bash', 'file_edit', 'file_publish', 'file_read', 'file_write', 'glob', 'grep'],
+        deny: [],
+      },
+    });
+  });
+
+  it('keeps product-locked Agent tools disabled for every scope', async () => {
+    const { ctx } = createHarness();
+    const service = ctx.toolPolicy!;
+
+    await expect(service.resolveAllowedTools({
+      session: { isDirect: true, userId: 'u1', channelId: 'private-1' },
+      routeProfile: 'agent',
+      toolNames: ['question', 'task', 'hbu_jw_course_guidance_context', 'cf_user_profile'],
+      room: { roomId: 7, conversationId: 'conv-private' },
+    })).resolves.toEqual({ allowed: [], unknown: [] });
+
+    await expect(service.saveToolOverrides([{
+      toolName: 'question',
+      routeProfile: 'agent',
+      scopeKind: 'global_default',
+      scopeId: GLOBAL_DEFAULT_SCOPE_ID,
+      enabled: true,
+    }])).rejects.toThrow('保持关闭');
   });
 
   it('hides file system tools from model masks outside the group allowlist', async () => {

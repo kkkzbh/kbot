@@ -10,6 +10,8 @@ import {
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ApiError } from '@/api/client';
+import ContextRulesView from '@/components/ContextRulesView.vue';
+import ContextRuntimeInspector from '@/components/ContextRuntimeInspector.vue';
 import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import {
   createContextPreset,
@@ -61,15 +63,11 @@ import {
   type GuidedContextBlockType,
 } from './context-preset-guides';
 
-type Anchor = LoreContextBlock['anchor'];
-type RoleAnchor = Extract<Anchor, { type: 'role' }>;
-type BlockAnchor = Extract<Anchor, { type: 'block' }>;
-type HistoryAnchor = Extract<Anchor, { type: 'chatHistory' }>;
 type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemory'>;
-type EditableContextPresetBlock = Exclude<ContextPresetBlock, { type: 'longMemory' }>;
 type TokenLimitChoice = 'auto' | '1024' | '2048' | '4096' | '8192' | 'custom';
 
 const router = useRouter();
+const viewMode = ref<'structure' | 'template'>('structure');
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
 const roleCatalog = ref<RolePresetCatalogResponse | null>(null);
 const selectedContextId = ref('');
@@ -117,15 +115,6 @@ const blockLabels: Record<ResolvedContextBlock['type'], string> = {
   qqbotFragments: 'QQBot Fragments',
   toolDefinitions: '工具定义',
 };
-
-const rolePositions: Array<{ value: RoleAnchor['position']; label: string }> = [
-  { value: 'beforeCharacterDefinitions', label: '角色定义前' },
-  { value: 'afterCharacterDefinitions', label: '角色定义后' },
-  { value: 'beforeScenario', label: '场景前' },
-  { value: 'afterScenario', label: '场景后' },
-  { value: 'beforeExampleMessages', label: '示例消息前' },
-  { value: 'afterExampleMessages', label: '示例消息后' },
-];
 
 const contextDirty = computed(() => (
   contextDraft.value !== null
@@ -212,20 +201,8 @@ const selectedKnowledgeBlock = computed<KnowledgeContextBlock | null>(() => (
 const selectedOutputBlock = computed<ModelOutputContextBlock | null>(() => (
   selectedStoredBlock.value?.type === 'modelOutput' ? selectedStoredBlock.value : null
 ));
-const selectedAnchorBlock = computed<LoreContextBlock | AuthorsNoteContextBlock | null>(() => (
-  selectedLoreBlock.value ?? selectedAuthorsNoteBlock.value
-));
 const roleBlock = computed<RoleContextBlock | null>(() => (
   contextDraft.value?.blocks.find((block): block is RoleContextBlock => block.type === 'role') ?? null
-));
-const anchorTargetBlocks = computed<EditableContextPresetBlock[]>(() => (
-  contextDraft.value?.blocks.filter(
-    (block): block is EditableContextPresetBlock => (
-      block.type !== 'longMemory'
-      && block.type !== 'modelOutput'
-      && block.id !== selectedAnchorBlock.value?.id
-    ),
-  ) ?? []
 ));
 const addableTypes = computed<EditableStoredContextBlockType[]>(() => {
   const draft = contextDraft.value;
@@ -335,7 +312,7 @@ async function confirmDiscard(): Promise<boolean> {
   if (!hasDirtyResources.value) return true;
   try {
     await ElMessageBox.confirm(
-      '当前上下文、共享角色或 QQBot 片段仍有未保存更改，继续会丢弃这些草稿。',
+      '当前上下文、角色或 QQBot 片段仍有未保存更改，继续会丢弃这些草稿。',
       '未保存的资源',
       { type: 'warning', confirmButtonText: '丢弃并继续', cancelButtonText: '留在当前页' },
     );
@@ -429,7 +406,7 @@ async function saveRole(): Promise<boolean> {
     savedRoleText.value = JSON.stringify(detail.rolePreset);
     await refreshCatalogs();
     await requestPreview();
-    ElMessage.success(`共享角色已保存，${detail.referenceCount} 个上下文会使用新内容`);
+    ElMessage.success(`角色已保存，${detail.referenceCount} 个上下文会使用新内容`);
     return true;
   } catch (error) {
     ElMessage.error(errorText(error));
@@ -695,12 +672,18 @@ async function revertCurrentRole(): Promise<void> {
   }
 }
 
-function insertionIndex(): number {
+function insertionIndex(type: EditableStoredContextBlockType): number {
   const draft = contextDraft.value;
   if (!draft) return 0;
   const input = draft.blocks.findIndex((block) => block.type === 'currentInput');
+  let loreEnd = 1;
+  while (draft.blocks[loreEnd]?.type === 'lore') loreEnd += 1;
+  if (type === 'lore') return loreEnd;
+  if (type === 'authorsNote') return input;
+  const noteStart = draft.blocks.findIndex((block) => block.type === 'authorsNote');
+  const upperBoundary = noteStart < 0 ? input : noteStart;
   const selected = draft.blocks.findIndex((block) => block.id === selectedBlockId.value);
-  return Math.max(1, Math.min(selected < 0 ? input : selected + 1, input));
+  return Math.max(loreEnd, Math.min(selected < 0 ? upperBoundary : selected + 1, upperBoundary));
 }
 
 function createBlock(type: EditableStoredContextBlockType): ContextPresetBlock {
@@ -728,7 +711,6 @@ function createBlock(type: EditableStoredContextBlockType): ContextPresetBlock {
         enabled: true,
         budgetPriority: 300,
         maxTokens: null,
-        anchor: { type: 'role', position: 'afterCharacterDefinitions' },
         prompt: null,
         defaults: {},
         entries: [],
@@ -740,7 +722,6 @@ function createBlock(type: EditableStoredContextBlockType): ContextPresetBlock {
         enabled: true,
         budgetPriority: 320,
         maxTokens: null,
-        anchor: { type: 'chatHistory', depth: 0 },
         content: '作者注内容',
         insertFrequency: 1,
       };
@@ -773,7 +754,7 @@ function addBlock(type: EditableStoredContextBlockType): void {
   const block = createBlock(type);
   const index = type === 'agentScratchpad'
     ? contextDraft.value.blocks.findIndex((item) => item.type === 'modelOutput')
-    : insertionIndex();
+    : insertionIndex(type);
   contextDraft.value.blocks.splice(index, 0, block);
   selectedBlockId.value = block.id;
 }
@@ -790,16 +771,7 @@ function duplicateSelectedBlock(): void {
 function removeSelectedBlock(): void {
   if (!contextDraft.value || !canRemoveSelected.value || !selectedStoredBlock.value) return;
   const index = contextDraft.value.blocks.findIndex((block) => block.id === selectedStoredBlock.value?.id);
-  const [removed] = contextDraft.value.blocks.splice(index, 1);
-  for (const block of contextDraft.value.blocks) {
-    if (
-      (block.type === 'lore' || block.type === 'authorsNote')
-      && block.anchor.type === 'block'
-      && block.anchor.blockId === removed.id
-    ) {
-      block.anchor = { type: 'role', position: 'afterCharacterDefinitions' };
-    }
-  }
+  contextDraft.value.blocks.splice(index, 1);
   selectedBlockId.value = contextDraft.value.blocks[Math.max(0, index - 1)]?.id ?? '';
 }
 
@@ -813,14 +785,6 @@ function canMoveTo(blockId: string, targetStoredIndex: number): boolean {
   return Boolean(resolved?.movable && range && targetStoredIndex >= range.minIndex && targetStoredIndex <= range.maxIndex);
 }
 
-function updateMovedAnchor(block: ContextPresetBlock, index: number): void {
-  if (!contextDraft.value || (block.type !== 'lore' && block.type !== 'authorsNote')) return;
-  const previous = contextDraft.value.blocks[index - 1];
-  block.anchor = previous?.type === 'role' || previous == null
-    ? { type: 'role', position: 'afterCharacterDefinitions' }
-    : { type: 'block', blockId: previous.id, position: 'after' };
-}
-
 function moveBlock(blockId: string, targetStoredIndex: number): void {
   const draft = contextDraft.value;
   if (!draft || !canMoveTo(blockId, targetStoredIndex)) return;
@@ -828,7 +792,6 @@ function moveBlock(blockId: string, targetStoredIndex: number): void {
   if (from < 0 || from === targetStoredIndex) return;
   const [block] = draft.blocks.splice(from, 1);
   draft.blocks.splice(targetStoredIndex, 0, block);
-  updateMovedAnchor(block, targetStoredIndex);
   selectedBlockId.value = block.id;
 }
 
@@ -876,29 +839,6 @@ function setBlockMaxTokens(value: number | undefined): void {
   selectedBudgetBlock.value.maxTokens = typeof value === 'number' && value > 0 ? value : null;
 }
 
-function setAnchorType(type: Anchor['type']): void {
-  const block = selectedAnchorBlock.value;
-  if (!block) return;
-  if (type === 'role') block.anchor = { type, position: 'afterCharacterDefinitions' };
-  if (type === 'block') {
-    const target = contextDraft.value?.blocks.find((item) => item.id !== block.id && item.type !== 'modelOutput');
-    if (target) block.anchor = { type, blockId: target.id, position: 'after' };
-  }
-  if (type === 'chatHistory') block.anchor = { type, depth: 0 };
-}
-
-function anchorRole(block: LoreContextBlock | AuthorsNoteContextBlock): RoleAnchor | null {
-  return block.anchor.type === 'role' ? block.anchor : null;
-}
-
-function anchorBlock(block: LoreContextBlock | AuthorsNoteContextBlock): BlockAnchor | null {
-  return block.anchor.type === 'block' ? block.anchor : null;
-}
-
-function anchorHistory(block: LoreContextBlock | AuthorsNoteContextBlock): HistoryAnchor | null {
-  return block.anchor.type === 'chatHistory' ? block.anchor : null;
-}
-
 function setKnowledgeSources(value: string): void {
   if (!selectedKnowledgeBlock.value) return;
   selectedKnowledgeBlock.value.sources = value
@@ -936,7 +876,7 @@ function setPostVariables(value: string): void {
 }
 
 function addRoleMessage(): void {
-  roleDraft.value?.messages.push({ role: 'system', purpose: 'description', content: '新角色说明' });
+  roleDraft.value?.messages.push({ role: 'system', content: '新角色说明' });
 }
 
 function removeRoleMessage(index: number): void {
@@ -985,6 +925,16 @@ function beforeUnload(event: BeforeUnloadEvent): void {
   event.returnValue = '';
 }
 
+async function editBlockFromRules(id: string): Promise<void> {
+  selectedBlockId.value = id;
+  viewMode.value = 'template';
+  await nextTick();
+}
+
+async function navigateAgentFromRules(section: 'mcp' | 'skills' | 'tools'): Promise<void> {
+  await router.push({ name: 'agent', query: { section } });
+}
+
 watch(contextDraft, schedulePreview, { deep: true });
 
 onBeforeRouteLeave(async () => {
@@ -1007,6 +957,70 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="context-workbench">
+    <header class="context-page-head">
+      <div>
+        <h1>上下文</h1>
+        <p>查看模型实际输入，或编辑生成这些输入的模板。</p>
+      </div>
+      <nav class="context-view-tabs" aria-label="上下文视图">
+        <button type="button" :class="{ active: viewMode === 'structure' }" @click="viewMode = 'structure'">上下文结构</button>
+        <button type="button" :class="{ active: viewMode === 'template' }" @click="viewMode = 'template'">模板配置</button>
+      </nav>
+    </header>
+
+    <template v-if="viewMode === 'structure'">
+      <section class="structure-preset-bar">
+        <span>当前模板</span>
+        <el-select
+          :model-value="selectedContextId"
+          filterable
+          :loading="loading"
+          aria-label="选择用于通用规则展示的上下文模板"
+          @change="selectContext"
+        >
+          <el-option v-for="item in contextSummaries" :key="item.id" :value="item.id" :label="item.displayName" />
+        </el-select>
+        <small>{{ contextCatalog?.globalDefaultContextPresetId === selectedContextId ? '全局默认' : '非默认模板' }}</small>
+      </section>
+      <ContextRulesView
+        :preset="contextDraft"
+        :role="roleDraft"
+        :preview="preview"
+        @edit-block="editBlockFromRules"
+        @navigate-agent="navigateAgentFromRules"
+      />
+      <section v-if="fragmentPolicyDraft" class="runtime-fragment-config">
+        <div class="runtime-config-head">
+          <div>
+            <h2>QQBot Fragments</h2>
+            <p>这些开关直接决定所选上下文模板允许注入的 QQBot runtime 片段。</p>
+          </div>
+          <el-select
+            :model-value="selectedContextId"
+            filterable
+            :loading="loading"
+            aria-label="选择片段配置的上下文模板"
+            @change="selectContext"
+          >
+            <el-option v-for="item in contextSummaries" :key="item.id" :value="item.id" :label="item.displayName" />
+          </el-select>
+        </div>
+        <div class="runtime-fragment-list">
+          <label v-for="channel in configurableQqbotFragmentChannels" :key="channel.key">
+            <span><strong>{{ channel.label }}</strong><small>{{ channel.description }}</small></span>
+            <el-switch v-model="fragmentPolicyDraft[channel.key]" />
+          </label>
+        </div>
+        <div class="runtime-config-actions">
+          <small>{{ fragmentPolicyState?.source === 'default' ? '使用默认值' : '已保存自定义配置' }}</small>
+          <el-button :disabled="fragmentPolicyState?.source === 'default'" @click="resetFragmentPolicy">恢复默认</el-button>
+          <el-button type="primary" :disabled="!fragmentPolicyDirty" :loading="savingFragmentPolicy" @click="saveFragmentPolicy">保存</el-button>
+        </div>
+      </section>
+      <ContextRuntimeInspector />
+    </template>
+
+    <template v-else>
     <section class="preset-bar panel">
       <div class="preset-picker">
         <span class="picker-label">上下文预设</span>
@@ -1254,7 +1268,7 @@ onBeforeUnmount(() => {
 
               <template v-if="selectedRoleBlock">
                 <div class="role-resource-head">
-                  <el-form-item label="共享角色">
+                  <el-form-item label="角色">
                     <el-select
                       :model-value="selectedRoleBlock.rolePresetId"
                       filterable
@@ -1270,9 +1284,6 @@ onBeforeUnmount(() => {
                   </el-form-item>
                 </div>
                 <template v-if="roleDraft">
-                  <el-form-item label="角色显示名">
-                    <el-input v-model="roleDraft.displayName" />
-                  </el-form-item>
                   <div class="subsection-head">
                     <strong>角色消息</strong>
                     <el-button size="small" @click="addRoleMessage">新增消息</el-button>
@@ -1283,14 +1294,6 @@ onBeforeUnmount(() => {
                         <el-option label="system" value="system" />
                         <el-option label="user" value="user" />
                         <el-option label="assistant" value="assistant" />
-                      </el-select>
-                      <el-select v-model="message.purpose" clearable size="small" placeholder="purpose">
-                        <el-option label="description" value="description" />
-                        <el-option label="personality" value="personality" />
-                        <el-option label="scenario" value="scenario" />
-                        <el-option label="firstMessage" value="firstMessage" />
-                        <el-option label="exampleStart" value="exampleStart" />
-                        <el-option label="exampleEnd" value="exampleEnd" />
                       </el-select>
                       <el-button text type="danger" @click="removeRoleMessage(index)">删除</el-button>
                     </div>
@@ -1403,50 +1406,6 @@ onBeforeUnmount(() => {
                 </el-form-item>
               </template>
 
-              <template v-if="selectedAnchorBlock">
-                <div class="anchor-editor">
-                  <strong>注入锚点</strong>
-                  <div class="form-grid two">
-                    <el-form-item label="Anchor 类型">
-                      <el-select :model-value="selectedAnchorBlock.anchor.type" @change="setAnchorType">
-                        <el-option label="角色结构" value="role" />
-                        <el-option label="其他块" value="block" />
-                        <el-option label="聊天历史深度" value="chatHistory" />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item v-if="anchorRole(selectedAnchorBlock)" label="角色位置">
-                      <el-select v-model="anchorRole(selectedAnchorBlock)!.position">
-                        <el-option
-                          v-for="position in rolePositions"
-                          :key="position.value"
-                          :value="position.value"
-                          :label="position.label"
-                        />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item v-if="anchorBlock(selectedAnchorBlock)" label="目标块">
-                      <el-select v-model="anchorBlock(selectedAnchorBlock)!.blockId">
-                        <el-option
-                          v-for="block in anchorTargetBlocks"
-                          :key="block.id"
-                          :value="block.id"
-                          :label="`${blockLabels[block.type]} · ${block.id}`"
-                        />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item v-if="anchorBlock(selectedAnchorBlock)" label="相对位置">
-                      <el-select v-model="anchorBlock(selectedAnchorBlock)!.position">
-                        <el-option label="之前" value="before" />
-                        <el-option label="之后" value="after" />
-                      </el-select>
-                    </el-form-item>
-                    <el-form-item v-if="anchorHistory(selectedAnchorBlock)" label="历史深度">
-                      <el-input-number v-model="anchorHistory(selectedAnchorBlock)!.depth" :min="0" />
-                    </el-form-item>
-                  </div>
-                </div>
-              </template>
-
               <template v-if="selectedAuthorsNoteBlock">
                 <el-form-item label="作者注">
                   <el-input v-model="selectedAuthorsNoteBlock.content" type="textarea" :autosize="{ minRows: 6, maxRows: 18 }" />
@@ -1499,6 +1458,7 @@ onBeforeUnmount(() => {
     <div v-else-if="!loading" class="panel empty-workbench">
       当前没有可编辑的上下文预设。
     </div>
+    </template>
     <PendingChangesBar
       v-if="hasDirtyResources"
       :saving="savingContext || savingRole"
@@ -1515,6 +1475,158 @@ onBeforeUnmount(() => {
 .context-workbench {
   min-width: 0;
   --workbench-height: clamp(560px, calc(100vh - 180px), 820px);
+}
+
+.context-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 1120px;
+  margin: 0 auto 28px;
+}
+
+.context-page-head h1 {
+  margin: 0;
+  font-size: 26px;
+  letter-spacing: -.03em;
+}
+
+.context-page-head p,
+.runtime-config-head p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.context-view-tabs {
+  display: flex;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.context-view-tabs button {
+  position: relative;
+  padding: 0 1px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.context-view-tabs button::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  content: '';
+  opacity: 0;
+}
+
+.context-view-tabs button.active {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.context-view-tabs button.active::after {
+  opacity: 1;
+}
+
+.structure-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 1120px;
+  margin: 0 auto 30px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.structure-preset-bar > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.structure-preset-bar .el-select {
+  width: 260px;
+}
+
+.structure-preset-bar small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-fragment-config {
+  display: grid;
+  gap: 14px;
+  max-width: 1120px;
+  margin: 38px auto 0;
+  padding-top: 26px;
+  border-top: 1px solid var(--line);
+}
+
+.runtime-config-head,
+.runtime-config-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.runtime-config-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.runtime-config-head .el-select {
+  width: 250px;
+}
+
+.runtime-fragment-list {
+  border-top: 1px solid var(--line);
+}
+
+.runtime-fragment-list label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 64px;
+  padding: 9px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.runtime-fragment-list label > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.runtime-fragment-list strong {
+  font-size: 12px;
+}
+
+.runtime-fragment-list small,
+.runtime-config-actions small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-config-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.runtime-config-actions small {
+  margin-right: auto;
 }
 
 .preset-bar {
@@ -2012,8 +2124,7 @@ onBeforeUnmount(() => {
 }
 
 .message-editor,
-.lore-entry,
-.anchor-editor {
+.lore-entry {
   min-width: 0;
   margin-bottom: 12px;
   padding: 14px;
@@ -2037,12 +2148,6 @@ onBeforeUnmount(() => {
 .role-actions {
   flex-wrap: wrap;
   margin-top: 16px;
-}
-
-.anchor-editor > strong {
-  display: block;
-  margin-bottom: 13px;
-  font-size: 12px;
 }
 
 .field-note {

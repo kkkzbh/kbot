@@ -4,11 +4,13 @@ import {
   agentComputerConfigPutSchema,
   agentMcpServerPutSchema,
   agentMcpToolPutSchema,
+  agentPluginStatePutSchema,
   agentSkillContentPutSchema,
   agentSkillConfigPutSchema,
   agentSkillGithubImportSchema,
   agentSkillModePutSchema,
   agentSkillsSettingsPutSchema,
+  agentToolPutSchema,
 } from '../../admin/contracts/agent.js';
 import { AdminHttpError } from '../shared/internal-access-policy.js';
 import type { ChatLunaAgentAdminService } from './chatluna-agent-admin.js';
@@ -138,6 +140,20 @@ export function registerAgentAdminRoutes(
 
   register('get', '/agent', () => run('读取 Agent 状态', () => agent.getState()));
 
+  register('patch', '/agent/tools/:name', async (koaCtx) => {
+    const name = parse(pathNameSchema, koaCtx.params.name);
+    const input = parse(agentToolPutSchema, koaCtx.request.body);
+    await run('保存 Tool', () => agent.saveTool(name, input));
+    return { success: true };
+  }, { mutation: true });
+
+  register('patch', '/agent/plugins/:id', async (koaCtx) => {
+    const id = parse(pathNameSchema, koaCtx.params.id);
+    const input = parse(agentPluginStatePutSchema, koaCtx.request.body);
+    await run('更新 Plugin 状态', () => agent.savePluginState(id, input.enabled));
+    return { success: true };
+  }, { mutation: true });
+
   register('put', '/agent/mcp/server', async (koaCtx) => {
     const input = parse(agentMcpServerPutSchema, koaCtx.request.body);
     await run('保存 MCP Server', () => agent.saveMcpServer(input));
@@ -205,13 +221,13 @@ export function registerAgentAdminRoutes(
     return { success: true };
   }, { mutation: true });
 
-  register('put', '/agent/plugins/computer', async (koaCtx) => {
+  register('put', '/agent/plugins/workspace', async (koaCtx) => {
     const input = parse(agentComputerConfigPutSchema, koaCtx.request.body);
-    await run('保存 Computer 配置', () => agent.saveComputerConfig(input));
+    await run('保存 Workspace 配置', () => agent.saveWorkspaceConfig(input));
     return { success: true };
   }, { mutation: true });
-  register('post', '/agent/plugins/computer/backends/:type/probe', async (koaCtx) => {
+  register('post', '/agent/plugins/workspace/backends/:type/probe', async (koaCtx) => {
     const type = parse(computerBackendSchema, koaCtx.params.type);
-    return await run('探测 Computer Backend', () => agent.probeComputerBackend(type));
+    return await run('探测 Workspace Backend', () => agent.probeComputerBackend(type));
   }, { mutation: true });
 }

@@ -10,7 +10,13 @@ import type {
   AgentSkillAdmin,
   AgentSkillConfigPut,
   AgentToolAdmin,
+  AgentToolPut,
 } from '../../admin/contracts/agent.js';
+import {
+  AGENT_TOOL_PLUGIN_MAP,
+  AGENT_TOOL_PLUGINS,
+  TOOL_CATALOG_MAP,
+} from '../shared/tool-policy-catalog.js';
 import { AdminHttpError } from '../shared/internal-access-policy.js';
 
 type McpServerConfig = {
@@ -36,7 +42,22 @@ type RuntimeAgentSkill = AgentSkillAdmin & {
   subAgents?: unknown;
 };
 
-type RuntimeAgentTool = AgentToolAdmin & { subAgents?: unknown };
+type RuntimeAgentTool = AgentToolAdmin & { subAgents: unknown };
+
+type RuntimeToolItemConfig = {
+  enabled: boolean;
+  main: boolean;
+  chatluna: boolean;
+  character: boolean;
+  characterGroup: boolean;
+  characterPrivate: boolean;
+  characterGroupMode: 'all' | 'allow' | 'deny';
+  characterPrivateMode: 'all' | 'allow' | 'deny';
+  characterGroupIds: string[];
+  characterPrivateIds: string[];
+  subAgents: unknown;
+  authority: number;
+};
 
 type RuntimeAgentConfig = {
   version: number;
@@ -54,7 +75,12 @@ type RuntimeAgentConfig = {
     items: Record<string, unknown>;
     githubToken?: string;
   };
+  tool: {
+    items: Record<string, RuntimeToolItemConfig>;
+    registry?: Record<string, unknown>;
+  };
   computer: RuntimeComputerConfig;
+  [key: string]: unknown;
 };
 
 type RuntimeAgentStatus = {
@@ -62,7 +88,7 @@ type RuntimeAgentStatus = {
     servers: Record<string, AgentMcpServerStatus>;
     tools: Record<string, AgentMcpToolAdmin>;
   };
-  computer: AgentAdminState['plugins']['catalog'][number]['computer']['status'];
+  computer: NonNullable<AgentAdminState['plugins']['catalog'][number]['computer']>['status'];
   tool: {
     catalog: Record<string, RuntimeAgentTool>;
   };
@@ -84,6 +110,9 @@ export interface ChatLunaAgentRuntimeService {
     timeout?: number;
     selector: string[];
   }): Promise<void>;
+  saveConfig(input: RuntimeAgentConfig): Promise<void>;
+  saveComputerConfig(input: RuntimeComputerConfig): Promise<void>;
+  saveToolConfig(input: RuntimeAgentConfig['tool']): Promise<void>;
   saveSkillsConfig(input: unknown): Promise<void>;
   setSkillMode(id: string, mode: 'off' | 'description' | 'full'): Promise<void>;
   removeSkill(id: string): Promise<void>;
@@ -92,7 +121,6 @@ export interface ChatLunaAgentRuntimeService {
     url: string;
     selected?: string[];
   }): Promise<unknown>;
-  saveComputerConfig(input: unknown): Promise<void>;
   skills: {
     listSkills(): RuntimeAgentSkill[];
     getSkillContent(id: string): Promise<{ id: string; content: string } | undefined>;
@@ -209,6 +237,48 @@ function computerAdminConfig(config: RuntimeComputerConfig) {
   };
 }
 
+function runtimeComputerConfig(
+  current: RuntimeComputerConfig,
+  input: AgentComputerConfigPut,
+): RuntimeComputerConfig {
+  return {
+    ...structuredClone(input.config),
+    e2b: {
+      ...input.config.e2b,
+      apiKey: resolveSecret(current.e2b.apiKey, input.e2bApiKey, 'E2B API Key'),
+    },
+    openTerminal: {
+      ...input.config.openTerminal,
+      apiKey: resolveSecret(
+        current.openTerminal.apiKey,
+        input.openTerminalApiKey,
+        'OpenTerminal API Key',
+      ),
+    },
+  };
+}
+
+function runtimeToolItem(
+  tool: RuntimeAgentTool,
+  enabled: boolean,
+  main: boolean,
+): RuntimeToolItemConfig {
+  return {
+    enabled,
+    main,
+    chatluna: tool.chatlunaEnabled,
+    character: tool.characterEnabled,
+    characterGroup: tool.characterGroupEnabled,
+    characterPrivate: tool.characterPrivateEnabled,
+    characterGroupMode: tool.characterGroupMode,
+    characterPrivateMode: tool.characterPrivateMode,
+    characterGroupIds: [...tool.characterGroupIds],
+    characterPrivateIds: [...tool.characterPrivateIds],
+    subAgents: structuredClone(tool.subAgents),
+    authority: tool.authority,
+  };
+}
+
 export class ChatLunaAgentAdminService {
   constructor(private readonly runtime: ChatLunaAgentRuntimeService) {}
 
@@ -233,6 +303,52 @@ export class ChatLunaAgentAdminService {
       Object.values(computerStatus.backends).flatMap((backend) => backend.capabilities),
     )].sort();
     const defaultBackend = computerStatus.backends[computerStatus.defaultProvider];
+    const toolsByName = new Map(toolCatalog.map((tool) => [tool.name, tool]));
+    const plugins = AGENT_TOOL_PLUGINS.map((plugin) => {
+      const tools = plugin.toolNames
+        .map((name) => toolsByName.get(name))
+        .filter((tool): tool is AgentToolAdmin => tool !== undefined);
+      const enabled = tools.some((tool) => tool.enabled && tool.main);
+      const workspace = plugin.kind === 'workspace';
+      const active = workspace ? computerStatus.enabled || enabled : enabled;
+      return {
+        id: plugin.id,
+        kind: plugin.kind,
+        displayName: plugin.displayName,
+        version: '1.0.0',
+        shortDescription: plugin.shortDescription,
+        longDescription: plugin.longDescription,
+        developerName: 'QQBot',
+        category: plugin.category,
+        capabilities: [...plugin.capabilities],
+        builtIn: true,
+        configurable: plugin.lockedReason == null,
+        removable: false,
+        ...(plugin.lockedReason ? { lockedReason: plugin.lockedReason } : {}),
+        state: plugin.lockedReason
+          ? 'inactive' as const
+          : workspace && computerStatus.enabled && defaultBackend.state === 'error'
+            ? 'error' as const
+            : active
+              ? 'active' as const
+              : 'inactive' as const,
+        contents: {
+          mcpServers: [],
+          skills: [],
+          tools: workspace
+            ? [...new Set([...tools.map((tool) => tool.name), ...computerTools])].sort()
+            : [...plugin.toolNames].sort(),
+        },
+        ...(workspace
+          ? {
+              computer: {
+                config: computerAdminConfig(data.config.computer),
+                status: computerStatus,
+              },
+            }
+          : {}),
+      };
+    });
 
     return {
       generatedAt: Date.now(),
@@ -265,31 +381,7 @@ export class ChatLunaAgentAdminService {
         catalog: toolCatalog.sort((a, b) => a.name.localeCompare(b.name)),
       },
       plugins: {
-        catalog: [{
-          id: 'computer',
-          displayName: 'Computer',
-          version: '1.0.0',
-          shortDescription: '为 Agent 提供受控文件、终端与桌面操作。',
-          longDescription: 'Computer 将本地、E2B 与 OpenTerminal backend 作为一个能力包接入 Agent。',
-          developerName: 'ChatLuna',
-          category: 'Agent Runtime',
-          capabilities: ['Read files', 'Edit files', 'Run commands', 'Control desktops'],
-          builtIn: true,
-          state: !computerStatus.enabled
-            ? 'inactive'
-            : defaultBackend.state === 'error'
-              ? 'error'
-              : 'active',
-          contents: {
-            mcpServers: [],
-            skills: [],
-            tools: computerTools,
-          },
-          computer: {
-            config: computerAdminConfig(data.config.computer),
-            status: computerStatus,
-          },
-        }],
+        catalog: plugins,
       },
     };
   }
@@ -332,6 +424,85 @@ export class ChatLunaAgentAdminService {
       throw new AdminHttpError(404, 'not_found', `MCP Tool 不存在：${name}`);
     }
     await this.runtime.saveMcpTool({ name, ...input });
+  }
+
+  async saveTool(name: string, input: AgentToolPut): Promise<void> {
+    const tool = this.runtime.getConsoleData().status.tool.catalog[name];
+    const policy = TOOL_CATALOG_MAP.get(name);
+    if (!tool || !policy) {
+      throw new AdminHttpError(404, 'not_found', `Tool 不存在：${name}`);
+    }
+    if (tool.isMcp) {
+      throw new AdminHttpError(409, 'conflict', 'MCP Tool 必须通过 MCP 配置更新。');
+    }
+    if (input.enabled && policy.management === 'locked_off') {
+      throw new AdminHttpError(
+        409,
+        'conflict',
+        policy.managementNote ?? `Tool 已锁定为关闭：${name}`,
+      );
+    }
+    const config = this.runtime.getConsoleData().config.tool;
+    await this.runtime.saveToolConfig({
+      ...structuredClone(config),
+      items: {
+        ...structuredClone(config.items),
+        [name]: runtimeToolItem(tool, input.enabled, input.main),
+      },
+    });
+  }
+
+  async savePluginState(id: string, enabled: boolean): Promise<void> {
+    const plugin = AGENT_TOOL_PLUGIN_MAP.get(id);
+    if (!plugin) throw new AdminHttpError(404, 'not_found', `Plugin 不存在：${id}`);
+    if (enabled && plugin.lockedReason) {
+      throw new AdminHttpError(409, 'conflict', plugin.lockedReason);
+    }
+
+    const data = this.runtime.getConsoleData();
+    const tools = plugin.toolNames
+      .map((name) => data.status.tool.catalog[name])
+      .filter((tool): tool is RuntimeAgentTool => tool !== undefined);
+    if (tools.length < 1) {
+      throw new AdminHttpError(409, 'conflict', `Plugin 没有已注册 Tool：${id}`);
+    }
+
+    const tool = {
+      ...structuredClone(data.config.tool),
+      items: {
+        ...structuredClone(data.config.tool.items),
+        ...Object.fromEntries(
+          tools.map((item) => [
+            item.name,
+            runtimeToolItem(item, enabled, enabled),
+          ]),
+        ),
+      },
+    };
+
+    if (plugin.kind !== 'workspace') {
+      await this.runtime.saveToolConfig(tool);
+      return;
+    }
+
+    const computer = structuredClone(data.config.computer);
+    if (!enabled) {
+      computer.local.enabled = false;
+      computer.e2b.enabled = false;
+      computer.openTerminal.enabled = false;
+    } else if (computer.defaultProvider === 'local') {
+      computer.local.enabled = true;
+    } else if (computer.defaultProvider === 'e2b') {
+      computer.e2b.enabled = true;
+    } else {
+      computer.openTerminal.enabled = true;
+    }
+
+    await this.runtime.saveConfig({
+      ...structuredClone(data.config),
+      computer,
+      tool,
+    });
   }
 
   async reconnectMcpServer(name: string): Promise<void> {
@@ -404,23 +575,10 @@ export class ChatLunaAgentAdminService {
     await this.runtime.refreshConsoleData();
   }
 
-  async saveComputerConfig(input: AgentComputerConfigPut): Promise<void> {
-    const current = this.runtime.getConsoleData().config.computer;
-    await this.runtime.saveComputerConfig({
-      ...structuredClone(input.config),
-      e2b: {
-        ...input.config.e2b,
-        apiKey: resolveSecret(current.e2b.apiKey, input.e2bApiKey, 'E2B API Key'),
-      },
-      openTerminal: {
-        ...input.config.openTerminal,
-        apiKey: resolveSecret(
-          current.openTerminal.apiKey,
-          input.openTerminalApiKey,
-          'OpenTerminal API Key',
-        ),
-      },
-    });
+  async saveWorkspaceConfig(input: AgentComputerConfigPut): Promise<void> {
+    const data = this.runtime.getConsoleData();
+    const computer = runtimeComputerConfig(data.config.computer, input);
+    await this.runtime.saveComputerConfig(computer);
   }
 
   async probeComputerBackend(type: 'local' | 'e2b' | 'open-terminal') {

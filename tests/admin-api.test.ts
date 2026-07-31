@@ -418,7 +418,7 @@ function createRolePresetDefinition(id = 'sakiko') {
     schemaVersion: 1 as const,
     id,
     displayName: id === 'sakiko' ? 'Sakiko' : id,
-    messages: [{ role: 'system' as const, purpose: 'description' as const, content: 'hello' }],
+    messages: [{ role: 'system' as const, content: 'hello' }],
   };
 }
 
@@ -682,7 +682,7 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/memory/reviews/:streamId');
     expect(postPaths).toContain('/api/admin/v1/agent/mcp/reload');
     expect(postPaths).toContain('/api/admin/v1/agent/skills/reload');
-    expect(postPaths).toContain('/api/admin/v1/agent/plugins/computer/backends/:type/probe');
+    expect(postPaths).toContain('/api/admin/v1/agent/plugins/workspace/backends/:type/probe');
     expect(postPaths).not.toContain('/api/admin/v1/agent/sub-agents');
     expect(postPaths).not.toContain('/api/admin/v1/agent/trigger/tasks');
     expect(postPaths).toContain('/api/admin/v1/memory/forget');
@@ -695,12 +695,14 @@ describe('independent admin API plugin', () => {
     expect(putPaths).toContain('/api/admin/v1/natural-trigger');
     expect(putPaths).toContain('/api/admin/v1/agent/mcp/server');
     expect(putPaths).toContain('/api/admin/v1/agent/skills/:id/config');
-    expect(putPaths).toContain('/api/admin/v1/agent/plugins/computer');
+    expect(putPaths).toContain('/api/admin/v1/agent/plugins/workspace');
     expect(putPaths).not.toContain('/api/admin/v1/agent/computer');
     expect(putPaths).not.toContain('/api/admin/v1/agent/tools/:name');
     expect(putPaths).not.toContain('/api/admin/v1/agent/trigger/tasks/:id');
     expect(putPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
     expect(patchPaths).toContain('/api/admin/v1/agent/tools/policy');
+    expect(patchPaths).toContain('/api/admin/v1/agent/tools/:name');
+    expect(patchPaths).toContain('/api/admin/v1/agent/plugins/:id');
     expect(patchPaths).not.toContain('/api/admin/v1/policies/tools');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
@@ -1957,9 +1959,9 @@ describe('independent admin API plugin', () => {
     const { server, preset } = createRuntime(createTempDir());
     preset.previewContextPreset.mockImplementationOnce(() => {
       throw new ContextPresetCompileError(
-        'invalid_anchor',
-        'anchor',
-        'Lore anchor is invalid.',
+        'invalid_schema',
+        'schema',
+        'Lore block placement is invalid.',
         'lore-one',
       );
     });
@@ -1973,11 +1975,6 @@ describe('independent admin API plugin', () => {
       enabled: true,
       budgetPriority: 300,
       maxTokens: 128,
-      anchor: {
-        type: 'block',
-        blockId: 'missing-anchor-target',
-        position: 'after',
-      },
       prompt: null,
       defaults: {},
       entries: [],
@@ -1999,8 +1996,8 @@ describe('independent admin API plugin', () => {
       error: {
         code: 'bad_request',
         details: {
-          contextCompileErrorCode: 'invalid_anchor',
-          stage: 'anchor',
+          contextCompileErrorCode: 'invalid_schema',
+          stage: 'schema',
           blockId: 'lore-one',
           limit: null,
         },
