@@ -10,7 +10,6 @@ import type {
   GenshinGachaType,
   GenshinGameRole,
   GenshinOperationStatus,
-  GenshinRedeemRecord,
   GenshinSignInRecord,
   GenshinSignInTrigger,
   GenshinStatusVerification,
@@ -123,25 +122,6 @@ export function ensureGenshinTables(ctx: Context): void {
     {
       autoInc: true,
       indexes: [['ownerKey', 'signDate'], ['uid', 'signDate'], ['createdAt']],
-    },
-  );
-
-  ctx.model.extend(
-    'genshin_redeem_record',
-    {
-      id: 'unsigned',
-      ownerKey: 'string',
-      uid: 'string',
-      region: 'string',
-      cdkeyHash: 'string',
-      status: 'string',
-      retcode: 'integer',
-      message: 'text',
-      createdAt: 'double',
-    },
-    {
-      autoInc: true,
-      indexes: [['ownerKey'], ['uid'], ['cdkeyHash'], ['createdAt']],
     },
   );
 
@@ -580,10 +560,6 @@ export class GenshinStore {
 
   async recordSignIn(row: Omit<GenshinSignInRecord, 'id'>): Promise<void> {
     await this.database.create('genshin_signin_record', row);
-  }
-
-  async recordRedeem(row: Omit<GenshinRedeemRecord, 'id'>): Promise<void> {
-    await this.database.create('genshin_redeem_record', row);
   }
 
   async findGachaRecord(recordKey: string): Promise<GenshinGachaRecord | null> {

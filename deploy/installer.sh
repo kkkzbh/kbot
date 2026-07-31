@@ -488,10 +488,10 @@ ensure_server_env_defaults() {
   ensure_server_env_key "GENSHIN_TIMEZONE" "Asia/Shanghai"
   ensure_server_env_key "GENSHIN_TAKUMI_APP_VERSION" "2.70.1"
   ensure_server_env_key "GENSHIN_SIGN_ACT_ID" "e202311201442471"
-  ensure_server_env_key "GENSHIN_REDEEM_GAME_VERSION" "CNRELWin6.0.0"
   ensure_server_env_key "HBU_JW_WEBVPN_BROKER_URL" "http://127.0.0.1:8789"
   local file
   for file in "${ENV_SERVER}" "${ENV_RUNTIME}"; do
+    remove_env_key "${file}" "GENSHIN_REDEEM_GAME_VERSION"
     remove_env_key "${file}" "HBU_JW_WEBVPN_BROKER_ACCOUNT"
     remove_env_key "${file}" "CHATLUNA_DEFAULT_PRESET"
     remove_env_key "${file}" "CHATLUNA_PRESET_DIRS"

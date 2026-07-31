@@ -5,11 +5,6 @@ name = "qqbot"
 script = ""
 
 [[actions]]
-name = "Build and Restart Koishi"
-icon = "run"
-command = "pnpm build && systemctl --user restart qqbot-koishi.service && systemctl --user status qqbot-koishi.service --no-pager"
-
-[[actions]]
 name = "Deploy Server"
 icon = "tool"
 command = "bash ./deploy/deploy.sh km6"

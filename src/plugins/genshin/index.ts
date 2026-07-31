@@ -10,6 +10,11 @@ import { GenshinGachaService, renderGenshinGachaRecordsImage } from './gacha-rec
 import { GenshinGachaIconResolver } from './gacha-icon-resolver.js';
 import { GenshinMenuService, type GenshinMenuPuppeteerLike } from './menu.js';
 import {
+  formatGenshinPreviewCodeReply,
+  GenshinPreviewCodeClient,
+  GenshinPreviewCodeError,
+} from './preview-codes.js';
+import {
   GenshinService,
   GenshinStatusVerificationLinkError,
   type QrBindingStatusResult,
@@ -31,9 +36,9 @@ const DEFAULT_AUTO_SIGN_CRON = '10 9 * * *';
 const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACT_ID = 'e202311201442471';
 const DEFAULT_APP_VERSION = '2.70.1';
-const DEFAULT_REDEEM_GAME_VERSION = 'CNRELWin6.0.0';
 const DEFAULT_GACHA_REQUEST_INTERVAL_MS = 1_200;
 const DEFAULT_GACHA_ICON_CACHE_PATH = './.runtime/genshin/gacha-icon-cache.json';
+const DEFAULT_PREVIEW_CODE_CACHE_PATH = './.runtime/genshin/preview-codes.json';
 
 export interface Config {
   bindPagePath?: string;
@@ -45,9 +50,9 @@ export interface Config {
   timezone?: string;
   takumiAppVersion?: string;
   signActId?: string;
-  redeemGameVersion?: string;
   gachaRequestIntervalMs?: number;
   gachaIconCachePath?: string;
+  previewCodeCachePath?: string;
   allowedGroups?: string[] | string;
   naturalTriggerEnabled?: boolean;
   naturalTriggerGroups?: string[] | string;
@@ -63,9 +68,9 @@ export const Config: Schema<Config> = Schema.object({
   timezone: Schema.string().default(DEFAULT_TIMEZONE).description('自动签到时区。'),
   takumiAppVersion: Schema.string().default(DEFAULT_APP_VERSION).description('米游社请求头 x-rpc-app_version。'),
   signActId: Schema.string().default(DEFAULT_ACT_ID).description('原神签到活动 act_id。'),
-  redeemGameVersion: Schema.string().default(DEFAULT_REDEEM_GAME_VERSION).description('兑换码接口 game_version。'),
   gachaRequestIntervalMs: Schema.natural().role('time').default(DEFAULT_GACHA_REQUEST_INTERVAL_MS).description('抽卡记录分页请求间隔，用于控制米游社接口访问频率。'),
   gachaIconCachePath: Schema.string().default(DEFAULT_GACHA_ICON_CACHE_PATH).description('抽卡记录物品图标运行时缓存文件路径。'),
+  previewCodeCachePath: Schema.string().default(DEFAULT_PREVIEW_CODE_CACHE_PATH).description('国服前瞻兑换码官方数据快照路径。'),
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用原神功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用原神功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
@@ -103,9 +108,9 @@ interface RuntimeConfig {
   timezone: string;
   takumiAppVersion: string;
   signActId: string;
-  redeemGameVersion: string;
   gachaRequestIntervalMs: number;
   gachaIconCachePath: string;
+  previewCodeCachePath: string;
   allowedGroups: Set<string>;
   naturalTriggerEnabled: boolean;
   naturalTriggerGroups: Set<string>;
@@ -122,7 +127,6 @@ export function apply(ctx: Context, config: Config): void {
   const client = new GenshinTakumiClient({
     appVersion: runtime.takumiAppVersion,
     actId: runtime.signActId,
-    redeemGameVersion: runtime.redeemGameVersion,
     deviceProfileStore,
   });
   const service = new GenshinService(store, client, kek, {
@@ -133,6 +137,9 @@ export function apply(ctx: Context, config: Config): void {
     timezone: runtime.timezone,
   });
   const menuService = new GenshinMenuService(genshinCtx.puppeteer);
+  const previewCodeClient = new GenshinPreviewCodeClient({
+    cachePath: runtime.previewCodeCachePath,
+  });
   const iconResolver = new GenshinGachaIconResolver({
     cachePath: runtime.gachaIconCachePath,
   });
@@ -155,6 +162,7 @@ export function apply(ctx: Context, config: Config): void {
     ctx,
     service,
     menuService,
+    previewCodeClient,
     gachaService,
     genshinCtx.puppeteer,
     genshinCtx.nativeFeatureChat,
@@ -178,6 +186,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
   const publicBaseUrl = normalizeBaseUrl(config.publicBaseUrl ?? `http://127.0.0.1:${process.env.KOISHI_PORT || '5140'}`, 'genshin.publicBaseUrl');
   const credentialKekPath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.credentialKekPath ?? './.runtime/genshin/credential-kek.key');
   const gachaIconCachePath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.gachaIconCachePath ?? DEFAULT_GACHA_ICON_CACHE_PATH);
+  const previewCodeCachePath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.previewCodeCachePath ?? DEFAULT_PREVIEW_CODE_CACHE_PATH);
   return {
     bindPagePath,
     publicBaseUrl,
@@ -189,12 +198,12 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     statusVerificationSubmitPath: `${bindPagePath}/status-verification/submit`,
     publicHostGuard: resolvePublicHostGuard(publicBaseUrl),
     gachaIconCachePath,
+    previewCodeCachePath,
     autoSignEnabled: config.autoSignEnabled ?? true,
     autoSignCron: requireNonEmptyString(config.autoSignCron ?? DEFAULT_AUTO_SIGN_CRON, 'genshin.autoSignCron'),
     timezone: requireNonEmptyString(config.timezone ?? DEFAULT_TIMEZONE, 'genshin.timezone'),
     takumiAppVersion: requireNonEmptyString(config.takumiAppVersion ?? DEFAULT_APP_VERSION, 'genshin.takumiAppVersion'),
     signActId: requireNonEmptyString(config.signActId ?? DEFAULT_ACT_ID, 'genshin.signActId'),
-    redeemGameVersion: requireNonEmptyString(config.redeemGameVersion ?? DEFAULT_REDEEM_GAME_VERSION, 'genshin.redeemGameVersion'),
     gachaRequestIntervalMs: requirePositiveInteger(config.gachaRequestIntervalMs ?? DEFAULT_GACHA_REQUEST_INTERVAL_MS, 'genshin.gachaRequestIntervalMs'),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'genshin.allowedGroups'),
     naturalTriggerEnabled: config.naturalTriggerEnabled === true,
@@ -363,6 +372,7 @@ function registerKeywordMiddleware(
   ctx: Context,
   service: GenshinService,
   menuService: GenshinMenuService,
+  previewCodeClient: GenshinPreviewCodeClient,
   gachaService: GenshinGachaService,
   puppeteer: GenshinMenuPuppeteerLike,
   nativeFeatureChat: NativeFeatureChatServiceLike,
@@ -373,7 +383,7 @@ function registerKeywordMiddleware(
     const command = parseGenshinCommand(text);
     if (!command) return next();
 
-    if (command.kind !== 'gacha_records' && !canInvokeGenshinInSession(session, runtime.naturalTriggerEnabled, runtime.naturalTriggerGroups)) {
+    if (command.kind !== 'gacha_records' && command.kind !== 'preview_codes' && !canInvokeGenshinInSession(session, runtime.naturalTriggerEnabled, runtime.naturalTriggerGroups)) {
       return next();
     }
 
@@ -463,20 +473,12 @@ function registerKeywordMiddleware(
       return;
     }
 
-    if (command.kind === 'redeem_help') {
-      await sendGenshinReply(nativeFeatureChat, session, command, text, '请发送：原神兑换 <兑换码>。', {
-        summary: '机器人说明原神兑换命令需要 6 至 32 位字母或数字兑换码。',
-      });
-      return;
-    }
-
-    if (command.kind === 'redeem') {
+    if (command.kind === 'preview_codes') {
       try {
-        const identity = resolveOwnerIdentity(session);
-        const result = await service.redeemCode(identity, command.cdkey);
-        const reply = formatRedeemReply(result.role, result.message);
+        const result = await previewCodeClient.queryLatest();
+        const reply = formatGenshinPreviewCodeReply(result);
         await sendGenshinReply(nativeFeatureChat, session, command, text, reply, {
-          summary: `机器人返回了 UID ${result.role.uid} 的兑换结果；兑换码未写入历史。`,
+          summary: reply,
         });
       } catch (error) {
         await sendGenshinError(nativeFeatureChat, session, command, text, error);
@@ -564,10 +566,6 @@ function formatSignReply(role: GenshinGameRole, status: string, message: string,
   return `原神签到完成：UID ${role.uid}${dayText}。${message && message !== 'OK' ? `\n${message}` : ''}`;
 }
 
-function formatRedeemReply(role: GenshinGameRole, message: string): string {
-  return `原神兑换码领取完成：UID ${role.uid}。\n${message}`;
-}
-
 function roleDisplayText(role: GenshinGameRole): string {
   return `${role.nickname || '旅行者'} / UID ${role.uid} / ${role.regionName || role.region}`;
 }
@@ -637,8 +635,7 @@ type GenshinCommand =
   | { kind: 'confirm'; confirmCode: string }
   | { kind: 'sign' }
   | { kind: 'status' }
-  | { kind: 'redeem_help' }
-  | { kind: 'redeem'; cdkey: string }
+  | { kind: 'preview_codes' }
   | { kind: 'gacha_records' }
   | { kind: 'unbind' };
 
@@ -650,7 +647,6 @@ interface GenshinHistoryReplyOptions {
 
 function genshinHistoryUserText(command: GenshinCommand, text: string): string {
   if (command.kind === 'confirm') return '原神确认 <确认码已隐藏>';
-  if (command.kind === 'redeem') return '原神兑换 <兑换码已隐藏>';
   return text;
 }
 
@@ -681,13 +677,9 @@ async function sendGenshinError(
   error: unknown,
 ): Promise<void> {
   const message = toUserMessage(error);
-  const sensitiveValue = command.kind === 'confirm'
-    ? command.confirmCode
-    : command.kind === 'redeem'
-      ? command.cdkey
-      : null;
+  const sensitiveValue = command.kind === 'confirm' ? command.confirmCode : null;
   const historyMessage = sensitiveValue
-    ? message.replaceAll(sensitiveValue, command.kind === 'confirm' ? '<确认码已隐藏>' : '<兑换码已隐藏>')
+    ? message.replaceAll(sensitiveValue, '<确认码已隐藏>')
     : message;
   const isStatusVerificationLink = error instanceof GenshinStatusVerificationLinkError;
   await sendGenshinReply(nativeFeatureChat, session, command, text, message, {
@@ -709,15 +701,16 @@ export function buildGenshinCapabilityReference(session: Session, runtime: Runti
   );
   const invocation = direct || bareEnabled
     ? '直接发送下面的命令。'
-    : '除抽卡记录外，群聊中需要 @机器人 后发送下面的命令。';
+    : '除“原神兑换码”和抽卡记录外，群聊中需要 @机器人 后发送下面的命令。';
 
   return [
     `原神功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
     '- 总入口：“原神”，返回完整原神菜单。',
     '- 账号：“原神绑定”、“原神确认 <6位数字确认码>”、“原神解绑”。',
-    '- 日常：“原神状态”、“原神签到”、“原神兑换 <兑换码>”；状态会返回树脂、委托、派遣、洞天宝钱和参量质变仪卡片；兑换码只接受 6 至 32 位字母或数字。',
+    '- 日常：“原神状态”、“原神签到”；状态会返回树脂、委托、派遣、洞天宝钱和参量质变仪卡片。',
+    '- 前瞻：“原神兑换码”，直接查询米游社官方发布的最新国服前瞻版本信息和三个兑换码，无需绑定 UID。',
     '- 记录：“抽卡记录”或“原神抽卡记录”，同步并返回当前绑定 UID 的抽卡统计；允许在已启用群聊中直接发送。',
-    '- 功能面向米游社国服原神 UID，查询和操作前需要先完成绑定。',
+    '- UID 状态、签到和抽卡记录需要先完成米游社国服原神 UID 绑定；前瞻兑换码查询无需绑定。',
     enabled
       ? '- 用户写成自然语言或格式错误时，纠正并给出最贴近意图的上述准确命令。'
       : '- 当前群未开启原神功能；说明不可用，不要引导用户反复尝试。',
@@ -732,7 +725,6 @@ export function shouldExposeGenshinCapabilityReference(session: Session): boolea
   if (!text) return false;
   if (parseGenshinCommand(text)) return true;
   if (/^原神(?:确认|确定)\d{6}$/.test(text)) return true;
-  if (/^原神兑换[A-Za-z0-9]{6,32}$/.test(text)) return true;
   return GENSHIN_USAGE_TOPIC_PATTERN.test(text) && GENSHIN_USAGE_INTENT_PATTERN.test(text);
 }
 
@@ -744,9 +736,7 @@ function parseGenshinCommand(text: string): GenshinCommand | null {
   if (confirm?.[1]) return { kind: 'confirm', confirmCode: confirm[1] };
   if (text === '原神状态') return { kind: 'status' };
   if (text === '原神签到') return { kind: 'sign' };
-  if (/^原神兑换\s*$/.test(text)) return { kind: 'redeem_help' };
-  const redeem = text.match(/^原神兑换\s+([A-Za-z0-9]{6,32})$/);
-  if (redeem?.[1]) return { kind: 'redeem', cdkey: redeem[1] };
+  if (text === '原神兑换码') return { kind: 'preview_codes' };
   if (text === '抽卡记录' || text === '原神抽卡记录') return { kind: 'gacha_records' };
   if (text === '原神解绑') return { kind: 'unbind' };
   return null;
@@ -823,6 +813,16 @@ async function readRawBody(stream: AsyncIterable<Buffer | string> | undefined): 
 }
 
 function toUserMessage(error: unknown): string {
+  if (error instanceof GenshinPreviewCodeError) {
+    logger.warn(
+      'genshin preview code query failed: stage=%s status=%s retcode=%s diagnostic=%s',
+      error.stage,
+      error.status == null ? '-' : String(error.status),
+      error.retcode == null ? '-' : String(error.retcode),
+      error.diagnostic,
+    );
+    return error.message;
+  }
   if (error instanceof GenshinUserError) return error.message;
   logger.warn('genshin operation failed: %s', error instanceof Error ? error.message : String(error));
   return '原神功能处理失败，请稍后重试。';

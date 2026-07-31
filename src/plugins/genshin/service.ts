@@ -8,7 +8,6 @@ import {
   sha256Hex,
   type CredentialKek,
 } from '../shared/credential-crypto.js';
-import { assertGenshinRedeemCookieCapability } from './cookie.js';
 import { credentialAad, decryptGenshinCredential } from './credential.js';
 import { GenshinStore, signInRecordRow } from './store.js';
 import {
@@ -72,12 +71,6 @@ export interface SignInReply {
   status: GenshinOperationStatus;
   message: string;
   totalSignDay: number | null;
-}
-
-export interface RedeemReply {
-  role: GenshinGameRole;
-  status: GenshinOperationStatus;
-  message: string;
 }
 
 export interface GenshinStatusReply {
@@ -419,49 +412,6 @@ export class GenshinService {
     }
   }
 
-  async redeemCode(identity: OwnerIdentity, cdkeyInput: string): Promise<RedeemReply> {
-    const cdkey = normalizeCdkey(cdkeyInput);
-    const credential = await this.requireActiveCredential(identity.ownerKey);
-    const { payload, role } = this.decryptCredential(credential);
-    const now = this.now();
-    try {
-      assertGenshinRedeemCookieCapability(payload.cookies);
-      const result = await this.client.redeemCode(payload.cookies, role, cdkey);
-      await this.store.markCredentialUsed(credential.id, now);
-      await this.store.recordRedeem({
-        ownerKey: credential.ownerKey,
-        uid: role.uid,
-        region: role.region,
-        cdkeyHash: sha256Hex(cdkey),
-        status: 'ok',
-        retcode: result.retcode,
-        message: result.message,
-        createdAt: now,
-      });
-      await this.audit(credential.ownerKey, 'redeem_succeeded', 'ok');
-      return {
-        role,
-        status: 'ok',
-        message: result.message || '兑换码领取完成。',
-      };
-    } catch (error) {
-      const result = redeemFailure(error);
-      await this.store.markCredentialFailure(credential.id, result.message, now);
-      await this.store.recordRedeem({
-        ownerKey: credential.ownerKey,
-        uid: role.uid,
-        region: role.region,
-        cdkeyHash: sha256Hex(cdkey),
-        status: 'failed',
-        retcode: result.retcode,
-        message: result.message,
-        createdAt: now,
-      });
-      await this.audit(credential.ownerKey, 'redeem_failed', 'failed', result.message);
-      throw new GenshinUserError(result.message);
-    }
-  }
-
   async runAutoSignIn(): Promise<void> {
     const now = this.now();
     const signDate = formatDateInTimeZone(now, this.config.timezone);
@@ -689,14 +639,6 @@ function parseRolesJson(value: string): GenshinGameRole[] {
   return parsed;
 }
 
-function normalizeCdkey(input: string): string {
-  const cdkey = input.trim().toUpperCase();
-  if (!/^[A-Z0-9]{6,32}$/.test(cdkey)) {
-    throw new GenshinUserError('兑换码格式不正确，请发送：原神兑换 <兑换码>。');
-  }
-  return cdkey;
-}
-
 function signInReply(role: GenshinGameRole, result: GenshinSignResult): SignInReply {
   return {
     role,
@@ -722,25 +664,6 @@ function signFailure(error: unknown): { retcode: number; message: string } {
   return {
     retcode: -1,
     message: '原神签到失败，请稍后重试。',
-  };
-}
-
-function redeemFailure(error: unknown): { retcode: number; message: string } {
-  if (error instanceof GenshinTakumiError) {
-    return {
-      retcode: error.retcode ?? -1,
-      message: error.message,
-    };
-  }
-  if (error instanceof GenshinUserError) {
-    return {
-      retcode: -1,
-      message: error.message,
-    };
-  }
-  return {
-    retcode: -1,
-    message: '原神兑换码领取失败，请稍后重试。',
   };
 }
 

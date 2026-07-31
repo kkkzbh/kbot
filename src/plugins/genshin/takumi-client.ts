@@ -19,7 +19,6 @@ const API_TAKUMI_BASE_URL = 'https://api-takumi.mihoyo.com';
 const API_TAKUMI_RECORD_BASE_URL = 'https://api-takumi-record.mihoyo.com';
 const PASSPORT_API_BASE_URL = 'https://passport-api.mihoyo.com';
 const DEVICE_FP_URL = 'https://public-data-api.mihoyo.com/device-fp/api/getFp';
-const REDEEM_BASE_URL = 'https://hk4e-api.mihoyo.com';
 const GACHA_LOG_BASE_URL = 'https://public-operation-hk4e.mihoyo.com';
 const DAILY_NOTE_PATH = '/game_record/app/genshin/api/dailyNote';
 const GAME_RECORD_INDEX_PATH = '/game_record/app/genshin/api/index';
@@ -32,7 +31,6 @@ const PASSPORT_QR_APP_ID = 'ddxf5dufpuyo';
 const PASSPORT_QR_CLIENT_TYPE = '3';
 const PASSPORT_QR_USER_AGENT = 'HYPContainer/1.3.3.182';
 const QR_EXPIRED_RETCODE = -106;
-const REDEEM_AUTH_APPID = 'apicdkey';
 const GACHA_AUTH_APPID = 'webview_gacha';
 const CONTENT_DS_SALT = 'xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs';
 const SIGN_DS_SALT = '9nQiU3AV0rJSIBWgdynfoGMGKaklfbM7';
@@ -42,7 +40,6 @@ export interface GenshinTakumiClientOptions {
   appVersion?: string;
   clientType?: string;
   actId?: string;
-  redeemGameVersion?: string;
   userAgent?: string;
   deviceId?: string;
   deviceProfileStore?: GenshinDeviceProfileStoreLike;
@@ -55,11 +52,6 @@ export interface GenshinSignResult {
   retcode: number;
   message: string;
   totalSignDay: number | null;
-}
-
-export interface GenshinRedeemResult {
-  retcode: number;
-  message: string;
 }
 
 export interface GenshinAuthKey {
@@ -247,7 +239,6 @@ export class GenshinTakumiClient {
   private readonly appVersion: string;
   private readonly clientType: string;
   private readonly actId: string;
-  private readonly redeemGameVersion: string;
   private readonly userAgent: string;
   private readonly deviceId: string;
   private readonly deviceProfileStore: GenshinDeviceProfileStoreLike;
@@ -259,7 +250,6 @@ export class GenshinTakumiClient {
     this.appVersion = options.appVersion ?? '2.70.1';
     this.clientType = options.clientType ?? '5';
     this.actId = options.actId ?? 'e202311201442471';
-    this.redeemGameVersion = options.redeemGameVersion ?? 'CNRELWin6.0.0';
     this.userAgent = options.userAgent ?? `Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) miHoYoBBS/${this.appVersion}`;
     if (options.deviceId && options.deviceProfileStore) {
       throw new Error('genshin client accepts either deviceId or deviceProfileStore.');
@@ -446,29 +436,6 @@ export class GenshinTakumiClient {
       retcode: payload.retcode,
       message: payload.message || 'OK',
       totalSignDay: info.totalSignDay == null ? null : info.totalSignDay + 1,
-    };
-  }
-
-  async redeemCode(cookies: GenshinCookieFields, role: GenshinGameRole, cdkey: string): Promise<GenshinRedeemResult> {
-    const authKey = await this.genAuthKey(cookies, role, REDEEM_AUTH_APPID);
-    const url = new URL('/common/apicdkey/api/exchangeCdkey', REDEEM_BASE_URL);
-    url.searchParams.set('sign_type', String(authKey.signType));
-    url.searchParams.set('auth_appid', REDEEM_AUTH_APPID);
-    url.searchParams.set('authkey_ver', String(authKey.authkeyVer));
-    url.searchParams.set('cdkey', cdkey);
-    url.searchParams.set('lang', 'zh-cn');
-    url.searchParams.set('device_type', 'pc');
-    url.searchParams.set('game_version', this.redeemGameVersion);
-    url.searchParams.set('plat_type', 'pc');
-    url.searchParams.set('authkey', authKey.authkey);
-    url.searchParams.set('game_biz', GENSHIN_GAME_BIZ);
-    const payload = await this.requestJson<unknown>(url, {
-      method: 'GET',
-      headers: this.baseHeaders(cookies),
-    });
-    return {
-      retcode: payload.retcode,
-      message: payload.message || 'OK',
     };
   }
 

@@ -80,6 +80,12 @@ import {
   renderGenshinMenuImage,
 } from '../src/plugins/genshin/menu.js';
 import {
+  formatGenshinPreviewCodeReply,
+  GenshinPreviewCodeClient,
+  GenshinPreviewCodeError,
+  type GenshinPreviewCodeInfo,
+} from '../src/plugins/genshin/preview-codes.js';
+import {
   buildGenshinStatusView,
   renderGenshinStatusHtml,
   renderGenshinStatusImage,
@@ -198,7 +204,6 @@ function createService(options: {
   roles?: GenshinGameRole[];
   qrResults?: Array<{ status: 'Init' | 'Scanned' | 'Confirmed' | 'Expired'; cookies?: GenshinCookieFields }>;
   signIn?: ReturnType<typeof vi.fn>;
-  redeemCode?: ReturnType<typeof vi.fn>;
   fetchDailyNote?: ReturnType<typeof vi.fn>;
   completeAccountTokens?: ReturnType<typeof vi.fn>;
   verifyDailyNoteChallenge?: ReturnType<typeof vi.fn>;
@@ -223,7 +228,6 @@ function createService(options: {
     })),
     listRoles: vi.fn(async () => options.roles ?? [role()]),
     signIn: options.signIn ?? vi.fn(async () => ({ status: 'ok', retcode: 0, message: 'OK', totalSignDay: 8 })),
-    redeemCode: options.redeemCode ?? vi.fn(async () => ({ retcode: 0, message: 'OK' })),
     fetchDailyNote: options.fetchDailyNote ?? vi.fn(async () => dailyNote()),
     verifyDailyNoteChallenge: options.verifyDailyNoteChallenge ?? vi.fn(async () => 'verified-challenge'),
     createGachaAuthKey: options.createGachaAuthKey ?? vi.fn(async () => ({ signType: 2, authkeyVer: 1, authkey: 'gacha-authkey-secret' })),
@@ -370,6 +374,27 @@ function dailyNote(overrides: Partial<GenshinDailyNote> = {}): GenshinDailyNote 
   };
 }
 
+function previewCodeInfo(overrides: Partial<GenshinPreviewCodeInfo> = {}): GenshinPreviewCodeInfo {
+  return {
+    actId: 'ea202607241851454675',
+    sourceUrl: 'https://webstatic.mihoyo.com/bbs/event/live/index.html?act_id=ea202607241851454675',
+    previewTitle: '《原神》7.0版本「无神怜爱的雪国」前瞻特别节目',
+    versionTitle: '《原神》7.0版本前瞻特别节目',
+    liveTitle: '原神7.0前瞻',
+    liveStartAt: Date.parse('2026-07-31T20:00:00+08:00'),
+    liveEndAt: Date.parse('2026-07-31T21:30:00+08:00'),
+    liveEnded: true,
+    expirationText: '兑换码将于8月3日12:00过期，请及时兑换~',
+    expiresAt: Date.parse('2026-08-03T12:00:00+08:00'),
+    codes: [
+      { code: '无神怜爱的雪国', rewards: '原石*100 精锻用魔矿*10' },
+      { code: '欢迎来到至冬', rewards: '原石*100 大英雄的经验*5' },
+      { code: '冰中雪影奥黛塔', rewards: '原石*100 摩拉*50000' },
+    ],
+    ...overrides,
+  };
+}
+
 function createPuppeteerHarness() {
   let navigatedHtml = '';
   const screenshotPng = createHarnessPng();
@@ -464,10 +489,9 @@ describe('genshin binding service', () => {
     });
   });
 
-  it('runs manual sign-in and manual redeem for the bound UID only', async () => {
+  it('runs manual sign-in for the bound UID only', async () => {
     const signIn = vi.fn(async () => ({ status: 'already_done', retcode: 0, message: '今天已经签到过了。', totalSignDay: 9 }));
-    const redeemCode = vi.fn(async () => ({ retcode: 0, message: 'OK' }));
-    const { service, database } = createService({ signIn, redeemCode });
+    const { service, database } = createService({ signIn });
     const started = await service.startBinding(identity());
     await completeQrBinding(service, extractToken(started.link));
 
@@ -476,23 +500,12 @@ describe('genshin binding service', () => {
       status: 'already_done',
       totalSignDay: 9,
     });
-    await expect(service.redeemCode(identity(), 'GENSHIN2026')).resolves.toMatchObject({
-      role: { uid: '100000001' },
-      status: 'ok',
-    });
-
     expect(signIn).toHaveBeenCalledTimes(1);
-    expect(redeemCode).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ uid: '100000001' }), 'GENSHIN2026');
     expect(database.tables.get('genshin_signin_record')?.[0]).toMatchObject({
       uid: '100000001',
       trigger: 'manual',
       status: 'already_done',
       signDate: '1970-01-01',
-    });
-    expect(database.tables.get('genshin_redeem_record')?.[0]).toMatchObject({
-      uid: '100000001',
-      status: 'ok',
-      retcode: 0,
     });
   });
 
@@ -938,10 +951,11 @@ describe('genshin menu module', () => {
     expect(shouldExposeGenshinCapabilityReference(session('你玩原神吗？'))).toBe(false);
     expect(shouldExposeGenshinCapabilityReference(session('原神最近的剧情怎么样？'))).toBe(false);
     expect(shouldExposeGenshinCapabilityReference(session('抽卡记录看起来挺有意思'))).toBe(false);
-    expect(shouldExposeGenshinCapabilityReference(session('原神兑换ABCDEF12'))).toBe(true);
+    expect(shouldExposeGenshinCapabilityReference(session('原神兑换ABCDEF12'))).toBe(false);
     expect(shouldExposeGenshinCapabilityReference(session('原神确认123456'))).toBe(true);
     expect(shouldExposeGenshinCapabilityReference(session('抽卡记录怎么查'))).toBe(true);
     expect(shouldExposeGenshinCapabilityReference(session('原神状态'))).toBe(true);
+    expect(shouldExposeGenshinCapabilityReference(session('原神兑换码'))).toBe(true);
     expect(shouldExposeGenshinCapabilityReference(session('原神签到失败了'))).toBe(true);
   });
 
@@ -957,9 +971,10 @@ describe('genshin menu module', () => {
 
     expect(reference).toContain('总入口：“原神”');
     expect(reference).toContain('原神确认 <6位数字确认码>');
-    expect(reference).toContain('原神兑换 <兑换码>');
+    expect(reference).not.toContain('原神兑换 <兑换码>');
+    expect(reference).toContain('前瞻：“原神兑换码”');
+    expect(reference).toContain('无需绑定 UID');
     expect(reference).toContain('原神状态');
-    expect(reference).toContain('6 至 32 位字母或数字');
     expect(reference).toContain('“抽卡记录”或“原神抽卡记录”');
     expect(reference).toContain('米游社国服原神 UID');
   });
@@ -983,7 +998,7 @@ describe('genshin menu module', () => {
         [
           ['原神状态', '查看树脂、委托、派遣与洞天宝钱'],
           ['原神签到', '为已绑定 UID 执行每日签到'],
-          ['原神兑换 <兑换码>', '为已绑定 UID 领取兑换码奖励'],
+          ['原神兑换码', '查看最新国服前瞻版本与三个兑换码'],
         ],
       ],
       [
@@ -1008,7 +1023,8 @@ describe('genshin menu module', () => {
     expect(html).toContain('class="panel-title">记录');
     expect(html).toContain('原神绑定');
     expect(html).toContain('原神确认 <span class="param">&lt;确认码&gt;</span>');
-    expect(html).toContain('原神兑换 <span class="param">&lt;兑换码&gt;</span>');
+    expect(html).not.toContain('原神兑换 <span class="param">&lt;兑换码&gt;</span>');
+    expect(html).toContain('原神兑换码');
     expect(html).toContain('原神状态');
     expect(html).toContain('抽卡记录');
     expect(html).not.toContain('原神资料');
@@ -1247,6 +1263,108 @@ describe('genshin device profile', () => {
   });
 });
 
+describe('genshin preview code client', () => {
+  const now = Date.parse('2026-08-01T00:00:00+08:00');
+
+  it('returns the latest official CN preview information and exactly three codes', async () => {
+    const fetchImpl = createPreviewCodeFetch();
+    const client = new GenshinPreviewCodeClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => now,
+      memoryCacheTtlMs: 0,
+    });
+
+    const result = await client.queryLatest();
+
+    expect(result).toEqual(previewCodeInfo());
+    expect(formatGenshinPreviewCodeReply(result, now)).toBe([
+      '《原神》7.0版本「无神怜爱的雪国」前瞻特别节目',
+      '直播状态：已结束',
+      '兑换截止：2026-08-03 12:00（UTC+8，未过期）',
+      '',
+      '1. 无神怜爱的雪国',
+      '   原石*100 精锻用魔矿*10',
+      '2. 欢迎来到至冬',
+      '   原石*100 大英雄的经验*5',
+      '3. 冰中雪影奥黛塔',
+      '   原石*100 摩拉*50000',
+      '',
+      '来源：米游社官方前瞻直播',
+    ].join('\n'));
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(new URL(String(fetchImpl.mock.calls[0]?.[0])).searchParams.get('uid')).toBe('75276539');
+    expect(new URL(String(fetchImpl.mock.calls[0]?.[0])).searchParams.get('size')).toBe('100');
+    expect(fetchImpl.mock.calls[1]?.[1]?.headers).toMatchObject({
+      'x-rpc-act_id': 'ea202607241851454675',
+    });
+    expect(new URL(String(fetchImpl.mock.calls[2]?.[0])).searchParams.get('version')).toBe('340cd7');
+  });
+
+  it('persists a verified snapshot and uses it after the live activity API is archived', async () => {
+    const dir = createTempDir();
+    const cachePath = join(dir, 'preview-codes.json');
+    const firstFetch = createPreviewCodeFetch();
+    const firstClient = new GenshinPreviewCodeClient({
+      fetchImpl: firstFetch as unknown as typeof fetch,
+      cachePath,
+      now: () => now,
+      memoryCacheTtlMs: 0,
+    });
+    await firstClient.queryLatest();
+
+    const stored = JSON.parse(await readFile(cachePath, 'utf8')) as { data?: GenshinPreviewCodeInfo };
+    expect(stored.data).toMatchObject({
+      actId: 'ea202607241851454675',
+      codes: [{ code: '无神怜爱的雪国' }, { code: '欢迎来到至冬' }, { code: '冰中雪影奥黛塔' }],
+    });
+
+    const archivedFetch = vi.fn(async () => jsonResponse(previewPostsPayload()));
+    const restartedClient = new GenshinPreviewCodeClient({
+      fetchImpl: archivedFetch as unknown as typeof fetch,
+      cachePath,
+      now: () => now,
+      memoryCacheTtlMs: 0,
+    });
+
+    await expect(restartedClient.queryLatest()).resolves.toEqual(previewCodeInfo());
+    expect(archivedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports when all three codes have not been issued yet', async () => {
+    const fetchImpl = createPreviewCodeFetch({
+      codes: previewCodesPayload().slice(0, 2),
+    });
+    const client = new GenshinPreviewCodeClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => now,
+      memoryCacheTtlMs: 0,
+    });
+
+    const error = await client.queryLatest().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(GenshinPreviewCodeError);
+    expect(error).toMatchObject({ stage: 'codes', retcode: 0 });
+    expect((error as Error).message).toBe('原神7.0前瞻的 3 个兑换码尚未全部发放（当前 2 个），请稍后再查。');
+  });
+
+  it('preserves the failed stage and provider retcode', async () => {
+    const fetchImpl = createPreviewCodeFetch({
+      liveResponse: { data: null, message: '活动已结束', retcode: -500007 },
+    });
+    const client = new GenshinPreviewCodeClient({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => now,
+      memoryCacheTtlMs: 0,
+    });
+
+    const error = await client.queryLatest().catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(GenshinPreviewCodeError);
+    expect(error).toMatchObject({ stage: 'live', status: 200, retcode: -500007 });
+    expect((error as Error).message).toContain('retcode -500007（活动已结束）');
+  });
+});
+
 describe('genshin takumi client', () => {
   it('completes the game-record cookie fields from a QR root token', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
@@ -1282,7 +1400,7 @@ describe('genshin takumi client', () => {
     });
   });
 
-  it('sends QR login, CN role, sign-in, authkey, and redeem requests with the expected shape', async () => {
+  it('sends QR login, CN role, sign-in, and gacha requests with the expected shape', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: URL, init: RequestInit) => {
       calls.push({ url: url.toString(), init });
@@ -1325,9 +1443,6 @@ describe('genshin takumi client', () => {
       if (url.pathname === '/binding/api/genAuthKey') {
         return jsonResponse({ retcode: 0, message: 'OK', data: { sign_type: 2, authkey_ver: 1, authkey: 'authkey-secret' } });
       }
-      if (url.pathname === '/common/apicdkey/api/exchangeCdkey') {
-        return jsonResponse({ retcode: 0, message: 'OK', data: {} });
-      }
       if (url.pathname === '/gacha_info/api/getGachaLog') {
         return jsonResponse({
           retcode: 0,
@@ -1350,7 +1465,6 @@ describe('genshin takumi client', () => {
     const client = new GenshinTakumiClient({
       fetchImpl: fetchImpl as unknown as typeof fetch,
       deviceId: '00000000-0000-4000-8000-000000000001',
-      redeemGameVersion: 'CNRELWin6.0.0',
     });
     const qr = await client.createQrLogin();
     const qrResult = await client.queryQrLogin(qr.ticket);
@@ -1361,7 +1475,6 @@ describe('genshin takumi client', () => {
     const [selectedRole] = await client.listRoles(cookies);
 
     await client.signIn(cookies, selectedRole);
-    await client.redeemCode(cookies, selectedRole, 'GENSHIN2026');
     const gachaAuthKey = await client.createGachaAuthKey(cookies, selectedRole);
     await client.fetchGachaLogPage(cookies, selectedRole, gachaAuthKey, '301', '0');
 
@@ -1373,8 +1486,6 @@ describe('genshin takumi client', () => {
       '/event/luna/info',
       '/device-fp/api/getFp',
       '/event/luna/sign',
-      '/binding/api/genAuthKey',
-      '/common/apicdkey/api/exchangeCdkey',
       '/binding/api/genAuthKey',
       '/gacha_info/api/getGachaLog',
     ]);
@@ -1412,14 +1523,8 @@ describe('genshin takumi client', () => {
       'x-rpc-signgame': 'hk4e',
       ds: expect.stringMatching(/^\d+,[A-Za-z0-9]{6},[a-f0-9]{32}$/),
     });
-    const redeemUrl = new URL(calls[8].url);
-    expect(redeemUrl.hostname).toBe('hk4e-api.mihoyo.com');
-    expect(redeemUrl.searchParams.get('auth_appid')).toBe('apicdkey');
-    expect(redeemUrl.searchParams.get('authkey')).toBe('authkey-secret');
-    expect(redeemUrl.searchParams.get('game_biz')).toBe('hk4e_cn');
-    expect(JSON.parse(String(calls[7].init.body))).toMatchObject({ auth_appid: 'apicdkey' });
-    expect(JSON.parse(String(calls[9].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
-    const gachaUrl = new URL(calls[10].url);
+    expect(JSON.parse(String(calls[7].init.body))).toMatchObject({ auth_appid: 'webview_gacha' });
+    const gachaUrl = new URL(calls[8].url);
     expect(gachaUrl.hostname).toBe('public-operation-hk4e.mihoyo.com');
     expect(gachaUrl.pathname).toBe('/gacha_info/api/getGachaLog');
     expect(gachaUrl.searchParams.get('authkey_ver')).toBe('1');
@@ -1731,6 +1836,86 @@ describe('genshin plugin routes and middleware', () => {
     expect(renderMessageContent(reply)).toContain('image/png');
     expect(getNavigatedHtml()).toContain('原神功能菜单');
     expect(database.tables.get('genshin_bind_challenge') ?? []).toHaveLength(0);
+  });
+
+  it('returns official preview information and three codes for the bare 原神兑换码 command', async () => {
+    const dir = createTempDir();
+    const queryLatest = vi.spyOn(GenshinPreviewCodeClient.prototype, 'queryLatest').mockResolvedValue(previewCodeInfo());
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database: createDatabase(),
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: false,
+    });
+
+    const send = vi.fn();
+    const next = vi.fn();
+    await middleware.mock.calls[0]?.[0]({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '原神兑换码',
+      send,
+    }, next);
+
+    const reply = renderMessageContent(send.mock.calls[0]?.[0]);
+    expect(reply).toContain('《原神》7.0版本「无神怜爱的雪国」前瞻特别节目');
+    expect(reply).toContain('1. 无神怜爱的雪国');
+    expect(reply).toContain('2. 欢迎来到至冬');
+    expect(reply).toContain('3. 冰中雪影奥黛塔');
+    expect(reply).toContain('来源：米游社官方前瞻直播');
+    expect(queryLatest).toHaveBeenCalledTimes(1);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('does not handle the removed manual redemption command', async () => {
+    const dir = createTempDir();
+    const middleware = vi.fn();
+    const { puppeteer } = createPuppeteerHarness();
+    const ctx = {
+      baseDir: dir,
+      database: createDatabase(),
+      model: { extend: vi.fn() },
+      server: { get: vi.fn(), post: vi.fn() },
+      middleware,
+      on: vi.fn(),
+      puppeteer,
+    };
+    apply(ctx as never, {
+      publicBaseUrl: 'https://genshin.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      autoSignEnabled: false,
+      allowedGroups: '100',
+      naturalTriggerEnabled: true,
+      naturalTriggerGroups: '100',
+    });
+
+    const send = vi.fn();
+    const next = vi.fn();
+    await middleware.mock.calls[0]?.[0]({
+      platform: 'onebot',
+      userId: '1405359129',
+      channelId: 'group:100',
+      guildId: '100',
+      content: '原神兑换 GENSHIN2026',
+      send,
+    }, next);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   it('returns gacha record images for bare and prefixed keywords in allowed groups', async () => {
@@ -2192,6 +2377,84 @@ describe('genshin plugin routes and middleware', () => {
     expect(html).not.toContain('cookie_token');
   });
 });
+
+function previewPostsPayload(): unknown {
+  return {
+    retcode: 0,
+    message: 'OK',
+    data: {
+      list: [
+        {
+          post: {
+            post: {
+              subject: '《原神》7.0版本「无神怜爱的雪国」前瞻特别节目预告',
+              structured_content: JSON.stringify([
+                {
+                  insert: '米游社直播间',
+                  attributes: {
+                    link: 'https://webstatic.mihoyo.com/bbs/event/live/index.html?act_id=ea202607241851454675&mhy_presentation_style=fullscreen&game_biz=hk4e',
+                  },
+                },
+              ]),
+              created_at: 1_785_297_612,
+            },
+          },
+        },
+      ],
+    },
+  };
+}
+
+function previewLivePayload(): unknown {
+  return {
+    retcode: 0,
+    message: 'OK',
+    data: {
+      game: 'hk4e',
+      live: {
+        title: '原神7.0前瞻',
+        start: '2026-07-31 20:00:00',
+        end: '2026-07-31 21:30:00',
+        is_end: true,
+        code_ver: '340cd7',
+      },
+      streamer: {
+        aid: '75276539',
+      },
+      template: JSON.stringify({
+        appTitle: '《原神》7.0版本前瞻特别节目',
+        codeTipText: '兑换码将于8月3日12:00过期，请及时兑换~',
+      }),
+    },
+  };
+}
+
+function previewCodesPayload(): Array<{ title: string; code: string }> {
+  return [
+    { title: '<p>原石*<span>100</span> 精锻用魔矿*<span>10</span></p>', code: '无神怜爱的雪国' },
+    { title: '<p>原石*<span>100</span> 大英雄的经验*<span>5</span></p>', code: '欢迎来到至冬' },
+    { title: '<p>原石*<span>100</span> 摩拉*<span>50000</span></p>', code: '冰中雪影奥黛塔' },
+  ];
+}
+
+function createPreviewCodeFetch(options: {
+  codes?: Array<{ title: string; code: string }>;
+  liveResponse?: unknown;
+} = {}) {
+  return vi.fn(async (input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+    const url = new URL(String(input));
+    if (url.hostname === 'bbs-api.mihoyo.com') return jsonResponse(previewPostsPayload());
+    if (url.pathname === '/event/miyolive/index') return jsonResponse(options.liveResponse ?? previewLivePayload());
+    if (url.pathname === '/event/miyolive/refreshCode') {
+      return jsonResponse({
+        retcode: 0,
+        message: 'OK',
+        data: { code_list: options.codes ?? previewCodesPayload() },
+      });
+    }
+    throw new Error(`unexpected preview code URL: ${url.href}`);
+  });
+}
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {

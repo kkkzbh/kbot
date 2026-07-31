@@ -68,7 +68,7 @@ const MENU_SECTIONS: GenshinMenuSectionView[] = [
     items: [
       { keyword: '原神状态', description: '查看树脂、委托、派遣与洞天宝钱', icon: 'spark', accent: 'gold' },
       { keyword: '原神签到', description: '为已绑定 UID 执行每日签到', icon: 'moon' },
-      { keyword: '原神兑换 <兑换码>', description: '为已绑定 UID 领取兑换码奖励', icon: 'gift', accent: 'gold' },
+      { keyword: '原神兑换码', description: '查看最新国服前瞻版本与三个兑换码', icon: 'gift', accent: 'gold' },
     ],
   },
   {

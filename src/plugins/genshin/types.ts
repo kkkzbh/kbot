@@ -155,18 +155,6 @@ export interface GenshinSignInRecord {
   createdAt: number;
 }
 
-export interface GenshinRedeemRecord {
-  id: number;
-  ownerKey: string;
-  uid: string;
-  region: string;
-  cdkeyHash: string;
-  status: GenshinOperationStatus;
-  retcode: number;
-  message: string;
-  createdAt: number;
-}
-
 export interface GenshinGachaRecord {
   id: number;
   recordKey: string;

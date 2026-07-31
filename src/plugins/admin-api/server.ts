@@ -267,7 +267,6 @@ export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'GENSHIN_TIMEZONE', label: '原神时区', type: 'text', section: 'features' },
   { key: 'GENSHIN_TAKUMI_APP_VERSION', label: '原神米游社 App 版本', type: 'text', section: 'features' },
   { key: 'GENSHIN_SIGN_ACT_ID', label: '原神签到活动 ID', type: 'text', section: 'features' },
-  { key: 'GENSHIN_REDEEM_GAME_VERSION', label: '原神兑换接口版本', type: 'text', section: 'features' },
   { key: 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS', label: '文件系统工具白名单群', type: 'text', section: 'features' },
   { key: 'QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT', label: '实时消息注入条数上限', type: 'number', section: 'features' },
   { key: 'QQBOT_REPLY_INTERRUPT_ENABLED', label: '回复期中断', type: 'toggle', section: 'features' },

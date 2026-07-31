@@ -4,16 +4,8 @@ import {
 } from './types.js';
 import { GenshinUserError } from './types.js';
 
-export function hasGenshinRedeemCookieCapability(fields: GenshinCookieFields): boolean {
-  return hasGenshinAdvancedCookieCapability(fields);
-}
-
 export function hasGenshinAdvancedCookieCapability(fields: GenshinCookieFields): boolean {
   return Boolean(fields.stoken && (fields.mid || fields.stuid));
-}
-
-export function assertGenshinRedeemCookieCapability(fields: GenshinCookieFields): void {
-  assertGenshinAdvancedCookieCapability(fields, '当前绑定 Cookie 不包含 stoken + mid/stuid，不能领取兑换码。请重新绑定包含这组字段的更高权限 Cookie。');
 }
 
 export function assertGenshinAdvancedCookieCapability(fields: GenshinCookieFields, message: string): void {
