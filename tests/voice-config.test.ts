@@ -1,15 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import YAML from 'yaml';
 
 describe('qq voice config wiring', () => {
   it('loads the qq-voice plugin before group trigger and chatluna', () => {
     const content = readFileSync(resolve(process.cwd(), 'koishi.yml'), 'utf8');
-    const voiceIndex = content.indexOf('./dist/plugins/reply:voice:');
-    const triggerIndex = content.indexOf('./dist/plugins/triggers/group-natural:natural-trigger:');
-    const chatlunaIndex = content.indexOf('chatluna:0qm1bk:');
-    const agentIndex = content.indexOf('chatluna-agent:computer-agent:');
-    const commonIndex = content.indexOf('chatluna-plugin-common:qf1a6x:');
+    const config = YAML.parse(content) as { plugins?: { 'group:entry'?: unknown } };
+    const entry = config.plugins?.['group:entry'];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error('koishi.yml must define plugins.group:entry as a mapping');
+    }
+    const plugins = entry as Record<string, Record<string, unknown>>;
+    const pluginOrder = Object.keys(plugins);
+    const voiceIndex = pluginOrder.indexOf('./dist/plugins/reply:voice');
+    const triggerIndex = pluginOrder.indexOf('./dist/plugins/triggers/group-natural:natural-trigger');
+    const chatlunaIndex = pluginOrder.indexOf('chatluna:0qm1bk');
+    const agentIndex = pluginOrder.indexOf('chatluna-agent:computer-agent');
+    const commonIndex = pluginOrder.indexOf('chatluna-plugin-common:qf1a6x');
 
     expect(voiceIndex).toBeGreaterThanOrEqual(0);
     expect(triggerIndex).toBeGreaterThan(voiceIndex);
@@ -17,28 +25,43 @@ describe('qq voice config wiring', () => {
     expect(commonIndex).toBeGreaterThan(chatlunaIndex);
     expect(agentIndex).toBeGreaterThan(commonIndex);
 
-    expect(content).toContain("asrBaseUrl: ${{ env.QQ_VOICE_ASR_BASE_URL || '' }}");
-    expect(content).toContain("ttsBaseUrl: ${{ env.QQ_VOICE_TTS_BASE_URL || '' }}");
-    expect(content).toContain('voiceOutputLanguage: ${{ env.QQ_VOICE_OUTPUT_LANGUAGE }}');
-    expect(content).toContain('replyInterruptCollectWindowMs: ${{ +env.QQBOT_REPLY_COLLECT_WINDOW_MS || 400 }}');
-    expect(content).toContain('replyInterruptMaxPendingInputs: ${{ +env.QQBOT_REPLY_MAX_PENDING_INPUTS || 8 }}');
-    expect(content).toContain('./dist/plugins/natural-trigger-config:natural-trigger-config:');
-    expect(content).toContain("configPath: ${{ env.QQBOT_NATURAL_TRIGGER_CONFIG_PATH || './.runtime/natural-trigger.json' }}");
-    expect(content).toContain('./dist/plugins/triggers/group-natural:natural-trigger: {}');
-    expect(content).toContain("naturalTriggerEnabled: ${{ env.HBU_JW_NATURAL_TRIGGER_ENABLED === 'true' }}");
-    expect(content).toContain("naturalTriggerEnabled: ${{ env.CHAOXING_NATURAL_TRIGGER_ENABLED === 'true' }}");
-    expect(content).toContain("naturalTriggerEnabled: ${{ env.GENSHIN_NATURAL_TRIGGER_ENABLED === 'true' }}");
-    expect(content).toContain('isNickname: false');
-    expect(content).toContain('isNickNameWithContent: false');
+    expect(plugins['./dist/plugins/reply:voice']).toMatchObject({
+      asrBaseUrl: "${{ env.QQ_VOICE_ASR_BASE_URL || '' }}",
+      ttsBaseUrl: "${{ env.QQ_VOICE_TTS_BASE_URL || '' }}",
+      voiceOutputLanguage: '${{ env.QQ_VOICE_OUTPUT_LANGUAGE }}',
+      replyInterruptCollectWindowMs: '${{ +env.QQBOT_REPLY_COLLECT_WINDOW_MS || 400 }}',
+      replyInterruptMaxPendingInputs: '${{ +env.QQBOT_REPLY_MAX_PENDING_INPUTS || 8 }}',
+    });
+    expect(plugins['./dist/plugins/natural-trigger-config:natural-trigger-config']).toEqual({
+      configPath: "${{ env.QQBOT_NATURAL_TRIGGER_CONFIG_PATH || './.runtime/natural-trigger.json' }}",
+    });
+    expect(plugins['./dist/plugins/triggers/group-natural:natural-trigger']).toEqual({});
+    expect(plugins['./dist/plugins/hbu-jw:hbu-jw']).toMatchObject({
+      naturalTriggerEnabled: "${{ env.HBU_JW_NATURAL_TRIGGER_ENABLED === 'true' }}",
+    });
+    expect(plugins['./dist/plugins/chaoxing:chaoxing']).toMatchObject({
+      naturalTriggerEnabled: "${{ env.CHAOXING_NATURAL_TRIGGER_ENABLED === 'true' }}",
+    });
+    expect(plugins['./dist/plugins/genshin:genshin']).toMatchObject({
+      naturalTriggerEnabled: "${{ env.GENSHIN_NATURAL_TRIGGER_ENABLED === 'true' }}",
+    });
+    expect(plugins['chatluna:0qm1bk']).toMatchObject({
+      isNickname: false,
+      isNickNameWithContent: false,
+    });
     expect(content).not.toContain('CHAT_NATURAL_TRIGGER_');
-    expect(content).toContain('voiceTranscribeTimeoutMs: ${{ +env.QQ_VOICE_TRANSCRIBE_TIMEOUT_MS || 45000 }}');
-    expect(content).toContain("maxJobsPerUser: ${{ +env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20 }}");
-    expect(content).not.toContain('maxTasksPerUser:');
-    expect(content).not.toContain('maxInjectTotalBytes:');
-    expect(content).not.toContain('maxPdfPreviewPagesPerFile:');
-    expect(content).not.toContain('historyWindow: ${{ +env.QQBOT_ATTACHMENT_HISTORY_WINDOW || 80 }}');
+    expect(plugins['./dist/plugins/attachment:attachment']).toMatchObject({
+      voiceTranscribeTimeoutMs: '${{ +env.QQ_VOICE_TRANSCRIBE_TIMEOUT_MS || 45000 }}',
+    });
+    expect(plugins['./dist/plugins/automation:automation']).toMatchObject({
+      maxJobsPerUser: '${{ +env.TASK_AUTOMATION_MAX_TASKS_PER_USER || 20 }}',
+    });
+    expect(plugins['./dist/plugins/automation:automation']).not.toHaveProperty('maxTasksPerUser');
+    expect(plugins['./dist/plugins/attachment:attachment']).not.toHaveProperty('maxInjectTotalBytes');
+    expect(plugins['./dist/plugins/attachment:attachment']).not.toHaveProperty('maxPdfPreviewPagesPerFile');
+    expect(plugins['./dist/plugins/attachment:attachment']).not.toHaveProperty('historyWindow');
     expect(content).not.toContain('QQBOT_ATTACHMENT_MAX_REQUEST_BODY_BYTES');
-    expect(content).toContain('chatluna-agent:computer-agent: {}');
+    expect(plugins['chatluna-agent:computer-agent']).toEqual({});
   });
 
   it('keeps the local compose health contract for pmhq and voice-asr', () => {
