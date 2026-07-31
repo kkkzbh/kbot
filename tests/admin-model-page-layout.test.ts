@@ -28,4 +28,17 @@ describe('admin unified model page layout', () => {
     expect(template).toContain("connectionConfigured(connection.id) ? '配置良好' : '需要配置'");
     expect(template).not.toContain('<small>{{ connection.id }}</small>');
   });
+
+  it('shows the dynamic catalog returned for the selected authentication', () => {
+    const page = readFileSync(resolve(
+      process.cwd(),
+      'apps/admin-web/src/pages/ModelsPage.vue',
+    ), 'utf8');
+    const template = page.slice(page.indexOf('<template>'), page.lastIndexOf('</template>'));
+
+    expect(template).toContain('<h4 id="available-models-title">可用模型</h4>');
+    expect(template).toContain('v-for="model in selectedCatalog.models"');
+    expect(template).toContain('{{ model.displayName }}');
+    expect(template).toContain('{{ model.transportModel }}');
+  });
 });

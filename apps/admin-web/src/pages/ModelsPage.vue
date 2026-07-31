@@ -121,6 +121,7 @@ const loading = ref(false);
 const saving = ref(false);
 const operationBusy = ref<string | null>(null);
 const catalogByConnection = reactive<Record<string, ModelCatalogResponse | undefined>>({});
+const catalogErrorByConnection = reactive<Record<string, string | undefined>>({});
 const probeByConnection = reactive<Record<string, {
   checkedAt: string;
   latencyMs: number;
@@ -144,6 +145,12 @@ const selectedConnection = computed(() => draft.value?.connections.find(
 const selectedConnectionModels = computed(() => draft.value?.models.filter(
   (model) => model.connectionId === selectedConnectionId.value,
 ) ?? []);
+const selectedCatalog = computed(() => (
+  catalogByConnection[selectedConnectionId.value] ?? null
+));
+const selectedCatalogError = computed(() => (
+  catalogErrorByConnection[selectedConnectionId.value] ?? null
+));
 const filteredConnections = computed(() => {
   const query = connectionQuery.value.trim().toLocaleLowerCase();
   const connections = draft.value?.connections ?? [];
@@ -221,6 +228,7 @@ function hydrate(aggregate: ModelConfigAdminAggregate): void {
     ? previousSelection
     : connections[0]?.id ?? '';
   for (const key of Object.keys(catalogByConnection)) delete catalogByConnection[key];
+  for (const key of Object.keys(catalogErrorByConnection)) delete catalogErrorByConnection[key];
   for (const key of Object.keys(probeByConnection)) delete probeByConnection[key];
   if (requestedWorkload.value) {
     void nextTick(() => {
@@ -307,6 +315,28 @@ function isStaleRevisionConflict(error: unknown): boolean {
     && typeof details.expectedRevision === 'number'
     && typeof details.actualRevision === 'number'
     && details.expectedRevision !== details.actualRevision;
+}
+
+function catalogFailureMessage(error: unknown): string {
+  const message = errorMessage(error, '模型目录刷新失败');
+  if (
+    !(error instanceof ApiError)
+    || !error.details
+    || typeof error.details !== 'object'
+    || Array.isArray(error.details)
+  ) {
+    return message;
+  }
+  const details = error.details as Record<string, unknown>;
+  const diagnostics = [
+    typeof details.operation === 'string' ? `操作 ${details.operation}` : null,
+    typeof details.stage === 'string' ? `阶段 ${details.stage}` : null,
+    typeof details.upstreamStatus === 'number' ? `上游 HTTP ${details.upstreamStatus}` : null,
+    typeof details.providerCode === 'string' ? `Provider ${details.providerCode}` : null,
+  ].filter((item): item is string => item !== null);
+  return diagnostics.length > 0
+    ? `${message}（${diagnostics.join(' · ')}）`
+    : message;
 }
 
 function connectionAuthState(connectionId: string): ModelConnectionAuthState | null {
@@ -451,6 +481,7 @@ async function removeSelectedConnection(): Promise<void> {
   draft.value.models = draft.value.models.filter((model) => model.connectionId !== connection.id);
   delete secretDrafts[connection.id];
   delete catalogByConnection[connection.id];
+  delete catalogErrorByConnection[connection.id];
   selectedConnectionId.value = draft.value.connections[0]?.id ?? '';
 }
 
@@ -804,6 +835,7 @@ async function refreshCatalog(
 ): Promise<ModelCatalogResponse | null> {
   if (operationBusy.value) return null;
   operationBusy.value = `catalog:${connectionId}`;
+  delete catalogErrorByConnection[connectionId];
   try {
     const result = await api(
       `/models/connections/${encodeURIComponent(connectionId)}/catalog`,
@@ -814,7 +846,9 @@ async function refreshCatalog(
     if (notify) ElMessage.success('模型目录已刷新');
     return result;
   } catch (error) {
-    if (notify) ElMessage.error(errorMessage(error, '模型目录刷新失败'));
+    const message = catalogFailureMessage(error);
+    catalogErrorByConnection[connectionId] = message;
+    if (notify) ElMessage.error(message);
     return null;
   } finally {
     operationBusy.value = null;
@@ -843,6 +877,7 @@ async function ensureCatalog(connectionId: string, notify: boolean): Promise<voi
 async function oauth(connectionId: string, action: 'start' | 'poll' | 'logout'): Promise<void> {
   if (operationBusy.value) return;
   const state = connectionAuthState(connectionId);
+  let reloadCatalog = false;
   operationBusy.value = `oauth:${connectionId}:${action}`;
   try {
     const body = action === 'poll'
@@ -858,12 +893,16 @@ async function oauth(connectionId: string, action: 'start' | 'poll' | 'logout'):
       if (index >= 0) saved.value.connectionStates[index] = result;
       else saved.value.connectionStates.push(result);
     }
+    delete catalogByConnection[connectionId];
+    delete catalogErrorByConnection[connectionId];
+    reloadCatalog = result.status === 'ready';
     ElMessage.success(action === 'start' ? 'OAuth 登录已启动。' : action === 'logout' ? 'OAuth 已退出。' : 'OAuth 状态已更新。');
   } catch (error) {
     ElMessage.error(errorMessage(error, 'OAuth 操作失败'));
   } finally {
     operationBusy.value = null;
   }
+  if (reloadCatalog) await ensureCatalog(connectionId, false);
 }
 
 function copyOAuthCode(): void {
@@ -1139,6 +1178,75 @@ onBeforeUnmount(() => {
           </section>
 
           <section
+            v-if="selectedConnection.catalogDriver !== 'static'"
+            class="catalog-section"
+            aria-labelledby="available-models-title"
+          >
+            <div class="catalog-heading">
+              <h4 id="available-models-title">可用模型</h4>
+              <span v-if="selectedCatalog">
+                {{ selectedCatalog.models.length }} 个 · 更新于
+                {{ new Date(selectedCatalog.fetchedAt).toLocaleString() }}
+              </span>
+              <span v-else>来自当前认证的模型目录</span>
+            </div>
+
+            <div v-if="selectedCatalogError" class="catalog-error" role="alert">
+              <div>
+                <strong>目录读取失败</strong>
+                <p>{{ selectedCatalogError }}</p>
+              </div>
+              <el-button
+                size="small"
+                :loading="operationBusy === `catalog:${selectedConnection.id}`"
+                :disabled="!canOperateSelectedConnection"
+                @click="refreshCatalog(selectedConnection.id)"
+              >
+                重试
+              </el-button>
+            </div>
+
+            <div
+              v-if="operationBusy === `catalog:${selectedConnection.id}` && !selectedCatalog"
+              class="catalog-loading"
+              role="status"
+              aria-label="正在读取可用模型"
+            >
+              <el-skeleton :rows="3" animated />
+            </div>
+            <div
+              v-else-if="selectedCatalog?.models.length"
+              class="catalog-list"
+              role="list"
+            >
+              <article
+                v-for="model in selectedCatalog.models"
+                :key="model.transportModel"
+                class="catalog-model"
+                role="listitem"
+              >
+                <div class="catalog-model-identity">
+                  <strong>{{ model.displayName }}</strong>
+                  <code v-if="model.displayName !== model.transportModel">
+                    {{ model.transportModel }}
+                  </code>
+                </div>
+                <div v-if="model.metadataTags.length" class="catalog-model-tags">
+                  <span v-for="tag in model.metadataTags" :key="tag">{{ tag }}</span>
+                </div>
+              </article>
+            </div>
+            <div v-else-if="selectedCatalog" class="catalog-empty">
+              当前认证没有返回可用模型。
+            </div>
+            <div v-else-if="!selectedCatalogError" class="catalog-empty">
+              {{ canOperateSelectedConnection
+                ? '正在等待模型目录。'
+                : '保存认证配置并完成认证后，即可读取可用模型。' }}
+            </div>
+          </section>
+
+          <section
             v-if="selectedConnection.catalogDriver === 'static'"
             class="models-section"
           >
@@ -1380,7 +1488,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.binding-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,2fr);gap:24px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row.binding-target{background:#f2f6ff;box-shadow:inset 3px 0 #416de0}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong{display:block;color:#344056;font-size:12px}.binding-controls{display:grid;grid-template-columns:minmax(130px,.75fr) minmax(160px,1fr) minmax(180px,1.3fr);gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.remove-binding{position:absolute;right:8px;top:4px}.connections-layout{height:500px;display:grid;grid-template-columns:260px minmax(0,1fr)}.connection-list{min-height:0;overflow-y:auto;padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:nowrap}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.secret-card,.oauth-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-title,.oauth-title{display:flex;align-items:center;gap:8px;min-width:0}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.subsection-title h4{min-width:0;margin:0;color:#354156;font-size:13px;white-space:nowrap}.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__header){display:flex;align-items:center;min-height:40px;height:auto;line-height:1.2}.models-section :deep(.el-collapse-item__title){min-width:0;display:block;flex:1}.models-section :deep(.el-collapse-item__arrow){flex:none;margin-left:8px;transition:transform .18s ease}.models-section :deep(.el-collapse-item__arrow.is-active){transform:rotate(90deg)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden}.model-title strong{min-width:0;overflow:hidden;color:#374357;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.model-title .el-tag{flex:none}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
-@media(prefers-reduced-motion:reduce){.models-section :deep(.el-collapse-item__arrow){transition:none}}
-@media(max-width:1100px){.binding-row{grid-template-columns:minmax(180px,.7fr) minmax(0,2fr)}}@media(max-width:760px){.load-error{align-items:flex-start;flex-direction:column}.binding-row{grid-template-columns:1fr;padding:14px}.binding-controls{grid-template-columns:1fr}.connections-layout{height:auto;grid-template-columns:1fr}.connection-list{max-height:280px;overflow:auto;border-right:0;border-bottom:1px solid var(--line)}.connection-editor{overflow:visible;scrollbar-gutter:auto;padding:18px 14px}.editor-title,.subsection-title{flex-direction:column}.editor-title>div:last-child{justify-content:flex-start}.connection-form,.model-form{grid-template-columns:1fr}.connection-form .span-2,.model-form .span-2{grid-column:auto}.secret-card,.oauth-card{grid-template-columns:1fr}.secret-card>.el-input,.oauth-attempt{grid-column:auto}.oauth-actions{justify-content:flex-start}.oauth-attempt{align-items:flex-start;flex-wrap:wrap}}
+.load-error{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 20px;color:#923b3b;background:#fff5f5}.load-error strong{font-size:13px}.load-error p{margin:4px 0 0;font-size:10px}.binding-panel,.connections-panel{margin-bottom:16px;overflow:hidden}.binding-list{display:grid}.binding-row{position:relative;display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,2fr);gap:24px;align-items:center;padding:15px 18px;border-top:1px solid var(--line)}.binding-row.binding-target{background:#f2f6ff;box-shadow:inset 3px 0 #416de0}.binding-row:first-child{border-top:0}.binding-purpose{min-width:0}.binding-purpose strong{display:block;color:#344056;font-size:12px}.binding-controls{display:grid;grid-template-columns:minmax(130px,.75fr) minmax(160px,1fr) minmax(180px,1.3fr);gap:8px}.binding-control{min-width:0}.binding-control>span{display:block;margin:0 0 5px;color:#8a94a3;font-size:9px}.binding-control>.el-select{width:100%}.binding-control:first-child:last-child{grid-column:1/-1}.remove-binding{position:absolute;right:8px;top:4px}.connections-layout{height:500px;display:grid;grid-template-columns:260px minmax(0,1fr)}.connection-list{min-height:0;overflow-y:auto;padding:12px;border-right:1px solid var(--line);background:#fbfcfe}.connection-list>.el-input{margin-bottom:10px}.connection-list>button{width:100%;display:flex;align-items:center;justify-content:flex-start;gap:10px;margin:3px 0;padding:9px 10px;border:1px solid transparent;border-radius:9px;text-align:left;transition:background .16s ease,border-color .16s ease,box-shadow .16s ease}.connection-list>button.is-configured{background:#f0faf4}.connection-list>button.needs-configuration{background:#fff2f1}.connection-list>button.is-configured:hover{background:#e7f7ed}.connection-list>button.needs-configuration:hover{background:#ffe9e7}.connection-list>button.active{border-color:#9fb7f0;box-shadow:inset 3px 0 #416de0}.provider-mark{width:30px;height:30px;display:grid;flex:none;place-items:center;border-radius:9px}.provider-mark img{width:19px;height:19px;object-fit:contain}.provider-openai{color:#087f6f;background:#dff6ef}.provider-copilot{color:#533c9d;background:#eee9ff}.provider-deepseek{background:#e9f0ff}.provider-siliconflow{background:#eee8ff}.provider-volcengine{background:#e8fbfb}.provider-xiaomi{color:#f56600;background:#fff0e5}.connection-name{min-width:0}.connection-list strong{display:block;overflow:hidden;color:#3b4659;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.connection-editor{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:20px 22px}.editor-title,.subsection-title{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:nowrap}.editor-title h3{margin:3px 0;color:#2f3c51;font-size:18px}.editor-title>div:last-child{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.probe-result{margin-top:14px;padding:8px 10px;border-radius:7px;color:#2e6b4c;background:#effaf4;font-size:10px}.connection-form,.model-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px;margin-top:20px}.connection-form .span-2,.model-form .span-2{grid-column:1/-1}.secret-card,.oauth-card{margin-top:14px;padding:14px 16px;border:1px solid #dfe6f2;border-radius:10px;background:#f8faff}.secret-card{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:12px 20px}.secret-card strong,.oauth-card strong{color:#344056;font-size:11px}.secret-title,.oauth-title{display:flex;align-items:center;gap:8px;min-width:0}.secret-card>.el-input{grid-column:1/-1}.oauth-card{display:grid;grid-template-columns:1fr auto;align-items:center;gap:12px 20px}.oauth-actions{display:flex;justify-content:flex-end}.oauth-attempt{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #dfe6f2}.oauth-attempt code{padding:7px 10px;border:1px solid #d7dfed;border-radius:7px;background:#fff;font-size:14px;font-weight:700;letter-spacing:.08em}.catalog-section,.models-section{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.catalog-heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px}.catalog-heading h4,.subsection-title h4{min-width:0;margin:0;color:#354156;font-size:13px;white-space:nowrap}.catalog-heading span{overflow:hidden;color:#8a94a3;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.catalog-list{margin-top:10px;border-top:1px solid var(--line)}.catalog-model{display:flex;min-width:0;min-height:48px;align-items:center;justify-content:space-between;gap:18px;padding:9px 4px;border-bottom:1px solid var(--line);transition:background-color .16s ease}.catalog-model:hover{background:#f8faff}.catalog-model-identity{display:flex;min-width:0;align-items:baseline;gap:10px}.catalog-model-identity strong{overflow:hidden;color:#344056;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.catalog-model-identity code{overflow:hidden;color:#8993a3;font:9px/1.4 "SFMono-Regular",Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.catalog-model-tags{display:flex;flex:none;gap:5px}.catalog-model-tags span{padding:3px 6px;border-radius:5px;color:#5d6f91;background:#eef2f8;font-size:8px}.catalog-loading,.catalog-empty{min-height:96px;display:grid;align-items:center;margin-top:10px;color:#8a94a3;font-size:10px}.catalog-loading{padding:6px 4px}.catalog-empty{place-items:center;border-top:1px solid var(--line);text-align:center}.catalog-error{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:12px;padding:10px 12px;border:1px solid #f0caca;border-radius:8px;color:#963d49;background:#fff7f7}.catalog-error strong{display:block;font-size:10px}.catalog-error p{margin:3px 0 0;font-size:9px;line-height:1.5}.models-section :deep(.el-collapse){margin-top:12px;border-top:1px solid var(--line)}.models-section :deep(.el-collapse-item__header){display:flex;align-items:center;min-height:40px;height:auto;line-height:1.2}.models-section :deep(.el-collapse-item__title){min-width:0;display:block;flex:1}.models-section :deep(.el-collapse-item__arrow){flex:none;margin-left:8px;transition:transform .18s ease}.models-section :deep(.el-collapse-item__arrow.is-active){transform:rotate(90deg)}.models-section :deep(.el-collapse-item__content){padding:0 4px 18px}.model-title{min-width:0;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden}.model-title strong{min-width:0;overflow:hidden;color:#374357;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.model-title .el-tag{flex:none}.remove-model{align-items:flex-end}.remove-model :deep(.el-form-item__content){justify-content:flex-end}
+@media(prefers-reduced-motion:reduce){.catalog-model,.models-section :deep(.el-collapse-item__arrow){transition:none}}
+@media(max-width:1100px){.binding-row{grid-template-columns:minmax(180px,.7fr) minmax(0,2fr)}}@media(max-width:760px){.load-error{align-items:flex-start;flex-direction:column}.binding-row{grid-template-columns:1fr;padding:14px}.binding-controls{grid-template-columns:1fr}.connections-layout{height:auto;grid-template-columns:1fr}.connection-list{max-height:280px;overflow:auto;border-right:0;border-bottom:1px solid var(--line)}.connection-editor{overflow:visible;scrollbar-gutter:auto;padding:18px 14px}.editor-title,.subsection-title{flex-direction:column}.editor-title>div:last-child{justify-content:flex-start}.connection-form,.model-form{grid-template-columns:1fr}.connection-form .span-2,.model-form .span-2{grid-column:auto}.secret-card,.oauth-card{grid-template-columns:1fr}.secret-card>.el-input,.oauth-attempt{grid-column:auto}.oauth-actions{justify-content:flex-start}.oauth-attempt{align-items:flex-start;flex-wrap:wrap}.catalog-heading,.catalog-model,.catalog-error{align-items:flex-start;flex-direction:column}.catalog-model-identity{align-items:flex-start;flex-direction:column;gap:3px}.catalog-model-tags{flex-wrap:wrap}}
 </style>
