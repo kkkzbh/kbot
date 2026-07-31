@@ -7,6 +7,7 @@ import {
   requestAttachmentHistory,
   requestAttachmentGuides,
   requestDocumentExample,
+  skillDescriptionExample,
   type GuidedContextBlockType,
 } from '../apps/admin-web/src/pages/context-preset-guides';
 
@@ -27,6 +28,7 @@ describe('context preset block guides', () => {
   it('explains every non-role block before it is configured', () => {
     for (const type of NON_ROLE_BLOCKS) {
       const guide = contextBlockGuides[type];
+      expect(guide.placement.trim().length).toBeGreaterThan(3);
       expect(guide.summary.trim().length).toBeGreaterThan(10);
     }
   });
@@ -51,6 +53,12 @@ describe('context preset block guides', () => {
       '<doc metadata="{"source":"upload","filename":"群规.txt"}" id="doc-01">',
     );
     expect(requestDocumentExample.content).toContain('群内禁止发布账号、口令和私人联系方式。');
+  });
+
+  it('keeps the description-mode Skill input shape literal', () => {
+    expect(skillDescriptionExample).toContain('<available_skills>');
+    expect(skillDescriptionExample).toContain('<name>web-research</name>');
+    expect(skillDescriptionExample).toContain('</available_skills>');
   });
 
   it('explains every attachment kind supported by the QQBot archive', () => {

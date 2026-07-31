@@ -44,19 +44,14 @@ import {
 } from '@contracts';
 import { jsonBody, rawApi } from '@/api/client';
 import AgentPluginDetail from '@/components/AgentPluginDetail.vue';
+import AgentToolDetail from '@/components/AgentToolDetail.vue';
 import AgentToolPluginDetail from '@/components/AgentToolPluginDetail.vue';
 import EmptyState from '@/components/EmptyState.vue';
-import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
 import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import { useRuntimeStore } from '@/stores/runtime';
 import { useManagedFeatureSettings } from './managed-settings';
 import {
-  buildAgentToolOverride,
-  canAddAgentToolOverride,
   createAgentPolicyScopeOptions,
-  createAgentToolOverrideDraft,
-  hasAgentToolOverride,
-  type AgentPolicyScopeOption,
   type AgentToolOverrideInput,
 } from './agent-tool-policy';
 
@@ -115,9 +110,7 @@ const pluginQuery = ref('');
 
 const toolOverrides = ref<AgentToolOverrideInput[]>([]);
 const savedToolOverridesText = ref('[]');
-const addToolOverrideOpen = ref(false);
-const toolOverrideDraft = reactive(createAgentToolOverrideDraft());
-const toolOverrideScope = ref<AgentPolicyScopeOption | null>(null);
+const toolEditingName = ref<string | null>(null);
 
 const mcpDialogOpen = ref(false);
 const mcpDraft = ref<McpServerDraft>(createMcpDraft());
@@ -151,6 +144,7 @@ const {
   clearSecrets: fileSystemClearSecrets,
   hasChanges: hasFileSystemChanges,
   load: loadFileSystemSettings,
+  reset: resetFileSystemSettings,
   save: saveFileSystemSettings,
 } = useManagedFeatureSettings(fileSystemToolSettingKeys);
 
@@ -158,9 +152,7 @@ const serializedToolOverrides = computed(() => JSON.stringify(toolOverrides.valu
 const toolOverridesChanged = computed(() => (
   serializedToolOverrides.value !== savedToolOverridesText.value
 ));
-const hasUnsavedChanges = computed(() => (
-  toolOverridesChanged.value || hasFileSystemChanges.value
-));
+const hasUnsavedChanges = computed(() => toolOverridesChanged.value);
 const computerSecretsText = computed(() => JSON.stringify({
   e2b: computerE2bKey.value,
   openTerminal: computerOpenTerminalKey.value,
@@ -182,18 +174,10 @@ const computerDirty = computed(() => Boolean(
     || computerSecretsText.value !== savedComputerSecretsText.value
   )
 ));
+const workspaceDirty = computed(() => computerDirty.value || hasFileSystemChanges.value);
 const toolScopeOptions = computed(() => createAgentPolicyScopeOptions(
   policy.value?.defaultScopes ?? [],
   policy.value?.scopes ?? [],
-));
-const toolOverrideDuplicate = computed(() => hasAgentToolOverride(
-  toolOverrides.value,
-  toolOverrideDraft,
-  toolOverrideScope.value,
-));
-const toolOverrideReady = computed(() => (
-  canAddAgentToolOverride(toolOverrideDraft, toolOverrideScope.value)
-  && !toolOverrideDuplicate.value
 ));
 const filteredSkills = computed(() => {
   const query = skillQuery.value.trim().toLowerCase();
@@ -256,6 +240,9 @@ const allToolRows = computed(() => {
   }
   return rows.sort((a, b) => a.title.localeCompare(b.title));
 });
+const toolEditing = computed(() => (
+  allToolRows.value.find((tool) => tool.name === toolEditingName.value) ?? null
+));
 const toolRows = computed(() => {
   const query = toolQuery.value.trim().toLowerCase();
   return allToolRows.value.filter((tool) => (
@@ -469,49 +456,36 @@ async function saveMcpTool(): Promise<void> {
   });
 }
 
-function openToolOverrideDialog(): void {
-  Object.assign(toolOverrideDraft, createAgentToolOverrideDraft());
-  toolOverrideScope.value = null;
-  addToolOverrideOpen.value = true;
-}
-
-function addToolOverride(): void {
-  toolOverrides.value.push(buildAgentToolOverride(toolOverrideDraft, toolOverrideScope.value));
-  addToolOverrideOpen.value = false;
-}
-
 async function saveToolPolicy(): Promise<void> {
-  if (!hasUnsavedChanges.value || runtime.restartInProgress) return;
+  if (!toolOverridesChanged.value || runtime.restartInProgress) return;
   pending.value = 'tool-policy';
   try {
-    if (toolOverridesChanged.value) {
-      await rawApi('/agent/tools/policy', {
-        method: 'PATCH',
-        body: jsonBody(agentToolPolicyPutSchema, { overrides: toolOverrides.value }),
-      });
-    }
-    if (hasFileSystemChanges.value) await saveFileSystemSettings();
-    ElMessage.success('Tools 设置已保存');
+    await rawApi('/agent/tools/policy', {
+      method: 'PATCH',
+      body: jsonBody(agentToolPolicyPutSchema, { overrides: toolOverrides.value }),
+    });
+    ElMessage.success('Tool 调用范围已保存');
     await load();
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : 'Tools 设置保存失败');
+    ElMessage.error(error instanceof Error ? error.message : 'Tool 调用范围保存失败');
   } finally {
     pending.value = '';
   }
 }
 
-async function discardToolPolicy(): Promise<void> {
-  if (!hasUnsavedChanges.value) return;
+async function discardToolPolicy(): Promise<boolean> {
+  if (!toolOverridesChanged.value) return true;
   try {
-    await ElMessageBox.confirm('将丢弃尚未保存的工具权限与文件边界设置。', '放弃修改？', {
+    await ElMessageBox.confirm('将丢弃尚未保存的 Tool 调用范围修改。', '放弃修改？', {
       type: 'warning',
       confirmButtonText: '放弃修改',
       cancelButtonText: '继续编辑',
     });
   } catch {
-    return;
+    return false;
   }
-  await load();
+  toolOverrides.value = JSON.parse(savedToolOverridesText.value) as AgentToolOverrideInput[];
+  return true;
 }
 
 function openSkillSettings(): void {
@@ -639,6 +613,7 @@ async function removeSkill(skill: AgentSkillAdmin): Promise<void> {
 }
 
 function openPlugin(plugin: AgentPluginAdmin): void {
+  toolEditingName.value = null;
   pluginEditing.value = plugin;
   if (plugin.kind !== 'workspace' || !plugin.computer) {
     computerDraft.value = null;
@@ -659,6 +634,20 @@ function openPlugin(plugin: AgentPluginAdmin): void {
   };
   savedComputerDraftText.value = JSON.stringify(computerDraft.value);
   savedComputerSecretsText.value = computerSecretsText.value;
+}
+
+function openTool(name: string): void {
+  if (workspaceDirty.value) {
+    ElMessage.warning('请先保存 Workspace 配置，再进入 Tool 详情。');
+    return;
+  }
+  if (!allToolRows.value.some((tool) => tool.name === name)) return;
+  toolEditingName.value = name;
+}
+
+async function closeTool(): Promise<void> {
+  if (toolOverridesChanged.value && !(await discardToolPolicy())) return;
+  toolEditingName.value = null;
 }
 
 function computerConfigBody(
@@ -682,17 +671,25 @@ function computerConfigBody(
 }
 
 async function saveWorkspacePlugin(): Promise<void> {
-  if (!computerDraft.value || pending.value) return;
+  if (
+    !computerDraft.value
+    || !workspaceDirty.value
+    || pending.value
+    || runtime.restartInProgress
+  ) return;
   pending.value = 'computer-plugin';
   try {
-    await rawApi('/agent/plugins/workspace', {
-      method: 'PUT',
-      body: computerConfigBody(
-        computerDraft.value,
-        secretUpdate(computerE2bKey.value),
-        secretUpdate(computerOpenTerminalKey.value),
-      ),
-    });
+    if (hasFileSystemChanges.value) await saveFileSystemSettings();
+    if (computerDirty.value) {
+      await rawApi('/agent/plugins/workspace', {
+        method: 'PUT',
+        body: computerConfigBody(
+          computerDraft.value,
+          secretUpdate(computerE2bKey.value),
+          secretUpdate(computerOpenTerminalKey.value),
+        ),
+      });
+    }
     ElMessage.success('Workspace Plugin 已保存');
     await refreshAgent();
     const updated = state.value?.plugins.catalog.find((plugin) => plugin.id === 'workspace');
@@ -749,7 +746,7 @@ async function toggleTool(name: string, enabled: boolean): Promise<void> {
 }
 
 async function closePlugin(): Promise<void> {
-  if (computerDirty.value) {
+  if (workspaceDirty.value) {
     try {
       await ElMessageBox.confirm('Workspace 仍有未保存修改。', '返回 Plugin？', {
         type: 'warning',
@@ -760,6 +757,8 @@ async function closePlugin(): Promise<void> {
       return;
     }
   }
+  resetFileSystemSettings();
+  toolEditingName.value = null;
   pluginEditing.value = null;
   computerDraft.value = null;
   savedComputerDraftText.value = '';
@@ -778,20 +777,14 @@ async function probeComputerBackend(type: 'local' | 'e2b' | 'open-terminal'): Pr
   });
 }
 
-function scopeLabel(override: AgentToolOverrideInput): string {
-  return toolScopeOptions.value.find((scope) => (
-    scope.scopeKind === override.scopeKind && scope.scopeId === override.scopeId
-  ))?.label ?? override.scopeId;
-}
-
 function beforeUnload(event: BeforeUnloadEvent): void {
-  if (!hasUnsavedChanges.value && !computerDirty.value) return;
+  if (!hasUnsavedChanges.value && !workspaceDirty.value) return;
   event.preventDefault();
   event.returnValue = '';
 }
 
 onBeforeRouteLeave(async () => {
-  if (!hasUnsavedChanges.value && !computerDirty.value) return true;
+  if (!hasUnsavedChanges.value && !workspaceDirty.value) return true;
   try {
     await ElMessageBox.confirm('Agent 仍有未保存修改。', '离开 Agent？', {
       type: 'warning',
@@ -805,11 +798,11 @@ onBeforeRouteLeave(async () => {
 });
 
 function handleSave(): void {
-  if (pluginEditing.value && computerDirty.value) {
+  if (workspacePlugin.value && workspaceDirty.value) {
     void saveWorkspacePlugin();
     return;
   }
-  if (activeSection.value === 'tools') void saveToolPolicy();
+  if (toolOverridesChanged.value) void saveToolPolicy();
 }
 
 watch(() => route.query.section, (section) => {
@@ -827,20 +820,37 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <AgentToolDetail
+    v-if="toolEditing"
+    v-model:overrides="toolOverrides"
+    :tool="toolEditing"
+    :scope-options="toolScopeOptions"
+    :route-profiles="policy?.routeProfileInfo ?? []"
+    :pending="pending"
+    :back-label="pluginEditing?.displayName ?? 'Tools'"
+    @back="closeTool"
+    @toggle-tool="toggleTool"
+  />
+
   <AgentPluginDetail
-    v-if="workspacePlugin && computerDraft"
+    v-else-if="workspacePlugin && computerDraft"
     v-model:draft="computerDraftModel"
     v-model:e2b-key="computerE2bKey"
     v-model:open-terminal-key="computerOpenTerminalKey"
+    v-model:file-system-draft="fileSystemDraft"
+    v-model:file-system-clear-secrets="fileSystemClearSecrets"
     :plugin="workspacePlugin"
     :tools="pluginToolRows"
+    :file-system-fields="fileSystemFields"
     :pending="pending"
-    :dirty="computerDirty"
+    :dirty="workspaceDirty"
+    :save-disabled="runtime.restartInProgress"
     @back="closePlugin"
     @save="saveWorkspacePlugin"
     @toggle-plugin="setPluginEnabled(workspacePlugin, $event)"
     @probe="probeComputerBackend"
     @toggle-tool="toggleTool"
+    @open-tool="openTool"
     @navigate="navigateFromPlugin"
   />
 
@@ -852,6 +862,7 @@ onBeforeUnmount(() => {
     @back="closePlugin"
     @toggle-plugin="setPluginEnabled(pluginEditing, $event)"
     @toggle-tool="toggleTool"
+    @open-tool="openTool"
     @navigate="navigateFromPlugin"
   />
 
@@ -927,21 +938,21 @@ onBeforeUnmount(() => {
           <div class="section-head">
             <div>
               <h2>Tools</h2>
-              <p>ChatLuna runtime registry 与调用边界。</p>
+              <p>选择 Tool 查看运行状态与调用范围。</p>
             </div>
             <el-input v-model="toolQuery" clearable placeholder="搜索 Tools" class="section-search" />
           </div>
 
           <div v-if="visibleToolRows.length" class="quiet-list">
             <article v-for="tool in visibleToolRows" :key="tool.name" class="quiet-row">
-              <div class="row-select">
+              <button type="button" class="row-select" @click="openTool(tool.name)">
                 <span class="row-icon"><Wrench :size="17" /></span>
                 <span class="row-main">
                   <span class="row-title"><strong>{{ tool.title }}</strong><small class="mono">{{ tool.name }}</small></span>
                   <span class="row-description">{{ tool.description }}</span>
                   <small v-if="tool.managementNote" class="row-error">{{ tool.managementNote }}</small>
                 </span>
-              </div>
+              </button>
               <div class="row-state">
                 <span class="status-line"><i :class="tool.registered && tool.enabled && tool.main ? 'ok' : ''" />{{ tool.registered ? (tool.enabled && tool.main ? 'Agent 中启用' : '已停用') : '未注册' }}</span>
                 <small>{{ tool.routes.join(' · ') }}</small>
@@ -953,50 +964,13 @@ onBeforeUnmount(() => {
                 :aria-label="`${tool.enabled && tool.main ? '停止' : '启动'} ${tool.title}`"
                 @change="toggleTool(tool.name, Boolean($event))"
               />
-              <div v-if="tool.mcpTool" class="row-actions">
-                <el-button text @click="openMcpTool(tool.mcpTool)">详细设置</el-button>
+              <div class="row-actions">
+                <el-button v-if="tool.mcpTool" text @click="openMcpTool(tool.mcpTool)">MCP 设置</el-button>
+                <ChevronRight class="row-chevron" :size="16" />
               </div>
             </article>
           </div>
           <EmptyState v-else title="没有匹配的 Tool" />
-
-          <details class="settings-fold">
-            <summary>
-              <span>范围权限</span>
-              <small>{{ toolOverrides.length }} 个自定义覆盖</small>
-            </summary>
-            <div class="fold-body">
-              <div class="fold-head">
-                <p>只记录偏离默认权限的范围。</p>
-                <el-button @click="openToolOverrideDialog">添加覆盖</el-button>
-              </div>
-              <div v-if="toolOverrides.length" class="quiet-list compact">
-                <div v-for="(override, index) in toolOverrides" :key="`${override.toolName}-${override.routeProfile}-${override.scopeKind}-${override.scopeId}`" class="quiet-row">
-                  <div class="row-main">
-                    <div class="row-title"><strong>{{ override.toolName }}</strong><small>{{ override.routeProfile }}</small></div>
-                    <span class="row-description">{{ scopeLabel(override) }}</span>
-                  </div>
-                  <el-switch v-model="override.enabled" inline-prompt active-text="开" inactive-text="关" />
-                  <div class="row-actions"><el-button text type="danger" @click="toolOverrides.splice(index, 1)">移除</el-button></div>
-                </div>
-              </div>
-              <p v-else class="fold-empty">当前使用默认工具权限。</p>
-            </div>
-          </details>
-
-          <details class="settings-fold">
-            <summary>
-              <span>Workspace 边界</span>
-              <small>访问范围与工作目录</small>
-            </summary>
-            <div class="fold-body">
-              <ManagedSettingsGrid
-                v-model="fileSystemDraft"
-                v-model:clear-secrets="fileSystemClearSecrets"
-                :fields="fileSystemFields"
-              />
-            </div>
-          </details>
         </template>
 
         <template v-else-if="activeSection === 'skills'">
@@ -1102,7 +1076,7 @@ onBeforeUnmount(() => {
     v-if="hasUnsavedChanges"
     :saving="pending === 'tool-policy'"
     :disabled="runtime.restartInProgress"
-    save-label="保存 Tools"
+    save-label="保存调用范围"
     @discard="discardToolPolicy"
     @save="saveToolPolicy"
   />
@@ -1135,11 +1109,6 @@ onBeforeUnmount(() => {
   <el-dialog v-model="mcpToolDialogOpen" title="MCP Tool" width="min(520px, calc(100vw - 32px))">
     <el-form label-position="top"><el-form-item label="启用"><el-switch v-model="mcpToolDraft.enabled" /></el-form-item><el-form-item label="Timeout（秒）"><el-input-number v-model="mcpToolDraft.timeout" :min="1" :max="600" /></el-form-item><el-form-item label="Selector"><el-select v-model="mcpToolDraft.selector" multiple filterable allow-create default-first-option /></el-form-item></el-form>
     <template #footer><el-button @click="mcpToolDialogOpen = false">取消</el-button><el-button type="primary" @click="saveMcpTool">保存</el-button></template>
-  </el-dialog>
-
-  <el-dialog v-model="addToolOverrideOpen" title="添加工具权限覆盖" width="min(520px, calc(100vw - 32px))">
-    <el-form label-position="top"><el-form-item label="Tool"><el-select v-model="toolOverrideDraft.toolName" filterable><el-option v-for="tool in policy?.catalog" :key="tool.toolName" :label="tool.title || tool.toolName" :value="tool.toolName" /></el-select></el-form-item><el-form-item label="Route"><el-select v-model="toolOverrideDraft.routeProfile"><el-option v-for="profile in policy?.routeProfiles" :key="profile" :label="profile" :value="profile" /></el-select></el-form-item><el-form-item label="范围" :error="toolOverrideDuplicate ? '这个范围已有相同覆盖' : ''"><el-select v-model="toolOverrideScope" value-key="key" filterable><el-option v-for="scope in toolScopeOptions" :key="scope.key" :label="scope.label" :value="scope" /></el-select></el-form-item><el-form-item label="允许"><el-switch v-model="toolOverrideDraft.enabled" /></el-form-item></el-form>
-    <template #footer><el-button @click="addToolOverrideOpen = false">取消</el-button><el-button type="primary" :disabled="!toolOverrideReady" @click="addToolOverride">添加</el-button></template>
   </el-dialog>
 
   <el-dialog v-model="skillSettingsOpen" title="Skills 来源" width="min(600px, calc(100vw - 32px))">
@@ -1177,10 +1146,9 @@ onBeforeUnmount(() => {
 .quiet-list{border-top:1px solid var(--line)}.quiet-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:12px;min-height:70px;padding:9px 6px;border-bottom:1px solid var(--line);transition:background-color .14s ease}.quiet-row:hover{background:color-mix(in srgb,var(--surface) 88%,var(--accent) 12%)}.quiet-list.compact .quiet-row{min-height:56px}.row-select{display:flex;align-items:center;gap:12px;min-width:0;padding:3px 0;border:0;background:transparent;color:inherit;text-align:left}.row-select:is(button){cursor:pointer}.row-icon{display:grid;width:38px;height:38px;flex:0 0 38px;place-items:center;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink)}
 .loader-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:16px;margin-bottom:20px;padding:13px 6px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.loader-row>div{display:flex;min-width:0;flex-direction:column;gap:4px}.loader-row strong{font-size:13px}.loader-row span{color:var(--muted);font-size:11px}
 .row-main{display:flex;min-width:0;flex-direction:column;gap:4px}.row-title{display:flex;align-items:baseline;gap:9px;min-width:0}.row-title strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.row-title small,.row-meta{color:var(--muted);font-size:10px}.row-description{overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.row-error{overflow:hidden;color:#a85252;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.row-state{display:flex;min-width:82px;flex-direction:column;align-items:flex-end;color:var(--muted);font-size:11px}.row-state small{margin-top:3px}.status-line{display:flex;align-items:center;gap:6px;white-space:nowrap}.status-line i{width:7px;height:7px;border-radius:50%;background:#b5bcc5}.status-line i.ok{background:#3a8b68}.status-line i.bad{background:#c45d5d}.row-actions{display:flex;align-items:center;flex:0 0 auto}.row-actions :deep(.el-button){margin-left:0}.row-chevron{color:var(--muted)}.mono{font-family:var(--font-mono,ui-monospace,monospace)}
-.settings-fold{margin-top:24px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.settings-fold+.settings-fold{margin-top:-1px}.settings-fold summary{display:flex;align-items:center;justify-content:space-between;padding:16px 4px;cursor:pointer;list-style:none;font-size:13px;font-weight:650}.settings-fold summary::-webkit-details-marker{display:none}.settings-fold summary small{color:var(--muted);font-size:11px;font-weight:400}.fold-body{padding:2px 4px 20px}.fold-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.fold-head p,.fold-empty{margin:0;color:var(--muted);font-size:12px}.settings-fold :deep(.settings-grid){padding-bottom:4px}
 .load-error{display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding:10px 12px;border-left:2px solid #c45d5d;background:#fff7f7;color:#8f4444;font-size:12px}
 .form-grid{display:grid;gap:14px}.form-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.dialog-form :deep(.el-select),.dialog-form :deep(.el-input-number){width:100%}.secret-section{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}.inline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.secret-row{display:grid;grid-template-columns:1fr 1.5fr auto;gap:8px;margin-top:8px}.switch-line{display:flex;align-items:center;justify-content:space-between;min-height:42px;border-bottom:1px solid var(--line);font-size:13px}.check-grid{display:flex;gap:16px;margin:12px 0 18px;flex-wrap:wrap}.content-editor :deep(textarea){font-family:var(--font-mono,ui-monospace,monospace);font-size:12px;line-height:1.6}
 .section-fade-enter-active,.section-fade-leave-active{transition:opacity .14s ease,transform .14s ease}.section-fade-enter-from{opacity:0;transform:translateY(4px)}.section-fade-leave-to{opacity:0;transform:translateY(-2px)}
 @media(max-width:800px){.section-head{align-items:stretch;flex-direction:column}.section-actions{justify-content:flex-start}.section-search{width:100%}.quiet-row{grid-template-columns:minmax(0,1fr) auto}.row-select{grid-column:1/-1}.row-state{min-width:0;align-items:flex-start}.row-actions{justify-self:end}.row-chevron{display:none}.form-grid.two{grid-template-columns:1fr}}
-@media(max-width:520px){.agent-tabs{gap:20px}.agent-header p{max-width:250px}.section-actions{align-items:stretch;flex-direction:column}.section-actions>.el-button{margin-left:0}.quiet-row{grid-template-columns:1fr auto}.row-description{white-space:normal}.secret-row{grid-template-columns:1fr}.fold-head{align-items:flex-start;flex-direction:column}}
+@media(max-width:520px){.agent-tabs{gap:20px}.agent-header p{max-width:250px}.section-actions{align-items:stretch;flex-direction:column}.section-actions>.el-button{margin-left:0}.quiet-row{grid-template-columns:1fr auto}.row-description{white-space:normal}.secret-row{grid-template-columns:1fr}}
 </style>

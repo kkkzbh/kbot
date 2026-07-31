@@ -68,6 +68,11 @@ export function useManagedFeatureSettings(ownedKeys: readonly string[]) {
     return true;
   }
 
+  function reset(): void {
+    draft.value = { ...original.value };
+    clearSecrets.value = Object.fromEntries(fields.value.map((field) => [field.key, false]));
+  }
+
   return {
     fields,
     draft,
@@ -75,6 +80,7 @@ export function useManagedFeatureSettings(ownedKeys: readonly string[]) {
     loading,
     hasChanges,
     load,
+    reset,
     save,
   };
 }

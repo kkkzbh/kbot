@@ -211,10 +211,7 @@ async function toggleExample(): Promise<void> {
 <template>
   <section class="runtime-inspector">
     <header class="runtime-head">
-      <div>
-        <h2>实际请求示例</h2>
-        <p>选择一个会话，用最近一次请求验证上面的通用规则；数据捕获于 <code>before_provider_serialization</code>。</p>
-      </div>
+      <h2>请求示例</h2>
       <div class="runtime-actions">
         <el-select
           v-if="exampleOpen"
@@ -233,12 +230,12 @@ async function toggleExample(): Promise<void> {
           />
         </el-select>
         <el-button v-if="exampleOpen" :loading="loading" @click="refresh">刷新</el-button>
-        <el-button @click="toggleExample">{{ exampleOpen ? '收起示例' : '选择请求示例' }}</el-button>
+        <el-button text @click="toggleExample">{{ exampleOpen ? '收起' : '查看最近请求' }}</el-button>
       </div>
     </header>
 
     <p v-if="exampleOpen" class="capture-note">
-      顺序、message fields、tool-call 参数与 schema 按捕获结果展示；Secret 字段、URL credentials、二进制内容和 data URL 会被安全替换。这里是 provider adapter 序列化前的 semantic payload，不伪造 HTTP wire payload。
+      <code>before_provider_serialization</code> 的 semantic payload；Secret、credentials 与二进制内容已替换。
     </p>
 
     <template v-if="exampleOpen && snapshot">
@@ -253,7 +250,7 @@ async function toggleExample(): Promise<void> {
 
       <section class="raw-section">
         <div class="section-title">
-          <div><h2>Messages</h2><p>以下顺序就是这次语义请求的最终消息顺序。</p></div>
+          <h2>Messages</h2>
           <el-button text @click="showSemanticPayload = !showSemanticPayload">
             {{ showSemanticPayload ? '收起捕获 JSON' : '捕获 JSON' }}
           </el-button>
@@ -284,7 +281,7 @@ async function toggleExample(): Promise<void> {
 
       <section class="raw-section">
         <div class="section-title">
-          <div><h2>Tools</h2><p>名称、description 与 input schema 会作为 provider tools 发送；开关修改未来请求，不改写当前历史快照。</p></div>
+          <h2>Tools</h2>
           <div class="secondary-links"><el-button text @click="openAgent('mcp')">管理 MCP</el-button><el-button text @click="openAgent('skills')">管理 Skills</el-button></div>
         </div>
         <div v-if="snapshot.tools.length" class="raw-list">
@@ -315,5 +312,5 @@ async function toggleExample(): Promise<void> {
 </template>
 
 <style scoped>
-.runtime-inspector{display:grid;gap:28px;max-width:1120px;margin:42px auto 0;padding-top:28px;border-top:1px solid var(--line);color:var(--ink)}.runtime-head{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:6px 2px 0}.runtime-head h2{margin:0;font-size:18px;letter-spacing:-.02em}.runtime-head p,.section-title p{margin:6px 0 0;color:var(--muted);font-size:12px}.runtime-head code{font-size:11px}.runtime-actions{display:flex;align-items:center;gap:8px}.runtime-actions .el-select{width:280px}.capture-note{margin:0;padding:11px 14px;border-left:2px solid #8090a6;background:color-mix(in srgb,var(--surface) 94%,#8090a6 6%);color:var(--muted);font-size:11px;line-height:1.65}.request-meta{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;margin:0;border:1px solid var(--line);background:var(--line)}.request-meta div{min-width:0;padding:11px 12px;background:var(--surface)}.request-meta dt{color:var(--muted);font-size:9px;text-transform:uppercase}.request-meta dd{overflow:hidden;margin:4px 0 0;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.raw-section{display:grid;gap:13px}.section-title{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.section-title h2,.empty-snapshot h2{margin:0;font-size:16px;letter-spacing:-.02em}.secondary-links{display:flex;gap:2px}.raw-list{border-top:1px solid var(--line)}.raw-item{position:relative;border-bottom:1px solid var(--line)}.raw-item-head{display:flex;width:100%;align-items:center;justify-content:space-between;gap:18px;min-height:55px;padding:8px 6px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.raw-item-head>span{display:flex;align-items:baseline;gap:9px;min-width:0}.raw-item-head strong{font-size:12px}.raw-item-head em{color:var(--accent);font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;font-style:normal}.raw-item-head small,.raw-item-head>span:last-child{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.raw-item pre,.raw-payload{max-height:480px;margin:0 6px 12px;padding:14px;overflow:auto;border:1px solid var(--line);border-radius:7px;background:#111418;color:#d7dde6;font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.raw-payload{max-height:640px;margin:0}.tool-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.tool-item pre{grid-column:1/-1}.tool-item>.el-switch{margin-right:6px}.excluded-toggle{justify-self:start;padding:2px 0;border:0;background:transparent;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}.excluded-list{opacity:.72}.empty-line{margin:0;padding:18px 6px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}.empty-snapshot{display:grid;gap:10px;padding:42px 4px;border-top:1px solid var(--line)}.empty-snapshot>p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}@media(max-width:900px){.request-meta{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:680px){.runtime-head,.section-title{align-items:stretch;flex-direction:column}.runtime-actions{align-items:stretch}.runtime-actions .el-select{width:100%}.request-meta{grid-template-columns:repeat(2,minmax(0,1fr))}.raw-item-head>span:first-child{align-items:flex-start;flex-direction:column;gap:3px}}
+.runtime-inspector{display:grid;gap:22px;max-width:1120px;margin:22px auto 0;padding-top:14px;border-top:1px solid var(--line);color:var(--ink)}.runtime-head{display:flex;align-items:center;justify-content:space-between;gap:24px}.runtime-head h2{margin:0;font-size:13px;letter-spacing:-.01em}.runtime-head code{font-size:11px}.runtime-actions{display:flex;align-items:center;gap:8px}.runtime-actions .el-select{width:280px}.capture-note{margin:0;padding:9px 12px;border-left:2px solid #8090a6;background:color-mix(in srgb,var(--surface) 94%,#8090a6 6%);color:var(--muted);font-size:10px;line-height:1.6}.request-meta{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;margin:0;border:1px solid var(--line);background:var(--line)}.request-meta div{min-width:0;padding:11px 12px;background:var(--surface)}.request-meta dt{color:var(--muted);font-size:9px;text-transform:uppercase}.request-meta dd{overflow:hidden;margin:4px 0 0;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.raw-section{display:grid;gap:13px}.section-title{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.section-title h2,.empty-snapshot h2{margin:0;font-size:16px;letter-spacing:-.02em}.secondary-links{display:flex;gap:2px}.raw-list{border-top:1px solid var(--line)}.raw-item{position:relative;border-bottom:1px solid var(--line)}.raw-item-head{display:flex;width:100%;align-items:center;justify-content:space-between;gap:18px;min-height:55px;padding:8px 6px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.raw-item-head>span{display:flex;align-items:baseline;gap:9px;min-width:0}.raw-item-head strong{font-size:12px}.raw-item-head em{color:var(--accent);font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;font-style:normal}.raw-item-head small,.raw-item-head>span:last-child{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.raw-item pre,.raw-payload{max-height:480px;margin:0 6px 12px;padding:14px;overflow:auto;border:1px solid var(--line);border-radius:7px;background:#111418;color:#d7dde6;font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.raw-payload{max-height:640px;margin:0}.tool-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.tool-item pre{grid-column:1/-1}.tool-item>.el-switch{margin-right:6px}.excluded-toggle{justify-self:start;padding:2px 0;border:0;background:transparent;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}.excluded-list{opacity:.72}.empty-line{margin:0;padding:18px 6px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}.empty-snapshot{display:grid;gap:10px;padding:42px 4px;border-top:1px solid var(--line)}.empty-snapshot>p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}@media(max-width:900px){.request-meta{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:680px){.runtime-head,.section-title{align-items:stretch;flex-direction:column}.runtime-actions{align-items:stretch}.runtime-actions .el-select{width:100%}.request-meta{grid-template-columns:repeat(2,minmax(0,1fr))}.raw-item-head>span:first-child{align-items:flex-start;flex-direction:column;gap:3px}}
 </style>

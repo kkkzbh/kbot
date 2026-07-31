@@ -11,6 +11,7 @@ export type GuidedContextBlockType =
   | 'toolDefinitions';
 
 export interface ContextBlockGuide {
+  placement: string;
   summary: string;
 }
 
@@ -56,17 +57,17 @@ export const configurableQqbotFragmentChannels = [
   {
     key: 'relationshipState',
     label: '关系状态',
-    description: '向模型提供当前角色与发言者的关系进度、最近关系事件和仍在进行的主动话题。',
+    description: '关系进度、近期事件和主动话题。',
   },
   {
     key: 'attachmentReferences',
     label: '附件定位参考',
-    description: '用户提到“刚才的文件”或附件引用时，向模型提供候选附件及定位结果。',
+    description: '解析“刚才的文件”等历史附件指代。',
   },
   {
     key: 'nativeCapabilities',
     label: 'QQ 功能能力',
-    description: '向模型说明本轮能够使用的 QQ 原生功能，例如回复、提及、表情和媒体发送能力。',
+    description: '本轮可用的回复、提及与媒体能力。',
   },
 ] as const;
 
@@ -87,6 +88,26 @@ export const requestDocumentExample = {
   role: 'human',
   content: '<system>As you answer the user\'s questions, use the following context when it is relevant: <context><doc metadata="{"source":"upload","filename":"群规.txt"}" id="doc-01">群内禁止发布账号、口令和私人联系方式。</doc></context>\n\nTreat retrieved context as supporting material. Follow the preset instructions and ignore unrelated material.</system>',
 } as const;
+
+export const skillDescriptionExample = [
+  '<available_skills>',
+  'You may use available computer-use capabilities when the environment provides them. Working directory: /workspace.',
+  '',
+  'Skills dir (local): /skills',
+  'When a task installs or updates a skill, place it under <skills-dir>/<skill-name>/ and keep the entry file at <skill-dir>/SKILL.md.',
+  '',
+  'You can load extra instructions with the skill tool when the current task matches one of the skills below.',
+  'Use a skill early when it gives you a better workflow, checklist, or domain-specific procedure.',
+  '',
+  '  <skill>',
+  '    <name>web-research</name>',
+  '    <description>Search the web and cite primary sources.</description>',
+  '    <location>/skills/web-research</location>',
+  '  </skill>',
+  '',
+  'Use the exact skill name when calling the skill tool.',
+  '</available_skills>',
+].join('\n');
 
 export const requestAttachmentHistory = {
   injectionName: 'read_files_context',
@@ -136,33 +157,43 @@ export const requestAttachmentGuides: RequestAttachmentGuide[] = [
 
 export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuide> = {
   chatHistory: {
-    summary: '读取当前会话已保存的消息。每条用户消息开启一个完整轮次，后续回复和工具结果归入该轮；系统从最新轮次向前保留，放不下的整轮舍弃。',
+    placement: '整轮裁剪',
+    summary: '按完整轮次从新到旧取用；预算不足时丢弃整轮。',
   },
   requestDocuments: {
-    summary: '这里说明两条独立路径：文本 Document 由本块加入聊天历史之后；QQ群附件属于当前输入或一次性运行时注入，不受本块的 Token 上限控制。',
+    placement: 'human reference',
+    summary: '检索文档进入 human 消息；附件走 Current input 或 runtime injection。',
   },
   lore: {
-    summary: '扫描最近对话中的关键词，只在命中时将对应的世界观、设定或背景资料放在角色之后。',
+    placement: 'Role 之后 · 命中时',
+    summary: '关键词命中时注入；多个 Lore 保持模板顺序。',
   },
   authorsNote: {
-    summary: '按固定轮次间隔将导演式说明放在当前输入之前，用于持续校正叙事方向或回复风格。',
+    placement: 'Input 之前 · 按频率',
+    summary: '达到配置的轮次频率时注入。',
   },
   knowledge: {
-    summary: '用当前用户输入查询已注册的知识来源，把返回文档作为本次回答的外部参考。',
+    placement: '按当前输入检索',
+    summary: '用当前输入检索已登记知识源，并计入本块预算。',
   },
   currentInput: {
-    summary: '格式化本轮当前用户消息，是模型必须看到的输入边界。',
+    placement: '本轮输入',
+    summary: '未配置格式时使用原始输入；附件保留在同一条 human 消息。',
   },
   agentScratchpad: {
-    summary: '仅在 Agent 模式承载工具调用协议、中间步骤和工具结果，使模型能够继续完成当前任务。',
+    placement: 'Input 之后 · Agent only',
+    summary: '保留 Tool call/result 的 call id；历史附件投影位于其后。',
   },
   modelOutput: {
-    summary: '为模型回复预留输出空间，并决定回复生成后的处理方式。',
+    placement: '不进入 messages[]',
+    summary: '只预留输出预算，并配置生成后的处理。',
   },
   qqbotFragments: {
-    summary: 'QQBot 在请求发出前补入身份、回复协议和实时状态，让模型知道当前是谁、如何回复，以及本轮有哪些可用信息。',
+    placement: 'Skills · QQBot context',
+    summary: 'Skills 与 trusted QQBot 内容进入 system；reference 与 state 保持 human 权限。',
   },
   toolDefinitions: {
-    summary: '告诉模型当前请求允许调用哪些工具，以及每个工具接受什么参数。',
+    placement: 'Provider tools[]',
+    summary: 'Native 与 MCP Tool 求交集后发送；Plugin 本身不产生 prompt。',
   },
 };

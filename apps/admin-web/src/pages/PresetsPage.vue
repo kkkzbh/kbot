@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   computed,
-  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -10,7 +9,6 @@ import {
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ApiError } from '@/api/client';
-import ContextRulesView from '@/components/ContextRulesView.vue';
 import ContextRuntimeInspector from '@/components/ContextRuntimeInspector.vue';
 import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import {
@@ -56,10 +54,9 @@ import {
   chatHistoryExample,
   contextBlockGuides,
   requestAttachmentHistory,
-  requestAttachmentGuides,
   requestDocumentExample,
+  skillDescriptionExample,
   configurableQqbotFragmentChannels,
-  qqbotFragmentRules,
   type GuidedContextBlockType,
 } from './context-preset-guides';
 
@@ -67,7 +64,6 @@ type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemor
 type TokenLimitChoice = 'auto' | '1024' | '2048' | '4096' | '8192' | 'custom';
 
 const router = useRouter();
-const viewMode = ref<'structure' | 'template'>('structure');
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
 const roleCatalog = ref<RolePresetCatalogResponse | null>(null);
 const selectedContextId = ref('');
@@ -112,7 +108,7 @@ const blockLabels: Record<ResolvedContextBlock['type'], string> = {
   currentInput: '当前输入',
   agentScratchpad: 'Agent Scratchpad',
   modelOutput: '模型输出',
-  qqbotFragments: 'QQBot Fragments',
+  qqbotFragments: 'Runtime 指令',
   toolDefinitions: '工具定义',
 };
 
@@ -152,6 +148,14 @@ const selectedBlockGuide = computed(() => {
   if (!type || type === 'role') return null;
   return contextBlockGuides[type as GuidedContextBlockType];
 });
+const selectedBlockPlacement = computed(() => (
+  selectedBlockType.value === 'role' ? '消息开头' : selectedBlockGuide.value?.placement ?? ''
+));
+const selectedBlockRule = computed(() => (
+  selectedBlockType.value === 'role'
+    ? 'Role preset 按消息原顺序展开，并组成模型输入的开头。'
+    : selectedBlockGuide.value?.summary ?? ''
+));
 const selectedBudgetLimitLabel = computed(() => {
   const block = selectedBudgetBlock.value;
   if (!block) return '';
@@ -236,6 +240,20 @@ function clone<T>(value: T): T {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function blockPlacement(type: ResolvedContextBlock['type']): string {
+  return type === 'role'
+    ? '消息开头'
+    : contextBlockGuides[type as GuidedContextBlockType].placement;
+}
+
+function blockOrderLabel(type: ResolvedContextBlock['type'], index: number): string {
+  if (type === 'toolDefinitions') return '↗';
+  const parallelBefore = preview.value?.blocks
+    .slice(0, index)
+    .filter((block) => block.type === 'toolDefinitions').length ?? 0;
+  return String(index + 1 - parallelBefore).padStart(2, '0');
 }
 
 function apiErrorDetails(error: unknown): Record<string, unknown> | null {
@@ -925,16 +943,6 @@ function beforeUnload(event: BeforeUnloadEvent): void {
   event.returnValue = '';
 }
 
-async function editBlockFromRules(id: string): Promise<void> {
-  selectedBlockId.value = id;
-  viewMode.value = 'template';
-  await nextTick();
-}
-
-async function navigateAgentFromRules(section: 'mcp' | 'skills' | 'tools'): Promise<void> {
-  await router.push({ name: 'agent', query: { section } });
-}
-
 watch(contextDraft, schedulePreview, { deep: true });
 
 onBeforeRouteLeave(async () => {
@@ -960,70 +968,17 @@ onBeforeUnmount(() => {
     <header class="context-page-head">
       <div>
         <h1>上下文</h1>
-        <p>查看模型实际输入，或编辑生成这些输入的模板。</p>
+        <p>按输入顺序排列；选择一项即可编辑。</p>
       </div>
-      <nav class="context-view-tabs" aria-label="上下文视图">
-        <button type="button" :class="{ active: viewMode === 'structure' }" @click="viewMode = 'structure'">上下文结构</button>
-        <button type="button" :class="{ active: viewMode === 'template' }" @click="viewMode = 'template'">模板配置</button>
-      </nav>
+      <div class="context-budget">
+        <span>Input <strong>{{ preview?.inputBudgetTokens ?? 'runtime' }}</strong></span>
+        <span>Output <strong>{{ preview?.outputBudgetTokens ?? '—' }}</strong></span>
+      </div>
     </header>
 
-    <template v-if="viewMode === 'structure'">
-      <section class="structure-preset-bar">
-        <span>当前模板</span>
-        <el-select
-          :model-value="selectedContextId"
-          filterable
-          :loading="loading"
-          aria-label="选择用于通用规则展示的上下文模板"
-          @change="selectContext"
-        >
-          <el-option v-for="item in contextSummaries" :key="item.id" :value="item.id" :label="item.displayName" />
-        </el-select>
-        <small>{{ contextCatalog?.globalDefaultContextPresetId === selectedContextId ? '全局默认' : '非默认模板' }}</small>
-      </section>
-      <ContextRulesView
-        :preset="contextDraft"
-        :role="roleDraft"
-        :preview="preview"
-        @edit-block="editBlockFromRules"
-        @navigate-agent="navigateAgentFromRules"
-      />
-      <section v-if="fragmentPolicyDraft" class="runtime-fragment-config">
-        <div class="runtime-config-head">
-          <div>
-            <h2>QQBot Fragments</h2>
-            <p>这些开关直接决定所选上下文模板允许注入的 QQBot runtime 片段。</p>
-          </div>
-          <el-select
-            :model-value="selectedContextId"
-            filterable
-            :loading="loading"
-            aria-label="选择片段配置的上下文模板"
-            @change="selectContext"
-          >
-            <el-option v-for="item in contextSummaries" :key="item.id" :value="item.id" :label="item.displayName" />
-          </el-select>
-        </div>
-        <div class="runtime-fragment-list">
-          <label v-for="channel in configurableQqbotFragmentChannels" :key="channel.key">
-            <span><strong>{{ channel.label }}</strong><small>{{ channel.description }}</small></span>
-            <el-switch v-model="fragmentPolicyDraft[channel.key]" />
-          </label>
-        </div>
-        <div class="runtime-config-actions">
-          <small>{{ fragmentPolicyState?.source === 'default' ? '使用默认值' : '已保存自定义配置' }}</small>
-          <el-button :disabled="fragmentPolicyState?.source === 'default'" @click="resetFragmentPolicy">恢复默认</el-button>
-          <el-button type="primary" :disabled="!fragmentPolicyDirty" :loading="savingFragmentPolicy" @click="saveFragmentPolicy">保存</el-button>
-        </div>
-      </section>
-      <ContextRuntimeInspector />
-    </template>
-
-    <template v-else>
-    <section class="preset-bar panel">
+    <section class="preset-bar">
       <div class="preset-picker">
-        <span class="picker-label">上下文预设</span>
+        <span class="picker-label">模板</span>
         <el-select
           :model-value="selectedContextId"
           filterable
@@ -1031,34 +986,33 @@ onBeforeUnmount(() => {
           aria-label="选择上下文预设"
           @change="selectContext"
         >
-          <el-option
-            v-for="item in contextSummaries"
-            :key="item.id"
-            :value="item.id"
-            :label="item.displayName"
-          >
-            <span>{{ item.displayName }}</span>
-          </el-option>
+          <el-option v-for="item in contextSummaries" :key="item.id" :value="item.id" :label="item.displayName" />
         </el-select>
       </div>
       <div class="preset-actions-inline">
-        <el-button @click="createContext">新建</el-button>
+        <span v-if="contextCatalog?.globalDefaultContextPresetId === selectedContextId" class="preset-status">全局默认</span>
+        <el-button text @click="createContext">新建</el-button>
         <el-button
-          :type="contextCatalog?.globalDefaultContextPresetId === selectedContextId ? 'success' : 'default'"
+          v-if="contextCatalog?.globalDefaultContextPresetId !== selectedContextId"
+          text
           :disabled="!selectedContextId || contextCatalog?.globalDefaultContextPresetId === selectedContextId"
           :loading="mutating"
           @click="makeDefault"
         >
-          {{ contextCatalog?.globalDefaultContextPresetId === selectedContextId ? '当前全局默认' : '设为全局默认' }}
+          设为默认
         </el-button>
         <el-button
           v-if="contextDetail?.hasOverride"
+          text
           :loading="mutating"
           @click="revertCurrentContext"
         >
           恢复 bundled
         </el-button>
         <el-button
+          v-if="contextDetail?.source === 'runtime' && !contextDetail.hasOverride"
+          text
+          type="danger"
           :disabled="!contextDetail || contextDetail.source !== 'runtime' || contextDetail.hasOverride"
           :loading="mutating"
           @click="removeCurrentContext"
@@ -1069,7 +1023,7 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="contextDraft" class="workbench-grid">
-      <section class="stack-panel panel" aria-label="上下文栈">
+      <section class="stack-panel" aria-label="上下文输入顺序">
         <div v-if="previewError" class="preview-error" role="alert">
           <strong>草稿无法编译</strong>
           <span>{{ previewError.message }}</span>
@@ -1080,7 +1034,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-else class="context-stack">
           <article
-            v-for="block in preview.blocks"
+            v-for="(block, index) in preview.blocks"
             :key="block.id"
             class="stack-block"
             :class="{
@@ -1101,7 +1055,13 @@ onBeforeUnmount(() => {
             @drop="dropOn(block, $event)"
             @dragend="draggingBlockId = null"
           >
-            <strong>{{ blockLabels[block.type] }}</strong>
+            <span class="stack-index">{{ blockOrderLabel(block.type, index) }}</span>
+            <span class="stack-copy">
+              <strong>{{ blockLabels[block.type] }}</strong>
+              <small>{{ blockPlacement(block.type) }}</small>
+            </span>
+            <span v-if="!block.enabled" class="stack-state">关闭</span>
+            <span v-else-if="block.source === 'runtime'" class="stack-state">Runtime</span>
           </article>
         </div>
 
@@ -1117,9 +1077,12 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="editor-panel panel">
+      <section class="editor-panel">
         <div class="panel-head editor-head">
-          <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
+          <div>
+            <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
+            <small v-if="selectedBlockPlacement">{{ selectedBlockPlacement }}</small>
+          </div>
           <div class="block-tools">
             <el-button v-if="canDuplicateSelected" size="small" @click="duplicateSelectedBlock">
               复制
@@ -1131,72 +1094,56 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="selectedBlockType" class="editor-body">
-          <section v-if="selectedBlockGuide" class="block-guide">
-            <p class="guide-summary">{{ selectedBlockGuide.summary }}</p>
+          <p v-if="selectedBlockRule" class="block-rule">{{ selectedBlockRule }}</p>
+          <section
+            v-if="selectedBlockType === 'chatHistory' || selectedBlockType === 'requestDocuments' || selectedBlockType === 'agentScratchpad'"
+            class="block-guide"
+          >
             <template v-if="selectedBlockType === 'chatHistory'">
-              <div class="history-example">
-                <div
-                  v-for="message in chatHistoryExample.messages"
-                  :key="message.role"
-                  class="history-message"
-                >
-                  <span :class="['history-role', `is-${message.role}`]">{{ message.role }}</span>
-                  <code>{{ message.content }}</code>
+              <details class="input-example">
+                <summary>输入示例</summary>
+                <div class="history-example">
+                  <div
+                    v-for="message in chatHistoryExample.messages"
+                    :key="message.role"
+                    class="history-message"
+                  >
+                    <span :class="['history-role', `is-${message.role}`]">{{ message.role }}</span>
+                    <code>{{ message.content }}</code>
+                  </div>
                 </div>
-              </div>
+              </details>
             </template>
             <template v-else-if="selectedBlockType === 'requestDocuments'">
-              <section class="document-guide-section">
-                <h3>文本 Document</h3>
-                <p>运行时检索到的文本资料会作为一条 user message 放在聊天历史之后。每份资料包含 id、metadata 和正文；空文档跳过，达到“文档 Token 上限”后停止加入后续文档。</p>
+              <details class="input-example">
+                <summary>输入示例</summary>
                 <div class="history-message">
                   <span class="history-role">{{ requestDocumentExample.role }}</span>
                   <code>{{ requestDocumentExample.content }}</code>
                 </div>
-              </section>
-
-              <section class="document-guide-section">
-                <h3>历史附件如何出现和回放</h3>
-                <p>附件发送时会被归档并获得引用 ID。用户后来提到该 ID、文件名或“刚才那张图”时，QQBot 在当前会话内定位附件，并生成一条只对本次请求有效的 system message。</p>
-                <p>这条消息名为 <code>{{ requestAttachmentHistory.injectionName }}</code>，位于 <code>{{ requestAttachmentHistory.stage }}</code>：在 Agent Scratchpad 之后、模型请求发出之前。它不属于聊天历史，也不写回聊天记录。</p>
+              </details>
+            </template>
+            <template v-else-if="selectedBlockType === 'agentScratchpad'">
+              <details class="input-example">
+                <summary>历史附件投影示例</summary>
                 <div class="history-message">
                   <span class="history-role is-system">{{ requestAttachmentHistory.role }}</span>
                   <code>{{ requestAttachmentHistory.projection }}</code>
                 </div>
-                <p>这一步只让模型看到引用信息，以及 PDF、文本或音频已经提取的文字。需要查看图片、PDF 版式、视频或其他原件时，模型先调用：</p>
-                <code class="tool-call">{{ requestAttachmentHistory.replayCall }}</code>
-                <p>该工具返回归档文件的 URL 和更长的提取文本；文件原件还需再调用：</p>
-                <code class="tool-call">{{ requestAttachmentHistory.readCall }}</code>
-                <p><code>read_files</code> 读取成功后，原件作为新的多模态消息加入下一次 Agent 推理。单独调用回放工具只取得句柄，不代表模型已经读取文件。</p>
-              </section>
-
-              <section class="document-guide-section attachment-types">
-                <h3>支持的附件</h3>
-                <div
-                  v-for="item in requestAttachmentGuides"
-                  :key="item.kind"
-                  class="attachment-type"
-                >
-                  <strong>{{ item.label }}</strong>
-                  <p>{{ item.description }}</p>
-                </div>
-              </section>
+              </details>
             </template>
           </section>
 
           <template v-if="selectedResolvedBlock?.source === 'runtime'">
             <template v-if="selectedResolvedBlock.type === 'qqbotFragments'">
-              <section class="fragment-rules" aria-label="QQBot 片段规则">
-                <div
-                  v-for="rule in qqbotFragmentRules"
-                  :key="rule.label"
-                  class="fragment-rule"
-                >
-                  <strong>{{ rule.label }}</strong>
-                  <p>{{ rule.description }}</p>
-                </div>
-              </section>
-
+              <div class="runtime-link-row">
+                <span><strong>Skills</strong><small>description mode 进入 &lt;available_skills&gt;；full mode 进入 &lt;skill_content&gt;。</small></span>
+                <el-button text @click="router.push('/intelligence/agent?section=skills')">管理</el-button>
+              </div>
+              <details class="input-example runtime-example">
+                <summary>Skill 输入示例</summary>
+                <pre>{{ skillDescriptionExample }}</pre>
+              </details>
               <section v-if="fragmentPolicyDraft" class="fragment-policy">
                 <div
                   v-for="channel in configurableQqbotFragmentChannels"
@@ -1215,15 +1162,8 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="fragment-policy-actions">
                   <el-button
-                    :disabled="!fragmentPolicyDirty"
-                    :loading="savingFragmentPolicy"
-                    type="primary"
-                    @click="saveFragmentPolicy"
-                  >
-                    保存片段设置
-                  </el-button>
-                  <el-button
-                    :disabled="fragmentPolicyState?.source === 'default'"
+                    v-if="fragmentPolicyState?.source !== 'default'"
+                    text
                     :loading="savingFragmentPolicy"
                     @click="resetFragmentPolicy"
                   >
@@ -1234,10 +1174,11 @@ onBeforeUnmount(() => {
             </template>
             <div v-else class="runtime-actions">
               <el-button
+                text
                 v-if="selectedResolvedBlock.type === 'toolDefinitions'"
                 @click="router.push('/intelligence/agent?section=tools')"
               >
-                打开工具策略
+                管理 Tools
               </el-button>
             </div>
           </template>
@@ -1458,7 +1399,7 @@ onBeforeUnmount(() => {
     <div v-else-if="!loading" class="panel empty-workbench">
       当前没有可编辑的上下文预设。
     </div>
-    </template>
+    <ContextRuntimeInspector />
     <PendingChangesBar
       v-if="hasDirtyResources"
       :saving="savingContext || savingRole"
@@ -1479,11 +1420,11 @@ onBeforeUnmount(() => {
 
 .context-page-head {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 24px;
   max-width: 1120px;
-  margin: 0 auto 28px;
+  margin: 0 auto 18px;
 }
 
 .context-page-head h1 {
@@ -1492,151 +1433,36 @@ onBeforeUnmount(() => {
   letter-spacing: -.03em;
 }
 
-.context-page-head p,
-.runtime-config-head p {
+.context-page-head p {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 12px;
 }
 
-.context-view-tabs {
+.context-budget {
   display: flex;
-  gap: 20px;
-  border-bottom: 1px solid var(--line);
-}
-
-.context-view-tabs button {
-  position: relative;
-  padding: 0 1px 9px;
-  border: 0;
-  background: transparent;
+  gap: 16px;
   color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
+  font-size: 10px;
 }
 
-.context-view-tabs button::after {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: var(--accent);
-  content: '';
-  opacity: 0;
-}
-
-.context-view-tabs button.active {
+.context-budget strong {
+  margin-left: 4px;
   color: var(--ink);
-  font-weight: 650;
-}
-
-.context-view-tabs button.active::after {
-  opacity: 1;
-}
-
-.structure-preset-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  max-width: 1120px;
-  margin: 0 auto 30px;
-  padding: 10px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.structure-preset-bar > span {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.structure-preset-bar .el-select {
-  width: 260px;
-}
-
-.structure-preset-bar small {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.runtime-fragment-config {
-  display: grid;
-  gap: 14px;
-  max-width: 1120px;
-  margin: 38px auto 0;
-  padding-top: 26px;
-  border-top: 1px solid var(--line);
-}
-
-.runtime-config-head,
-.runtime-config-actions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.runtime-config-head h2 {
-  margin: 0;
-  font-size: 16px;
-}
-
-.runtime-config-head .el-select {
-  width: 250px;
-}
-
-.runtime-fragment-list {
-  border-top: 1px solid var(--line);
-}
-
-.runtime-fragment-list label {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 18px;
-  min-height: 64px;
-  padding: 9px 6px;
-  border-bottom: 1px solid var(--line);
-}
-
-.runtime-fragment-list label > span {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.runtime-fragment-list strong {
-  font-size: 12px;
-}
-
-.runtime-fragment-list small,
-.runtime-config-actions small {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.runtime-config-actions {
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.runtime-config-actions small {
-  margin-right: auto;
+  font-weight: 600;
 }
 
 .preset-bar {
-  min-height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 16px;
-  padding: 13px 16px;
+  min-height: 52px;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
 .preset-picker,
@@ -1658,7 +1484,7 @@ onBeforeUnmount(() => {
 }
 
 .preset-picker .el-select {
-  width: min(420px, 48vw);
+  width: min(360px, 48vw);
 }
 
 .picker-label {
@@ -1668,12 +1494,19 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
+.preset-status {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .workbench-grid {
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
   align-items: stretch;
-  gap: 14px;
   min-width: 0;
+  max-width: 1120px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--line);
 }
 
 .stack-panel,
@@ -1686,7 +1519,7 @@ onBeforeUnmount(() => {
 .stack-panel {
   display: flex;
   flex-direction: column;
-  background: #f8f9fc;
+  border-right: 1px solid var(--line);
 }
 
 .editor-panel {
@@ -1697,10 +1530,18 @@ onBeforeUnmount(() => {
 .editor-head {
   flex: none;
   min-height: 64px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
 }
 
 .editor-head h2 {
-  margin-bottom: 3px;
+  margin: 0 0 3px;
+  font-size: 15px;
+}
+
+.editor-head small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .context-stack {
@@ -1708,60 +1549,72 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 12px;
   overflow: auto;
 }
 
 .stack-block {
-  display: flex;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
+  gap: 9px;
   width: 100%;
-  min-height: 44px;
-  padding: 0 13px;
-  border: 1px solid rgba(206, 216, 232, .92);
-  border-radius: 9px;
-  color: #263248;
-  background: #fff;
+  min-height: 54px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  background: transparent;
   cursor: pointer;
   outline: none;
-  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
+  transition: background-color .14s ease, color .14s ease;
 }
 
 .stack-block:hover,
 .stack-block:focus-visible {
-  border-color: #9fb1df;
-  background: #fafbff;
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent) 8%);
 }
 
 .stack-block.selected {
-  border-color: #5c7fe2;
-  color: #244ba9;
-  background: #eef3ff;
-  box-shadow: inset 3px 0 0 #5c7fe2;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .stack-block.disabled {
-  color: #7c8798;
-  background: #f4f5f7;
-  opacity: .72;
-}
-
-.stack-block.runtime {
-  border-style: dashed;
-  background: rgba(248, 250, 253, .9);
+  opacity: .55;
 }
 
 .stack-block.dragging {
   opacity: .55;
 }
 
-.stack-block strong {
+.stack-copy {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stack-copy strong {
   overflow: hidden;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.stack-index,
+.stack-copy small,
+.stack-state {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.stack-index {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.stack-state {
+  text-transform: uppercase;
 }
 
 .add-block-tray {
@@ -1770,27 +1623,24 @@ onBeforeUnmount(() => {
   gap: 8px;
   flex-wrap: wrap;
   flex: none;
-  padding: 12px 16px 14px;
-  border-top: 1px solid rgba(219, 226, 238, .9);
-  background: rgba(255, 255, 255, .78);
-  backdrop-filter: blur(10px);
+  padding: 10px;
+  border-top: 1px solid var(--line);
 }
 
 .add-block-tray button {
   height: 28px;
   padding: 0 10px;
-  border: 1px solid #dbe4f2;
-  border-radius: 999px;
-  color: #40506a;
-  background: #fff;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
   font-size: 11px;
   cursor: pointer;
 }
 
 .add-block-tray button:hover {
-  border-color: #9db3ef;
-  color: #315fc8;
-  background: #f5f8ff;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 90%, var(--accent) 10%);
 }
 
 .preview-error {
@@ -1824,32 +1674,40 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 20px;
+  padding: 18px;
   overflow: auto;
 }
 
-.block-guide {
-  margin-bottom: 20px;
-  padding: 0 0 18px;
-  border-bottom: 1px solid #e5e9f0;
+.block-rule {
+  max-width: 760px;
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
-.guide-summary {
-  max-width: 760px;
-  margin: 0;
-  color: #29354a;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.7;
+.block-guide {
+  margin: 0 0 16px;
+}
+
+.input-example {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.input-example summary {
+  width: fit-content;
+  padding: 9px 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
 }
 
 .history-example {
   max-width: 800px;
-  margin-top: 14px;
+  margin-bottom: 10px;
   overflow: hidden;
-  border: 1px solid #dce3ee;
-  border-radius: 9px;
-  background: #f8fafc;
+  background: color-mix(in srgb, var(--surface) 94%, #8090a6 6%);
 }
 
 .history-message {
@@ -1861,7 +1719,7 @@ onBeforeUnmount(() => {
 }
 
 .history-message + .history-message {
-  border-top: 1px solid #e4e9f1;
+  border-top: 1px solid var(--line);
 }
 
 .history-role {
@@ -1875,9 +1733,14 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.history-role.is-assistant {
+.history-role.is-ai {
   color: #397357;
   background: #e7f5ed;
+}
+
+.input-example > .history-message {
+  margin-bottom: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, #8090a6 6%);
 }
 
 .history-message code {
@@ -1889,123 +1752,52 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
-.document-guide-section {
-  max-width: 800px;
-  margin-top: 22px;
-  padding-top: 20px;
-  border-top: 1px solid #e2e7ef;
-}
-
-.document-guide-section:first-of-type {
-  margin-top: 16px;
-  padding-top: 0;
-  border-top: 0;
-}
-
-.document-guide-section h3 {
-  margin: 0 0 8px;
-  color: #263248;
-  font-size: 14px;
-}
-
-.document-guide-section p {
-  margin: 7px 0;
-  color: #4d5a70;
-  font-size: 12px;
-  line-height: 1.75;
-}
-
-.document-guide-section > .history-message {
-  margin-top: 12px;
-  border: 1px solid #dce3ee;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.document-guide-section p code,
-.tool-call {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-.document-guide-section p code {
-  color: #37517e;
-  font-size: 12px;
-}
-
-.tool-call {
-  display: block;
-  margin: 9px 0;
-  padding: 9px 11px;
-  border-radius: 7px;
-  color: #263651;
-  background: #f8fafc;
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
 .history-role.is-system {
   color: #7650a4;
   background: #f0e9f8;
 }
 
-.attachment-type {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 16px;
-  padding: 12px 0;
-  border-bottom: 1px solid #e4e9f1;
-}
-
-.attachment-type > strong {
-  color: #24324a;
-  font-size: 12px;
-}
-
-.attachment-type > p {
-  min-width: 0;
-  margin: 0;
-  color: #344158;
-  font-size: 12px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-}
-
 .runtime-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
+}
+
+.runtime-link-row {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  color: #6f7a8d;
-  font-size: 11px;
+  gap: 18px;
+  border-top: 1px solid var(--line);
 }
 
-.fragment-rules {
-  max-width: 820px;
-  margin-bottom: 24px;
-  border-top: 1px solid #e2e7ef;
+.runtime-link-row > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.fragment-rule {
-  display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
-  gap: 16px;
-  padding: 13px 0;
-  border-bottom: 1px solid #e2e7ef;
+.runtime-link-row strong {
+  font-size: 12px;
 }
 
-.fragment-rule strong,
-.fragment-policy-row strong {
-  color: #24324a;
-  font-size: 13px;
+.runtime-link-row small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
-.fragment-rule p,
-.fragment-policy-row p {
-  margin: 0;
-  color: #46536a;
-  font-size: 13px;
-  line-height: 1.65;
+.runtime-example pre {
+  max-height: 260px;
+  margin: 0 0 10px;
+  padding: 12px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #111418;
+  color: #d7dde6;
+  font: 10px/1.6 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
 }
 
 .fragment-policy {
@@ -2017,19 +1809,27 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 24px;
-  padding: 16px 0;
+  gap: 18px;
+  min-height: 58px;
+  padding: 8px 0;
   border-bottom: 1px solid #e2e7ef;
 }
 
+.fragment-policy-row strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .fragment-policy-row p {
-  margin-top: 4px;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .fragment-policy-actions {
   display: flex;
-  gap: 10px;
-  padding-top: 18px;
+  justify-content: flex-end;
+  padding-top: 8px;
 }
 
 .advanced-settings {
@@ -2225,11 +2025,6 @@ onBeforeUnmount(() => {
   .history-message {
     grid-template-columns: 1fr;
     gap: 6px;
-  }
-
-  .attachment-type {
-    grid-template-columns: 1fr;
-    gap: 5px;
   }
 
   .token-limit-control .el-segmented {
