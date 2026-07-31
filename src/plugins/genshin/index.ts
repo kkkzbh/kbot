@@ -480,6 +480,9 @@ function registerKeywordMiddleware(
         await sendGenshinReply(nativeFeatureChat, session, command, text, reply, {
           summary: reply,
         });
+        for (const entry of result.codes) {
+          await session.send(entry.code);
+        }
       } catch (error) {
         await sendGenshinError(nativeFeatureChat, session, command, text, error);
       }

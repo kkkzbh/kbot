@@ -1838,7 +1838,7 @@ describe('genshin plugin routes and middleware', () => {
     expect(database.tables.get('genshin_bind_challenge') ?? []).toHaveLength(0);
   });
 
-  it('returns official preview information and three codes for the bare 原神兑换码 command', async () => {
+  it('returns official preview information followed by three copyable code messages', async () => {
     const dir = createTempDir();
     const queryLatest = vi.spyOn(GenshinPreviewCodeClient.prototype, 'queryLatest').mockResolvedValue(previewCodeInfo());
     const middleware = vi.fn();
@@ -1877,6 +1877,12 @@ describe('genshin plugin routes and middleware', () => {
     expect(reply).toContain('2. 欢迎来到至冬');
     expect(reply).toContain('3. 冰中雪影奥黛塔');
     expect(reply).toContain('来源：米游社官方前瞻直播');
+    expect(send.mock.calls.map(([message]) => renderMessageContent(message))).toEqual([
+      reply,
+      '无神怜爱的雪国',
+      '欢迎来到至冬',
+      '冰中雪影奥黛塔',
+    ]);
     expect(queryLatest).toHaveBeenCalledTimes(1);
     expect(next).not.toHaveBeenCalled();
   });
