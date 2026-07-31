@@ -9,14 +9,7 @@ import type {
   AgentSecretUpdate,
   AgentSkillAdmin,
   AgentSkillConfigPut,
-  AgentSubAgentAdmin,
-  AgentSubAgentInput,
-  AgentSubAgentRunAdmin,
   AgentToolAdmin,
-  AgentToolConfigPut,
-  AgentTriggerProviderAdmin,
-  AgentTriggerRoutingChoice,
-  AgentTriggerTaskInput,
 } from '../../admin/contracts/agent.js';
 import { AdminHttpError } from '../shared/internal-access-policy.js';
 
@@ -37,16 +30,13 @@ type RuntimeComputerConfig = AgentComputerConfigPut['config'] & {
   openTerminal: AgentComputerConfigPut['config']['openTerminal'] & { apiKey: string };
 };
 
-type RuntimeTriggerTask = Omit<
-  AgentAdminState['trigger']['tasks'][number],
-  'lastFiredAt' | 'nextFireAt' | 'createdAt' | 'updatedAt' | 'wakeupTemplate'
-> & {
-  wakeupTemplate: Record<string, unknown>;
-  lastFiredAt?: Date | string | null;
-  nextFireAt?: Date | string | null;
-  createdAt: Date | string;
-  updatedAt: Date | string;
+type RuntimeAgentSkill = AgentSkillAdmin & {
+  path: string;
+  dir: string;
+  subAgents?: unknown;
 };
+
+type RuntimeAgentTool = AgentToolAdmin & { subAgents?: unknown };
 
 type RuntimeAgentConfig = {
   version: number;
@@ -65,40 +55,17 @@ type RuntimeAgentConfig = {
     githubToken?: string;
   };
   computer: RuntimeComputerConfig;
-  subAgent: {
-    dirs: string[];
-    items: Record<string, unknown>;
-    builtin: Record<string, unknown>;
-    presetAgents: Record<string, unknown>;
-    defaults: AgentAdminState['subAgents']['defaults'];
-  };
-  tool: {
-    items: Record<string, AgentToolConfigPut>;
-    registry?: Record<string, unknown>;
-  };
-  trigger: {
-    providers: Record<string, { enabled: boolean }>;
-  };
 };
 
 type RuntimeAgentStatus = {
   mcp: {
-    connected: boolean;
     servers: Record<string, AgentMcpServerStatus>;
     tools: Record<string, AgentMcpToolAdmin>;
   };
-  skills: AgentAdminState['status']['skills'] & {
-    catalog: Record<string, AgentSkillAdmin & { path: string; dir: string }>;
+  computer: AgentAdminState['plugins']['catalog'][number]['computer']['status'];
+  tool: {
+    catalog: Record<string, RuntimeAgentTool>;
   };
-  computer: AgentAdminState['status']['computer'];
-  subAgent: AgentAdminState['status']['subAgent'] & {
-    catalog: Record<string, AgentSubAgentAdmin & { path?: string }>;
-    runs: Array<AgentSubAgentRunAdmin & { trace: unknown[]; output?: string }>;
-  };
-  tool: AgentAdminState['status']['tool'] & {
-    catalog: Record<string, AgentToolAdmin>;
-  };
-  trigger: AgentAdminState['status']['trigger'];
 };
 
 export interface ChatLunaAgentRuntimeService {
@@ -126,23 +93,11 @@ export interface ChatLunaAgentRuntimeService {
     selected?: string[];
   }): Promise<unknown>;
   saveComputerConfig(input: unknown): Promise<void>;
-  saveSubAgentConfig(input: unknown): Promise<void>;
-  addSubAgent(input: AgentSubAgentInput): Promise<unknown>;
-  saveSubAgentContent(id: string, input: AgentSubAgentInput): Promise<unknown>;
-  setSubAgentEnabled(id: string, enabled: boolean): Promise<void>;
-  removeSubAgent(id: string): Promise<void>;
-  reloadSubAgents(): Promise<void>;
-  saveToolConfig(input: unknown): Promise<void>;
-  setTriggerProviderEnabled(kind: string, enabled: boolean): Promise<void>;
   skills: {
-    listSkills(): Array<AgentSkillAdmin & { path: string; dir: string }>;
+    listSkills(): RuntimeAgentSkill[];
     getSkillContent(id: string): Promise<{ id: string; content: string } | undefined>;
     saveSkillContent(id: string, content: string): Promise<boolean | void>;
     reload(): Promise<void>;
-  };
-  subAgent: {
-    getCatalogSync(): Array<AgentSubAgentAdmin & { path?: string }>;
-    getRuns(): Array<AgentSubAgentRunAdmin & { trace: unknown[]; output?: string }>;
   };
   mcp: {
     reconnect(name: string): Promise<void>;
@@ -151,16 +106,6 @@ export interface ChatLunaAgentRuntimeService {
     testBackend(
       type: 'local' | 'e2b' | 'open-terminal',
     ): Promise<AgentComputerBackendStatus>;
-  };
-  trigger: {
-    listProviders(): AgentTriggerProviderAdmin[];
-    listTasks(): Promise<RuntimeTriggerTask[]>;
-    listRoutingChoices(): AgentTriggerRoutingChoice[];
-    createTask(input: unknown): Promise<unknown>;
-    updateTask(id: number, input: unknown): Promise<unknown>;
-    setEnabled(id: number, enabled: boolean): Promise<void>;
-    removeTask(id: number): Promise<void>;
-    fire(id: number): Promise<unknown>;
   };
 }
 
@@ -213,41 +158,6 @@ function resolveSecretEntries(
   return next;
 }
 
-function serializeDate(value: Date | string | null | undefined): string | null {
-  if (value == null) return null;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.valueOf()) ? null : date.toISOString();
-}
-
-function sanitizeTriggerTask(task: RuntimeTriggerTask): AgentAdminState['trigger']['tasks'][number] {
-  return {
-    id: task.id,
-    providerKind: task.providerKind ?? null,
-    enabled: task.enabled,
-    name: task.name ?? null,
-    bindingKey: task.bindingKey,
-    presetLane: task.presetLane ?? null,
-    conversationId: task.conversationId ?? null,
-    selfId: task.selfId,
-    platform: task.platform,
-    userId: task.userId,
-    username: task.username ?? null,
-    guildId: task.guildId ?? null,
-    channelId: task.channelId ?? null,
-    isDirect: task.isDirect,
-    wakeupTemplate: task.wakeupTemplate as Record<string, unknown>,
-    params: task.params ?? null,
-    lastFiredAt: serializeDate(task.lastFiredAt),
-    nextFireAt: serializeDate(task.nextFireAt),
-    fireCount: task.fireCount,
-    lastError: task.lastError ?? null,
-    source: task.source,
-    createdBy: task.createdBy,
-    createdAt: serializeDate(task.createdAt) as string,
-    updatedAt: serializeDate(task.updatedAt) as string,
-  };
-}
-
 function createMcpConfig(
   input: AgentMcpServerPut,
   current: McpServerConfig | undefined,
@@ -276,64 +186,57 @@ function createMcpConfig(
   };
 }
 
+function computerAdminConfig(config: RuntimeComputerConfig) {
+  return {
+    defaultProvider: config.defaultProvider,
+    idleTimeoutMs: config.idleTimeoutMs,
+    local: structuredClone(config.local),
+    e2b: {
+      enabled: config.e2b.enabled,
+      apiKeyConfigured: Boolean(config.e2b.apiKey),
+      template: config.e2b.template,
+      desktopTemplate: config.e2b.desktopTemplate,
+      timeoutMs: config.e2b.timeoutMs,
+      keepAlive: config.e2b.keepAlive,
+    },
+    openTerminal: {
+      enabled: config.openTerminal.enabled,
+      apiKeyConfigured: Boolean(config.openTerminal.apiKey),
+      baseUrl: config.openTerminal.baseUrl,
+      deploymentMode: config.openTerminal.deploymentMode,
+      userIsolation: config.openTerminal.userIsolation,
+    },
+  };
+}
+
 export class ChatLunaAgentAdminService {
   constructor(private readonly runtime: ChatLunaAgentRuntimeService) {}
 
   async getState(): Promise<AgentAdminState> {
     const data = this.runtime.getConsoleData();
-    const [skills, subAgents, runs, providers, tasks, routingChoices] = await Promise.all([
-      Promise.resolve(this.runtime.skills.listSkills()),
-      Promise.resolve(this.runtime.subAgent.getCatalogSync()),
-      Promise.resolve(this.runtime.subAgent.getRuns()),
-      Promise.resolve(this.runtime.trigger.listProviders()),
-      this.runtime.trigger.listTasks(),
-      Promise.resolve(this.runtime.trigger.listRoutingChoices()),
-    ]);
-    const mcpStatus = data.status.mcp;
+    const skills = await Promise.resolve(this.runtime.skills.listSkills());
     const skillCatalog = skills.map((skill) => {
-      const { path: _path, dir: _dir, ...safe } = skill;
+      const {
+        path: _path,
+        dir: _dir,
+        subAgents: _subAgents,
+        ...safe
+      } = skill;
       return safe;
     });
-    const subAgentCatalog = subAgents.map((agent) => {
-      const { path: _path, ...safe } = agent;
+    const toolCatalog = Object.values(data.status.tool.catalog).map((tool) => {
+      const { subAgents: _subAgents, ...safe } = tool;
       return safe;
     });
-    const runCatalog = runs.map((run) => {
-      const { trace: _trace, output: _output, ...safe } = run;
-      return safe;
-    });
+    const computerStatus = data.status.computer;
+    const computerTools = [...new Set(
+      Object.values(computerStatus.backends).flatMap((backend) => backend.capabilities),
+    )].sort();
+    const defaultBackend = computerStatus.backends[computerStatus.defaultProvider];
 
     return {
       generatedAt: Date.now(),
       version: data.config.version,
-      status: {
-        mcp: {
-          connected: mcpStatus.connected,
-          serverCount: Object.keys(mcpStatus.servers).length,
-          connectedServers: Object.values(mcpStatus.servers).filter((server) => server.connected).length,
-          toolCount: Object.keys(mcpStatus.tools).length,
-        },
-        skills: {
-          enabled: data.status.skills.enabled,
-          root: data.status.skills.root,
-          total: data.status.skills.total,
-          visible: data.status.skills.visible,
-          modelEnabled: data.status.skills.modelEnabled,
-          activeConversations: data.status.skills.activeConversations,
-        },
-        computer: data.status.computer,
-        subAgent: {
-          enabled: data.status.subAgent.enabled,
-          total: data.status.subAgent.total,
-        },
-        tool: {
-          enabled: data.status.tool.enabled,
-          total: data.status.tool.total,
-          mainEnabled: data.status.tool.mainEnabled,
-          subAgentEnabled: data.status.tool.subAgentEnabled,
-        },
-        trigger: data.status.trigger,
-      },
       mcp: {
         servers: Object.entries(data.config.mcp.mcpServers)
           .map(([name, config]) => ({
@@ -347,60 +250,46 @@ export class ChatLunaAgentAdminService {
             proxy: config.proxy,
             envKeys: Object.keys(config.env ?? {}).sort(),
             headerKeys: Object.keys(config.headers ?? {}).sort(),
-            status: mcpStatus.servers[name] ?? null,
+            status: data.status.mcp.servers[name] ?? null,
           }))
           .sort((a, b) => a.name.localeCompare(b.name)),
-        tools: Object.values(mcpStatus.tools).sort((a, b) => a.name.localeCompare(b.name)),
+        tools: Object.values(data.status.mcp.tools)
+          .sort((a, b) => a.name.localeCompare(b.name)),
       },
       skills: {
         dirs: [...data.config.skills.dirs],
         githubTokenConfigured: Boolean(data.config.skills.githubToken),
         catalog: skillCatalog.sort((a, b) => a.name.localeCompare(b.name)),
       },
-      computer: {
-        config: {
-          defaultProvider: data.config.computer.defaultProvider,
-          idleTimeoutMs: data.config.computer.idleTimeoutMs,
-          local: structuredClone(data.config.computer.local),
-          e2b: {
-            enabled: data.config.computer.e2b.enabled,
-            apiKeyConfigured: Boolean(data.config.computer.e2b.apiKey),
-            template: data.config.computer.e2b.template,
-            desktopTemplate: data.config.computer.e2b.desktopTemplate,
-            timeoutMs: data.config.computer.e2b.timeoutMs,
-            keepAlive: data.config.computer.e2b.keepAlive,
-          },
-          openTerminal: {
-            enabled: data.config.computer.openTerminal.enabled,
-            apiKeyConfigured: Boolean(data.config.computer.openTerminal.apiKey),
-            baseUrl: data.config.computer.openTerminal.baseUrl,
-            deploymentMode: data.config.computer.openTerminal.deploymentMode,
-            userIsolation: data.config.computer.openTerminal.userIsolation,
-          },
-        },
-        status: data.status.computer,
-      },
-      subAgents: {
-        dirs: [...data.config.subAgent.dirs],
-        defaults: structuredClone(data.config.subAgent.defaults),
-        catalog: subAgentCatalog.sort((a, b) => a.name.localeCompare(b.name)),
-        runs: runCatalog.sort((a, b) => b.startedAt - a.startedAt),
-      },
       tools: {
-        catalog: Object.values(data.status.tool.catalog).sort((a, b) => a.name.localeCompare(b.name)),
+        catalog: toolCatalog.sort((a, b) => a.name.localeCompare(b.name)),
       },
-      trigger: {
-        providers: providers.map((provider) => ({
-          kind: provider.kind,
-          name: provider.name,
-          description: provider.description,
-          passive: provider.passive,
-          scheduled: provider.scheduled,
-          needsMessage: provider.needsMessage,
-          enabled: provider.enabled,
-        })),
-        routingChoices,
-        tasks: tasks.map(sanitizeTriggerTask),
+      plugins: {
+        catalog: [{
+          id: 'computer',
+          displayName: 'Computer',
+          version: '1.0.0',
+          shortDescription: '为 Agent 提供受控文件、终端与桌面操作。',
+          longDescription: 'Computer 将本地、E2B 与 OpenTerminal backend 作为一个能力包接入 Agent。',
+          developerName: 'ChatLuna',
+          category: 'Agent Runtime',
+          capabilities: ['Read files', 'Edit files', 'Run commands', 'Control desktops'],
+          builtIn: true,
+          state: !computerStatus.enabled
+            ? 'inactive'
+            : defaultBackend.state === 'error'
+              ? 'error'
+              : 'active',
+          contents: {
+            mcpServers: [],
+            skills: [],
+            tools: computerTools,
+          },
+          computer: {
+            config: computerAdminConfig(data.config.computer),
+            status: computerStatus,
+          },
+        }],
       },
     };
   }
@@ -480,6 +369,7 @@ export class ChatLunaAgentAdminService {
         ...structuredClone(current.items),
         [id]: {
           ...structuredClone(input),
+          subAgents: { mode: 'deny', allow: [], deny: [] },
           remote: info.remote === true,
         },
       },
@@ -535,79 +425,5 @@ export class ChatLunaAgentAdminService {
 
   async probeComputerBackend(type: 'local' | 'e2b' | 'open-terminal') {
     return await this.runtime.computer.testBackend(type);
-  }
-
-  async saveSubAgentSettings(input: {
-    dirs: string[];
-    defaults: AgentAdminState['subAgents']['defaults'];
-  }): Promise<void> {
-    const current = this.runtime.getConsoleData().config.subAgent;
-    await this.runtime.saveSubAgentConfig({
-      ...structuredClone(current),
-      dirs: input.dirs,
-      defaults: structuredClone(input.defaults),
-    });
-  }
-
-  async createSubAgent(input: AgentSubAgentInput) {
-    return await this.runtime.addSubAgent(input);
-  }
-
-  async saveSubAgent(id: string, input: AgentSubAgentInput) {
-    return await this.runtime.saveSubAgentContent(id, input);
-  }
-
-  async setSubAgentEnabled(id: string, enabled: boolean): Promise<void> {
-    await this.runtime.setSubAgentEnabled(id, enabled);
-  }
-
-  async removeSubAgent(id: string): Promise<void> {
-    await this.runtime.removeSubAgent(id);
-  }
-
-  async reloadSubAgents(): Promise<void> {
-    await this.runtime.reloadSubAgents();
-  }
-
-  async saveTool(name: string, input: AgentToolConfigPut): Promise<void> {
-    const current = this.runtime.getConsoleData();
-    if (!Object.hasOwn(current.status.tool.catalog, name)) {
-      throw new AdminHttpError(404, 'not_found', `Runtime Tool 不存在：${name}`);
-    }
-    await this.runtime.saveToolConfig({
-      ...structuredClone(current.config.tool),
-      items: {
-        ...structuredClone(current.config.tool.items),
-        [name]: structuredClone(input),
-      },
-    });
-  }
-
-  async setTriggerProviderEnabled(kind: string, enabled: boolean): Promise<void> {
-    await this.runtime.setTriggerProviderEnabled(kind, enabled);
-  }
-
-  async createTriggerTask(input: AgentTriggerTaskInput) {
-    return await this.runtime.trigger.createTask({
-      ...input,
-      source: 'webui',
-      createdBy: 'qqbot-admin',
-    });
-  }
-
-  async updateTriggerTask(id: number, input: AgentTriggerTaskInput) {
-    return await this.runtime.trigger.updateTask(id, input);
-  }
-
-  async setTriggerTaskEnabled(id: number, enabled: boolean): Promise<void> {
-    await this.runtime.trigger.setEnabled(id, enabled);
-  }
-
-  async removeTriggerTask(id: number): Promise<void> {
-    await this.runtime.trigger.removeTask(id);
-  }
-
-  async fireTriggerTask(id: number) {
-    return await this.runtime.trigger.fire(id);
   }
 }

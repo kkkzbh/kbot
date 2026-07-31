@@ -2,7 +2,6 @@ import { z } from 'zod';
 import type { Logger } from 'koishi';
 import {
   agentComputerConfigPutSchema,
-  agentEnabledPutSchema,
   agentMcpServerPutSchema,
   agentMcpToolPutSchema,
   agentSkillContentPutSchema,
@@ -10,10 +9,6 @@ import {
   agentSkillGithubImportSchema,
   agentSkillModePutSchema,
   agentSkillsSettingsPutSchema,
-  agentSubAgentInputSchema,
-  agentSubAgentSettingsPutSchema,
-  agentToolConfigPutSchema,
-  agentTriggerTaskInputSchema,
 } from '../../admin/contracts/agent.js';
 import { AdminHttpError } from '../shared/internal-access-policy.js';
 import type { ChatLunaAgentAdminService } from './chatluna-agent-admin.js';
@@ -28,7 +23,6 @@ type AgentRouteRegister = (
 ) => void;
 
 const pathNameSchema = z.string().trim().min(1).max(512);
-const taskIdSchema = z.coerce.number().int().positive();
 const computerBackendSchema = z.enum(['local', 'e2b', 'open-terminal']);
 
 function parse<T extends z.ZodTypeAny>(schema: T, input: unknown): z.output<T> {
@@ -211,87 +205,13 @@ export function registerAgentAdminRoutes(
     return { success: true };
   }, { mutation: true });
 
-  register('put', '/agent/computer', async (koaCtx) => {
+  register('put', '/agent/plugins/computer', async (koaCtx) => {
     const input = parse(agentComputerConfigPutSchema, koaCtx.request.body);
     await run('保存 Computer 配置', () => agent.saveComputerConfig(input));
     return { success: true };
   }, { mutation: true });
-  register('post', '/agent/computer/backends/:type/probe', async (koaCtx) => {
+  register('post', '/agent/plugins/computer/backends/:type/probe', async (koaCtx) => {
     const type = parse(computerBackendSchema, koaCtx.params.type);
     return await run('探测 Computer Backend', () => agent.probeComputerBackend(type));
-  }, { mutation: true });
-
-  register('put', '/agent/sub-agents/settings', async (koaCtx) => {
-    const input = parse(agentSubAgentSettingsPutSchema, koaCtx.request.body);
-    await run('保存 Sub-Agent 设置', () => agent.saveSubAgentSettings(input));
-    return { success: true };
-  }, { mutation: true });
-  register('post', '/agent/sub-agents', async (koaCtx) => {
-    const input = parse(agentSubAgentInputSchema, koaCtx.request.body);
-    return await run('创建 Sub-Agent', () => agent.createSubAgent(input));
-  }, { mutation: true });
-  register('put', '/agent/sub-agents/:id', async (koaCtx) => {
-    const id = parse(pathNameSchema, koaCtx.params.id);
-    const input = parse(agentSubAgentInputSchema, koaCtx.request.body);
-    return await run('保存 Sub-Agent', () => agent.saveSubAgent(id, input));
-  }, { mutation: true });
-  register('put', '/agent/sub-agents/:id/enabled', async (koaCtx) => {
-    const id = parse(pathNameSchema, koaCtx.params.id);
-    const input = parse(agentEnabledPutSchema, koaCtx.request.body);
-    await run('更新 Sub-Agent 状态', () => agent.setSubAgentEnabled(id, input.enabled));
-    return { success: true };
-  }, { mutation: true });
-  register('delete', '/agent/sub-agents/:id', async (koaCtx) => {
-    const id = parse(pathNameSchema, koaCtx.params.id);
-    await run('删除 Sub-Agent', () => agent.removeSubAgent(id));
-    return { success: true };
-  }, { mutation: true });
-  register('post', '/agent/sub-agents/reload', async () => {
-    await run('重载 Sub-Agent', () => agent.reloadSubAgents());
-    return { success: true };
-  }, { mutation: true });
-
-  register('put', '/agent/tools/:name', async (koaCtx) => {
-    const name = parse(pathNameSchema, koaCtx.params.name);
-    const input = parse(agentToolConfigPutSchema, koaCtx.request.body);
-    await run('保存 Runtime Tool', () => agent.saveTool(name, input));
-    return { success: true };
-  }, { mutation: true });
-
-  register('put', '/agent/trigger/providers/:kind/enabled', async (koaCtx) => {
-    const kind = parse(pathNameSchema, koaCtx.params.kind);
-    const input = parse(agentEnabledPutSchema, koaCtx.request.body);
-    await run(
-      '更新 Agent 调度提供器',
-      () => agent.setTriggerProviderEnabled(kind, input.enabled),
-    );
-    return { success: true };
-  }, { mutation: true });
-  register('post', '/agent/trigger/tasks', async (koaCtx) => {
-    const input = parse(agentTriggerTaskInputSchema, koaCtx.request.body);
-    return await run('创建 Agent 调度任务', () => agent.createTriggerTask(input));
-  }, { mutation: true });
-  register('put', '/agent/trigger/tasks/:id', async (koaCtx) => {
-    const id = parse(taskIdSchema, koaCtx.params.id);
-    const input = parse(agentTriggerTaskInputSchema, koaCtx.request.body);
-    return await run('保存 Agent 调度任务', () => agent.updateTriggerTask(id, input));
-  }, { mutation: true });
-  register('put', '/agent/trigger/tasks/:id/enabled', async (koaCtx) => {
-    const id = parse(taskIdSchema, koaCtx.params.id);
-    const input = parse(agentEnabledPutSchema, koaCtx.request.body);
-    await run(
-      '更新 Agent 调度任务状态',
-      () => agent.setTriggerTaskEnabled(id, input.enabled),
-    );
-    return { success: true };
-  }, { mutation: true });
-  register('delete', '/agent/trigger/tasks/:id', async (koaCtx) => {
-    const id = parse(taskIdSchema, koaCtx.params.id);
-    await run('删除 Agent 调度任务', () => agent.removeTriggerTask(id));
-    return { success: true };
-  }, { mutation: true });
-  register('post', '/agent/trigger/tasks/:id/fire', async (koaCtx) => {
-    const id = parse(taskIdSchema, koaCtx.params.id);
-    return await run('执行 Agent 调度任务', () => agent.fireTriggerTask(id));
   }, { mutation: true });
 }

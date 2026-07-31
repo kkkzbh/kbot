@@ -64,25 +64,6 @@ function createRuntime(): ChatLunaAgentRuntimeService {
         userIsolation: false,
       },
     },
-    subAgent: {
-      dirs: [],
-      items: {},
-      builtin: {},
-      presetAgents: {},
-      defaults: {
-        skills: { mode: 'deny' as const, allow: [], deny: [] },
-        mcp: { mode: 'deny' as const, allow: [], deny: [] },
-        tools: { mode: 'deny' as const, allow: [], deny: [] },
-        computer: { mode: 'allow' as const, allow: [], deny: [] },
-      },
-    },
-    tool: {
-      items: {},
-      registry: {},
-    },
-    trigger: {
-      providers: {},
-    },
   };
   const tool = (name: string) => ({
     name,
@@ -161,12 +142,6 @@ function createRuntime(): ChatLunaAgentRuntimeService {
           catalog: {},
         },
         computer: computerStatus,
-        subAgent: {
-          enabled: true,
-          total: 0,
-          catalog: {},
-          runs: [],
-        },
         tool: {
           enabled: true,
           total: 3,
@@ -177,12 +152,6 @@ function createRuntime(): ChatLunaAgentRuntimeService {
             file_read: tool('file_read'),
             bash: tool('bash'),
           },
-        },
-        trigger: {
-          total: 0,
-          enabled: 0,
-          scheduled: 0,
-          passive: 0,
         },
       },
     }),
@@ -196,39 +165,17 @@ function createRuntime(): ChatLunaAgentRuntimeService {
     removeSkill: vi.fn(),
     importSkills: vi.fn(),
     saveComputerConfig: vi.fn(),
-    saveSubAgentConfig: vi.fn(),
-    addSubAgent: vi.fn(),
-    saveSubAgentContent: vi.fn(),
-    setSubAgentEnabled: vi.fn(),
-    removeSubAgent: vi.fn(),
-    reloadSubAgents: vi.fn(),
-    saveToolConfig: vi.fn(),
-    setTriggerProviderEnabled: vi.fn(),
     skills: {
       listSkills: () => [],
       getSkillContent: vi.fn(),
       saveSkillContent: vi.fn(),
       reload: vi.fn(),
     },
-    subAgent: {
-      getCatalogSync: () => [],
-      getRuns: () => [],
-    },
     mcp: {
       reconnect: vi.fn(),
     },
     computer: {
       testBackend: vi.fn(),
-    },
-    trigger: {
-      listProviders: () => [],
-      listTasks: async () => [],
-      listRoutingChoices: () => [],
-      createTask: vi.fn(),
-      updateTask: vi.fn(),
-      setEnabled: vi.fn(),
-      removeTask: vi.fn(),
-      fire: vi.fn(),
     },
   };
 }
@@ -246,8 +193,15 @@ describe('ChatLuna Agent Admin boundary', () => {
       headerKeys: ['Authorization', 'X-Tenant'],
     });
     expect(state.skills.githubTokenConfigured).toBe(true);
-    expect(state.computer.config.e2b.apiKeyConfigured).toBe(true);
-    expect(state.computer.config.openTerminal.apiKeyConfigured).toBe(true);
+    expect(state.plugins.catalog).toHaveLength(1);
+    expect(state.plugins.catalog[0]).toMatchObject({
+      id: 'computer',
+      displayName: 'Computer',
+      state: 'active',
+      contents: { mcpServers: [], skills: [], tools: ['bash', 'file_read'] },
+    });
+    expect(state.plugins.catalog[0].computer.config.e2b.apiKeyConfigured).toBe(true);
+    expect(state.plugins.catalog[0].computer.config.openTerminal.apiKeyConfigured).toBe(true);
     expect(state.tools.catalog.map((tool) => tool.name)).toEqual([
       'bash',
       'file_read',
@@ -258,6 +212,8 @@ describe('ChatLuna Agent Admin boundary', () => {
     expect(serialized).not.toContain('github-secret');
     expect(serialized).not.toContain('e2b-secret');
     expect(serialized).not.toContain('terminal-secret');
+    expect(serialized).not.toContain('subAgents');
+    expect(serialized).not.toContain('trigger');
   });
 
   it('applies explicit MCP secret mutations while preserving configured values', async () => {
@@ -343,7 +299,6 @@ describe('ChatLuna Agent Admin boundary', () => {
       characterPrivateMode: 'allow',
       characterGroupIds: ['100'],
       characterPrivateIds: ['200'],
-      subAgents: { mode: 'allow', allow: ['reader'], deny: [] },
     });
 
     expect(runtime.saveSkillsConfig).toHaveBeenCalledWith({
@@ -363,7 +318,7 @@ describe('ChatLuna Agent Admin boundary', () => {
           characterPrivateMode: 'allow',
           characterGroupIds: ['100'],
           characterPrivateIds: ['200'],
-          subAgents: { mode: 'allow', allow: ['reader'], deny: [] },
+          subAgents: { mode: 'deny', allow: [], deny: [] },
           remote: true,
         },
       },

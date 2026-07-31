@@ -105,7 +105,7 @@ Server voice input is intentionally disabled by default. If voice output is enab
 
 The Koishi process serves the standalone SPA directly at `/`; the SPA uses the same-origin `/api/admin/v1` runtime API and has no Koishi Console dependency. The official Console required by ChatLuna Agent lives at the internal `/koishi-console` path with its WebSocket API at `/koishi-console/status`. Bot-owned HTTP routes such as `/api/**`, campus binding pages, and Storage remain owned by their respective plugins.
 
-`/intelligence/agent` is the permanent ChatLuna Agent management surface. It calls the project-owned REST boundary for MCP, Skills, Computer, Sub-Agent, Runtime Tool, and Agent Trigger configuration. Agent writes are delegated to the upstream runtime service, whose canonical document is `${CHATLUNA_AGENT_DATA_DIR}/agents/config.json`; managed environment saves do not mirror or overwrite that document.
+`/intelligence/agent` is the permanent ChatLuna Agent management surface and exposes four modules: MCP, Tools, Skills, and Plugin. Tools owns the runtime registry, scoped access, and file/shell boundaries. The Plugin module follows the Codex manifest capability-package model, where a package declares its MCP servers, Skills, and Tools; Computer is the built-in Plugin for file, terminal, and desktop backends. Sub-Agent management is closed for now, and Skill writes explicitly deny Sub-Agent access. Agent writes are delegated to the upstream runtime service, whose canonical document is `${CHATLUNA_AGENT_DATA_DIR}/agents/config.json`; managed environment saves do not mirror or overwrite that document.
 
 Configure the browser-facing origin explicitly before startup:
 

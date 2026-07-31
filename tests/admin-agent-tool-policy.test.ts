@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildToolOverride,
-  canAddToolOverride,
-  createPolicyScopeOptions,
-  createToolOverrideDraft,
-  hasToolOverride,
-} from '../apps/admin-web/src/pages/policy-page-state.js';
+  buildAgentToolOverride,
+  canAddAgentToolOverride,
+  createAgentPolicyScopeOptions,
+  createAgentToolOverrideDraft,
+  hasAgentToolOverride,
+} from '../apps/admin-web/src/pages/agent-tool-policy.js';
 
-describe('admin policy page draft state', () => {
+describe('Agent Tools policy draft state', () => {
   it('deduplicates canonical scopes while preserving the preferred label', () => {
-    expect(createPolicyScopeOptions(
+    expect(createAgentPolicyScopeOptions(
       [
         { scopeKind: 'global_default', scopeId: 'global-default', title: '全局默认' },
         { scopeKind: 'private_default', scopeId: 'private-default', title: '私聊默认' },
@@ -34,32 +34,32 @@ describe('admin policy page draft state', () => {
     ]);
   });
 
-  it('requires both tool and scope before creating a tool override', () => {
-    const draft = createToolOverrideDraft();
-    const scope = { scopeKind: 'global_default', scopeId: 'global' };
+  it('requires both tool and scope before creating an override', () => {
+    const draft = createAgentToolOverrideDraft();
+    const scope = { scopeKind: 'global_default' as const, scopeId: 'global' };
 
     expect(draft).not.toHaveProperty('scopeKind');
     expect(draft).not.toHaveProperty('scopeId');
-    expect(canAddToolOverride(draft, scope)).toBe(false);
-    expect(() => buildToolOverride(draft, scope))
+    expect(canAddAgentToolOverride(draft, scope)).toBe(false);
+    expect(() => buildAgentToolOverride(draft, scope))
       .toThrow('添加工具覆盖前必须选择工具');
 
     draft.toolName = 'web_run';
-    expect(canAddToolOverride(draft, null)).toBe(false);
-    expect(() => buildToolOverride(draft, null))
+    expect(canAddAgentToolOverride(draft, null)).toBe(false);
+    expect(() => buildAgentToolOverride(draft, null))
       .toThrow('添加工具覆盖前必须选择范围');
 
-    expect(canAddToolOverride(draft, scope)).toBe(true);
-    expect(buildToolOverride(draft, scope)).toEqual({
+    expect(canAddAgentToolOverride(draft, scope)).toBe(true);
+    expect(buildAgentToolOverride(draft, scope)).toEqual({
       toolName: 'web_run',
       routeProfile: 'agent',
       enabled: true,
       scopeKind: 'global_default',
       scopeId: 'global',
     });
-    expect(hasToolOverride([buildToolOverride(draft, scope)], draft, scope)).toBe(true);
-    expect(hasToolOverride(
-      [buildToolOverride(draft, scope)],
+    expect(hasAgentToolOverride([buildAgentToolOverride(draft, scope)], draft, scope)).toBe(true);
+    expect(hasAgentToolOverride(
+      [buildAgentToolOverride(draft, scope)],
       { ...draft, routeProfile: 'automation' },
       scope,
     )).toBe(false);

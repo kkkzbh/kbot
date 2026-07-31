@@ -21,7 +21,6 @@ import {
   RotateCw,
   School,
   ScrollText,
-  ShieldCheck,
   UserRoundCog,
   Volume2,
 } from '@lucide/vue';
@@ -60,9 +59,8 @@ const groups: NavGroup[] = [
     { key: 'context-presets', label: '上下文预设', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },
     { key: 'natural-trigger', label: '自然触发', path: '/intelligence/natural-trigger', icon: MessageCircleMore },
-    { key: 'agent', label: 'Agent 能力', path: '/intelligence/agent', icon: Bot },
+    { key: 'agent', label: 'Agent', path: '/intelligence/agent', icon: Bot },
   ] },
-  { label: '策略与权限', items: [{ key: 'policies', label: '工具策略', path: '/policies', icon: ShieldCheck }] },
   { label: '扩展服务', items: [
     { key: 'affinity', label: '关系事件', path: '/extensions/affinity', icon: HeartHandshake },
     {

@@ -513,7 +513,6 @@ export const ttsSampleRequestSchema = z.object({
   style: z.enum(['white', 'black']),
 });
 
-export const toolOverridesRequestSchema = z.object({ overrides: z.array(z.unknown()) });
 export const affinitySettingsRequestSchema = z.object({
   settings: z.object({
     enabled: z.boolean(),
@@ -546,11 +545,6 @@ export const affinityAdjustRequestSchema = z.object({
   familiarity: z.number().optional(),
   comfort: z.number().optional(),
   tension: z.number().optional(),
-});
-
-export const conversationTargetRequestSchema = z.object({
-  roomId: z.number().int().positive(),
-  conversationId: z.string().min(1),
 });
 
 export type AdminError = z.infer<typeof adminErrorSchema>;

@@ -1221,7 +1221,7 @@ onBeforeUnmount(() => {
             <div v-else class="runtime-actions">
               <el-button
                 v-if="selectedResolvedBlock.type === 'toolDefinitions'"
-                @click="router.push('/policies')"
+                @click="router.push('/intelligence/agent?section=tools')"
               >
                 打开工具策略
               </el-button>

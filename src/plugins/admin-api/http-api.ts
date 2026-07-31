@@ -10,9 +10,9 @@ import {
   affinityAdjustRequestSchema,
   affinitySettingsRequestSchema,
   affinityWhitelistRequestSchema,
+  agentToolPolicyPutSchema,
   adminLogsQuerySchema,
   connectionIdSchema,
-  conversationTargetRequestSchema,
   memoryAssertionsResponseSchema,
   memoryArchiveRequestSchema,
   memoryArchiveResponseSchema,
@@ -61,7 +61,6 @@ import {
   settingsPatchRequestSchema,
   settingsSectionSchema,
   stickerIndexMaintenanceResponseSchema,
-  toolOverridesRequestSchema,
   ttsSampleRequestSchema,
   voiceFeatureSettingKeys,
   type SettingsSection,
@@ -1159,29 +1158,15 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return contextSnapshotResponseSchema.parse(options.contextSnapshots.latest(conversationId));
   });
 
-  register('get', '/policies', async () => {
-    const featurePolicy = requireService(options.services.featurePolicy, 'feature policy');
+  register('get', '/agent/tools/policy', async () => {
     const toolPolicy = requireService(options.services.toolPolicy, 'tool policy');
-    const [conversationTargets, tools] = await Promise.all([
-      featurePolicy.listConversationTargets(),
-      toolPolicy.getToolPolicyState(),
-    ]);
-    return { conversationTargets, tools };
+    const { conversationTargets: _conversationTargets, ...state } = await toolPolicy.getToolPolicyState();
+    return state;
   });
-  register('patch', '/policies/tools', async (koaCtx) => {
-    const input = parseInput(toolOverridesRequestSchema, koaCtx.request.body);
+  register('patch', '/agent/tools/policy', async (koaCtx) => {
+    const input = parseInput(agentToolPolicyPutSchema, koaCtx.request.body);
     const service = requireService(options.services.toolPolicy, 'tool policy');
-    return { overrides: await domain(() => service.saveToolOverrides(input.overrides as any)) };
-  }, { mutation: true });
-  register('post', '/conversations/clear', async (koaCtx) => {
-    const input = parseInput(conversationTargetRequestSchema, koaCtx.request.body);
-    const service = requireService(options.services.featurePolicy, 'feature policy');
-    return { result: await domain(() => service.clearConversationHistory(input)) };
-  }, { mutation: true });
-  register('delete', '/conversations', async (koaCtx) => {
-    const input = parseInput(conversationTargetRequestSchema, koaCtx.request.body);
-    const service = requireService(options.services.featurePolicy, 'feature policy');
-    return { result: await domain(() => service.deleteConversationRoom(input)) };
+    return { overrides: await domain(() => service.saveToolOverrides(input.overrides)) };
   }, { mutation: true });
 
   register('get', '/affinity', async () => redactAffinityState(await requireService(options.services.affinity, 'affinity').getAdminState()));

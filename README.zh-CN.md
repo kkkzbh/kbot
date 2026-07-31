@@ -105,7 +105,7 @@ LLONEBOT_DATA_DIR=./.runtime/llonebot
 
 管理工作台由 Koishi 进程直接通过根路径 `/` 提供静态 SPA，并通过同源 `/api/admin/v1` 访问运行时能力。自有 Admin SPA 不依赖 Koishi Console。ChatLuna Agent 所需的官方 Console 位于内部路径 `/koishi-console`，WebSocket API 位于 `/koishi-console/status`。`/api/**`、校园绑定页和 Storage 等机器人 HTTP 路由继续由各自插件处理。
 
-`/intelligence/agent` 是 ChatLuna Agent 的长期管理入口，通过项目自有 REST 边界管理 MCP、Skills、Computer、Sub-Agent、Runtime Tool 与 Agent Trigger。配置写入统一委托给上游 runtime service，规范文件为 `${CHATLUNA_AGENT_DATA_DIR}/agents/config.json`；托管环境变量保存不会同步覆盖该文件。
+`/intelligence/agent` 是 ChatLuna Agent 的长期管理入口，只保留 MCP、Tools、Skills 与 Plugin 四个模块。Tools 同时管理 runtime registry、范围权限和文件/Shell 边界；Plugin 采用 Codex manifest 的能力包模型，由一个包声明其 MCP、Skills 与 Tools，Computer 作为内建 Plugin 提供文件、终端和桌面 backend。Sub-Agent 暂停开放，Skill 写入会固定关闭其 Sub-Agent 权限。配置写入统一委托给上游 runtime service，规范文件为 `${CHATLUNA_AGENT_DATA_DIR}/agents/config.json`；托管环境变量保存不会同步覆盖该文件。
 
 启动前必须显式配置浏览器实际使用的 Origin：
 

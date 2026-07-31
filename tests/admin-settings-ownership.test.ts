@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -12,10 +12,11 @@ describe('admin settings ownership', () => {
     const router = readFileSync(resolve(process.cwd(), 'apps/admin-web/src/router.ts'), 'utf8');
 
     expect(app).toContain("label: '自然触发', path: '/intelligence/natural-trigger'");
-    expect(app).toContain("label: 'Agent 能力', path: '/intelligence/agent'");
+    expect(app).toContain("label: 'Agent', path: '/intelligence/agent'");
     expect(app).not.toContain("label: '系统设置'");
     expect(router).toContain("path: '/intelligence/natural-trigger'");
     expect(router).toContain("path: '/intelligence/agent'");
+    expect(router).not.toContain("path: '/policies'");
     expect(router).not.toContain("path: '/system/basic'");
     expect(router).not.toContain("path: '/system/features'");
   });
@@ -27,9 +28,16 @@ describe('admin settings ownership', () => {
     ), 'utf8');
 
     expect(agentPage).toContain("rawApi<AgentAdminState>('/agent')");
-    expect(agentPage).toContain("label: 'Runtime Tools'");
-    expect(agentPage).toContain("label: 'Agent 调度'");
-    expect(agentPage).toContain('to="/policies"');
+    expect(agentPage).toContain("{ name: 'mcp', label: 'MCP' }");
+    expect(agentPage).toContain("{ name: 'tools', label: 'Tools' }");
+    expect(agentPage).toContain("{ name: 'skills', label: 'Skills' }");
+    expect(agentPage).toContain("{ name: 'plugins', label: 'Plugin' }");
+    expect(agentPage).toContain("rawApi<AgentToolPolicyState>('/agent/tools/policy')");
+    expect(agentPage).toContain('useManagedFeatureSettings(fileSystemToolSettingKeys)');
+    expect(agentPage).toContain("rawApi('/agent/plugins/computer'");
+    expect(agentPage).not.toContain('/policies');
+    expect(agentPage).not.toContain('sub-agents');
+    expect(agentPage).not.toContain('Agent 调度');
     expect(agentPage).not.toContain('/koishi-console');
     expect(agentPage).not.toContain('ctx.console');
   });
@@ -46,9 +54,9 @@ describe('admin settings ownership', () => {
       process.cwd(),
       'apps/admin-web/src/pages/NaturalTriggerPage.vue',
     ), 'utf8');
-    const policiesPage = readFileSync(resolve(
+    const agentPage = readFileSync(resolve(
       process.cwd(),
-      'apps/admin-web/src/pages/PoliciesPage.vue',
+      'apps/admin-web/src/pages/AgentPage.vue',
     ), 'utf8');
 
     expect(naturalTriggerPage).toContain("api('/natural-trigger'");
@@ -59,9 +67,12 @@ describe('admin settings ownership', () => {
     expect(naturalTriggerPage).toContain(
       'useManagedFeatureSettings(runtimeFeatureSettingKeys)',
     );
-    expect(policiesPage).not.toContain('CHAT_NATURAL_TRIGGER_ENABLED');
-    expect(policiesPage).not.toContain('runtimeFeatureSettingKeys');
-    expect(policiesPage).not.toContain('功能策略');
-    expect(policiesPage).not.toContain('功能范围覆盖');
+    expect(agentPage).toContain('fileSystemToolSettingKeys');
+    expect(agentPage).not.toContain('CHAT_NATURAL_TRIGGER_ENABLED');
+    expect(agentPage).not.toContain('runtimeFeatureSettingKeys');
+    expect(existsSync(resolve(
+      process.cwd(),
+      'apps/admin-web/src/pages/PoliciesPage.vue',
+    ))).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { z } from 'zod';
+import type { AdminToolPolicyState } from '../../types/tool-policy.js';
 
-const nonEmptyIdSchema = z.string().trim().min(1).max(512);
 const stringListSchema = z.array(z.string().trim().min(1).max(2048)).max(512);
 
 export const agentSecretUpdateSchema = z.discriminatedUnion('operation', [
@@ -123,12 +123,6 @@ export const agentComputerConfigPutSchema = z.object({
 }).strict();
 export type AgentComputerConfigPut = z.infer<typeof agentComputerConfigPutSchema>;
 
-const permissionRuleSchema = z.object({
-  mode: z.enum(['inherit', 'all', 'allow', 'deny']),
-  allow: stringListSchema,
-  deny: stringListSchema,
-}).strict();
-
 export const agentSkillConfigPutSchema = z.object({
   enabled: z.boolean(),
   mode: z.enum(['description', 'full']),
@@ -142,102 +136,26 @@ export const agentSkillConfigPutSchema = z.object({
   characterPrivateMode: z.enum(['all', 'allow', 'deny']),
   characterGroupIds: stringListSchema,
   characterPrivateIds: stringListSchema,
-  subAgents: permissionRuleSchema,
 }).strict();
 export type AgentSkillConfigPut = z.infer<typeof agentSkillConfigPutSchema>;
 
-const subAgentPermissionsSchema = z.object({
-  skills: permissionRuleSchema,
-  mcp: permissionRuleSchema,
-  tools: permissionRuleSchema,
-  computer: permissionRuleSchema,
+const toolRouteProfileSchema = z.enum(['agent', 'automation']);
+const toolScopeKindSchema = z.enum([
+  'global_default',
+  'private_default',
+  'private_conversation',
+  'group',
+]);
+export const agentToolPolicyPutSchema = z.object({
+  overrides: z.array(z.object({
+    toolName: z.string().trim().min(1).max(256),
+    routeProfile: toolRouteProfileSchema,
+    scopeKind: toolScopeKindSchema,
+    scopeId: z.string().trim().min(1).max(512),
+    enabled: z.boolean(),
+  }).strict()).max(4096),
 }).strict();
-
-export const agentSubAgentSettingsPutSchema = z.object({
-  dirs: stringListSchema,
-  defaults: subAgentPermissionsSchema,
-}).strict();
-
-export const agentSubAgentInputSchema = z.object({
-  name: z.string().trim().min(1).max(256),
-  description: z.string().max(16_384).default(''),
-  promptContent: z.string().max(2_000_000).default(''),
-  dedupeTools: z.boolean().default(false),
-  chatluna: z.boolean().default(true),
-  character: z.boolean().default(true),
-  characterGroup: z.boolean().default(true),
-  characterPrivate: z.boolean().default(true),
-  characterGroupMode: z.enum(['all', 'allow', 'deny']).default('all'),
-  characterPrivateMode: z.enum(['all', 'allow', 'deny']).default('all'),
-  characterGroupIds: stringListSchema.default([]),
-  characterPrivateIds: stringListSchema.default([]),
-  authority: z.number().int().min(0).max(5).default(0),
-  format: z.enum(['chatluna', 'claude', 'opencode']).default('chatluna'),
-  maxTurns: z.number().int().min(1).max(1_000).default(100),
-  hidden: z.boolean().default(false),
-  enabled: z.boolean().default(true),
-  allowKoishiMessageTransform: z.boolean().default(false),
-  permissions: subAgentPermissionsSchema,
-}).strict();
-export type AgentSubAgentInput = z.infer<typeof agentSubAgentInputSchema>;
-
-export const agentEnabledPutSchema = z.object({
-  enabled: z.boolean(),
-}).strict();
-
-export const agentToolConfigPutSchema = z.object({
-  enabled: z.boolean(),
-  main: z.boolean(),
-  chatluna: z.boolean(),
-  character: z.boolean(),
-  characterGroup: z.boolean(),
-  characterPrivate: z.boolean(),
-  characterGroupMode: z.enum(['all', 'allow', 'deny']),
-  characterPrivateMode: z.enum(['all', 'allow', 'deny']),
-  characterGroupIds: stringListSchema,
-  characterPrivateIds: stringListSchema,
-  subAgents: permissionRuleSchema,
-  authority: z.number().int().min(0).max(5),
-}).strict();
-export type AgentToolConfigPut = z.infer<typeof agentToolConfigPutSchema>;
-
-const triggerWakeupTemplateSchema = z.object({
-  message: z.union([
-    z.string().trim().min(1).max(200_000),
-    z.array(z.unknown()).min(1).max(10_000),
-  ]),
-  messageName: z.string().trim().max(256).optional(),
-  variables: z.record(z.unknown()).optional(),
-  execMode: z.enum(['chain', 'direct']).optional(),
-  chatMode: z.string().trim().max(128).optional(),
-  replyTo: z.enum(['channel', 'user', 'silent', 'callback']).optional(),
-  replyUserId: z.string().trim().max(256).optional(),
-  timeout: z.number().int().min(1_000).max(3_600_000).optional(),
-  newConversation: z.boolean().optional(),
-  presetLane: z.string().trim().max(256).nullable().optional(),
-  conversationId: z.string().trim().max(512).nullable().optional(),
-  toolMask: z.unknown().optional(),
-}).strict();
-
-export const agentTriggerTaskInputSchema = z.object({
-  providerKind: z.string().trim().min(1).max(64).nullable().optional(),
-  enabled: z.boolean().default(true),
-  name: z.string().trim().max(256).optional(),
-  bindingKey: z.string().trim().min(1).max(512),
-  presetLane: z.string().trim().max(256).nullable().optional(),
-  conversationId: z.string().trim().max(512).nullable().optional(),
-  selfId: nonEmptyIdSchema,
-  platform: nonEmptyIdSchema,
-  userId: nonEmptyIdSchema,
-  username: z.string().trim().max(256).nullable().optional(),
-  guildId: z.string().trim().max(256).nullable().optional(),
-  channelId: z.string().trim().max(256).nullable().optional(),
-  isDirect: z.boolean(),
-  wakeupTemplate: triggerWakeupTemplateSchema,
-  params: z.record(z.unknown()).nullable().optional(),
-  nextFireAt: z.string().datetime().optional(),
-}).strict();
-export type AgentTriggerTaskInput = z.infer<typeof agentTriggerTaskInputSchema>;
+export type AgentToolPolicyPut = z.infer<typeof agentToolPolicyPutSchema>;
 
 export interface AgentMcpServerStatus {
   name: string;
@@ -281,12 +199,6 @@ export type AgentMcpServerAdmin = {
   status: AgentMcpServerStatus | null;
 };
 
-export interface AgentPermissionRule {
-  mode: 'inherit' | 'all' | 'allow' | 'deny';
-  allow: string[];
-  deny: string[];
-}
-
 export interface AgentSkillAdmin {
   id: string;
   name: string;
@@ -307,7 +219,6 @@ export interface AgentSkillAdmin {
   characterPrivateMode: 'all' | 'allow' | 'deny';
   characterGroupIds: string[];
   characterPrivateIds: string[];
-  subAgents: AgentPermissionRule;
   available: boolean;
   visible: boolean;
   modelEnabled: boolean;
@@ -331,63 +242,6 @@ export interface AgentSkillAdmin {
   diagnostics: string[];
 }
 
-export interface AgentSubAgentPermissionConfig {
-  skills: AgentPermissionRule;
-  mcp: AgentPermissionRule;
-  tools: AgentPermissionRule;
-  computer: AgentPermissionRule;
-}
-
-export interface AgentSubAgentAdmin {
-  id: string;
-  name: string;
-  description: string;
-  dedupeTools: boolean;
-  source: 'builtin' | 'markdown' | 'preset' | 'manual';
-  format: 'chatluna' | 'claude' | 'opencode';
-  state: 'ready' | 'invalid' | 'missing';
-  enabled: boolean;
-  chatlunaEnabled: boolean;
-  characterEnabled: boolean;
-  characterGroupEnabled: boolean;
-  characterPrivateEnabled: boolean;
-  characterGroupMode: 'all' | 'allow' | 'deny';
-  characterPrivateMode: 'all' | 'allow' | 'deny';
-  characterGroupIds: string[];
-  characterPrivateIds: string[];
-  authority: number;
-  hidden: boolean;
-  remote?: boolean;
-  scope?: 'data' | 'project' | 'user';
-  priority: number;
-  promptContent: string;
-  maxTurns?: number;
-  permissions: AgentSubAgentPermissionConfig;
-  allowKoishiMessageTransform: boolean;
-  diagnostics: string[];
-  shadowedBy?: string;
-  promptMode: 'markdown' | 'preset';
-  preset?: string;
-}
-
-export interface AgentSubAgentRunAdmin {
-  runId: string;
-  taskId: string;
-  agentId: string;
-  agentName: string;
-  conversationId: string;
-  parentConversationId: string;
-  depth: number;
-  state: 'running' | 'completed' | 'failed' | 'aborted';
-  background?: boolean;
-  startedAt: number;
-  endedAt?: number;
-  lastTool?: string;
-  toolCount: number;
-  turnCount: number;
-  error?: string;
-}
-
 export interface AgentLocalComputerConfig {
   enabled: boolean;
   sandboxMode: 'read-only' | 'workspace-write';
@@ -404,23 +258,24 @@ export interface AgentLocalComputerConfig {
   networkPolicy: 'block' | 'allow';
 }
 
+export type AgentComputerCapability =
+  | 'file_read'
+  | 'file_write'
+  | 'file_edit'
+  | 'file_publish'
+  | 'grep'
+  | 'glob'
+  | 'bash'
+  | 'terminal_pty'
+  | 'desktop_stream'
+  | 'desktop_screenshot'
+  | 'desktop_action';
+
 export interface AgentComputerBackendStatus {
   type: 'local' | 'e2b' | 'open-terminal';
   state: 'idle' | 'connecting' | 'connected' | 'error' | 'unsupported';
   error?: string;
-  capabilities: Array<
-    | 'file_read'
-    | 'file_write'
-    | 'file_edit'
-    | 'file_publish'
-    | 'grep'
-    | 'glob'
-    | 'bash'
-    | 'terminal_pty'
-    | 'desktop_stream'
-    | 'desktop_screenshot'
-    | 'desktop_action'
-  >;
+  capabilities: AgentComputerCapability[];
   sessionCount: number;
 }
 
@@ -465,7 +320,6 @@ export interface AgentToolAdmin {
   characterPrivateMode: 'all' | 'allow' | 'deny';
   characterGroupIds: string[];
   characterPrivateIds: string[];
-  subAgents: AgentPermissionRule;
   authority: number;
   source?: string;
   group?: string;
@@ -474,82 +328,33 @@ export interface AgentToolAdmin {
   serverName?: string;
 }
 
-export interface AgentTriggerProviderAdmin {
-  kind: string;
-  name: string;
-  description: string;
-  passive?: boolean;
-  scheduled?: boolean;
-  needsMessage?: boolean;
-  enabled?: boolean;
+export interface AgentPluginAdmin {
+  id: 'computer';
+  displayName: string;
+  version: string;
+  shortDescription: string;
+  longDescription: string;
+  developerName: string;
+  category: string;
+  capabilities: string[];
+  builtIn: boolean;
+  state: 'active' | 'inactive' | 'error';
+  contents: {
+    mcpServers: string[];
+    skills: string[];
+    tools: string[];
+  };
+  computer: {
+    config: AgentComputerAdminConfig;
+    status: AgentComputerStatus;
+  };
 }
 
-export interface AgentTriggerRoutingChoice {
-  label: string;
-  platform: string;
-  selfId: string;
-}
-
-export interface AgentTriggerTaskAdmin {
-  id: number;
-  providerKind: string | null;
-  enabled: boolean;
-  name: string | null;
-  bindingKey: string;
-  presetLane: string | null;
-  conversationId: string | null;
-  selfId: string;
-  platform: string;
-  userId: string;
-  username: string | null;
-  guildId: string | null;
-  channelId: string | null;
-  isDirect: boolean;
-  wakeupTemplate: Record<string, unknown>;
-  params: Record<string, unknown> | null;
-  lastFiredAt: string | null;
-  nextFireAt: string | null;
-  fireCount: number;
-  lastError: string | null;
-  source: 'webui' | 'agent' | 'command' | 'plugin';
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
+export type AgentToolPolicyState = Omit<AdminToolPolicyState, 'conversationTargets'>;
 
 export interface AgentAdminState {
   generatedAt: number;
   version: number;
-  status: {
-    mcp: {
-      connected: boolean;
-      serverCount: number;
-      connectedServers: number;
-      toolCount: number;
-    };
-    skills: {
-      enabled: boolean;
-      root: string;
-      total: number;
-      visible: number;
-      modelEnabled: number;
-      activeConversations: number;
-    };
-    computer: AgentComputerStatus;
-    subAgent: { enabled: boolean; total: number };
-    tool: {
-      enabled: boolean;
-      total: number;
-      mainEnabled: number;
-      subAgentEnabled: number;
-    };
-    trigger: {
-      total: number;
-      enabled: number;
-      scheduled: number;
-      passive: number;
-    };
-  };
   mcp: {
     servers: AgentMcpServerAdmin[];
     tools: AgentMcpToolAdmin[];
@@ -559,22 +364,10 @@ export interface AgentAdminState {
     githubTokenConfigured: boolean;
     catalog: AgentSkillAdmin[];
   };
-  computer: {
-    config: AgentComputerAdminConfig;
-    status: AgentComputerStatus;
-  };
-  subAgents: {
-    dirs: string[];
-    defaults: AgentSubAgentPermissionConfig;
-    catalog: AgentSubAgentAdmin[];
-    runs: AgentSubAgentRunAdmin[];
-  };
   tools: {
     catalog: AgentToolAdmin[];
   };
-  trigger: {
-    providers: AgentTriggerProviderAdmin[];
-    routingChoices: AgentTriggerRoutingChoice[];
-    tasks: AgentTriggerTaskAdmin[];
+  plugins: {
+    catalog: AgentPluginAdmin[];
   };
 }

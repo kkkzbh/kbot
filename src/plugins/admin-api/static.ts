@@ -28,7 +28,6 @@ const ADMIN_ROUTES = [
   '/icon-180.png',
   '/icon-512.png',
   '/icon.svg',
-  '/policies',
   '/assets/(.*)',
   '/runtime',
   '/runtime/(.*)',

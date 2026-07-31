@@ -644,6 +644,7 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/models');
     expect(getPaths).toContain('/api/admin/v1/natural-trigger');
     expect(getPaths).toContain('/api/admin/v1/agent');
+    expect(getPaths).toContain('/api/admin/v1/agent/tools/policy');
     expect(getPaths).toContain('/api/admin/v1/agent/skills/:id/content');
     expect(getPaths).toContain('/api/admin/v1/context-presets');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id');
@@ -659,9 +660,12 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/icon-512.png');
     expect(getPaths).toContain('/icon.svg');
     expect(getPaths).toContain('/extensions/(.*)');
+    expect(getPaths).not.toContain('/policies');
     expect(getPaths).not.toContain('/api/admin/v1/session');
     expect(postPaths).not.toContain('/api/admin/v1/session');
+    expect(postPaths).not.toContain('/api/admin/v1/conversations/clear');
     expect(server.delete.mock.calls.map((call) => call[0])).not.toContain('/api/admin/v1/session');
+    expect(server.delete.mock.calls.map((call) => call[0])).not.toContain('/api/admin/v1/conversations');
     expect(postPaths).toContain('/api/admin/v1/events/acknowledge-all');
     expect(postPaths).toContain('/api/admin/v1/events/:id/action');
     expect(postPaths).toContain('/api/admin/v1/apply/restart');
@@ -678,8 +682,9 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/memory/reviews/:streamId');
     expect(postPaths).toContain('/api/admin/v1/agent/mcp/reload');
     expect(postPaths).toContain('/api/admin/v1/agent/skills/reload');
-    expect(postPaths).toContain('/api/admin/v1/agent/sub-agents');
-    expect(postPaths).toContain('/api/admin/v1/agent/trigger/tasks');
+    expect(postPaths).toContain('/api/admin/v1/agent/plugins/computer/backends/:type/probe');
+    expect(postPaths).not.toContain('/api/admin/v1/agent/sub-agents');
+    expect(postPaths).not.toContain('/api/admin/v1/agent/trigger/tasks');
     expect(postPaths).toContain('/api/admin/v1/memory/forget');
     expect(postPaths).not.toContain('/api/admin/v1/memory/backfill');
     expect(postPaths).toContain('/api/admin/v1/memory/probe/:workload');
@@ -690,18 +695,73 @@ describe('independent admin API plugin', () => {
     expect(putPaths).toContain('/api/admin/v1/natural-trigger');
     expect(putPaths).toContain('/api/admin/v1/agent/mcp/server');
     expect(putPaths).toContain('/api/admin/v1/agent/skills/:id/config');
-    expect(putPaths).toContain('/api/admin/v1/agent/computer');
-    expect(putPaths).toContain('/api/admin/v1/agent/tools/:name');
-    expect(putPaths).toContain('/api/admin/v1/agent/trigger/tasks/:id');
+    expect(putPaths).toContain('/api/admin/v1/agent/plugins/computer');
+    expect(putPaths).not.toContain('/api/admin/v1/agent/computer');
+    expect(putPaths).not.toContain('/api/admin/v1/agent/tools/:name');
+    expect(putPaths).not.toContain('/api/admin/v1/agent/trigger/tasks/:id');
     expect(putPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
-    expect(patchPaths).toContain('/api/admin/v1/policies/tools');
-    expect(patchPaths).not.toContain('/api/admin/v1/policies/features');
+    expect(patchPaths).toContain('/api/admin/v1/agent/tools/policy');
+    expect(patchPaths).not.toContain('/api/admin/v1/policies/tools');
     expect(postPaths).toContain('/api/admin/v1/tts/sample');
     expect(postPaths).toContain('/api/internal/copilot/v1/responses');
     expect(server.use).not.toHaveBeenCalled();
     expect(getPaths).not.toContain('/api/admin/v1/model-context/blueprint');
     expect(getPaths).not.toContain('/api/admin/v1/models/runtime');
     expect(postPaths).not.toContain('/api/admin/v1/models/:provider/list');
+  });
+
+  it('owns scoped tool policy under Agent without exposing conversation targets', async () => {
+    const savedOverrides = [{
+      id: 1,
+      toolName: 'bash',
+      routeProfile: 'agent' as const,
+      scopeKind: 'group' as const,
+      scopeId: 'group:100',
+      enabled: 0,
+      updatedAt: 10,
+    }];
+    const toolPolicy = {
+      getToolPolicyState: vi.fn(async () => ({
+        routeProfiles: ['agent' as const, 'automation' as const],
+        catalog: [],
+        routeProfileInfo: [],
+        defaultScopes: [],
+        scopes: [],
+        overrides: savedOverrides,
+        conversationTargets: [{ roomId: 7, conversationId: 'private-conversation' }],
+      })),
+      saveToolOverrides: vi.fn(async () => savedOverrides),
+    };
+    const { server } = createRuntime(createTempDir(), { toolPolicy });
+    const readPolicy = server.get.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/agent/tools/policy',
+    )?.[1];
+    const savePolicy = server.patch.mock.calls.find(
+      (call) => call[0] === '/api/admin/v1/agent/tools/policy',
+    )?.[1];
+
+    const read = createKoaCtx();
+    await readPolicy(read);
+    expect(read.status).toBe(200);
+    expect(read.body).toMatchObject({
+      routeProfiles: ['agent', 'automation'],
+      overrides: savedOverrides,
+    });
+    expect(read.body).not.toHaveProperty('conversationTargets');
+
+    const input = {
+      overrides: [{
+        toolName: 'bash',
+        routeProfile: 'agent',
+        scopeKind: 'group',
+        scopeId: 'group:100',
+        enabled: false,
+      }],
+    };
+    const save = createKoaCtx({ method: 'PATCH', origin: 'https://admin.example.com', body: input });
+    await savePolicy(save);
+    expect(save.status).toBe(200);
+    expect(toolPolicy.saveToolOverrides).toHaveBeenCalledWith(input.overrides);
   });
 
   it('reads, updates and resets QQBot fragment policy for an existing context preset', async () => {
