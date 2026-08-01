@@ -103,12 +103,12 @@ onBeforeUnmount(() => {
 }
 
 .payload-toolbar {
-  min-height: 36px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 7px 10px 7px 13px;
+  padding: 8px 12px 8px 15px;
   border-bottom: 1px solid #e1e7f0;
 }
 
@@ -122,7 +122,7 @@ onBeforeUnmount(() => {
 
 .payload-toolbar code {
   color: #68758a;
-  font: 10px/1.3 var(--font-mono, ui-monospace, monospace);
+  font: 11px/1.35 var(--font-mono, ui-monospace, monospace);
 }
 
 .payload-toolbar button {
@@ -132,7 +132,7 @@ onBeforeUnmount(() => {
   border-radius: 5px;
   color: #6e7a8e;
   background: transparent;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -147,12 +147,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   color: #758094;
-  font: 9px/1.3 var(--font-mono, ui-monospace, monospace);
+  font: 10px/1.35 var(--font-mono, ui-monospace, monospace);
 }
 
 .payload-role::before {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #7c8aa1;
   content: '';
@@ -165,21 +165,22 @@ onBeforeUnmount(() => {
 .payload-role.is-data::before { background: #7c8aa1; }
 
 .payload-preview pre {
-  max-height: 520px;
+  max-height: 560px;
   margin: 0;
-  padding: 14px 16px 16px 18px;
+  padding: 18px 20px 20px;
   overflow: auto;
   color: #27344a;
   background: transparent;
-  font: 10.5px/1.65 var(--font-mono, ui-monospace, monospace);
+  font: 12.5px/1.65 var(--font-mono, ui-monospace, monospace);
   scrollbar-color: #c4cfdf transparent;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .payload-preview.compact pre {
-  max-height: 420px;
-  padding: 12px 14px 14px;
+  max-height: 460px;
+  padding: 16px 18px 18px;
+  font-size: 11.5px;
 }
 
 .token-key { color: #356ce0; }
@@ -191,7 +192,8 @@ onBeforeUnmount(() => {
 
 @media (max-width: 620px) {
   .payload-preview pre {
-    font-size: 10px;
+    padding: 14px 16px 16px;
+    font-size: 11.5px;
   }
 }
 </style>

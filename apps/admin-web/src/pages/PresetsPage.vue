@@ -1731,7 +1731,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .context-workbench {
   min-width: 0;
-  --workbench-height: clamp(560px, calc(100vh - 180px), 820px);
 }
 
 .context-page-head {
@@ -1739,27 +1738,27 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  max-width: 1180px;
-  margin: 0 auto 18px;
+  max-width: 1320px;
+  margin: 0 auto 20px;
 }
 
 .context-page-head h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 29px;
   letter-spacing: -.03em;
 }
 
 .context-page-head p {
-  margin: 6px 0 0;
+  margin: 7px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .context-budget {
   display: flex;
   gap: 16px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .context-budget strong {
@@ -1773,8 +1772,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  min-height: 52px;
-  max-width: 1180px;
+  min-height: 56px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 8px 0;
   border-top: 1px solid var(--line);
@@ -1806,61 +1805,61 @@ onBeforeUnmount(() => {
 .picker-label {
   flex: none;
   color: #657083;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .preset-status {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  align-items: stretch;
+  grid-template-columns: 232px minmax(0, 1fr);
+  align-items: start;
   min-width: 0;
-  max-width: 1180px;
+  max-width: 1320px;
   margin: 0 auto;
-  border-bottom: 1px solid var(--line);
 }
 
 .stack-panel,
 .editor-panel {
   min-width: 0;
-  height: var(--workbench-height);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .stack-panel {
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
 .editor-panel {
   display: flex;
   flex-direction: column;
+  border-bottom: 1px solid var(--line);
 }
 
 .editor-head {
   flex: none;
-  min-height: 64px;
-  padding: 12px 18px;
+  min-height: 72px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--line);
 }
 
 .editor-head h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 18px;
 }
 
 .editor-head small {
   display: block;
   margin-top: 5px;
   color: var(--muted);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .editor-title-row {
@@ -1871,29 +1870,29 @@ onBeforeUnmount(() => {
 }
 
 .editor-title-row code {
-  padding: 2px 6px;
+  padding: 3px 7px;
   border-radius: 5px;
   color: #7155b3;
   background: #f1ecff;
-  font: 9px/1.4 var(--font-mono, ui-monospace, monospace);
+  font: 10px/1.4 var(--font-mono, ui-monospace, monospace);
 }
 
 .context-stack {
-  flex: 1;
+  flex: none;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: visible;
 }
 
 .stack-block {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: 27px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  min-height: 54px;
-  padding: 7px 10px;
+  min-height: 62px;
+  padding: 9px 12px;
   border: 0;
   border-bottom: 1px solid var(--line);
   color: var(--ink);
@@ -1926,12 +1925,12 @@ onBeforeUnmount(() => {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .stack-copy strong {
   overflow: hidden;
-  font-size: 12px;
+  font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1940,7 +1939,7 @@ onBeforeUnmount(() => {
 .stack-copy small,
 .stack-state {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 .stack-index {
@@ -1957,18 +1956,18 @@ onBeforeUnmount(() => {
   gap: 8px;
   flex-wrap: wrap;
   flex: none;
-  padding: 10px;
+  padding: 12px;
   border-top: 1px solid var(--line);
 }
 
 .add-block-tray button {
-  height: 28px;
-  padding: 0 10px;
+  height: 32px;
+  padding: 0 11px;
   border: 0;
   border-radius: 6px;
   color: var(--muted);
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -1986,12 +1985,12 @@ onBeforeUnmount(() => {
   border-radius: 9px;
   color: #9b3142;
   background: #fff4f5;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .preview-error code {
   color: #a0505c;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .stack-loading,
@@ -2001,21 +2000,21 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   color: #8b95a4;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .editor-body {
-  flex: 1;
+  flex: none;
   min-width: 0;
   min-height: 0;
-  padding: 18px;
-  overflow: auto;
+  padding: 20px;
+  overflow: visible;
 }
 
 .context-editor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(250px, .75fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(290px, .8fr);
+  gap: 22px;
   align-items: start;
 }
 
@@ -2025,12 +2024,12 @@ onBeforeUnmount(() => {
 }
 
 .block-settings {
-  padding-left: 18px;
+  padding-left: 20px;
   border-left: 1px solid var(--line);
 }
 
 .settings-head {
-  min-height: 30px;
+  min-height: 34px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -2040,7 +2039,7 @@ onBeforeUnmount(() => {
 
 .settings-head h3 {
   margin: 0;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -2074,8 +2073,8 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  min-height: 58px;
-  padding: 8px 3px;
+  min-height: 64px;
+  padding: 9px 3px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -2096,30 +2095,30 @@ onBeforeUnmount(() => {
 }
 
 .context-tool-row strong {
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .context-tool-row small {
   color: var(--muted);
-  font: 9px/1.4 var(--font-mono, ui-monospace, monospace);
+  font: 10.5px/1.4 var(--font-mono, ui-monospace, monospace);
 }
 
 .context-tool-row span {
   grid-column: 1 / -1;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 .empty-setting {
   margin: 0;
   padding: 18px 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .runtime-link-row {
   display: flex;
-  min-height: 52px;
+  min-height: 58px;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
@@ -2134,12 +2133,12 @@ onBeforeUnmount(() => {
 }
 
 .runtime-link-row strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .runtime-link-row small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .fragment-policy {
@@ -2151,20 +2150,21 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 18px;
-  min-height: 58px;
-  padding: 8px 0;
+  min-height: 64px;
+  padding: 9px 0;
   border-bottom: 1px solid #e2e7ef;
 }
 
 .fragment-policy-row strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .fragment-policy-row p {
   margin: 3px 0 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .fragment-policy-actions {
@@ -2190,7 +2190,7 @@ onBeforeUnmount(() => {
 .advanced-settings > p {
   margin: 8px 0 14px;
   color: #788397;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.65;
 }
 
@@ -2240,7 +2240,7 @@ onBeforeUnmount(() => {
 
 .token-limit-control :deep(.el-segmented__item-label) {
   padding: 0;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .custom-token-limit {
@@ -2282,7 +2282,7 @@ onBeforeUnmount(() => {
   margin: 18px 0 10px;
   padding-top: 14px;
   border-top: 1px solid #e7eaf0;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .message-editor,
@@ -2315,7 +2315,7 @@ onBeforeUnmount(() => {
 .field-note {
   margin: -8px 0 14px;
   color: #858f9f;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .field-note code {
@@ -2327,11 +2327,7 @@ onBeforeUnmount(() => {
   gap: 9px;
 }
 
-@media (max-width: 1080px) {
-  .workbench-grid {
-    grid-template-columns: 188px minmax(0, 1fr);
-  }
-
+@media (max-width: 1380px) {
   .context-editor-grid {
     grid-template-columns: 1fr;
   }
@@ -2344,11 +2340,13 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 820px) {
-  .context-workbench {
-    --workbench-height: auto;
+@media (max-width: 1080px) {
+  .workbench-grid {
+    grid-template-columns: 210px minmax(0, 1fr);
   }
+}
 
+@media (max-width: 820px) {
   .preset-bar,
   .preset-picker {
     align-items: stretch;
@@ -2367,14 +2365,10 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .stack-panel,
-  .editor-panel {
-    height: auto;
-  }
-
   .context-stack {
     max-height: 520px;
     padding: 12px;
+    overflow: auto;
   }
 }
 
