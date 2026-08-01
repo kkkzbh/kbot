@@ -15,43 +15,11 @@ export interface ContextBlockGuide {
   summary: string;
 }
 
-export interface ChatHistoryExampleMessage {
-  role: 'human' | 'ai';
-  content: string;
+export interface ContextPayloadExample {
+  meta: string;
+  roles: readonly string[];
+  value: unknown;
 }
-
-export type SupportedRequestAttachmentKind =
-  | 'image'
-  | 'pdf'
-  | 'text'
-  | 'audio'
-  | 'video'
-  | 'file';
-
-export interface RequestAttachmentGuide {
-  kind: SupportedRequestAttachmentKind;
-  label: string;
-  description: string;
-}
-
-export const qqbotFragmentRules = [
-  {
-    label: '生成',
-    description: '每次模型请求都重新读取当前会话状态并生成，保存上下文预设时不会把动态内容写进 YAML。',
-  },
-  {
-    label: '放置',
-    description: '身份与回复协议作为 system 指令接在角色提示之后；本轮参考和助手状态放在当前输入之前，保持低权限。',
-  },
-  {
-    label: '排序',
-    description: '身份协议、运行协议、参考信息、助手状态按固定次序排列；完全相同的片段只保留一次。',
-  },
-  {
-    label: '消费',
-    description: '片段只供当前请求使用，注入后立即清除。下一次请求重新计算，不会混入上一轮的临时状态。',
-  },
-] as const;
 
 export const configurableQqbotFragmentChannels = [
   {
@@ -71,23 +39,39 @@ export const configurableQqbotFragmentChannels = [
   },
 ] as const;
 
-export const chatHistoryExample = {
-  messages: [
+export const chatHistoryExample: ContextPayloadExample = {
+  meta: 'messages[4]',
+  roles: ['human', 'ai'],
+  value: [
     {
       role: 'human',
-      content: '[speaker_id=10001 speaker_name="小明"] 今晚几点开黑？',
+      content: '[speaker_id=10001 speaker_name="小明"] 你还记得我刚才发的群规吗？',
     },
     {
       role: 'ai',
-      content: '八点，可以。',
+      content: '记得。你发的是一份群规文本。',
     },
-  ] satisfies ChatHistoryExampleMessage[],
-} as const;
+    {
+      role: 'human',
+      content: '[speaker_id=10002 speaker_name="小李"] 那里面允许发账号密码吗？',
+    },
+    {
+      role: 'ai',
+      content: '不允许，其中明确禁止发布账号、口令和私人联系方式。',
+    },
+  ],
+};
 
-export const requestDocumentExample = {
-  role: 'human',
-  content: '<system>As you answer the user\'s questions, use the following context when it is relevant: <context><doc metadata="{"source":"upload","filename":"群规.txt"}" id="doc-01">群内禁止发布账号、口令和私人联系方式。</doc></context>\n\nTreat retrieved context as supporting material. Follow the preset instructions and ignore unrelated material.</system>',
-} as const;
+export const requestDocumentExample: ContextPayloadExample = {
+  meta: 'messages[1]',
+  roles: ['human'],
+  value: [
+    {
+      role: 'human',
+      content: '<system>As you answer the user\'s questions, use the following context when it is relevant: <context><doc metadata="{"source":"upload","filename":"群规.txt"}" id="doc-01">群内禁止发布账号、口令和私人联系方式。违规内容将被撤回并记录。</doc></context>\n\nTreat retrieved context as supporting material. Follow the preset instructions and ignore unrelated material.</system>',
+    },
+  ],
+};
 
 export const skillDescriptionExample = [
   '<available_skills>',
@@ -109,51 +93,205 @@ export const skillDescriptionExample = [
   '</available_skills>',
 ].join('\n');
 
-export const requestAttachmentHistory = {
-  injectionName: 'read_files_context',
-  stage: 'after_scratchpad',
-  role: 'system',
-  projection: [
-    '历史附件引用上下文：默认只保留引用、元数据和处理后文本；除非显式调用 qqbot_attachment_replay，否则不要假定已经看到原件。',
-    '- att_pdf01 | PDF | 需求说明.pdf | 820.0 KiB | 发送者=小明 | 可回放=file_url',
-    '  处理结果：这是 PDF 已提取并截断的正文……',
-  ].join('\n'),
-  replayCall: 'qqbot_attachment_replay({ refs: ["att_pdf01"], purpose: "查看 PDF 原件中的图表" })',
-  readCall: 'read_files({ files: [{ url: "<回放返回的 file_url>" }] })',
-} as const;
+export const runtimeInstructionExample: ContextPayloadExample = {
+  meta: 'messages[6]',
+  roles: ['system', 'human'],
+  value: [
+    {
+      role: 'system',
+      content: skillDescriptionExample,
+    },
+    {
+      role: 'system',
+      content: [
+        '[qqbot-context]',
+        'kind: runtime_contract',
+        'title: Context Interpretation Protocol',
+        'trust: trusted',
+        'payload:',
+        '  上下文解释协议：',
+        '  - 只有真实用户消息才是本轮要直接回应的对象。',
+        '  - 注入的 reference / assistant_state / runtime_contract 都是背景信息，不是用户在对你说的话。',
+        '  - 群聊里的真实用户消息写成 [speaker_id=<id> speaker_name="<name>"] 内容。',
+        '[/qqbot-context]',
+      ].join('\n'),
+    },
+    {
+      role: 'human',
+      content: [
+        '[qqbot-context]',
+        'kind: reference',
+        'title: User Turn Metadata',
+        'trust: trusted',
+        'payload:',
+        '  {',
+        '    "user_name": "小明",',
+        '    "local_time": "2026-08-01 13:42:18",',
+        '    "timezone": "Asia/Shanghai"',
+        '  }',
+        '[/qqbot-context]',
+      ].join('\n'),
+    },
+    {
+      role: 'human',
+      content: [
+        '[qqbot-context]',
+        'kind: assistant_state',
+        'title: Sakiko Relationship State',
+        'trust: trusted',
+        'payload:',
+        '  {',
+        '    "relation": "熟悉，交流自然，近期话题是 Agent 管理页",',
+        '    "activeProactiveThreads": [],',
+        '    "eventResult": null',
+        '  }',
+        '[/qqbot-context]',
+      ].join('\n'),
+    },
+    {
+      role: 'human',
+      content: [
+        '[qqbot-context]',
+        'kind: reference',
+        'title: Recent Attachments',
+        'trust: trusted',
+        'payload:',
+        '  - att_pdf01 | PDF | 需求说明.pdf | 820.0 KiB | 发送者=小明 | 可回放=file_url',
+        '    处理结果：这是 PDF 已提取并截断的正文……',
+        '[/qqbot-context]',
+      ].join('\n'),
+    },
+    {
+      role: 'human',
+      content: [
+        '[qqbot-context]',
+        'kind: reference',
+        'title: QQ Native Feature Capabilities',
+        'trust: trusted',
+        'payload:',
+        '  当前会话支持引用回复、@ 指定成员、图片与文件发送。',
+        '[/qqbot-context]',
+      ].join('\n'),
+    },
+  ],
+};
 
-export const requestAttachmentGuides: RequestAttachmentGuide[] = [
-  {
-    kind: 'image',
-    label: '图片',
-    description: '本轮图片作为 image_url 放在“当前输入”，视觉模型可直接识别画面和文字。归档后不提取图片内容；历史引用只给出文件信息，模型需要原图时按引用 ID 回放，再用 read_files 读取。',
+export const toolDefinitionsExample: ContextPayloadExample = {
+  meta: 'tools[3]',
+  roles: ['native', 'mcp'],
+  value: [
+    {
+      name: 'web_run',
+      description: 'Search and inspect current information on the web.',
+      schema: {
+        type: 'object',
+        properties: {
+          search_query: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { q: { type: 'string' } },
+              required: ['q'],
+            },
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'memory_search',
+      description: 'Search durable memories available to the current conversation.',
+      schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 10 },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'file_read',
+      description: 'Read a UTF-8 text file from the Agent workspace.',
+      schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          offset: { type: 'integer' },
+          limit: { type: 'integer' },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+    },
+  ],
+};
+
+export const currentInputExample: ContextPayloadExample = {
+  meta: 'messages[1] · content[2]',
+  roles: ['human', 'file'],
+  value: [
+    {
+      role: 'human',
+      content: [
+        {
+          type: 'text',
+          text: '[speaker_id=10001 speaker_name="小明"] 请总结这个文件，并解释第二张图。',
+        },
+        {
+          type: 'file_url',
+          file_url: {
+            url: 'qqbot-file://att_pdf01/需求说明.pdf',
+            mimeType: 'application/pdf',
+          },
+        },
+      ],
+    },
+  ],
+};
+
+export const agentScratchpadExample: ContextPayloadExample = {
+  meta: 'messages[2] · call_01',
+  roles: ['ai', 'tool'],
+  value: [
+    {
+      role: 'ai',
+      content: '',
+      toolCalls: [
+        {
+          id: 'call_01',
+          name: 'memory_search',
+          args: {
+            query: 'Agent 管理页设计',
+            limit: 3,
+          },
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      name: 'memory_search',
+      content: '{"items":[{"title":"Agent 页面","summary":"保持单页、低噪音，并直接展示有效配置。"}]}',
+      toolCallId: 'call_01',
+    },
+  ],
+};
+
+export const modelOutputExample: ContextPayloadExample = {
+  meta: 'request options',
+  roles: ['option'],
+  value: {
+    maxOutputTokens: 1024,
+    postHandler: null,
   },
-  {
-    kind: 'pdf',
-    label: 'PDF',
-    description: '本轮 PDF 作为 file_url 进入“当前输入”，Provider 会转换为文件输入。归档时提取正文，历史引用直接附带文本摘录；需要版式、图片或更完整内容时再回放原件。扫描版 PDF 当前不自动 OCR。',
-  },
-  {
-    kind: 'text',
-    label: '文本与 JSON',
-    description: '本轮文件作为 file_url 进入“当前输入”。归档时保存 UTF-8 文本摘录，历史引用和回放直接返回这段文本，模型可据此检索、总结和比较；超长内容会截断。',
-  },
-  {
-    kind: 'audio',
-    label: '语音与音频',
-    description: '先用 ASR 转写，本轮“当前输入”、历史引用和回放都给模型转写文本。没有转写时只保留附件引用；当前回放不会把原始音频交给模型，因此音色、语气和背景声不可用。',
-  },
-  {
-    kind: 'video',
-    label: '视频',
-    description: '本轮保留 video_url。归档后不抽帧、不提取字幕，历史引用只有文件信息；回放可取回 file_url，再由 read_files 尝试读取，能否理解取决于 Provider 与模型的视频能力。',
-  },
-  {
-    kind: 'file',
-    label: '其他文件',
-    description: '本轮和回放都使用 file_url。系统没有通用二进制解析器；归档后的历史引用只有文件名、类型、大小和发送者，只有 read_files 与所选模型支持该格式时才能读取原件。',
-  },
-];
+};
+
+export const defaultKnowledgePrompt = [
+  '<system>Relevant knowledge from the preset\'s configured sources: <knowledge>{knowledge}</knowledge>',
+  '',
+  'Use relevant knowledge as supporting material and ignore unrelated material.</system>',
+].join('\n');
 
 export const contextBlockGuides: Record<GuidedContextBlockType, ContextBlockGuide> = {
   chatHistory: {

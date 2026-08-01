@@ -8,7 +8,15 @@ import {
 } from 'vue';
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { ApiError } from '@/api/client';
+import {
+  agentMcpToolPutSchema,
+  agentToolPutSchema,
+  type AgentAdminState,
+  type AgentMcpToolAdmin,
+  type AgentToolPolicyState,
+} from '@contracts';
+import { ApiError, jsonBody, rawApi } from '@/api/client';
+import ContextPayloadPreview from '@/components/ContextPayloadPreview.vue';
 import ContextRuntimeInspector from '@/components/ContextRuntimeInspector.vue';
 import PendingChangesBar from '@/components/PendingChangesBar.vue';
 import {
@@ -51,12 +59,17 @@ import {
   type StoredContextBlockType,
 } from '@/api/context-presets';
 import {
+  agentScratchpadExample,
   chatHistoryExample,
   contextBlockGuides,
-  requestAttachmentHistory,
+  currentInputExample,
+  defaultKnowledgePrompt,
+  modelOutputExample,
   requestDocumentExample,
-  skillDescriptionExample,
+  runtimeInstructionExample,
+  toolDefinitionsExample,
   configurableQqbotFragmentChannels,
+  type ContextPayloadExample,
   type GuidedContextBlockType,
 } from './context-preset-guides';
 
@@ -86,6 +99,11 @@ const savingFragmentPolicy = ref(false);
 const mutating = ref(false);
 const draggingBlockId = ref<string | null>(null);
 const customTokenLimitBlockId = ref('');
+const agentState = ref<AgentAdminState | null>(null);
+const agentToolPolicy = ref<AgentToolPolicyState | null>(null);
+const agentToolsLoading = ref(false);
+const pendingAgentTool = ref('');
+const agentToolQuery = ref('');
 let previewTimer: number | undefined;
 let previewSequence = 0;
 
@@ -148,9 +166,6 @@ const selectedBlockGuide = computed(() => {
   if (!type || type === 'role') return null;
   return contextBlockGuides[type as GuidedContextBlockType];
 });
-const selectedBlockPlacement = computed(() => (
-  selectedBlockType.value === 'role' ? '消息开头' : selectedBlockGuide.value?.placement ?? ''
-));
 const selectedBlockRule = computed(() => (
   selectedBlockType.value === 'role'
     ? 'Role preset 按消息原顺序展开，并组成模型输入的开头。'
@@ -234,6 +249,255 @@ const canRemoveSelected = computed(() => {
     || type === 'agentScratchpad';
 });
 
+interface ContextToolRow {
+  name: string;
+  title: string;
+  description: string;
+  registered: boolean;
+  enabled: boolean;
+  main: boolean;
+  management: 'editable' | 'locked_off';
+  managementNote?: string;
+  mcpTool?: AgentMcpToolAdmin;
+}
+
+const contextToolRows = computed<ContextToolRow[]>(() => {
+  const query = agentToolQuery.value.trim().toLowerCase();
+  const runtimeTools = new Map(
+    (agentState.value?.tools.catalog ?? []).map((tool) => [tool.name, tool]),
+  );
+  const mcpTools = new Map(
+    (agentState.value?.mcp.tools ?? []).map((tool) => [tool.name, tool]),
+  );
+  return (agentToolPolicy.value?.catalog ?? [])
+    .filter((entry) => entry.visibility === 'standalone')
+    .map((entry): ContextToolRow => ({
+      name: entry.toolName,
+      title: entry.title || entry.toolName,
+      description: entry.description,
+      registered: entry.registered ?? runtimeTools.has(entry.toolName),
+      enabled: runtimeTools.get(entry.toolName)?.enabled ?? false,
+      main: runtimeTools.get(entry.toolName)?.main ?? false,
+      management: entry.management,
+      managementNote: entry.managementNote,
+      mcpTool: mcpTools.get(entry.toolName),
+    }))
+    .filter((tool) => (
+      !query || `${tool.title} ${tool.name} ${tool.description}`.toLowerCase().includes(query)
+    ))
+    .sort((left, right) => left.title.localeCompare(right.title));
+});
+
+interface SelectedContextPayload extends ContextPayloadExample {
+  channel: 'messages[]' | 'tools[]' | 'request options';
+}
+
+function renderPayloadTemplate(source: string): string {
+  const variables: Record<string, string> = {
+    name: roleDraft.value?.displayName ?? 'Sakiko',
+    sender_id: '10001',
+    sender: '小明',
+    prompt: '请总结这个文件，并解释第二张图。',
+    date: '2026-08-01 13:42:18',
+    time: '13:42:18',
+    weekday: '星期六',
+    user_id: '10001',
+    user: '小明',
+    platform: 'onebot',
+    group_id: '778899',
+    group_name: 'Agent 设计讨论',
+    bot_id: '123456',
+    is_group: 'true',
+    is_private: 'false',
+    idle_duration: '2 分钟',
+    noop: '',
+  };
+  let rendered = source;
+  for (const [name, value] of Object.entries(variables)) {
+    rendered = rendered.replaceAll(`{${name}}`, value);
+  }
+  return rendered;
+}
+
+function roleContentForPreview(content: RolePresetMessage['content']): unknown {
+  if (typeof content === 'string') return renderPayloadTemplate(content);
+  return content.map((part) => {
+    if (part.type === 'text') return { type: 'text', text: renderPayloadTemplate(part.text) };
+    if (part.type === 'image') {
+      return {
+        type: 'image_url',
+        image_url: { url: part.url, detail: part.detail },
+      };
+    }
+    if (part.type === 'file') {
+      return {
+        type: 'file_url',
+        file_url: { url: part.url, mimeType: part.mimeType },
+      };
+    }
+    if (part.type === 'audio') {
+      return {
+        type: 'audio_url',
+        audio_url: { url: part.url, mimeType: part.mimeType },
+      };
+    }
+    return {
+      type: 'video_url',
+      video_url: { url: part.url, mimeType: part.mimeType },
+    };
+  });
+}
+
+const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
+  const type = selectedBlockType.value;
+  if (!type) return null;
+
+  if (type === 'role') {
+    const messages = roleDraft.value?.messages.map((message) => ({
+      role: message.role === 'user' ? 'human' : message.role === 'assistant' ? 'ai' : 'system',
+      content: roleContentForPreview(message.content),
+    })) ?? [];
+    return {
+      channel: 'messages[]',
+      meta: `messages[${messages.length}]`,
+      roles: [...new Set(messages.map((message) => message.role))],
+      value: messages,
+    };
+  }
+
+  if (type === 'chatHistory') {
+    const enabled = selectedStoredBlock.value?.type === 'chatHistory' && selectedStoredBlock.value.enabled;
+    return enabled
+      ? { channel: 'messages[]', ...chatHistoryExample }
+      : { channel: 'messages[]', meta: 'messages[0]', roles: chatHistoryExample.roles, value: [] };
+  }
+
+  if (type === 'requestDocuments') {
+    const enabled = selectedStoredBlock.value?.type === 'requestDocuments' && selectedStoredBlock.value.enabled;
+    return enabled
+      ? { channel: 'messages[]', ...requestDocumentExample }
+      : { channel: 'messages[]', meta: 'messages[0]', roles: requestDocumentExample.roles, value: [] };
+  }
+
+  if (type === 'qqbotFragments') {
+    const source = runtimeInstructionExample.value as unknown[];
+    const messages = [source[0], source[1], source[2]];
+    if (fragmentPolicyDraft.value?.relationshipState !== false) messages.push(source[3]);
+    if (fragmentPolicyDraft.value?.attachmentReferences !== false) messages.push(source[4]);
+    if (fragmentPolicyDraft.value?.nativeCapabilities !== false) messages.push(source[5]);
+    return {
+      channel: 'messages[]',
+      meta: `messages[${messages.length}]`,
+      roles: runtimeInstructionExample.roles,
+      value: messages,
+    };
+  }
+
+  if (type === 'toolDefinitions') {
+    return { channel: 'tools[]', ...toolDefinitionsExample };
+  }
+
+  if (type === 'currentInput') {
+    const block = selectedStoredBlock.value;
+    if (block?.type !== 'currentInput' || block.inputFormat === null) {
+      return { channel: 'messages[]', ...currentInputExample };
+    }
+    return {
+      channel: 'messages[]',
+      meta: currentInputExample.meta,
+      roles: currentInputExample.roles,
+      value: [
+        {
+          role: 'human',
+          content: [
+            {
+              type: 'text',
+              text: renderPayloadTemplate(block.inputFormat),
+            },
+            {
+              type: 'file_url',
+              file_url: {
+                url: 'qqbot-file://att_pdf01/需求说明.pdf',
+                mimeType: 'application/pdf',
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  if (type === 'agentScratchpad') {
+    const enabled = selectedStoredBlock.value?.type === 'agentScratchpad' && selectedStoredBlock.value.enabled;
+    return enabled
+      ? { channel: 'messages[]', ...agentScratchpadExample }
+      : { channel: 'messages[]', meta: 'messages[0]', roles: agentScratchpadExample.roles, value: [] };
+  }
+
+  if (type === 'modelOutput') {
+    const block = selectedOutputBlock.value;
+    return block
+      ? {
+          channel: 'request options',
+          meta: modelOutputExample.meta,
+          roles: modelOutputExample.roles,
+          value: {
+            maxOutputTokens: block.maxOutputTokens,
+            postHandler: block.postHandler,
+          },
+        }
+      : { channel: 'request options', ...modelOutputExample };
+  }
+
+  if (type === 'lore') {
+    const block = selectedLoreBlock.value;
+    const entries = block?.enabled
+      ? block.entries.filter((entry) => entry.enabled !== false)
+      : [];
+    const content = entries.map((entry) => renderPayloadTemplate(entry.content)).join('\n');
+    const messages = content
+      ? [{
+          role: 'human',
+          content: renderPayloadTemplate((block?.prompt ?? '{input}').replaceAll('{input}', content)),
+        }]
+      : [];
+    return {
+      channel: 'messages[]',
+      meta: `messages[${messages.length}]`,
+      roles: ['human'],
+      value: messages,
+    };
+  }
+
+  if (type === 'authorsNote') {
+    const block = selectedAuthorsNoteBlock.value;
+    const messages = block?.enabled && block.insertFrequency > 0
+      ? [{ role: 'human', content: renderPayloadTemplate(block.content) }]
+      : [];
+    return {
+      channel: 'messages[]',
+      meta: `messages[${messages.length}]`,
+      roles: ['human'],
+      value: messages,
+    };
+  }
+
+  const block = selectedKnowledgeBlock.value;
+  if (!block?.enabled || block.sources.length === 0) {
+    return { channel: 'messages[]', meta: 'messages[0]', roles: ['human'], value: [] };
+  }
+  const document = `<doc metadata="${JSON.stringify({ source: block.sources[0], blockId: block.id })}" id="knowledge-01">Agent 页面使用单一工作区，并在上下文块旁直接提供相关配置。</doc>`;
+  return {
+    channel: 'messages[]',
+    meta: 'messages[1]',
+    roles: ['human'],
+    value: [{
+      role: 'human',
+      content: renderPayloadTemplate((block.prompt ?? defaultKnowledgePrompt).replaceAll('{knowledge}', document)),
+    }],
+  };
+});
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -278,6 +542,58 @@ async function refreshCatalogs(): Promise<void> {
   const [contexts, roles] = await Promise.all([listContextPresets(), listRolePresets()]);
   contextCatalog.value = contexts;
   roleCatalog.value = roles;
+}
+
+async function loadAgentTools(): Promise<void> {
+  if (agentToolsLoading.value) return;
+  agentToolsLoading.value = true;
+  try {
+    const [state, policy] = await Promise.all([
+      rawApi<AgentAdminState>('/agent'),
+      rawApi<AgentToolPolicyState>('/agent/tools/policy'),
+    ]);
+    agentState.value = state;
+    agentToolPolicy.value = policy;
+  } catch (error) {
+    ElMessage.error(errorText(error));
+  } finally {
+    agentToolsLoading.value = false;
+  }
+}
+
+function contextToolState(tool: ContextToolRow): string {
+  if (tool.management === 'locked_off') return tool.managementNote ?? '策略锁定关闭';
+  if (!tool.registered) return '未注册';
+  return tool.enabled && tool.main ? '已启用' : '已停用';
+}
+
+async function toggleContextTool(tool: ContextToolRow, enabled: boolean): Promise<void> {
+  if (!tool.registered || tool.management === 'locked_off' || pendingAgentTool.value) return;
+  pendingAgentTool.value = tool.name;
+  try {
+    if (tool.mcpTool) {
+      await rawApi(`/agent/mcp/tools/${encodeURIComponent(tool.name)}`, {
+        method: 'PUT',
+        body: jsonBody(agentMcpToolPutSchema, {
+          enabled,
+          timeout: tool.mcpTool.timeout,
+          selector: tool.mcpTool.selector,
+        }),
+      });
+    } else {
+      await rawApi(`/agent/tools/${encodeURIComponent(tool.name)}`, {
+        method: 'PATCH',
+        body: jsonBody(agentToolPutSchema, { enabled, main: enabled }),
+      });
+    }
+    const state = await rawApi<AgentAdminState>('/agent');
+    agentState.value = state;
+    ElMessage.success(enabled ? `${tool.title} 已启用` : `${tool.title} 已停用`);
+  } catch (error) {
+    ElMessage.error(errorText(error));
+  } finally {
+    pendingAgentTool.value = '';
+  }
 }
 
 async function loadRole(id: string): Promise<void> {
@@ -944,6 +1260,9 @@ function beforeUnload(event: BeforeUnloadEvent): void {
 }
 
 watch(contextDraft, schedulePreview, { deep: true });
+watch(selectedBlockType, (type) => {
+  if (type === 'toolDefinitions' && agentState.value === null) void loadAgentTools();
+});
 
 onBeforeRouteLeave(async () => {
   if (!hasDirtyResources.value) return true;
@@ -1080,12 +1399,15 @@ onBeforeUnmount(() => {
       <section class="editor-panel">
         <div class="panel-head editor-head">
           <div>
-            <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
-            <small v-if="selectedBlockPlacement">{{ selectedBlockPlacement }}</small>
+            <div class="editor-title-row">
+              <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
+              <code v-if="selectedContextPayload">{{ selectedContextPayload.channel }}</code>
+            </div>
+            <small v-if="selectedBlockRule">{{ selectedBlockRule }}</small>
           </div>
           <div class="block-tools">
             <el-button v-if="canDuplicateSelected" size="small" @click="duplicateSelectedBlock">
-              复制
+              复制块
             </el-button>
             <el-button v-if="canRemoveSelected" size="small" type="danger" plain @click="removeSelectedBlock">
               移除
@@ -1094,56 +1416,26 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="selectedBlockType" class="editor-body">
-          <p v-if="selectedBlockRule" class="block-rule">{{ selectedBlockRule }}</p>
-          <section
-            v-if="selectedBlockType === 'chatHistory' || selectedBlockType === 'requestDocuments' || selectedBlockType === 'agentScratchpad'"
-            class="block-guide"
-          >
-            <template v-if="selectedBlockType === 'chatHistory'">
-              <details class="input-example">
-                <summary>输入示例</summary>
-                <div class="history-example">
-                  <div
-                    v-for="message in chatHistoryExample.messages"
-                    :key="message.role"
-                    class="history-message"
-                  >
-                    <span :class="['history-role', `is-${message.role}`]">{{ message.role }}</span>
-                    <code>{{ message.content }}</code>
-                  </div>
-                </div>
-              </details>
-            </template>
-            <template v-else-if="selectedBlockType === 'requestDocuments'">
-              <details class="input-example">
-                <summary>输入示例</summary>
-                <div class="history-message">
-                  <span class="history-role">{{ requestDocumentExample.role }}</span>
-                  <code>{{ requestDocumentExample.content }}</code>
-                </div>
-              </details>
-            </template>
-            <template v-else-if="selectedBlockType === 'agentScratchpad'">
-              <details class="input-example">
-                <summary>历史附件投影示例</summary>
-                <div class="history-message">
-                  <span class="history-role is-system">{{ requestAttachmentHistory.role }}</span>
-                  <code>{{ requestAttachmentHistory.projection }}</code>
-                </div>
-              </details>
-            </template>
-          </section>
+          <div class="context-editor-grid">
+            <ContextPayloadPreview
+              v-if="selectedContextPayload"
+              class="context-payload"
+              :value="selectedContextPayload.value"
+              :meta="selectedContextPayload.meta"
+              :roles="selectedContextPayload.roles"
+            />
 
-          <template v-if="selectedResolvedBlock?.source === 'runtime'">
+            <section class="block-settings">
+              <header class="settings-head">
+                <h3>配置</h3>
+              </header>
+
+              <template v-if="selectedResolvedBlock?.source === 'runtime'">
             <template v-if="selectedResolvedBlock.type === 'qqbotFragments'">
               <div class="runtime-link-row">
-                <span><strong>Skills</strong><small>description mode 进入 &lt;available_skills&gt;；full mode 进入 &lt;skill_content&gt;。</small></span>
+                <span><strong>Skills</strong><small>description / full</small></span>
                 <el-button text @click="router.push('/intelligence/agent?section=skills')">管理</el-button>
               </div>
-              <details class="input-example runtime-example">
-                <summary>Skill 输入示例</summary>
-                <pre>{{ skillDescriptionExample }}</pre>
-              </details>
               <section v-if="fragmentPolicyDraft" class="fragment-policy">
                 <div
                   v-for="channel in configurableQqbotFragmentChannels"
@@ -1172,18 +1464,40 @@ onBeforeUnmount(() => {
                 </div>
               </section>
             </template>
-            <div v-else class="runtime-actions">
-              <el-button
-                text
-                v-if="selectedResolvedBlock.type === 'toolDefinitions'"
-                @click="router.push('/intelligence/agent?section=tools')"
-              >
-                管理 Tools
-              </el-button>
-            </div>
-          </template>
+            <section v-else-if="selectedResolvedBlock.type === 'toolDefinitions'" class="context-tools">
+              <div class="context-tools-head">
+                <el-input
+                  v-model="agentToolQuery"
+                  clearable
+                  size="small"
+                  placeholder="搜索 Tools"
+                  aria-label="搜索 Tools"
+                />
+                <el-button text @click="router.push('/intelligence/agent?section=tools')">全部</el-button>
+              </div>
+              <div v-loading="agentToolsLoading" class="context-tool-list">
+                <article v-for="tool in contextToolRows" :key="tool.name" class="context-tool-row">
+                  <div>
+                    <strong>{{ tool.title }}</strong>
+                    <small>{{ tool.name }}</small>
+                    <span>{{ contextToolState(tool) }}</span>
+                  </div>
+                  <el-switch
+                    :model-value="tool.enabled && tool.main"
+                    :disabled="!tool.registered || tool.management === 'locked_off'"
+                    :loading="pendingAgentTool === tool.name"
+                    :aria-label="`${tool.enabled && tool.main ? '停用' : '启用'} ${tool.title}`"
+                    @change="toggleContextTool(tool, Boolean($event))"
+                  />
+                </article>
+                <p v-if="!agentToolsLoading && contextToolRows.length === 0" class="empty-setting">
+                  {{ agentToolQuery ? '没有匹配的 Tool' : '没有可配置的 Tool' }}
+                </p>
+              </div>
+            </section>
+              </template>
 
-          <template v-else-if="selectedStoredBlock">
+              <template v-else-if="selectedStoredBlock">
             <el-form label-position="top">
               <div v-if="selectedBudgetBlock" class="budget-settings">
                 <el-form-item label="启用">
@@ -1390,7 +1704,9 @@ onBeforeUnmount(() => {
               </template>
 
             </el-form>
-          </template>
+              </template>
+            </section>
+          </div>
         </div>
         <div v-else class="editor-empty">从左侧选择一个上下文块。</div>
       </section>
@@ -1423,7 +1739,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0 auto 18px;
 }
 
@@ -1458,7 +1774,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 18px;
   min-height: 52px;
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0 auto;
   padding: 8px 0;
   border-top: 1px solid var(--line);
@@ -1501,10 +1817,10 @@ onBeforeUnmount(() => {
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: 210px minmax(0, 1fr);
   align-items: stretch;
   min-width: 0;
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0 auto;
   border-bottom: 1px solid var(--line);
 }
@@ -1535,13 +1851,31 @@ onBeforeUnmount(() => {
 }
 
 .editor-head h2 {
-  margin: 0 0 3px;
+  margin: 0;
   font-size: 15px;
 }
 
 .editor-head small {
+  display: block;
+  margin-top: 5px;
   color: var(--muted);
   font-size: 10px;
+  line-height: 1.45;
+}
+
+.editor-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-title-row code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: #7155b3;
+  background: #f1ecff;
+  font: 9px/1.4 var(--font-mono, ui-monospace, monospace);
 }
 
 .context-stack {
@@ -1678,89 +2012,109 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
-.block-rule {
-  max-width: 760px;
-  margin: 0 0 16px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.block-guide {
-  margin: 0 0 16px;
-}
-
-.input-example {
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.input-example summary {
-  width: fit-content;
-  padding: 9px 0;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 10px;
-}
-
-.history-example {
-  max-width: 800px;
-  margin-bottom: 10px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--surface) 94%, #8090a6 6%);
-}
-
-.history-message {
+.context-editor-grid {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.65fr) minmax(250px, .75fr);
+  gap: 20px;
   align-items: start;
-  gap: 10px;
-  padding: 10px 12px;
 }
 
-.history-message + .history-message {
-  border-top: 1px solid var(--line);
+.context-payload,
+.block-settings {
+  min-width: 0;
 }
 
-.history-role {
-  width: fit-content;
-  padding: 2px 7px;
-  border-radius: 999px;
-  color: #3159a7;
-  background: #e9f0ff;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.block-settings {
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+
+.settings-head {
+  min-height: 30px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 8px;
+}
+
+.settings-head h3 {
+  margin: 0;
   font-size: 11px;
   font-weight: 700;
-}
-
-.history-role.is-ai {
-  color: #397357;
-  background: #e7f5ed;
-}
-
-.input-example > .history-message {
-  margin-bottom: 10px;
-  background: color-mix(in srgb, var(--surface) 94%, #8090a6 6%);
-}
-
-.history-message code {
-  min-width: 0;
-  color: #253148;
-  font-size: 12px;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.history-role.is-system {
-  color: #7650a4;
-  background: #f0e9f8;
 }
 
 .runtime-actions {
   display: flex;
   align-items: center;
   justify-content: flex-start;
+}
+
+.context-tools {
+  min-width: 0;
+}
+
+.context-tools-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.context-tool-list {
+  min-height: 54px;
+  max-height: 500px;
+  overflow: auto;
+}
+
+.context-tool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 8px 3px;
+  border-bottom: 1px solid var(--line);
+}
+
+.context-tool-row > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+}
+
+.context-tool-row strong,
+.context-tool-row small,
+.context-tool-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-tool-row strong {
+  font-size: 11px;
+}
+
+.context-tool-row small {
+  color: var(--muted);
+  font: 9px/1.4 var(--font-mono, ui-monospace, monospace);
+}
+
+.context-tool-row span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.empty-setting {
+  margin: 0;
+  padding: 18px 2px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .runtime-link-row {
@@ -1788,20 +2142,7 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 
-.runtime-example pre {
-  max-height: 260px;
-  margin: 0 0 10px;
-  padding: 12px;
-  overflow: auto;
-  border-radius: 6px;
-  background: #111418;
-  color: #d7dde6;
-  font: 10px/1.6 var(--font-mono, ui-monospace, monospace);
-  white-space: pre-wrap;
-}
-
 .fragment-policy {
-  max-width: 820px;
   border-top: 1px solid #d8e0eb;
 }
 
@@ -1855,13 +2196,15 @@ onBeforeUnmount(() => {
 
 .budget-settings {
   display: grid;
-  grid-template-columns: 90px minmax(260px, 1fr);
+  grid-template-columns: 1fr;
+  min-width: 0;
   gap: 0 14px;
   align-items: start;
   margin-bottom: 8px;
 }
 
 .budget-settings .el-form-item {
+  min-width: 0;
   margin-bottom: 10px;
 }
 
@@ -1871,6 +2214,7 @@ onBeforeUnmount(() => {
 
 .token-limit-control {
   width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1878,7 +2222,25 @@ onBeforeUnmount(() => {
 }
 
 .token-limit-control .el-segmented {
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
+}
+
+.token-limit-control :deep(.el-segmented__group) {
+  width: 100%;
+  min-width: 0;
+}
+
+.token-limit-control :deep(.el-segmented__item) {
+  min-width: 0;
+  flex: 1;
+  padding: 0 3px;
+}
+
+.token-limit-control :deep(.el-segmented__item-label) {
+  padding: 0;
+  font-size: 10px;
 }
 
 .custom-token-limit {
@@ -1891,7 +2253,7 @@ onBeforeUnmount(() => {
 }
 
 .form-grid.two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .form-grid .wide {
@@ -1910,7 +2272,7 @@ onBeforeUnmount(() => {
 }
 
 .role-resource-head .el-form-item {
-  min-width: min(100%, 360px);
+  min-width: 0;
   flex: 1;
   margin-bottom: 0;
 }
@@ -1967,7 +2329,18 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1080px) {
   .workbench-grid {
-    grid-template-columns: 204px minmax(0, 1fr);
+    grid-template-columns: 188px minmax(0, 1fr);
+  }
+
+  .context-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .block-settings {
+    padding-top: 16px;
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
   }
 }
 
@@ -2020,11 +2393,6 @@ onBeforeUnmount(() => {
 
   .budget-settings {
     grid-template-columns: 1fr;
-  }
-
-  .history-message {
-    grid-template-columns: 1fr;
-    gap: 6px;
   }
 
   .token-limit-control .el-segmented {

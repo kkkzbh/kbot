@@ -13,6 +13,7 @@ import {
 } from '@contracts';
 import { jsonBody, rawApi } from '@/api/client';
 import { getContextSnapshot, listContextTargets } from '@/api/context-presets';
+import ContextPayloadPreview from '@/components/ContextPayloadPreview.vue';
 
 const router = useRouter();
 const targets = ref<ContextTarget[]>([]);
@@ -37,7 +38,7 @@ const excludedMessages = computed(() => (
   snapshot.value?.messages.filter((message) => !message.included)
     .sort((left, right) => left.index - right.index) ?? []
 ));
-const semanticPayload = computed(() => JSON.stringify({
+const semanticPayload = computed(() => ({
   messages: includedMessages.value.map((message) => ({
     role: message.role,
     ...(message.name === undefined ? {} : { name: message.name }),
@@ -50,16 +51,16 @@ const semanticPayload = computed(() => JSON.stringify({
     ...(tool.description === undefined ? {} : { description: tool.description }),
     ...(tool.schema === undefined ? {} : { schema: tool.schema }),
   })) ?? [],
-}, null, 2));
+}));
 
-function formatMessage(message: ContextSnapshotMessage): string {
-  return JSON.stringify({
+function messagePayload(message: ContextSnapshotMessage): Record<string, unknown> {
+  return {
     role: message.role,
     ...(message.name === undefined ? {} : { name: message.name }),
     content: message.content,
     ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
     ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
-  }, null, 2);
+  };
 }
 
 function formatTime(timestamp: number): string {
@@ -211,7 +212,7 @@ async function toggleExample(): Promise<void> {
 <template>
   <section class="runtime-inspector">
     <header class="runtime-head">
-      <h2>请求示例</h2>
+      <h2>最近请求</h2>
       <div class="runtime-actions">
         <el-select
           v-if="exampleOpen"
@@ -234,10 +235,6 @@ async function toggleExample(): Promise<void> {
       </div>
     </header>
 
-    <p v-if="exampleOpen" class="capture-note">
-      <code>before_provider_serialization</code> 的 semantic payload；Secret、credentials 与二进制内容已替换。
-    </p>
-
     <template v-if="exampleOpen && snapshot">
       <dl class="request-meta">
         <div><dt>Model</dt><dd>{{ snapshot.model }}</dd></div>
@@ -255,14 +252,28 @@ async function toggleExample(): Promise<void> {
             {{ showSemanticPayload ? '收起捕获 JSON' : '捕获 JSON' }}
           </el-button>
         </div>
-        <pre v-if="showSemanticPayload" class="raw-payload">{{ semanticPayload }}</pre>
+        <ContextPayloadPreview
+          v-if="showSemanticPayload"
+          class="raw-payload"
+          :value="semanticPayload"
+          :meta="`messages[${includedMessages.length}] · tools[${snapshot.tools.length}]`"
+          :roles="[...new Set(includedMessages.map((message) => message.role))]"
+          compact
+        />
         <div class="raw-list">
           <article v-for="message in includedMessages" :key="message.id" class="raw-item">
             <button type="button" class="raw-item-head" @click="toggleMessage(message.id)">
               <span><strong>{{ message.index }}</strong><em>{{ message.role }}</em><small>{{ message.stage }} · {{ message.source }}</small></span>
               <span>{{ message.estimatedTokens }} tokens · {{ expandedMessages.has(message.id) ? '收起' : '原文' }}</span>
             </button>
-            <pre v-if="expandedMessages.has(message.id)">{{ formatMessage(message) }}</pre>
+            <ContextPayloadPreview
+              v-if="expandedMessages.has(message.id)"
+              class="raw-item-payload"
+              :value="messagePayload(message)"
+              :roles="[message.role]"
+              :copyable="false"
+              compact
+            />
           </article>
         </div>
         <button v-if="excludedMessages.length" type="button" class="excluded-toggle" @click="showExcluded = !showExcluded">
@@ -274,7 +285,14 @@ async function toggleExample(): Promise<void> {
               <span><strong>{{ message.index }}</strong><em>{{ message.role }}</em><small>{{ message.dropReason }}</small></span>
               <span>{{ expandedMessages.has(message.id) ? '收起' : '原文' }}</span>
             </button>
-            <pre v-if="expandedMessages.has(message.id)">{{ formatMessage(message) }}</pre>
+            <ContextPayloadPreview
+              v-if="expandedMessages.has(message.id)"
+              class="raw-item-payload"
+              :value="messagePayload(message)"
+              :roles="[message.role]"
+              :copyable="false"
+              compact
+            />
           </article>
         </div>
       </section>
@@ -297,7 +315,14 @@ async function toggleExample(): Promise<void> {
               :aria-label="`配置 ${tool.name}`"
               @change="toggleTool(tool.name, Boolean($event))"
             />
-            <pre v-if="expandedTools.has(tool.name)">{{ JSON.stringify({ name: tool.name, description: tool.description, schema: tool.schema }, null, 2) }}</pre>
+            <ContextPayloadPreview
+              v-if="expandedTools.has(tool.name)"
+              class="raw-item-payload"
+              :value="{ name: tool.name, description: tool.description, schema: tool.schema }"
+              :roles="['tool']"
+              :copyable="false"
+              compact
+            />
           </article>
         </div>
         <p v-else class="empty-line">这次请求没有 Tool definitions。</p>
@@ -312,5 +337,5 @@ async function toggleExample(): Promise<void> {
 </template>
 
 <style scoped>
-.runtime-inspector{display:grid;gap:22px;max-width:1120px;margin:22px auto 0;padding-top:14px;border-top:1px solid var(--line);color:var(--ink)}.runtime-head{display:flex;align-items:center;justify-content:space-between;gap:24px}.runtime-head h2{margin:0;font-size:13px;letter-spacing:-.01em}.runtime-head code{font-size:11px}.runtime-actions{display:flex;align-items:center;gap:8px}.runtime-actions .el-select{width:280px}.capture-note{margin:0;padding:9px 12px;border-left:2px solid #8090a6;background:color-mix(in srgb,var(--surface) 94%,#8090a6 6%);color:var(--muted);font-size:10px;line-height:1.6}.request-meta{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;margin:0;border:1px solid var(--line);background:var(--line)}.request-meta div{min-width:0;padding:11px 12px;background:var(--surface)}.request-meta dt{color:var(--muted);font-size:9px;text-transform:uppercase}.request-meta dd{overflow:hidden;margin:4px 0 0;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.raw-section{display:grid;gap:13px}.section-title{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.section-title h2,.empty-snapshot h2{margin:0;font-size:16px;letter-spacing:-.02em}.secondary-links{display:flex;gap:2px}.raw-list{border-top:1px solid var(--line)}.raw-item{position:relative;border-bottom:1px solid var(--line)}.raw-item-head{display:flex;width:100%;align-items:center;justify-content:space-between;gap:18px;min-height:55px;padding:8px 6px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.raw-item-head>span{display:flex;align-items:baseline;gap:9px;min-width:0}.raw-item-head strong{font-size:12px}.raw-item-head em{color:var(--accent);font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;font-style:normal}.raw-item-head small,.raw-item-head>span:last-child{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.raw-item pre,.raw-payload{max-height:480px;margin:0 6px 12px;padding:14px;overflow:auto;border:1px solid var(--line);border-radius:7px;background:#111418;color:#d7dde6;font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.raw-payload{max-height:640px;margin:0}.tool-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.tool-item pre{grid-column:1/-1}.tool-item>.el-switch{margin-right:6px}.excluded-toggle{justify-self:start;padding:2px 0;border:0;background:transparent;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}.excluded-list{opacity:.72}.empty-line{margin:0;padding:18px 6px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}.empty-snapshot{display:grid;gap:10px;padding:42px 4px;border-top:1px solid var(--line)}.empty-snapshot>p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}@media(max-width:900px){.request-meta{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:680px){.runtime-head,.section-title{align-items:stretch;flex-direction:column}.runtime-actions{align-items:stretch}.runtime-actions .el-select{width:100%}.request-meta{grid-template-columns:repeat(2,minmax(0,1fr))}.raw-item-head>span:first-child{align-items:flex-start;flex-direction:column;gap:3px}}
+.runtime-inspector{display:grid;gap:22px;max-width:1180px;margin:22px auto 0;padding-top:14px;border-top:1px solid var(--line);color:var(--ink)}.runtime-head{display:flex;align-items:center;justify-content:space-between;gap:24px}.runtime-head h2{margin:0;font-size:13px;letter-spacing:-.01em}.runtime-actions{display:flex;align-items:center;gap:8px}.runtime-actions .el-select{width:280px}.request-meta{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;margin:0;border:1px solid var(--line);background:var(--line)}.request-meta div{min-width:0;padding:11px 12px;background:var(--surface)}.request-meta dt{color:var(--muted);font-size:9px;text-transform:uppercase}.request-meta dd{overflow:hidden;margin:4px 0 0;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.raw-section{display:grid;gap:13px}.section-title{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.section-title h2,.empty-snapshot h2{margin:0;font-size:16px;letter-spacing:-.02em}.secondary-links{display:flex;gap:2px}.raw-payload{margin:0}.raw-list{border-top:1px solid var(--line)}.raw-item{position:relative;border-bottom:1px solid var(--line)}.raw-item-head{display:flex;width:100%;align-items:center;justify-content:space-between;gap:18px;min-height:55px;padding:8px 6px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.raw-item-head>span{display:flex;align-items:baseline;gap:9px;min-width:0}.raw-item-head strong{font-size:12px}.raw-item-head em{color:var(--accent);font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;font-style:normal}.raw-item-head small,.raw-item-head>span:last-child{overflow:hidden;color:var(--muted);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.raw-item-payload{margin:0 6px 12px}.tool-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.tool-item .raw-item-payload{grid-column:1/-1}.tool-item>.el-switch{margin-right:6px}.excluded-toggle{justify-self:start;padding:2px 0;border:0;background:transparent;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}.excluded-list{opacity:.72}.empty-line{margin:0;padding:18px 6px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}.empty-snapshot{display:grid;gap:10px;padding:42px 4px;border-top:1px solid var(--line)}.empty-snapshot>p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}@media(max-width:900px){.request-meta{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:680px){.runtime-head,.section-title{align-items:stretch;flex-direction:column}.runtime-actions{align-items:stretch}.runtime-actions .el-select{width:100%}.request-meta{grid-template-columns:repeat(2,minmax(0,1fr))}.raw-item-head>span:first-child{align-items:flex-start;flex-direction:column;gap:3px}}
 </style>
