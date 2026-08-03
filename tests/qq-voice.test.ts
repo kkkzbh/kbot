@@ -920,6 +920,22 @@ describe('qq voice plugin', () => {
     ).toBe(false);
   });
 
+  it('does not persist a negative onebot record capability observation', async () => {
+    let supported = false;
+    const { bot } = createHarness({
+      canSendRecordImpl: async () => supported,
+    });
+    const capabilityCache = new Map<string, boolean>();
+
+    await expect(ensureCanSendRecord(bot as never, capabilityCache)).resolves.toBe(false);
+    expect(capabilityCache.has('onebot:bot-1')).toBe(false);
+
+    supported = true;
+    await expect(ensureCanSendRecord(bot as never, capabilityCache)).resolves.toBe(true);
+    expect(bot.internal.canSendRecord).toHaveBeenCalledTimes(2);
+    expect(capabilityCache.get('onebot:bot-1')).toBe(true);
+  });
+
   it('rejects standalone reply delivery outside onebot instead of falling back to ChatLuna send', async () => {
     const { bot } = createHarness();
     const session = createSession(bot, { platform: 'discord' });
@@ -1797,6 +1813,45 @@ describe('qq voice plugin', () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(fetchMock.mock.calls.some((call: any[]) => String(call[0]).includes('http://127.0.0.1:8082/healthz'))).toBe(true);
+  });
+
+  it('refreshes platform and tts capability before an explicit voice turn', async () => {
+    let canSendRecord = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === 'http://127.0.0.1:8082/healthz') {
+        return new Response('ok', { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { capabilityMiddleware, bot } = createHarness({
+      canSendRecordImpl: async () => canSendRecord,
+    });
+    bot.selfId = 'bot-explicit-refresh';
+    const normal = createSession(bot, {
+      content: '晚上好',
+      strippedContent: '晚上好',
+    });
+    await capabilityMiddleware?.(normal, async () => undefined);
+    expect(normal.state.qqReplyTransport.capabilitySnapshot.canVoice).toBe(false);
+
+    canSendRecord = true;
+    const explicit = createSession(bot, {
+      content: '我有点睡不着，给我发一小段语音说晚安。',
+      strippedContent: '我有点睡不着，给我发一小段语音说晚安。',
+    });
+    await capabilityMiddleware?.(explicit, async () => undefined);
+
+    expect(bot.internal.canSendRecord).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8082/healthz',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(explicit.state.qqReplyTransport.capabilitySnapshot).toMatchObject({
+      canVoice: true,
+      voiceFailure: null,
+    });
   });
 
   it('compiles QQ reply turns into explicit agent prompt envelopes and requests structured output', async () => {

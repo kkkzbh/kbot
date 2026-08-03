@@ -94,6 +94,7 @@ import {
   type StructuredReplyHistoryDatabaseLike,
 } from '../history-migration.js';
 import {
+  isExplicitVoiceRequest,
   isExclusiveVoiceRequest,
   ModalityDirector,
   type ModalityPolicySnapshot,
@@ -1081,8 +1082,8 @@ export async function ensureCanSendRecord(
   force = false,
 ): Promise<boolean> {
   const cacheKey = `${bot.platform ?? 'onebot'}:${bot.selfId ?? 'default'}`;
-  if (!force && capabilityCache.has(cacheKey)) {
-    return capabilityCache.get(cacheKey) ?? false;
+  if (!force && capabilityCache.get(cacheKey) === true) {
+    return true;
   }
 
   if (typeof bot.internal?._request !== 'function') {
@@ -1117,7 +1118,8 @@ export async function ensureCanSendRecord(
     }, `onebot can_send_record failed: ${(error as Error).message}`);
   }
 
-  capabilityCache.set(cacheKey, result);
+  if (result) capabilityCache.set(cacheKey, true);
+  else capabilityCache.delete(cacheKey);
   return result;
 }
 
@@ -1683,7 +1685,7 @@ export async function resolveReplyCapabilitySnapshot(args: {
   canSendRecordCache?: Map<string, boolean>;
   ttsCapabilityStates?: Map<string, TtsCapabilityState>;
   voiceOutputEnabled?: boolean;
-  waitForProbe?: boolean;
+  requireFreshVoiceCapability?: boolean;
 }): Promise<ReplyCapabilitySnapshot> {
   const {
     runtime,
@@ -1691,7 +1693,7 @@ export async function resolveReplyCapabilitySnapshot(args: {
     canSendRecordCache = sharedReplyTransportCanSendRecordCache,
     ttsCapabilityStates = sharedReplyTransportTtsCapabilityStates,
     voiceOutputEnabled = false,
-    waitForProbe = false,
+    requireFreshVoiceCapability = false,
   } = args;
   const snapshot: ReplyCapabilitySnapshot = {
     canMultiline: true,
@@ -1722,7 +1724,11 @@ export async function resolveReplyCapabilitySnapshot(args: {
   const bot = session.bot as OneBotBotLike;
   let canSendRecord = false;
   try {
-    canSendRecord = await ensureCanSendRecord(bot, canSendRecordCache);
+    canSendRecord = await ensureCanSendRecord(
+      bot,
+      canSendRecordCache,
+      requireFreshVoiceCapability,
+    );
   } catch (error) {
     if (!(error instanceof VoiceOutputError)) throw error;
     logger.warn(
@@ -1748,7 +1754,7 @@ export async function resolveReplyCapabilitySnapshot(args: {
   ttsState.turnCounter += 1;
   const due = isTtsProbeDue(ttsState, snapshot.refreshedAt);
 
-  if (waitForProbe && ttsState.lastKnownHealthy == null) {
+  if (requireFreshVoiceCapability) {
     try {
       await runTtsHealthProbe(runtime, ttsState, true);
     } catch (error) {
@@ -2509,6 +2515,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         runtime,
         session,
         voiceOutputEnabled: voiceFeatureState.outputEnabled,
+        requireFreshVoiceCapability: isExplicitVoiceRequest(getTextInputContent(session)),
       });
       rememberReplyCapabilitySnapshot(session, snapshot, replyCapabilitySnapshots);
       return next();
@@ -2630,6 +2637,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               runtime,
               session,
               voiceOutputEnabled: voiceFeatureState.outputEnabled,
+              requireFreshVoiceCapability: isExplicitVoiceRequest(getTextInputContent(session)),
             }));
           rememberReplyCapabilitySnapshot(session, snapshot, replyCapabilitySnapshots);
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
@@ -2840,6 +2848,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               runtime,
               session,
               voiceOutputEnabled: voiceFeatureState.outputEnabled,
+              requireFreshVoiceCapability: isExplicitVoiceRequest(turnInput.text),
             }));
           rememberReplyCapabilitySnapshot(session, snapshot, replyCapabilitySnapshots);
           if (!conversationId) {

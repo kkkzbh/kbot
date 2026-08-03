@@ -1022,7 +1022,7 @@ async function prepareAutomationExecutionContext(
     runtime: voiceRuntime,
     session,
     voiceOutputEnabled: voiceRuntime.outputEnabled,
-    waitForProbe: true,
+    requireFreshVoiceCapability: true,
   });
   const requestedPolicy = deriveModalityPolicy(
     buildReplyTurnInput(

@@ -63,7 +63,7 @@ export interface ModalityDirectorOptions {
 }
 
 const VOICE_REQUEST_PATTERNS = [
-  /(?:^|[，。！？；\s])(?:请|麻烦)?(?:只|就)?(?:给我|回我|回复我)?(?:用|发|来|录)(?:一|几)?(?:条|段|个|句)?(?:语音|录音)(?:说|讲|回答|回复|念|读|唱)?/u,
+  /(?:^|[，。！？；\s])(?:请|麻烦)?(?:只|就)?(?:给我|回我|回复我)?(?:用|发|来|录)(?:一|几)?(?:小)?(?:条|段|个|句)?(?:语音|录音)(?:说|讲|回答|回复|念|读|唱)?/u,
   /(?:请|麻烦|能不能|可不可以|要不|还是)(?:给我)?(?:用|发|来|录)(?:一|几)?(?:条|段|个)?(?:语音|录音)/u,
   /可以给我(?:用|发|来|录)(?:一|几)?(?:条|段|个)?(?:语音|录音)/u,
   /可以用(?:语音|录音)(?:给我|回我|回复我|回答我|说给我听)/u,
@@ -103,13 +103,18 @@ function cooldownReady(lastTurn: number | null, currentTurn: number, cooldownTur
 }
 
 function resolveVoiceReason(input: TurnInput): VoiceAdmissionReason {
+  if (isExplicitVoiceRequest(input.text)) return 'explicit_request';
   if (VOICE_OPTOUT_PATTERN.test(input.text)) return 'not_admitted';
-  if (VOICE_REQUEST_PATTERNS.some((pattern) => pattern.test(input.text))) return 'explicit_request';
   if (input.hasVoiceInput) return 'voice_reply';
   if (input.isDirect && SOCIAL_VOICE_PATTERN.test(input.text) && !INFORMATION_TASK_PATTERN.test(input.text)) {
     return 'private_social_moment';
   }
   return 'not_admitted';
+}
+
+export function isExplicitVoiceRequest(text: string): boolean {
+  return !VOICE_OPTOUT_PATTERN.test(text)
+    && VOICE_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 export function isExclusiveVoiceRequest(text: string): boolean {

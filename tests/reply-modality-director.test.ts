@@ -4,6 +4,7 @@ import {
   DEFAULT_MODALITY_PREFERENCE,
   ModalityDirector,
   deriveModalityPolicy,
+  isExplicitVoiceRequest,
   type ModalityPreferenceSnapshot,
   type ModalityTransportCapabilities,
 } from '../src/plugins/reply/modality/director.js';
@@ -71,6 +72,7 @@ describe('modality director', () => {
       '请只发一句语音',
       '用语音说收到，再补一句',
       '用语音说说我的性格',
+      '我有点睡不着，给我发一小段语音说晚安。',
     ];
     const stickerRequests = [
       '配一个表情包',
@@ -87,6 +89,7 @@ describe('modality director', () => {
       );
       expect(policy.voiceReason, text).toBe('explicit_request');
       expect(policy.canVoice, text).toBe(true);
+      expect(isExplicitVoiceRequest(text), text).toBe(true);
     }
     for (const text of stickerRequests) {
       const policy = deriveModalityPolicy(
