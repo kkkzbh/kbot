@@ -77,6 +77,7 @@ import {
   type ResolvedAction,
   type TurnContext,
   type TurnInput,
+  type TurnInputImagePart,
 } from '../pipeline/types.js';
 import {
   buildReplyPromptCompilerInput,
@@ -92,6 +93,22 @@ import {
   migrateStructuredReplyHistoryRows,
   type StructuredReplyHistoryDatabaseLike,
 } from '../history-migration.js';
+import {
+  isExclusiveVoiceRequest,
+  ModalityDirector,
+  type ModalityPolicySnapshot,
+} from '../modality/director.js';
+import {
+  ModalityPreferenceStore,
+  registerModalityPreferenceTable,
+  type ModalityPreferenceDatabase,
+} from '../modality/preference-store.js';
+import { ReplyArtifactRegistry } from '../modality/artifact-registry.js';
+import {
+  createAgentProgressCallbacksProvider,
+  type AgentProgressCallbacksProvider,
+  type ChatCallbacksProviderLike,
+} from '../progress/narrator.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
@@ -175,12 +192,47 @@ interface QqVoiceState {
 
 type ReplyCapabilitySource = 'cached' | 'probed';
 
+export type VoiceOutputFailureCode =
+  | 'feature_disabled'
+  | 'tts_not_configured'
+  | 'platform_record_unsupported'
+  | 'platform_capability_rpc'
+  | 'tts_health_pending'
+  | 'tts_health_http'
+  | 'tts_health_timeout'
+  | 'tts_health_transport'
+  | 'tts_synthesis_http'
+  | 'tts_synthesis_timeout'
+  | 'tts_synthesis_transport'
+  | 'tts_synthesis_invalid_audio'
+  | 'voice_delivery_rpc'
+  | 'voice_content_empty'
+  | 'voice_content_word_limit'
+  | 'voice_content_duration_limit';
+
+export interface VoiceOutputFailure {
+  code: VoiceOutputFailureCode;
+  stage: 'policy' | 'configuration' | 'platform_capability' | 'health_probe' | 'synthesis' | 'content_validation' | 'delivery';
+  operation: string;
+  httpStatus?: number;
+  providerCode?: string;
+  limit?: number;
+}
+
+class VoiceOutputError extends Error {
+  constructor(readonly failure: VoiceOutputFailure, message: string) {
+    super(message);
+    this.name = 'VoiceOutputError';
+  }
+}
+
 export interface ReplyCapabilitySnapshot {
   canMultiline: true;
   canVoice: boolean;
   voiceOutputLanguage: VoiceOutputLanguage;
   source: ReplyCapabilitySource;
   refreshedAt: number;
+  voiceFailure?: VoiceOutputFailure | null;
 }
 
 interface ReplyTransportState {
@@ -233,7 +285,7 @@ export type ReplyInputMessageLike = {
 export type ReplyOutputContractApplyOptions = {
   modelTarget: ResolvedModelTarget;
   replyMode?: 'agent' | 'automation';
-  capabilitySnapshot?: Pick<NonNullable<TurnContext['capabilitySnapshot']>, 'canMention' | 'canVoice' | 'canSticker' | 'voiceOutputLanguage'> | null;
+  capabilitySnapshot?: Pick<NonNullable<TurnContext['capabilitySnapshot']>, 'canMention' | 'canVoice' | 'canSticker' | 'stickerIntentHints' | 'voiceOutputLanguage'> | null;
   replyOutputContract?: MainChatReplyOutputContract;
 };
 
@@ -248,14 +300,10 @@ type MiddlewareContextLike = {
   };
 };
 
-type InputMessageContentPart = {
-  type?: unknown;
-  text?: unknown;
-};
-
 type ReplyInputContentMeta = {
   hasImageInput: boolean;
   imageCount: number;
+  hasVoiceInput: boolean;
 };
 
 type ReplySpeakerFormatMeta = {
@@ -273,6 +321,7 @@ interface TtsCapabilityState {
   turnCounter: number;
   pendingProbe: Promise<boolean> | null;
   failureBackoffUntil: number;
+  lastFailure: VoiceOutputFailure | null;
 }
 
 interface PreparedVoiceDelivery {
@@ -298,7 +347,6 @@ type ReplyPlanDeliveryResult =
 
 type ChatLunaLike = {
   chat?: unknown;
-  stopChat?: (room: unknown, requestId: string) => Promise<boolean>;
   createChatModel?: (fullModelName: string) => Promise<{ value?: { invoke: (input: unknown, options?: Record<string, unknown>) => Promise<{ content?: unknown }> } | undefined }>;
   contextManager?: {
     inject: (options: {
@@ -314,8 +362,10 @@ type ChatLunaLike = {
     finalVisibleText: string,
     updatedAt?: Date,
   ) => Promise<unknown>;
+  registerCallbacksProvider?: (provider: ChatCallbacksProviderLike) => () => void;
   conversationRuntime?: {
     clearConversationCache: (conversationId: string) => Promise<unknown>;
+    stopConversationRequest: (conversationId: string) => boolean;
   };
   chatChain?: {
     middleware: (name: string, middleware: (session: unknown, context: unknown) => Promise<number>) => {
@@ -489,6 +539,28 @@ function createAuthHeaders(apiKey: string): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function readProviderCode(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const nested = record.error && typeof record.error === 'object' && !Array.isArray(record.error)
+    ? record.error as Record<string, unknown>
+    : null;
+  const candidate = record.code ?? record.error_code ?? nested?.code ?? nested?.error_code;
+  if (typeof candidate !== 'string' && typeof candidate !== 'number') return undefined;
+  const normalized = String(candidate).trim();
+  return normalized ? normalized.slice(0, 80) : undefined;
+}
+
+async function readHttpProviderCode(response: Response): Promise<string | undefined> {
+  const body = (await response.text()).slice(0, 8_192).trim();
+  if (!body) return undefined;
+  try {
+    return readProviderCode(JSON.parse(body));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function synthesizeVoice(
   runtime: RuntimeConfig,
   text: string,
@@ -496,13 +568,21 @@ export async function synthesizeVoice(
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   if (!runtime.ttsBaseUrl) {
-    throw new Error('missing TTS base url');
+    throw new VoiceOutputError({
+      code: 'tts_not_configured',
+      stage: 'configuration',
+      operation: 'tts.synthesize',
+    }, 'TTS synthesis is not configured.');
   }
 
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), runtime.synthTimeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, runtime.synthTimeoutMs);
 
   try {
     const response = await fetch(`${runtime.ttsBaseUrl}/synthesize`, {
@@ -521,10 +601,31 @@ export async function synthesizeVoice(
     });
 
     if (!response.ok) {
-      throw new Error(`TTS http ${response.status}`);
+      const providerCode = await readHttpProviderCode(response);
+      throw new VoiceOutputError({
+        code: 'tts_synthesis_http',
+        stage: 'synthesis',
+        operation: 'tts.synthesize',
+        httpStatus: response.status,
+        ...(providerCode ? { providerCode } : {}),
+      }, `TTS synthesis failed with HTTP ${response.status}${providerCode ? ` (${providerCode})` : ''}.`);
     }
 
     return new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    if (error instanceof VoiceOutputError) throw error;
+    if (timedOut) {
+      throw new VoiceOutputError({
+        code: 'tts_synthesis_timeout',
+        stage: 'synthesis',
+        operation: 'tts.synthesize',
+      }, `TTS synthesis timed out after ${runtime.synthTimeoutMs} ms.`);
+    }
+    throw new VoiceOutputError({
+      code: 'tts_synthesis_transport',
+      stage: 'synthesis',
+      operation: 'tts.synthesize',
+    }, `TTS synthesis transport failed: ${(error as Error).message}`);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
@@ -655,6 +756,25 @@ function isOneBotRpcTransportUnavailableError(error: unknown): boolean {
   return /\b_request is not a function\b/i.test(message);
 }
 
+function extractOneBotFailureDetails(error: unknown): Pick<VoiceOutputFailure, 'httpStatus' | 'providerCode'> {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const message = error instanceof Error ? error.message : String(error);
+  const messageRetcode = /\bretcode:\s*(-?\d+)\b/i.exec(message)?.[1];
+  const rawProviderCode = record.retcode ?? record.code ?? messageRetcode;
+  const rawHttpStatus = record.httpStatus ?? record.status;
+  const providerCode = (
+    (typeof rawProviderCode === 'string' && rawProviderCode.trim())
+    || (typeof rawProviderCode === 'number' && Number.isFinite(rawProviderCode) ? String(rawProviderCode) : '')
+  );
+  const httpStatus = typeof rawHttpStatus === 'number' && Number.isFinite(rawHttpStatus)
+    ? rawHttpStatus
+    : undefined;
+  return {
+    ...(providerCode ? { providerCode } : {}),
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+  };
+}
+
 function buildContentBlockedFallbackText(session: SessionWithVoiceState): string {
   const fallback = session.isDirect
     ? '这个话题我不方便展开，换个别的吧。'
@@ -672,6 +792,23 @@ async function sendFailureReply(session: SessionWithVoiceState, message: string)
   await sendBotMessageByNormalizedContent(session.bot as OneBotBotLike, session.channelId, message, session);
 }
 
+async function closeVisibleProgress(args: {
+  session: SessionWithVoiceState;
+  replyRuntime: ReplyRuntime;
+  runId: string;
+  message: string;
+  normalizeHistory: (visibleText: string) => Promise<void>;
+}): Promise<boolean> {
+  const progress = args.replyRuntime.getProgressState(args.runId);
+  if (!progress?.visibleLines.length) return false;
+
+  const message = sanitizeStructuredReplyText(args.message, 'message');
+  await sendFailureReply(args.session, message);
+  args.replyRuntime.recordCommittedUnit(args.runId, message);
+  await args.normalizeHistory(message);
+  return true;
+}
+
 function downgradeVoiceSegmentsToText(plan: ReplyTransportPlan): ReplyTransportPlan {
   return {
     segments: plan.segments.map((segment) =>
@@ -685,9 +822,91 @@ function downgradeVoiceSegmentsToText(plan: ReplyTransportPlan): ReplyTransportP
   };
 }
 
+function formatVoiceOutputFailure(failure: VoiceOutputFailure): string {
+  const providerCode = failure.providerCode ? `，error_code=${failure.providerCode}` : '';
+  const oneBotCode = failure.providerCode ? `，retcode=${failure.providerCode}` : '';
+  switch (failure.code) {
+    case 'feature_disabled':
+      return '我这会儿发不了语音，语音输出还没有启用。';
+    case 'tts_not_configured':
+      return `我这会儿发不了语音，语音合成还没有配置好（${failure.operation}）。`;
+    case 'platform_record_unsupported':
+      return 'QQ 这边现在不让我发语音（onebot.can_send_record=false）。';
+    case 'platform_capability_rpc':
+      return `我刚才没问到 QQ 能不能发语音（${failure.operation}${oneBotCode}）。`;
+    case 'tts_health_pending':
+      return '语音服务还没准备好，过一会儿再叫我试试。';
+    case 'tts_health_http':
+      return `语音服务的健康检查出错了（${failure.operation}，HTTP ${failure.httpStatus ?? 'unknown'}${providerCode}）。`;
+    case 'tts_health_timeout':
+      return `语音服务一直没回应，健康检查超时了（${failure.operation}）。`;
+    case 'tts_health_transport':
+      return `我刚才没连上语音服务（${failure.operation}）。`;
+    case 'tts_synthesis_http':
+      return `刚才的语音没合成出来（${failure.operation}，HTTP ${failure.httpStatus ?? 'unknown'}${providerCode}）。`;
+    case 'tts_synthesis_timeout':
+      return `语音服务一直没回应，合成请求超时了（${failure.operation}）。`;
+    case 'tts_synthesis_transport':
+      return `我刚才没连上语音合成服务（${failure.operation}）。`;
+    case 'tts_synthesis_invalid_audio':
+      return `语音服务刚才返回的音频有问题（${failure.operation}）。`;
+    case 'voice_delivery_rpc':
+      return `语音发出去时被 QQ 拒绝了（${failure.operation}${oneBotCode}）。`;
+    case 'voice_content_empty':
+      return '这段话没有可以朗读的内容，所以没法发成语音。';
+    case 'voice_content_word_limit':
+      return `这段话太长了，超过单段 ${failure.limit ?? 'unknown'} 词的语音限制。`;
+    case 'voice_content_duration_limit':
+      return `这段语音太长了，超过单段 ${failure.limit ?? 'unknown'} 秒的限制。`;
+  }
+}
+
+function replaceRequestedVoiceWithFailure(
+  plan: ReplyTransportPlan,
+  failure: VoiceOutputFailure,
+  preserveExistingWhenVoiceAbsent = false,
+): ReplyTransportPlan {
+  let inserted = false;
+  const failureSegment = {
+    kind: 'message' as const,
+    parts: [{ kind: 'text' as const, content: formatVoiceOutputFailure(failure) }],
+  };
+  if (!plan.segments.some((segment) => segment.kind === 'voice')) {
+    return {
+      segments: preserveExistingWhenVoiceAbsent && plan.segments.length > 0
+        ? [...plan.segments, failureSegment]
+        : [failureSegment],
+    };
+  }
+  return {
+    segments: plan.segments.flatMap((segment) => {
+      if (segment.kind !== 'voice') return [segment];
+      if (inserted) return [];
+      inserted = true;
+      return [failureSegment];
+    }),
+  };
+}
+
 function removeStickerSegments(plan: ReplyTransportPlan): ReplyTransportPlan {
   return {
     segments: plan.segments.filter((segment) => segment.kind !== 'sticker'),
+  };
+}
+
+function replaceStickerSegmentsWithFailure(plan: ReplyTransportPlan): ReplyTransportPlan {
+  let inserted = false;
+  const failureSegment = {
+    kind: 'message' as const,
+    parts: [{ kind: 'text' as const, content: '这次没找到合适的表情，我先不乱发。' }],
+  };
+  return {
+    segments: plan.segments.flatMap((segment) => {
+      if (segment.kind !== 'sticker') return [segment];
+      if (inserted) return [];
+      inserted = true;
+      return [failureSegment];
+    }),
   };
 }
 
@@ -868,7 +1087,11 @@ export async function ensureCanSendRecord(
 
   if (typeof bot.internal?._request !== 'function') {
     capabilityCache.delete(cacheKey);
-    return false;
+    throw new VoiceOutputError({
+      code: 'platform_capability_rpc',
+      stage: 'platform_capability',
+      operation: 'onebot.can_send_record',
+    }, 'onebot can_send_record transport is unavailable: _request is not a function.');
   }
 
   let result = false;
@@ -877,12 +1100,21 @@ export async function ensureCanSendRecord(
   } catch (error) {
     if (/_request is not a function/i.test((error as Error).message)) {
       capabilityCache.delete(cacheKey);
-      return false;
+      throw new VoiceOutputError({
+        code: 'platform_capability_rpc',
+        stage: 'platform_capability',
+        operation: 'onebot.can_send_record',
+      }, `onebot can_send_record transport is unavailable: ${(error as Error).message}`);
     }
 
-    logger.warn('canSendRecord failed for %s: %s', cacheKey, (error as Error).message);
     capabilityCache.delete(cacheKey);
-    return false;
+    const details = extractOneBotFailureDetails(error);
+    throw new VoiceOutputError({
+      code: 'platform_capability_rpc',
+      stage: 'platform_capability',
+      operation: 'onebot.can_send_record',
+      ...details,
+    }, `onebot can_send_record failed: ${(error as Error).message}`);
   }
 
   capabilityCache.set(cacheKey, result);
@@ -942,14 +1174,13 @@ function setReplyRequestModelErrorHandler(
 
 function registerReplyRunRequestModelGuard(args: {
   session: SessionWithVoiceState;
-  replyRuntime: ReplyRuntime;
   runId: string;
   conversationId?: string;
+  finishRun: () => boolean;
 }): void {
-  const { session, replyRuntime, runId, conversationId } = args;
+  const { session, runId, conversationId, finishRun } = args;
   setReplyRequestModelErrorHandler(session, async (error) => {
-    const finished = replyRuntime.finishRun(runId);
-    if (!finished) {
+    if (!finishRun()) {
       return;
     }
     const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
@@ -1052,16 +1283,37 @@ function canSessionUseMention(session: SessionWithVoiceState): boolean {
   return !session.isDirect;
 }
 
-export function buildTurnCapabilitySnapshot(session: SessionWithVoiceState, snapshot: ReplyCapabilitySnapshot): NonNullable<TurnContext['capabilitySnapshot']> {
+function resolveStickerIntentHints(state: StickerCapabilityState | undefined): string[] {
+  if (!state?.catalog) return [];
+  const presetScope = state.preset ? `persona:${state.preset.trim().toLowerCase()}` : null;
+  const hints = state.catalog.entries
+    .filter((entry) => entry.scopes.some((scope) => (
+      scope.trim().toLowerCase() === 'global'
+      || (presetScope != null && scope.trim().toLowerCase() === presetScope)
+    )))
+    .flatMap((entry) => entry.moods)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set(hints)].slice(0, 12);
+}
+
+export function buildTurnCapabilitySnapshot(
+  session: SessionWithVoiceState,
+  snapshot: ReplyCapabilitySnapshot,
+  modalityPolicy: ModalityPolicySnapshot,
+  imageAssetRefs: readonly string[],
+): NonNullable<TurnContext['capabilitySnapshot']> {
   const stickerState = session.state?.qqSticker;
   const stickerAvailableCount = stickerState?.availableCount ?? 0;
   return {
     canMultiline: snapshot.canMultiline,
     canMention: canSessionUseMention(session),
-    canVoice: snapshot.canVoice,
+    canVoice: modalityPolicy.canVoice,
     voiceOutputLanguage: snapshot.voiceOutputLanguage,
-    canSticker: stickerAvailableCount > 0,
+    canSticker: modalityPolicy.canSticker,
     stickerAvailableCount,
+    stickerIntentHints: resolveStickerIntentHints(stickerState),
+    imageAssetRefs: [...imageAssetRefs],
     source: snapshot.source,
   };
 }
@@ -1106,9 +1358,9 @@ export function applyReplyOutputContract(
   const replyOutputContract = options.replyOutputContract ?? buildModelReplyOutputContract({
     canonicalModel: options.modelTarget.canonicalModel,
     model: options.modelTarget.model,
-    canMention: options.capabilitySnapshot?.canMention !== false,
     canVoice: options.capabilitySnapshot?.canVoice !== false,
     canMeme: options.capabilitySnapshot?.canSticker === true,
+    stickerIntentHints: options.capabilitySnapshot?.stickerIntentHints,
     voiceOutputLanguage: options.capabilitySnapshot?.voiceOutputLanguage,
   });
   const overrideRequestParams = mergeReplyOverrideRequestParams(inputMessage.additional_kwargs, replyOutputContract.overrideRequestParams);
@@ -1163,7 +1415,7 @@ function resolveReplyOutputProtocolFromMessage(
 
 function applyReplyTurnInputMetadata(
   inputMessage: ReplyInputMessageLike | undefined,
-  turnInput: Pick<TurnInput, 'hasImageInput' | 'imageCount' | 'displayName' | 'userId' | 'isDirect'>,
+  turnInput: Pick<TurnInput, 'hasImageInput' | 'imageCount' | 'hasVoiceInput' | 'displayName' | 'userId' | 'isDirect'>,
 ): void {
   if (!inputMessage) return;
 
@@ -1175,6 +1427,7 @@ function applyReplyTurnInputMetadata(
     qqbot_input_content_meta: {
       hasImageInput: turnInput.hasImageInput,
       imageCount: turnInput.imageCount,
+      hasVoiceInput: turnInput.hasVoiceInput,
     } satisfies ReplyInputContentMeta,
     qqbot_speaker_format: {
       version: 'speaker_id_v1',
@@ -1186,46 +1439,32 @@ function applyReplyTurnInputMetadata(
   };
 }
 
-function applyPreparedInputText(
+function cloneTurnInputImagePart(part: TurnInputImagePart): TurnInputImagePart {
+  return {
+    type: 'image_url',
+    image_url: typeof part.image_url === 'string'
+      ? part.image_url
+      : { ...part.image_url },
+  };
+}
+
+function applyPreparedTurnInput(
   session: SessionWithVoiceState,
   context: MiddlewareContextLike,
-  inputText: string | undefined,
+  turnInput: TurnInput,
   inputTextSpeakerTagged?: boolean,
 ): void {
-  const normalized = inputText?.trim();
-  if (!normalized) return;
+  const normalized = turnInput.text.trim();
 
   session.content = normalized;
   const inputMessage = context.options?.inputMessage;
   if (inputMessage) {
-    const currentContent = inputMessage.content;
-    if (!Array.isArray(currentContent)) {
-      inputMessage.content = normalized;
-    } else {
-      let textUpdated = false;
-      inputMessage.content = currentContent.map((part) => {
-        if (
-          !textUpdated &&
-          part &&
-          typeof part === 'object' &&
-          (part as InputMessageContentPart).type === 'text'
-        ) {
-          textUpdated = true;
-          return {
-            ...(part as Record<string, unknown>),
-            text: normalized,
-          };
-        }
-        return part;
-      });
-
-      if (!textUpdated) {
-        inputMessage.content = [
-          { type: 'text', text: normalized },
-          ...currentContent,
-        ];
-      }
-    }
+    inputMessage.content = turnInput.imageParts.length > 0
+      ? [
+          ...(normalized ? [{ type: 'text', text: normalized }] : []),
+          ...turnInput.imageParts.map(cloneTurnInputImagePart),
+        ]
+      : normalized;
 
     const speakerFormat = inputMessage.additional_kwargs?.qqbot_speaker_format as ReplySpeakerFormatMeta | undefined;
     if (speakerFormat?.version === 'speaker_id_v1') {
@@ -1252,6 +1491,10 @@ function buildReplyTurnStateText(context: ReplyTurnContinuationContext): string 
   if (context.pendingUnitTexts.length > 0) {
     lines.push('以下内容是上一轮尚未发出的剩余发送单元，仅供承接参考，不要机械复述：');
     lines.push(context.pendingUnitTexts.join('\n'));
+  }
+  if (context.progressVisibleLines.length > 0) {
+    lines.push('以下过程短句已经发给用户，不要重复开场，也不要当作最终答复：');
+    lines.push(context.progressVisibleLines.join('\n'));
   }
   if (context.supplementalMessages.length > 0) {
     lines.push('在当前主消息之前，还收到了这些补充消息：');
@@ -1347,17 +1590,23 @@ function getTtsCapabilityState(
     turnCounter: 0,
     pendingProbe: null,
     failureBackoffUntil: 0,
+    lastFailure: null,
   };
   ttsCapabilityStates.set(cacheKey, created);
   return created;
 }
 
-function updateTtsCapabilityObservation(state: TtsCapabilityState, healthy: boolean): void {
+function updateTtsCapabilityObservation(
+  state: TtsCapabilityState,
+  healthy: boolean,
+  failure: VoiceOutputFailure | null = null,
+): void {
   const now = Date.now();
   state.lastKnownHealthy = healthy;
   state.lastProbeAt = now;
   state.lastProbeTurn = state.turnCounter;
   state.failureBackoffUntil = healthy ? 0 : now + TTS_PROBE_FAILURE_BACKOFF_MS;
+  state.lastFailure = healthy ? null : failure;
 }
 
 function isTtsProbeDue(state: TtsCapabilityState, now = Date.now()): boolean {
@@ -1379,8 +1628,13 @@ async function runTtsHealthProbe(
 
   const task = (async () => {
     let healthy = false;
+    let failure: VoiceOutputFailure | null = null;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(runtime.synthTimeoutMs, TTS_PROBE_TIMEOUT_MS));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, Math.min(runtime.synthTimeoutMs, TTS_PROBE_TIMEOUT_MS));
 
     try {
       const response = await fetch(`${runtime.ttsBaseUrl}/healthz`, {
@@ -1389,14 +1643,29 @@ async function runTtsHealthProbe(
         signal: controller.signal,
       });
       healthy = response.ok;
+      if (!healthy) {
+        const providerCode = await readHttpProviderCode(response);
+        failure = {
+          code: 'tts_health_http',
+          stage: 'health_probe',
+          operation: 'tts.healthz',
+          httpStatus: response.status,
+          ...(providerCode ? { providerCode } : {}),
+        };
+      }
     } catch (error) {
       logger.warn('tts health probe failed: %s', (error as Error).message);
       healthy = false;
+      failure = {
+        code: timedOut ? 'tts_health_timeout' : 'tts_health_transport',
+        stage: 'health_probe',
+        operation: 'tts.healthz',
+      };
     } finally {
       clearTimeout(timer);
     }
 
-    updateTtsCapabilityObservation(state, healthy);
+    updateTtsCapabilityObservation(state, healthy, failure);
     return healthy;
   })().finally(() => {
     if (state.pendingProbe === task) {
@@ -1430,14 +1699,48 @@ export async function resolveReplyCapabilitySnapshot(args: {
     voiceOutputLanguage: runtime.voiceOutputLanguage,
     source: 'cached',
     refreshedAt: Date.now(),
+    voiceFailure: null,
   };
 
-  if (!voiceOutputEnabled || !isVoiceOutputConfigured(runtime)) {
+  if (!voiceOutputEnabled) {
+    snapshot.voiceFailure = {
+      code: 'feature_disabled',
+      stage: 'policy',
+      operation: 'voice.output_policy',
+    };
+    return snapshot;
+  }
+  if (!isVoiceOutputConfigured(runtime)) {
+    snapshot.voiceFailure = {
+      code: 'tts_not_configured',
+      stage: 'configuration',
+      operation: 'tts.synthesize',
+    };
     return snapshot;
   }
 
   const bot = session.bot as OneBotBotLike;
-  if (!(await ensureCanSendRecord(bot, canSendRecordCache))) {
+  let canSendRecord = false;
+  try {
+    canSendRecord = await ensureCanSendRecord(bot, canSendRecordCache);
+  } catch (error) {
+    if (!(error instanceof VoiceOutputError)) throw error;
+    logger.warn(
+      'onebot voice capability probe failed: operation=%s code=%s providerCode=%s error=%s',
+      error.failure.operation,
+      error.failure.code,
+      error.failure.providerCode ?? '<none>',
+      error.message,
+    );
+    snapshot.voiceFailure = error.failure;
+    return snapshot;
+  }
+  if (!canSendRecord) {
+    snapshot.voiceFailure = {
+      code: 'platform_record_unsupported',
+      stage: 'platform_capability',
+      operation: 'onebot.can_send_record',
+    };
     return snapshot;
   }
 
@@ -1460,6 +1763,13 @@ export async function resolveReplyCapabilitySnapshot(args: {
   }
 
   snapshot.canVoice = ttsState.lastKnownHealthy === true;
+  snapshot.voiceFailure = snapshot.canVoice
+    ? null
+    : ttsState.lastFailure ?? {
+        code: 'tts_health_pending',
+        stage: 'health_probe',
+        operation: 'tts.healthz',
+      };
   return snapshot;
 }
 
@@ -1477,17 +1787,45 @@ async function prepareVoiceDeliveries(args: {
   bot: OneBotBotLike;
   canSendRecordCache: Map<string, boolean>;
   ttsCapabilityStates: Map<string, TtsCapabilityState>;
+  explicitVoiceRequested: boolean;
 }): Promise<{ preparedByRaw: Map<string, PreparedVoiceDelivery>; effectivePlan: ReplyTransportPlan }> {
-  const { runtime, plan, bot, canSendRecordCache, ttsCapabilityStates } = args;
+  const { runtime, plan, bot, canSendRecordCache, ttsCapabilityStates, explicitVoiceRequested } = args;
+  const unavailablePlan = (failure: VoiceOutputFailure) => explicitVoiceRequested
+    ? replaceRequestedVoiceWithFailure(plan, failure)
+    : downgradeVoiceSegmentsToText(plan);
   const outboundPlan = buildOutboundMessagePlanFromReplyPlan(plan);
   if (!hasVoiceSegments(outboundPlan)) {
     return { preparedByRaw: new Map(), effectivePlan: plan };
   }
   if (!isVoiceOutputConfigured(runtime)) {
-    return { preparedByRaw: new Map(), effectivePlan: downgradeVoiceSegmentsToText(plan) };
+    return {
+      preparedByRaw: new Map(),
+      effectivePlan: unavailablePlan({
+        code: 'tts_not_configured',
+        stage: 'configuration',
+        operation: 'tts.synthesize',
+      }),
+    };
   }
-  if (!(await ensureCanSendRecord(bot, canSendRecordCache))) {
-    return { preparedByRaw: new Map(), effectivePlan: downgradeVoiceSegmentsToText(plan) };
+  let canSendRecord = false;
+  try {
+    canSendRecord = await ensureCanSendRecord(bot, canSendRecordCache);
+  } catch (error) {
+    if (!(error instanceof VoiceOutputError)) throw error;
+    return {
+      preparedByRaw: new Map(),
+      effectivePlan: unavailablePlan(error.failure),
+    };
+  }
+  if (!canSendRecord) {
+    return {
+      preparedByRaw: new Map(),
+      effectivePlan: unavailablePlan({
+        code: 'platform_record_unsupported',
+        stage: 'platform_capability',
+        operation: 'onebot.can_send_record',
+      }),
+    };
   }
 
   const voiceSegments = outboundPlan.segments.filter(
@@ -1501,18 +1839,39 @@ async function prepareVoiceDeliveries(args: {
       voiceSegments.map(async (segment) => {
         const text = normalizeVoiceSynthesisText(segment.content);
         if (!text) {
-          throw new Error('empty_voice_segment');
+          throw new VoiceOutputError({
+            code: 'voice_content_empty',
+            stage: 'content_validation',
+            operation: 'voice.normalize',
+          }, 'voice segment is empty after normalization.');
         }
         const wordCount = countVoiceWords(text);
         if (wordCount > runtime.outputMaxWords) {
-          throw new Error(`voice_segment_too_many_words:${runtime.outputMaxWords}`);
+          throw new VoiceOutputError({
+            code: 'voice_content_word_limit',
+            stage: 'content_validation',
+            operation: 'voice.word_limit',
+            limit: runtime.outputMaxWords,
+          }, `voice segment exceeds ${runtime.outputMaxWords} words.`);
         }
 
         const style = pickVoiceStyle(text);
         const wav = await synthesizeVoice(runtime, text, style);
         const durationMs = estimateWavDurationMs(wav);
-        if (durationMs && durationMs > runtime.outputMaxSeconds * 1000) {
-          throw new Error(`voice_segment_too_long_duration:${runtime.outputMaxSeconds}`);
+        if (durationMs == null) {
+          throw new VoiceOutputError({
+            code: 'tts_synthesis_invalid_audio',
+            stage: 'synthesis',
+            operation: 'tts.synthesize_response',
+          }, 'TTS synthesis returned invalid WAV data.');
+        }
+        if (durationMs > runtime.outputMaxSeconds * 1000) {
+          throw new VoiceOutputError({
+            code: 'voice_content_duration_limit',
+            stage: 'content_validation',
+            operation: 'voice.duration_limit',
+            limit: runtime.outputMaxSeconds,
+          }, `voice segment exceeds ${runtime.outputMaxSeconds} seconds.`);
         }
         return [segment.raw, { segment, text, style, wav }] as const;
       }),
@@ -1525,25 +1884,35 @@ async function prepareVoiceDeliveries(args: {
     updateTtsCapabilityObservation(ttsState, true);
     return { preparedByRaw, effectivePlan: plan };
   } catch (error) {
-    updateTtsCapabilityObservation(ttsState, false);
-    const reason = (error as Error).message;
-    if (
-      reason.startsWith('voice_segment_too_many_words:') ||
-      reason.startsWith('voice_segment_too_long_duration:') ||
-      reason === 'empty_voice_segment'
-    ) {
-      return { preparedByRaw: new Map(), effectivePlan: downgradeVoiceSegmentsToText(plan) };
+    const failure = error instanceof VoiceOutputError
+      ? error.failure
+      : {
+          code: 'tts_synthesis_transport' as const,
+          stage: 'synthesis' as const,
+          operation: 'tts.synthesize',
+        };
+    if (failure.stage !== 'content_validation') {
+      updateTtsCapabilityObservation(ttsState, false, failure);
     }
-    logger.warn('voice preflight failed: %s', reason);
-    return { preparedByRaw: new Map(), effectivePlan: downgradeVoiceSegmentsToText(plan) };
+    logger.warn(
+      'voice preflight failed: stage=%s operation=%s code=%s httpStatus=%s providerCode=%s error=%s',
+      failure.stage,
+      failure.operation,
+      failure.code,
+      failure.httpStatus == null ? '<none>' : String(failure.httpStatus),
+      failure.providerCode ?? '<none>',
+      (error as Error).message,
+    );
+    return { preparedByRaw: new Map(), effectivePlan: unavailablePlan(failure) };
   }
 }
 
 async function prepareStickerDeliveries(args: {
   session: SessionWithVoiceState;
   plan: ReplyTransportPlan;
+  explicitStickerRequested: boolean;
 }): Promise<{ preparedByRaw: Map<string, PreparedStickerDelivery>; effectivePlan: ReplyTransportPlan }> {
-  const { session, plan } = args;
+  const { session, plan, explicitStickerRequested } = args;
   const outboundPlan = buildOutboundMessagePlanFromReplyPlan(plan);
   if (!hasStickerSegments(outboundPlan)) {
     return { preparedByRaw: new Map(), effectivePlan: plan };
@@ -1551,7 +1920,12 @@ async function prepareStickerDeliveries(args: {
 
   const stickerState = session.state?.qqSticker;
   if (!stickerState?.catalog) {
-    return { preparedByRaw: new Map(), effectivePlan: removeStickerSegments(plan) };
+    return {
+      preparedByRaw: new Map(),
+      effectivePlan: explicitStickerRequested
+        ? replaceStickerSegmentsWithFailure(plan)
+        : removeStickerSegments(plan),
+    };
   }
 
   const stickerSegments = outboundPlan.segments.filter(
@@ -1576,7 +1950,15 @@ async function prepareStickerDeliveries(args: {
       usedIds: usedStickerIds,
       sequenceIndex: preparedByRaw.size,
     });
-    if (!selected) continue;
+    if (!selected) {
+      if (explicitStickerRequested) {
+        effectiveSegments.push({
+          kind: 'message',
+          parts: [{ kind: 'text', content: '这次没找到合适的表情，我先不乱发。' }],
+        });
+      }
+      continue;
+    }
 
     preparedByRaw.set(outboundSticker.raw, {
       segment: outboundSticker,
@@ -1605,6 +1987,9 @@ async function deliverReplyPlanCore(args: {
   onPlannedUnitHistoryLines?: (historyLines: string[]) => void;
   onCommittedUnit?: (historyLine: string) => void;
   onDeliveryReceipt?: (receipt: unknown) => void;
+  onDeliveredModality?: (modality: 'sticker' | 'voice') => void;
+  explicitVoiceRequested?: boolean;
+  explicitStickerRequested?: boolean;
 }): Promise<ReplyPlanDeliveryResult> {
   const {
     runtime,
@@ -1620,6 +2005,9 @@ async function deliverReplyPlanCore(args: {
     onPlannedUnitHistoryLines,
     onCommittedUnit,
     onDeliveryReceipt,
+    onDeliveredModality,
+    explicitVoiceRequested = false,
+    explicitStickerRequested = false,
   } = args;
   const historyText = renderDeliveredReplyPlanHistoryText(plan);
   if (session.platform !== 'onebot' || !session.channelId) {
@@ -1632,10 +2020,12 @@ async function deliverReplyPlanCore(args: {
     bot: session.bot as OneBotBotLike,
     canSendRecordCache,
     ttsCapabilityStates,
+    explicitVoiceRequested,
   });
   const preparedSticker = await prepareStickerDeliveries({
     session,
     plan: preparedVoice.effectivePlan,
+    explicitStickerRequested,
   });
   const effectivePlan = preparedSticker.effectivePlan;
   const outboundPlan = buildOutboundMessagePlanFromReplyPlan(effectivePlan);
@@ -1652,6 +2042,7 @@ async function deliverReplyPlanCore(args: {
   });
   onPlannedUnitHistoryLines?.(plannedUnitHistoryLines);
   let beganSending = false;
+  let deliveryHistoryChanged = false;
   let sendAbortSignal: AbortSignal | null = null;
   const committedHistoryLines: string[] = [];
   const wasSendAborted = () => (sendAbortSignal as AbortSignal | null)?.aborted === true;
@@ -1706,6 +2097,7 @@ async function deliverReplyPlanCore(args: {
 
         const receipt = await sendWhole(createQuotedMessageContent(h.image(prepared.buffer, prepared.mime), quoteTargetMessageId));
         beganSending = true;
+        onDeliveredModality?.('sticker');
         onDeliveryReceipt?.(receipt);
         if (historyLine) {
           committedHistoryLines.push(historyLine);
@@ -1730,8 +2122,35 @@ async function deliverReplyPlanCore(args: {
         throw new Error('missing_prepared_voice');
       }
 
-      const receipt = await sendWhole(h.audio(createAudioDataUri(prepared.wav)));
+      let receipt: unknown;
+      try {
+        receipt = await sendWhole(h.audio(createAudioDataUri(prepared.wav)));
+      } catch (error) {
+        if (!explicitVoiceRequested || isOneBotRpcTransportUnavailableError(error)) throw error;
+        const failure: VoiceOutputFailure = {
+          code: 'voice_delivery_rpc',
+          stage: 'delivery',
+          operation: 'onebot.send_record',
+          ...extractOneBotFailureDetails(error),
+        };
+        const failureText = formatVoiceOutputFailure(failure);
+        logger.warn(
+          'explicit voice delivery failed: operation=%s code=%s providerCode=%s httpStatus=%s error=%s',
+          failure.operation,
+          failure.code,
+          failure.providerCode ?? '<none>',
+          failure.httpStatus == null ? '<none>' : String(failure.httpStatus),
+          (error as Error).message,
+        );
+        await sendFailureReply(session, failureText);
+        beganSending = true;
+        deliveryHistoryChanged = true;
+        committedHistoryLines.push(failureText);
+        onCommittedUnit?.(failureText);
+        return;
+      }
       beganSending = true;
+      onDeliveredModality?.('voice');
       onDeliveryReceipt?.(receipt);
       if (historyLine) {
         committedHistoryLines.push(historyLine);
@@ -1780,7 +2199,12 @@ async function deliverReplyPlanCore(args: {
     return { status: 'interrupted', historyText: committedHistoryLines.join('\n').trim() };
   }
 
-  return { status: 'delivered', historyText: effectiveHistoryText };
+  return {
+    status: 'delivered',
+    historyText: deliveryHistoryChanged
+      ? committedHistoryLines.join('\n').trim()
+      : effectiveHistoryText,
+  };
 }
 
 async function deliverReplyPlan(args: {
@@ -1789,8 +2213,20 @@ async function deliverReplyPlan(args: {
   plan: ReplyTransportPlan;
   replyRuntime: ReplyRuntime;
   runId: string;
+  onDeliveredModality?: (modality: 'sticker' | 'voice') => void;
+  explicitVoiceRequested: boolean;
+  explicitStickerRequested: boolean;
 }): Promise<ReplyPlanDeliveryResult> {
-  const { runtime, session, plan, replyRuntime, runId } = args;
+  const {
+    runtime,
+    session,
+    plan,
+    replyRuntime,
+    runId,
+    onDeliveredModality,
+    explicitVoiceRequested,
+    explicitStickerRequested,
+  } = args;
   return deliverReplyPlanCore({
     runtime,
     session,
@@ -1807,6 +2243,9 @@ async function deliverReplyPlan(args: {
     resolveQuoteTargetMessageId: (supports) => replyRuntime.consumeFirstReplyQuote(runId, supports),
     onPlannedUnitHistoryLines: (historyLines) => replyRuntime.setPlannedUnitHistory(runId, historyLines),
     onCommittedUnit: (historyLine) => replyRuntime.recordCommittedUnit(runId, historyLine),
+    onDeliveredModality,
+    explicitVoiceRequested,
+    explicitStickerRequested,
   });
 }
 
@@ -1851,6 +2290,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (!naturalTriggerConfig) {
     throw new Error('qq-voice requires naturalTriggerConfig service.');
   }
+  registerModalityPreferenceTable(ctx.model);
   const resolveMainModelTarget = (): ResolvedModelTarget => {
     const resolved = new CanonicalModelBindingResolver(
       modelConfig.getRuntimeSnapshot(),
@@ -1895,14 +2335,119 @@ export function apply(ctx: Context, config: Config = {}): void {
   };
 
   const replyRuntime = new ReplyRuntime({
-    stopChat: async (room, requestId) => {
+    stopConversationRequest: async (conversationId) => {
       const chatluna = resolveChatLunaService();
-      if (typeof chatluna?.stopChat !== 'function') return;
-      await chatluna.stopChat(room, requestId);
+      const conversationRuntime = chatluna?.conversationRuntime;
+      const stopConversationRequest = conversationRuntime?.stopConversationRequest;
+      if (typeof stopConversationRequest !== 'function') {
+        throw new Error('reply interruption requires chatluna.conversationRuntime.stopConversationRequest.');
+      }
+      await stopConversationRequest.call(conversationRuntime, conversationId);
+    },
+    drainOutbound: async (queueKey) => {
+      await sharedReplyTransportSendStrand.run(queueKey, async () => undefined);
     },
     collectWindowMs: runtime.replyInterruptCollectWindowMs,
     maxPendingInputs: runtime.replyInterruptMaxPendingInputs,
   });
+  const modalityDirector = new ModalityDirector();
+  const modalityPreferenceStore = new ModalityPreferenceStore(
+    services.database as StructuredReplyHistoryDatabaseLike & ModalityPreferenceDatabase,
+  );
+  const artifactRegistry = new ReplyArtifactRegistry();
+  let progressCallbacksController: AgentProgressCallbacksProvider | null = null;
+
+  const finishReplyRun = (session: SessionWithVoiceState, runId: string): boolean => {
+    progressCallbacksController?.disposeRun(runId);
+    modalityDirector.finishTurn(runId);
+    artifactRegistry.finishRun(runId);
+    setReplyRequestModelErrorHandler(session, undefined);
+    if (getReplyRunId(session) === runId) clearReplyRunId(session);
+    return replyRuntime.finishRun(runId) != null;
+  };
+
+  const beginModalityTurn = async (args: {
+    session: SessionWithVoiceState;
+    runId: string;
+    conversationId: string;
+    turnInput: TurnInput;
+    capability: ReplyCapabilitySnapshot;
+  }): Promise<ModalityPolicySnapshot> => {
+    const stickerAvailableCount = args.session.state?.qqSticker?.availableCount ?? 0;
+    const preference = await modalityPreferenceStore.resolveForTurn({
+      platform: args.session.platform,
+      botSelfId: String(args.session.bot?.selfId ?? '').trim(),
+      userId: String(args.session.userId ?? '').trim(),
+      conversationId: args.conversationId,
+    }, args.turnInput.text);
+    return modalityDirector.beginTurn({
+      turnId: args.runId,
+      conversationKey: args.conversationId,
+      input: args.turnInput,
+      transport: {
+        canVoice: args.capability.canVoice,
+        canSticker: stickerAvailableCount > 0,
+        stickerAvailableCount,
+      },
+      preference,
+    });
+  };
+
+  let progressCallbacksDispose: (() => void) | null = null;
+  const ensureProgressCallbacksRegistered = (): boolean => {
+    if (progressCallbacksDispose) return true;
+    const chatluna = resolveChatLunaService();
+    if (!chatluna) return false;
+    if (typeof chatluna.registerCallbacksProvider !== 'function') {
+      throw new Error('reply progress requires chatluna.registerCallbacksProvider.');
+    }
+    const controller = createAgentProgressCallbacksProvider({
+      resolveReplyRunId: (rawSession) => getReplyRunId(rawSession as SessionWithVoiceState),
+      resolveInitialState: (replyRunId) => {
+        const state = replyRuntime.getProgressState(replyRunId);
+        if (!state) {
+          throw new Error(`reply progress state is unavailable for run ${replyRunId}.`);
+        }
+        return {
+          messageCount: state.visibleLines.length,
+          lastMessageAt: state.lastSentAt ?? 0,
+        };
+      },
+      send: async ({ session: rawSession, replyRunId, text }) => {
+        const session = rawSession as SessionWithVoiceState;
+        const run = replyRuntime.getRun(replyRunId);
+        if (!run) return false;
+        return sharedReplyTransportSendStrand.run(run.queueKey, async () => {
+          const current = replyRuntime.getRun(replyRunId);
+          if (!current || current.state !== 'computing' || !replyRuntime.isCurrentRun(replyRunId)) {
+            return false;
+          }
+          await session.send(text);
+          if (!replyRuntime.recordProgressVisibleLine(replyRunId, text)) {
+            throw new Error(`reply progress run ${replyRunId} ended before delivery was recorded.`);
+          }
+          return true;
+        });
+      },
+      onAgentEvent: ({ replyRunId, event }) => {
+        if (event.type !== 'tool-result') return;
+        for (const step of event.steps) {
+          artifactRegistry.registerObservation(replyRunId, step.action.tool, step.observation);
+        }
+      },
+      onSendError: (error) => {
+        logger.warn('agent progress message delivery failed: %s', (error as Error).message);
+      },
+    });
+    const unregister = chatluna.registerCallbacksProvider(controller);
+    progressCallbacksController = controller;
+    progressCallbacksDispose = () => {
+      unregister();
+      controller.dispose();
+      if (progressCallbacksController === controller) progressCallbacksController = null;
+    };
+    return true;
+  };
 
   ctx.middleware(
     async (rawSession, next) => {
@@ -2028,18 +2573,27 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (prepared.action === 'stop') {
           return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
         }
-        applyPreparedInputText(session, context, prepared.inputText, prepared.inputTextSpeakerTagged);
-        beginPromptAssemblyTurn(conversationId, { turnId: runId });
-        registerReplyTurnStateFragment(conversationId, prepared.continuationContext);
-        setReplyRunId(session, runId);
-        registerReplyRunRequestModelGuard({
-          session,
-          replyRuntime,
-          runId,
-          conversationId,
-        });
-        if (context.options) {
-          context.options.messageId = runId;
+        try {
+          if (!prepared.run) {
+            throw new Error('reply runtime prepare returned continue without a run.');
+          }
+          applyPreparedTurnInput(session, context, prepared.run.input, prepared.inputTextSpeakerTagged);
+          applyReplyTurnInputMetadata(context.options?.inputMessage, prepared.run.input);
+          beginPromptAssemblyTurn(conversationId, { turnId: runId });
+          registerReplyTurnStateFragment(conversationId, prepared.continuationContext);
+          setReplyRunId(session, runId);
+          registerReplyRunRequestModelGuard({
+            session,
+            runId,
+            conversationId,
+            finishRun: () => finishReplyRun(session, runId),
+          });
+          if (context.options) {
+            context.options.messageId = runId;
+          }
+        } catch (error) {
+          finishReplyRun(session, runId);
+          throw error;
         }
         return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
       }) as ChatLunaChainBuilderLike;
@@ -2065,18 +2619,24 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (getReplyRouteState(session) !== 'agent') {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
-        suppressReplyErrorNotice(session);
-        const voiceFeatureState = await resolveVoiceFeatureState(session);
+        const runId = getReplyRunId(session);
+        try {
+          suppressReplyErrorNotice(session);
+          const voiceFeatureState = await resolveVoiceFeatureState(session);
 
-        const snapshot =
-          getAuthorizedReplyCapabilitySnapshot(session, replyCapabilitySnapshots) ??
-          (await resolveReplyCapabilitySnapshot({
-            runtime,
-            session,
-            voiceOutputEnabled: voiceFeatureState.outputEnabled,
-          }));
-        rememberReplyCapabilitySnapshot(session, snapshot, replyCapabilitySnapshots);
-        return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+          const snapshot =
+            getAuthorizedReplyCapabilitySnapshot(session, replyCapabilitySnapshots) ??
+            (await resolveReplyCapabilitySnapshot({
+              runtime,
+              session,
+              voiceOutputEnabled: voiceFeatureState.outputEnabled,
+            }));
+          rememberReplyCapabilitySnapshot(session, snapshot, replyCapabilitySnapshots);
+          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        } catch (error) {
+          if (runId) finishReplyRun(session, runId);
+          throw error;
+        }
       }) as ChatLunaChainBuilderLike;
     policyBuilder.after('qqbot_turn_context');
     policyBuilder.after('qqbot_memory');
@@ -2102,48 +2662,67 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (!room || !conversationId || !chatlunaService) {
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
-        ensureReplyPluginRoom(room);
-        const mainModelTarget = resolveMainModelTarget();
-        ensureSupportedStructuredReplyModel(mainModelTarget);
+        const runId = getReplyRunId(session);
+        if (!runId) {
+          throw new Error('reply prompt compiler requires an active reply run.');
+        }
+        try {
+          ensureReplyPluginRoom(room);
+          const mainModelTarget = resolveMainModelTarget();
+          ensureSupportedStructuredReplyModel(mainModelTarget);
 
-        const capability = getAuthorizedReplyCapabilitySnapshot(session, replyCapabilitySnapshots);
-        const turnInput = buildReplyTurnInput(session, room, context.options?.inputMessage);
-        applyReplyTurnInputMetadata(context.options?.inputMessage, turnInput);
-        const turnCapabilitySnapshot = capability ? buildTurnCapabilitySnapshot(session, capability) : null;
-        const schemaCapabilitySnapshot = {
-          canMention: canSessionUseMention(session),
-          canVoice: turnCapabilitySnapshot?.canVoice ?? false,
-          voiceOutputLanguage: runtime.voiceOutputLanguage,
-          canSticker: turnCapabilitySnapshot?.canSticker ?? false,
-        };
-        const replyOutputContract = buildModelReplyOutputContract({
-          canonicalModel: mainModelTarget.canonicalModel,
-          model: mainModelTarget.model,
-          canMention: schemaCapabilitySnapshot.canMention,
-          canVoice: schemaCapabilitySnapshot.canVoice,
-          canMeme: schemaCapabilitySnapshot.canSticker,
-          voiceOutputLanguage: schemaCapabilitySnapshot.voiceOutputLanguage,
-        });
-        injectReplyPromptEnvelope({
-          chatluna: chatlunaService,
-          conversationId,
-          turnContext: {
-            input: turnInput,
-            policySnapshot: {
-              route,
-              toolRouteProfile: route,
+          const capability = getAuthorizedReplyCapabilitySnapshot(session, replyCapabilitySnapshots);
+          if (!capability) {
+            throw new Error('reply prompt compiler requires an authorized transport capability snapshot.');
+          }
+          const turnInput = buildReplyTurnInput(session, room, context.options?.inputMessage);
+          applyReplyTurnInputMetadata(context.options?.inputMessage, turnInput);
+          const modalityPolicy = await beginModalityTurn({ session, runId, conversationId, turnInput, capability });
+          const turnCapabilitySnapshot = buildTurnCapabilitySnapshot(
+            session,
+            capability,
+            modalityPolicy,
+            artifactRegistry.list(runId),
+          );
+          const schemaCapabilitySnapshot = {
+            canMention: canSessionUseMention(session),
+            canVoice: turnCapabilitySnapshot.canVoice,
+            voiceOutputLanguage: runtime.voiceOutputLanguage,
+            canSticker: turnCapabilitySnapshot.canSticker,
+            stickerIntentHints: turnCapabilitySnapshot.stickerIntentHints ?? [],
+          };
+          const replyOutputContract = buildModelReplyOutputContract({
+            canonicalModel: mainModelTarget.canonicalModel,
+            model: mainModelTarget.model,
+            canVoice: schemaCapabilitySnapshot.canVoice,
+            canMeme: schemaCapabilitySnapshot.canSticker,
+            stickerIntentHints: schemaCapabilitySnapshot.stickerIntentHints,
+            voiceOutputLanguage: schemaCapabilitySnapshot.voiceOutputLanguage,
+          });
+          injectReplyPromptEnvelope({
+            chatluna: chatlunaService,
+            conversationId,
+            turnContext: {
+              input: turnInput,
+              policySnapshot: {
+                route,
+                toolRouteProfile: route,
+              },
+              capabilitySnapshot: turnCapabilitySnapshot,
+              continuationContext: null,
             },
-            capabilitySnapshot: turnCapabilitySnapshot,
-            continuationContext: null,
-          },
-          outputProtocol: replyOutputContract.protocol,
-        });
-        applyReplyOutputContract(context.options?.inputMessage, {
-          modelTarget: mainModelTarget,
-          capabilitySnapshot: schemaCapabilitySnapshot,
-          replyOutputContract,
-        });
-        return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+            outputProtocol: replyOutputContract.protocol,
+          });
+          applyReplyOutputContract(context.options?.inputMessage, {
+            modelTarget: mainModelTarget,
+            capabilitySnapshot: schemaCapabilitySnapshot,
+            replyOutputContract,
+          });
+          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        } catch (error) {
+          finishReplyRun(session, runId);
+          throw error;
+        }
       }) as ChatLunaChainBuilderLike;
     promptCompilerBuilder.after('qqbot_reply_transport_policy');
     promptCompilerBuilder.after('qqbot_turn_context');
@@ -2151,6 +2730,25 @@ export function apply(ctx: Context, config: Config = {}): void {
     promptCompilerBuilder.after('qqbot_sticker_policy');
     promptCompilerBuilder.before('qqbot_prompt_envelope');
     promptCompilerBuilder.before('lifecycle-handle_command');
+
+    const requestGuardBuilder = chain.middleware('qqbot_reply_request_guard', async (rawSession, rawContext) => {
+        const session = rawSession as SessionWithVoiceState;
+        const context = rawContext as MiddlewareContextLike;
+        if (!isReplyPlanSessionAvailable(session)) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        if (getReplyRouteState(session) !== 'agent') return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        const runId = getReplyRunId(session);
+        if (!runId) {
+          throw new Error('reply request guard requires an active reply run.');
+        }
+        if (replyRuntime.isCurrentRun(runId)) {
+          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        }
+        if (context.options) context.options.responseMessage = null;
+        finishReplyRun(session, runId);
+        return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
+      }) as ChatLunaChainBuilderLike;
+    requestGuardBuilder.after('qqbot_reply_prompt_compiler');
+    requestGuardBuilder.before('lifecycle-request_conversation');
 
     const executorBuilder = chain.middleware('qqbot_reply_plan_executor', async (rawSession, rawContext) => {
         const session = rawSession as SessionWithVoiceState;
@@ -2162,52 +2760,69 @@ export function apply(ctx: Context, config: Config = {}): void {
         suppressReplyErrorNotice(session);
 
         const responseMessage = context.options?.responseMessage;
-        if (!responseMessage) return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
-        const room = resolveChatLunaRoomLike(context.options) as ReplyRuntimeRoomLike | undefined;
-        const conversationId = room?.conversationId?.trim();
-        ensureReplyPluginRoom(room);
-        ensureSupportedStructuredReplyModel(resolveMainModelTarget());
-        const runMode = await resolveReplyRunMode(session);
+        if (!responseMessage) {
+          const unfinishedRunId = getReplyRunId(session);
+          if (unfinishedRunId) finishReplyRun(session, unfinishedRunId);
+          return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        }
         let runId = getReplyRunId(session);
-        if (!runId) {
-          const queueKey = resolveReplyQueueKey(session);
-          const actorKey = resolveReplyActorKey(session);
-          if (!room || !conversationId || !queueKey || !actorKey) {
-            if (context.options) {
-              context.options.responseMessage = null;
+        let room: ReplyRuntimeRoomLike | undefined;
+        let conversationId: string | undefined;
+        let runMode: ReplyRunMode;
+        try {
+          room = resolveChatLunaRoomLike(context.options) as ReplyRuntimeRoomLike | undefined;
+          conversationId = room?.conversationId?.trim();
+          ensureReplyPluginRoom(room);
+          ensureSupportedStructuredReplyModel(resolveMainModelTarget());
+          runMode = await resolveReplyRunMode(session);
+          if (!runId) {
+            const queueKey = resolveReplyQueueKey(session);
+            const actorKey = resolveReplyActorKey(session);
+            if (!room || !conversationId || !queueKey || !actorKey) {
+              if (context.options) {
+                context.options.responseMessage = null;
+              }
+              return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
             }
-            return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
-          }
-          runId = `qqreply:${randomUUID()}`;
-          const prepared = await replyRuntime.prepareRun({
-            runId,
-            queueKey,
-            actorKey,
-            conversationId,
-            room,
-            mode: runMode,
-            input: buildReplyTurnInput(session, room, context.options?.inputMessage),
-          });
-          if (prepared.action === 'stop') {
-            if (context.options) {
-              context.options.responseMessage = null;
+            runId = `qqreply:${randomUUID()}`;
+            const prepared = await replyRuntime.prepareRun({
+              runId,
+              queueKey,
+              actorKey,
+              conversationId,
+              room,
+              mode: runMode,
+              input: buildReplyTurnInput(session, room, context.options?.inputMessage),
+            });
+            if (prepared.action === 'stop') {
+              if (context.options) {
+                context.options.responseMessage = null;
+              }
+              return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
             }
-            return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
+            if (!prepared.run) {
+              throw new Error('reply runtime executor prepare returned continue without a run.');
+            }
+            applyPreparedTurnInput(session, context, prepared.run.input, prepared.inputTextSpeakerTagged);
+            applyReplyTurnInputMetadata(context.options?.inputMessage, prepared.run.input);
+            setReplyRunId(session, runId);
+            const guardedRunId = runId;
+            registerReplyRunRequestModelGuard({
+              session,
+              runId: guardedRunId,
+              conversationId,
+              finishRun: () => finishReplyRun(session, guardedRunId),
+            });
           }
-          applyPreparedInputText(session, context, prepared.inputText, prepared.inputTextSpeakerTagged);
-          setReplyRunId(session, runId);
-          registerReplyRunRequestModelGuard({
-            session,
-            replyRuntime,
-            runId,
-            conversationId,
-          });
+        } catch (error) {
+          if (runId) finishReplyRun(session, runId);
+          throw error;
         }
         if (!replyRuntime.isCurrentRun(runId)) {
           if (context.options) {
             context.options.responseMessage = null;
           }
-          replyRuntime.finishRun(runId);
+          finishReplyRun(session, runId);
           return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
         }
 
@@ -2227,7 +2842,22 @@ export function apply(ctx: Context, config: Config = {}): void {
               voiceOutputEnabled: voiceFeatureState.outputEnabled,
             }));
           rememberReplyCapabilitySnapshot(session, snapshot, replyCapabilitySnapshots);
-          const turnCapabilitySnapshot = buildTurnCapabilitySnapshot(session, snapshot);
+          if (!conversationId) {
+            throw new Error('reply plan executor requires conversationId.');
+          }
+          const modalityPolicy = await beginModalityTurn({
+            session,
+            runId,
+            conversationId,
+            turnInput,
+            capability: snapshot,
+          });
+          const turnCapabilitySnapshot = buildTurnCapabilitySnapshot(
+            session,
+            snapshot,
+            modalityPolicy,
+            artifactRegistry.list(runId),
+          );
           const outputProtocol = resolveReplyOutputProtocolFromMessage(context.options?.inputMessage);
           let orchestration;
           try {
@@ -2263,10 +2893,19 @@ export function apply(ctx: Context, config: Config = {}): void {
               diagnostic.protocolErrorLine == null ? '<none>' : String(diagnostic.protocolErrorLine),
               diagnostic.rawTextPreview,
             );
-            try {
-              await normalizeResearchReplyHistory(ctx, room, '');
-            } catch (cleanupError) {
-              logger.warn('structured model failure history cleanup failed: %s', (cleanupError as Error).message);
+            const progressClosed = await closeVisibleProgress({
+              session,
+              replyRuntime,
+              runId,
+              message: '刚才没整理好，麻烦你再问我一次。',
+              normalizeHistory: (visibleText) => normalizeResearchReplyHistory(ctx, room, visibleText),
+            });
+            if (!progressClosed) {
+              try {
+                await normalizeResearchReplyHistory(ctx, room, '');
+              } catch (cleanupError) {
+                logger.warn('structured model failure history cleanup failed: %s', (cleanupError as Error).message);
+              }
             }
             if (context.options) {
               context.options.responseMessage = null;
@@ -2275,6 +2914,13 @@ export function apply(ctx: Context, config: Config = {}): void {
           }
 
           if (orchestration.status === 'no_reply') {
+            await closeVisibleProgress({
+              session,
+              replyRuntime,
+              runId,
+              message: '我看完了，暂时没找到合适的答案。',
+              normalizeHistory: (visibleText) => normalizeResearchReplyHistory(ctx, room, visibleText),
+            });
             if (context.options) {
               context.options.responseMessage = null;
             }
@@ -2284,13 +2930,31 @@ export function apply(ctx: Context, config: Config = {}): void {
             throw new Error(`reply v2 orchestrator expected ready status, got ${orchestration.status}.`);
           }
           if (orchestration.actions.length === 1 && orchestration.actions[0]?.kind === 'no_reply') {
+            await closeVisibleProgress({
+              session,
+              replyRuntime,
+              runId,
+              message: '我看完了，暂时没找到合适的答案。',
+              normalizeHistory: (visibleText) => normalizeResearchReplyHistory(ctx, room, visibleText),
+            });
             if (context.options) {
               context.options.responseMessage = null;
             }
             return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
           }
 
-          const executablePlan = buildReplyTransportPlanFromResolvedActions(orchestration.actions);
+          const plannedTransport = buildReplyTransportPlanFromResolvedActions(orchestration.actions);
+          const executablePlan = modalityPolicy.voiceReason === 'explicit_request' && !snapshot.canVoice
+            ? replaceRequestedVoiceWithFailure(
+                plannedTransport,
+                snapshot.voiceFailure ?? {
+                  code: 'tts_health_pending',
+                  stage: 'health_probe',
+                  operation: 'tts.healthz',
+                },
+                !isExclusiveVoiceRequest(turnInput.text),
+              )
+            : plannedTransport;
           replyRuntime.setPlannedUnitHistory(runId, buildOptimisticPlannedUnitHistoryLines(executablePlan));
           if (!replyRuntime.completeCompute(runId)) {
             if (context.options) {
@@ -2305,6 +2969,9 @@ export function apply(ctx: Context, config: Config = {}): void {
             plan: executablePlan,
             replyRuntime,
             runId,
+            onDeliveredModality: (modality) => modalityDirector.recordDelivered(runId, modality),
+            explicitVoiceRequested: modalityPolicy.voiceReason === 'explicit_request',
+            explicitStickerRequested: modalityPolicy.stickerReason === 'explicit_request',
           });
 
           if (result.status === 'failed_before_send' || result.status === 'transport_unavailable') {
@@ -2335,9 +3002,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             ? ChatLunaChains.ChainMiddlewareRunStatus.STOP
             : ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         } finally {
-          setReplyRequestModelErrorHandler(session, undefined);
-          clearReplyRunId(session);
-          replyRuntime.finishRun(runId);
+          finishReplyRun(session, runId);
         }
       }) as ChatLunaChainBuilderLike;
     executorBuilder.after('request_conversation');
@@ -2378,10 +3043,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
 
     ensureReplyRuntimeMiddlewaresRegistered();
+    ensureProgressCallbacksRegistered();
   });
 
   ctx.on('chatluna/chat-chain-added', () => {
     ensureReplyRuntimeMiddlewaresRegistered();
+    ensureProgressCallbacksRegistered();
   });
 
   ctx.on('dispose', () => {
@@ -2389,5 +3056,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       clearTimeout(initialTtsProbeTimer);
       initialTtsProbeTimer = null;
     }
+    progressCallbacksDispose?.();
+    progressCallbacksDispose = null;
   });
 }

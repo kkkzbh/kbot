@@ -1,7 +1,9 @@
 import {
+  buildNativeStructuredReplyEnvelopeSchema,
   normalizeStructuredReply,
   STRUCTURED_REPLY_SCHEMA,
   type StructuredReply,
+  unwrapNativeStructuredReplyEnvelope,
 } from './types.js';
 import type { ReplyOutputProtocol } from '../../shared/llm/reply-output-contract.js';
 import { ChatReplyV1ParseError, ChatReplyV1Parser } from './chat-reply-v1.js';
@@ -249,7 +251,11 @@ export class StructuredReplyCompilerService {
           tool_calls?: unknown[];
           tool_call_chunks?: unknown[];
         },
-    private readonly options: { outputProtocol?: ReplyCompilerOutputProtocol } = {},
+    private readonly options: {
+      outputProtocol?: ReplyCompilerOutputProtocol;
+      canVoice?: boolean;
+      canMeme?: boolean;
+    } = {},
   ) {}
 
   compile(): StructuredReply {
@@ -287,6 +293,20 @@ export class StructuredReplyCompilerService {
           buildCompilerDiagnostic(normalizedOutput, rawText, 'invalid_structured_json', outputProtocol),
         );
       }
+
+      const parsedEnvelope = buildNativeStructuredReplyEnvelopeSchema({
+        canVoice: this.options.canVoice,
+        canMeme: this.options.canMeme,
+      }).safeParse(rawReply);
+      if (!parsedEnvelope.success) {
+        throw new StructuredReplyCompilerError(
+          `structured reply compiler received invalid provider envelope: ${parsedEnvelope.error.issues
+            .map((issue) => `${issue.path.join('.') || 'root'} ${issue.message}`)
+            .join('; ')}`,
+          buildCompilerDiagnostic(normalizedOutput, rawText, 'invalid_structured_schema', outputProtocol),
+        );
+      }
+      rawReply = unwrapNativeStructuredReplyEnvelope(parsedEnvelope.data);
     }
 
     const parsedReply = STRUCTURED_REPLY_SCHEMA.safeParse(rawReply);

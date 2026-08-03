@@ -80,6 +80,10 @@ export class ReplyOrchestratorService {
 
     const compiler = new StructuredReplyCompilerService(context.responseMessage, {
       outputProtocol: context.outputProtocol,
+      ...(context.capabilitySnapshot == null ? {} : {
+        canVoice: context.capabilitySnapshot.canVoice,
+        canMeme: context.capabilitySnapshot.canSticker,
+      }),
     });
     const reply = compiler.compile();
     const actions = await this.actionResolver.resolve(reply, turnContext, _session);

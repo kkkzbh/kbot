@@ -15,6 +15,8 @@ import {
   createPromptTextFragment,
   deliverStandaloneReplyPlan,
   ensureSupportedStructuredReplyModel,
+  DEFAULT_MODALITY_PREFERENCE,
+  deriveModalityPolicy,
   ReplyOrchestratorService,
   resolveReplyCapabilitySnapshot,
   type TurnContext,
@@ -1007,6 +1009,7 @@ async function prepareAutomationExecutionContext(
   sourceRoom: AutomationRoomRow,
   tempRoom: AutomationRoomRow,
   session: ReplySessionLike,
+  job: AutomationJob,
 ): Promise<AutomationCapabilitySnapshot> {
   const stickerArtifacts = resolveStickerCapabilityArtifacts(sourceRoom.preset?.trim() || null);
   const currentState = ((session as Session & { state?: Record<string, unknown> }).state ?? {}) as Record<string, unknown>;
@@ -1021,7 +1024,30 @@ async function prepareAutomationExecutionContext(
     voiceOutputEnabled: voiceRuntime.outputEnabled,
     waitForProbe: true,
   });
-  const capabilitySnapshot = buildTurnCapabilitySnapshot(session, replyCapability);
+  const requestedPolicy = deriveModalityPolicy(
+    buildReplyTurnInput(
+      session,
+      { conversationId: tempRoom.conversationId ?? undefined },
+      { content: job.goal },
+    ),
+    {
+      canVoice: replyCapability.canVoice,
+      canSticker: stickerArtifacts.state.availableCount > 0,
+      stickerAvailableCount: stickerArtifacts.state.availableCount,
+    },
+    { stickerReady: true, voiceReady: true },
+    DEFAULT_MODALITY_PREFERENCE,
+  );
+  const capabilitySnapshot = buildTurnCapabilitySnapshot(
+    session,
+    replyCapability,
+    {
+      ...requestedPolicy,
+      canVoice: requestedPolicy.canVoice && requestedPolicy.voiceReason === 'explicit_request',
+      canSticker: requestedPolicy.canSticker && requestedPolicy.stickerReason === 'explicit_request',
+    },
+    [],
+  );
   const recentContextTurns = await loadRecentConversationTurns(ctx, sourceRoom.conversationId);
   const recentContextFragment = buildAutomationRecentContextFragment(recentContextTurns);
   const fragments = recentContextFragment ? [recentContextFragment] : [];
@@ -1051,7 +1077,13 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
     );
     const replyRoom = toReplyAutomationRoom(tempRoom);
     ensureSupportedStructuredReplyModel(modelTarget);
-    const capabilitySnapshot = await prepareAutomationExecutionContext(ctx, source.room, tempRoom, source.session);
+    const capabilitySnapshot = await prepareAutomationExecutionContext(
+      ctx,
+      source.room,
+      tempRoom,
+      source.session,
+      job,
+    );
     const toolMask = await resolveAutomationToolMask(ctx, source.session, source.room);
     const message: ChatLunaMessage = {
       content: createAutomationPrompt(job, run.triggeredAt),

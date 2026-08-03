@@ -1,7 +1,18 @@
-const DEFAULT_PROBE_GROUP_ID = '829573670'
+const LIVE_ACCEPTANCE_GROUP_ID = '829573670'
+const TEMP_PROBE_GROUP_PREFIX = '880000'
+const TEMP_PROBE_USER_PREFIX = '890000'
+const DEFAULT_PROBE_GROUP_ID = `${TEMP_PROBE_GROUP_PREFIX}000000001`
 const DEFAULT_PROBE_GROUP_NAME = 'codex-probe-group'
 const DEFAULT_PROBE_GROUP_CARD = 'codex-probe'
-const PROBE_LOCK_DIR = '/tmp/qqbot-group-probe.lock'
+const PROBE_LOCK_FILE = '.tmp/probe-runtime/group-probe.lock'
+
+function isOwnedTemporaryProbeGroupId(value) {
+  return new RegExp(`^${TEMP_PROBE_GROUP_PREFIX}\\d{9}$`).test(String(value ?? ''))
+}
+
+function isOwnedTemporaryProbeUserId(value) {
+  return new RegExp(`^${TEMP_PROBE_USER_PREFIX}\\d{9}$`).test(String(value ?? ''))
+}
 
 function normalizeVisibleContent(content) {
   if (typeof content === 'string') return content
@@ -54,11 +65,140 @@ function serializePayload(content) {
   return String(content)
 }
 
+function payloadHasKind(value, target, allowMarkup = true) {
+  if (value == null) return false
+  if (Array.isArray(value)) return value.some((item) => payloadHasKind(item, target, true))
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (allowMarkup && target === 'voice' && /^(?:<quote\b[^>]*>\s*)?<(?:audio|voice|record)\b/i.test(trimmed)) return true
+    if (allowMarkup && target === 'image' && /^(?:<quote\b[^>]*>\s*)?<(?:img|image|sticker)\b/i.test(trimmed)) return true
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        return payloadHasKind(JSON.parse(trimmed), target, false)
+      } catch {}
+    }
+    return false
+  }
+  if (typeof value !== 'object') return false
+  const type = String(value.type ?? value.kind ?? '').toLowerCase()
+  if (target === 'voice' && ['audio', 'voice', 'record'].includes(type)) return true
+  if (target === 'image' && ['image', 'img', 'sticker', 'face'].includes(type)) return true
+  return Array.isArray(value.children) && value.children.some((item) => payloadHasKind(item, target, true))
+}
+
+function latestTerminalOrchestration(orchestrations) {
+  if (!Array.isArray(orchestrations)) return null
+  for (let index = orchestrations.length - 1; index >= 0; index -= 1) {
+    const item = orchestrations[index]
+    const status = item && item.result && item.result.status
+    if (status === 'ready' || status === 'no_reply' || status === 'error') return item
+  }
+  return null
+}
+
+function isSuccessfulDeliveryCapture(capture) {
+  return Boolean(
+    capture
+    && capture.delivered === true
+    && capture.receipt != null
+    && Number.isFinite(capture.at)
+    && Number.isInteger(capture.ordinal),
+  )
+}
+
+function isCaptureAfterOrchestration(capture, orchestration) {
+  return Boolean(
+    isSuccessfulDeliveryCapture(capture)
+    && orchestration
+    && Number.isInteger(orchestration.ordinal)
+    && capture.ordinal > orchestration.ordinal,
+  )
+}
+
+function evaluateTurnTerminal(orchestrations, captures) {
+  const terminal = latestTerminalOrchestration(orchestrations)
+  if (!terminal || !Number.isFinite(terminal.at) || !Number.isInteger(terminal.ordinal)) {
+    return { terminal: false, status: null, at: null }
+  }
+  if (terminal.result.status === 'no_reply') {
+    return { terminal: true, status: 'no_reply', at: terminal.at }
+  }
+  if (terminal.result.status === 'error') {
+    return { terminal: true, status: 'error', at: terminal.at }
+  }
+  const actions = Array.isArray(terminal.result.actions) ? terminal.result.actions : []
+  if (actions.length === 1 && actions[0] && actions[0].kind === 'no_reply') {
+    return { terminal: true, status: 'no_reply', at: terminal.at }
+  }
+  const delivered = Array.isArray(captures) && captures.some(
+    (capture) => isCaptureAfterOrchestration(capture, terminal),
+  )
+  return { terminal: delivered, status: delivered ? 'delivered' : 'awaiting_delivery', at: terminal.at }
+}
+
+function classifyDeliveredTypedMedia(orchestrations, captures) {
+  const terminal = latestTerminalOrchestration(orchestrations)
+  if (
+    !terminal
+    || terminal.result.status !== 'ready'
+    || !Number.isFinite(terminal.at)
+    || !Number.isInteger(terminal.ordinal)
+  ) {
+    return { voice: false, sticker: false, image: false, ambiguous: false }
+  }
+  const actions = Array.isArray(terminal.result.actions) ? terminal.result.actions : []
+  const stickerActionCount = actions.filter((action) => action && action.kind === 'sticker').length
+  const imageActionCount = actions.filter((action) => action && action.kind === 'image').length
+  const voiceActionCount = actions.filter((action) => action && action.kind === 'voice').length
+  const deliveredCaptures = Array.isArray(captures)
+    ? captures.filter((capture) => isCaptureAfterOrchestration(capture, terminal))
+    : []
+  const deliveredVoice = deliveredCaptures.some((capture) => payloadHasKind(capture.payload, 'voice'))
+  const deliveredImage = deliveredCaptures.some((capture) => payloadHasKind(capture.payload, 'image'))
+  const imageActionAmbiguous = stickerActionCount > 0 && imageActionCount > 0
+  return {
+    voice: voiceActionCount > 0 && deliveredVoice,
+    sticker: !imageActionAmbiguous && stickerActionCount > 0 && deliveredImage,
+    image: !imageActionAmbiguous && imageActionCount > 0 && deliveredImage,
+    ambiguous: imageActionAmbiguous,
+  }
+}
+
+function evaluateVisualDeliveryExpectation(mode, deliveredMedia) {
+  if (!['allowed', 'forbidden', 'required'].includes(mode)) {
+    throw new Error(`invalid visual delivery expectation: ${String(mode)}`)
+  }
+  if (deliveredMedia && deliveredMedia.ambiguous === true) {
+    return { ok: false, reason: 'ambiguous_image_attribution' }
+  }
+  const sticker = Boolean(deliveredMedia && deliveredMedia.sticker)
+  const image = Boolean(deliveredMedia && deliveredMedia.image)
+  if (mode === 'required') {
+    return { ok: sticker, reason: sticker ? null : 'sticker_required' }
+  }
+  if (mode === 'forbidden' && (sticker || image)) {
+    return { ok: false, reason: 'visual_forbidden' }
+  }
+  return { ok: true, reason: null }
+}
+
 module.exports = {
   DEFAULT_PROBE_GROUP_CARD,
   DEFAULT_PROBE_GROUP_ID,
   DEFAULT_PROBE_GROUP_NAME,
-  PROBE_LOCK_DIR,
+  LIVE_ACCEPTANCE_GROUP_ID,
+  PROBE_LOCK_FILE,
+  TEMP_PROBE_GROUP_PREFIX,
+  TEMP_PROBE_USER_PREFIX,
+  classifyDeliveredTypedMedia,
+  evaluateVisualDeliveryExpectation,
+  evaluateTurnTerminal,
+  isCaptureAfterOrchestration,
+  isOwnedTemporaryProbeGroupId,
+  isOwnedTemporaryProbeUserId,
+  isSuccessfulDeliveryCapture,
+  latestTerminalOrchestration,
   normalizeVisibleContent,
+  payloadHasKind,
   serializePayload,
 }

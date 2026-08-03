@@ -67,18 +67,18 @@ export function buildModelRequestOverrides(args: {
 export function buildModelReplyOutputContract(args: {
   canonicalModel: string;
   model: ModelDefinition;
-  canMention?: boolean;
   canVoice?: boolean;
   canMeme?: boolean;
+  stickerIntentHints?: readonly string[];
   voiceOutputLanguage?: VoiceOutputLanguage;
 }): MainChatReplyOutputContract {
   return createReplyOutputContract({
     requestMode: requireRequestMode(args.model),
     protocol: requireReplyProtocol(args.model),
     overrideRequestParams: buildModelRequestOverrides(args),
-    canMention: args.canMention,
     canVoice: args.canVoice,
     canMeme: args.canMeme,
+    stickerIntentHints: args.stickerIntentHints,
     voiceOutputLanguage: args.voiceOutputLanguage,
   });
 }

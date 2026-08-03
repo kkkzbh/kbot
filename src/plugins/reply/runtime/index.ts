@@ -16,6 +16,7 @@ export interface ReplyTurnContinuationContext {
   alreadySentText: string;
   pendingUnitTexts: string[];
   supplementalMessages: string[];
+  progressVisibleLines: string[];
 }
 
 export interface ReplyRuntimePrepareResult {
@@ -32,6 +33,11 @@ export interface ReplyRuntimeFirstReplyQuote {
   consumed: boolean;
 }
 
+export interface ReplyRuntimeProgressState {
+  visibleLines: string[];
+  lastSentAt: number | null;
+}
+
 export interface ReplyRuntimeRun {
   id: string;
   queueKey: string;
@@ -44,13 +50,15 @@ export interface ReplyRuntimeRun {
   cancelled: boolean;
   plannedUnitHistoryLines: string[];
   committedHistoryLines: string[];
+  transientProgress: ReplyRuntimeProgressState;
   requestId: string;
   firstReplyQuote: ReplyRuntimeFirstReplyQuote;
   sendAbortController?: AbortController;
 }
 
 export interface ReplyRuntimeOptions {
-  stopChat: (room: ReplyRuntimeRoomLike, requestId: string) => Promise<void>;
+  stopConversationRequest: (conversationId: string) => Promise<void>;
+  drainOutbound: (queueKey: string) => Promise<void>;
   collectWindowMs?: number;
   maxPendingInputs?: number;
 }
@@ -58,6 +66,8 @@ export interface ReplyRuntimeOptions {
 interface ReplyRuntimeContinuationSnapshot {
   alreadySentText: string;
   pendingUnitTexts: string[];
+  progressVisibleLines: string[];
+  progressLastSentAt: number | null;
   hasModelOutput: boolean;
   baseInput?: ReplyTurnInput;
 }
@@ -78,7 +88,7 @@ interface ReplyRuntimePendingState {
   actorKey: string;
   snapshot: ReplyRuntimeContinuationSnapshot;
   pending: PendingTurnEntry[];
-  status: 'queued' | 'cooldown';
+  status: 'draining' | 'cooldown' | 'queued';
   timer?: NodeJS.Timeout;
 }
 
@@ -182,10 +192,20 @@ export class ReplyRuntime {
     const activeRunId = this.activeRunByActorKey.get(args.actorKey);
     const activeRun = activeRunId ? this.runs.get(activeRunId) : null;
     if (activeRun && !activeRun.cancelled) {
-      const snapshot = this.captureContinuationSnapshot(activeRun);
-      const pendingState = this.getOrCreatePendingState(args, snapshot, 'cooldown');
+      const pendingState = this.getOrCreatePendingState(
+        args,
+        this.captureContinuationSnapshot(activeRun),
+        'draining',
+      );
       const pendingPromise = this.enqueuePendingTurn(pendingState, { ...args, firstReplyQuote });
-      await this.interruptRun(activeRun);
+      try {
+        await this.interruptRun(activeRun);
+      } catch (error) {
+        this.stopPendingState(pendingState);
+        this.finishRun(activeRun.id);
+        throw error;
+      }
+      pendingState.snapshot = this.captureContinuationSnapshot(activeRun);
       this.enterCooldown(pendingState);
       this.tryStartNextCompute(args.queueKey);
       return pendingPromise;
@@ -213,6 +233,8 @@ export class ReplyRuntime {
     const pendingState = this.getOrCreatePendingState(args, {
       alreadySentText: '',
       pendingUnitTexts: [],
+      progressVisibleLines: [],
+      progressLastSentAt: null,
       hasModelOutput: false,
     }, 'queued');
     const pendingPromise = this.enqueuePendingTurn(pendingState, { ...args, firstReplyQuote });
@@ -276,6 +298,30 @@ export class ReplyRuntime {
     run.committedHistoryLines.push(normalized);
   }
 
+  recordProgressVisibleLine(runId: string, text: string, sentAt = Date.now()): boolean {
+    const run = this.getRun(runId);
+    if (!run) return false;
+    const normalized = text.trim();
+    if (!normalized) {
+      throw new Error('reply progress visible line must not be empty.');
+    }
+    if (!Number.isFinite(sentAt) || sentAt < 0) {
+      throw new Error('reply progress sentAt must be a non-negative finite number.');
+    }
+    run.transientProgress.visibleLines.push(normalized);
+    run.transientProgress.lastSentAt = sentAt;
+    return true;
+  }
+
+  getProgressState(runId: string | undefined): ReplyRuntimeProgressState | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+    return {
+      visibleLines: [...run.transientProgress.visibleLines],
+      lastSentAt: run.transientProgress.lastSentAt,
+    };
+  }
+
   wasInterrupted(runId: string | undefined): boolean {
     const run = this.getRun(runId);
     if (!run) return true;
@@ -331,6 +377,7 @@ export class ReplyRuntime {
     room: ReplyRuntimeRoomLike;
     input: ReplyTurnInput;
     firstReplyQuote: ReplyRuntimeFirstReplyQuote;
+    transientProgress?: ReplyRuntimeProgressState;
   }): ReplyRuntimeRun {
     const created: ReplyRuntimeRun = {
       id: args.runId,
@@ -344,6 +391,15 @@ export class ReplyRuntime {
       cancelled: false,
       plannedUnitHistoryLines: [],
       committedHistoryLines: [],
+      transientProgress: args.transientProgress
+        ? {
+            visibleLines: [...args.transientProgress.visibleLines],
+            lastSentAt: args.transientProgress.lastSentAt,
+          }
+        : {
+            visibleLines: [],
+            lastSentAt: null,
+          },
       requestId: args.runId,
       firstReplyQuote: { ...args.firstReplyQuote },
     };
@@ -360,6 +416,8 @@ export class ReplyRuntime {
     return {
       alreadySentText,
       pendingUnitTexts,
+      progressVisibleLines: [...run.transientProgress.visibleLines],
+      progressLastSentAt: run.transientProgress.lastSentAt,
       hasModelOutput: run.hasComputedOutput || run.plannedUnitHistoryLines.length > 0,
       baseInput: run.hasComputedOutput || run.plannedUnitHistoryLines.length > 0 ? undefined : run.input,
     };
@@ -382,10 +440,15 @@ export class ReplyRuntime {
     }
 
     if (run.state === 'computing') {
-      await this.options.stopChat(run.room, run.requestId).catch(() => undefined);
+      const conversationId = run.conversationId?.trim();
+      if (!conversationId) {
+        throw new Error(`reply run ${run.id} cannot interrupt without conversationId.`);
+      }
+      await this.options.stopConversationRequest(conversationId);
     }
 
     run.sendAbortController?.abort();
+    await this.options.drainOutbound(run.queueKey);
   }
 
   private getOrCreatePendingState(
@@ -457,6 +520,19 @@ export class ReplyRuntime {
     }, this.collectWindowMs);
   }
 
+  private stopPendingState(state: ReplyRuntimePendingState): void {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = undefined;
+    }
+    if (this.pendingStatesByActorKey.get(state.actorKey) === state) {
+      this.pendingStatesByActorKey.delete(state.actorKey);
+    }
+    this.removeActorFromQueue(state.queueKey, state.actorKey);
+    const pending = state.pending.splice(0);
+    for (const entry of pending) entry.resolve({ action: 'stop' });
+  }
+
   private canStartCompute(queueKey: string): boolean {
     return !this.currentComputeByQueueKey.has(queueKey) && !this.currentComputedByQueueKey.has(queueKey);
   }
@@ -497,30 +573,56 @@ export class ReplyRuntime {
     const earlier = state.pending.slice(0, -1);
     earlier.forEach((entry) => entry.resolve({ action: 'stop' }));
 
-    const continuationContext = state.snapshot.hasModelOutput
+    const hasContinuationContext = state.snapshot.hasModelOutput
+      || state.snapshot.progressVisibleLines.length > 0;
+    const continuationContext = hasContinuationContext
       ? {
           alreadySentText: state.snapshot.alreadySentText,
           pendingUnitTexts: [...state.snapshot.pendingUnitTexts],
-          supplementalMessages: buildSupplementalMessages(earlier.map((entry) => entry.input)),
+          supplementalMessages: state.snapshot.hasModelOutput
+            ? buildSupplementalMessages(earlier.map((entry) => entry.input))
+            : [],
+          progressVisibleLines: [...state.snapshot.progressVisibleLines],
         }
       : undefined;
+    const aggregatedInputs = [
+      ...(state.snapshot.baseInput ? [state.snapshot.baseInput] : []),
+      ...state.pending.map((entry) => entry.input),
+    ];
     const aggregatedInput = state.snapshot.hasModelOutput
       ? {
           text: normalizeInputText(carrier.input.text),
           speakerTagged: false,
         }
-      : renderAggregatedInput([
-          ...(state.snapshot.baseInput ? [state.snapshot.baseInput] : []),
-          ...state.pending.map((entry) => entry.input),
-        ]);
+      : renderAggregatedInput(aggregatedInputs);
+    const effectiveInput: ReplyTurnInput = state.snapshot.hasModelOutput
+      ? {
+          ...carrier.input,
+          imageParts: state.pending.flatMap((entry) => entry.input.imageParts),
+          hasVoiceInput: state.pending.some((entry) => entry.input.hasVoiceInput),
+          hasImageInput: state.pending.some((entry) => entry.input.imageParts.length > 0),
+          imageCount: state.pending.reduce((total, entry) => total + entry.input.imageParts.length, 0),
+        }
+      : {
+          ...carrier.input,
+          text: aggregatedInput.text,
+          imageParts: aggregatedInputs.flatMap((input) => input.imageParts),
+          hasVoiceInput: aggregatedInputs.some((input) => input.hasVoiceInput),
+          hasImageInput: aggregatedInputs.some((input) => input.imageParts.length > 0),
+          imageCount: aggregatedInputs.reduce((total, input) => total + input.imageParts.length, 0),
+        };
     const run = this.createRun({
       runId: carrier.runId,
       queueKey: carrier.queueKey,
       actorKey: carrier.actorKey,
       conversationId: carrier.conversationId,
       room: carrier.room,
-      input: carrier.input,
+      input: effectiveInput,
       firstReplyQuote: carrier.firstReplyQuote,
+      transientProgress: {
+        visibleLines: [...state.snapshot.progressVisibleLines],
+        lastSentAt: state.snapshot.progressLastSentAt,
+      },
     });
 
     carrier.resolve({

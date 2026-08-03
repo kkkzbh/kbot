@@ -38,6 +38,7 @@ import type { AffinityRandomGenerationInput } from '../src/plugins/affinity/proa
 import { generateAffinityProactiveViaChatLuna } from '../src/plugins/affinity/proactive-chatluna.js';
 import { createVoiceRuntimeConfig } from '../src/plugins/reply/voice/generation.js';
 import { createTestModelRuntime } from './model-runtime-fixture.js';
+import { nativeStructuredReplyContent } from './structured-reply-fixture.js';
 
 const NOW = Date.UTC(2026, 5, 17, 6, 0, 0);
 
@@ -280,7 +281,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
 
   it('uses the current native StructuredReply contract and returns a transport plan', async () => {
     const { mainTarget } = createTestModelRuntime();
-    const chatluna = createChatLuna(JSON.stringify({
+    const chatluna = createChatLuna(nativeStructuredReplyContent({
       decision: 'reply',
       outbound_messages: [
         {
@@ -314,10 +315,10 @@ describe('affinity proactive task prompt and provider adapter', () => {
     const modelMessage = chatluna.chat.mock.calls[0]?.[2] as { additional_kwargs?: Record<string, any> };
     expect(modelMessage.additional_kwargs?.qqbot_final_response_contract).toEqual(expect.objectContaining({
       protocol: 'native_chat_json_schema',
-      schema: expect.objectContaining({ title: 'StructuredReply' }),
+      schema: expect.objectContaining({ title: 'StructuredReplyEnvelope' }),
     }));
     expect(modelMessage.additional_kwargs?.qqbot_final_response_schema).toEqual(expect.objectContaining({
-      title: 'StructuredReply',
+      title: 'StructuredReplyEnvelope',
     }));
     const injectedMessages = chatluna.contextManager.inject.mock.calls
       .flatMap((call) => call[0]?.value ?? []) as Array<{
@@ -336,9 +337,9 @@ describe('affinity proactive task prompt and provider adapter', () => {
     );
   });
 
-  it('keeps image, meme, and voice provider actions in the proactive transport plan', async () => {
+  it('rejects provider modalities that the proactive route did not admit', async () => {
     const { mainTarget } = createTestModelRuntime();
-    const chatluna = createChatLuna(JSON.stringify({
+    const chatluna = createChatLuna(nativeStructuredReplyContent({
       decision: 'reply',
       outbound_messages: [
         { type: 'image', assetRef: 'https://example.com/rehearsal.png', alt: '排练标记' },
@@ -373,10 +374,10 @@ describe('affinity proactive task prompt and provider adapter', () => {
     });
 
     expect(result).toEqual(expect.objectContaining({
-      shouldSend: true,
-      eventTypeHint: 'music_help',
+      shouldSend: false,
+      skipReason: 'structured_reply_invalid',
+      transportPlan: null,
     }));
-    expect(result.transportPlan?.segments.map((segment) => segment.kind)).toEqual(['image', 'sticker', 'voice']);
   });
 
   it('uses CHAT_REPLY_V1 when the current provider requires the text protocol', async () => {
@@ -427,7 +428,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
 
   it('maps provider no_reply to a skipped proactive generation without fallback text', async () => {
     const { mainTarget } = createTestModelRuntime();
-    const chatluna = createChatLuna(JSON.stringify({
+    const chatluna = createChatLuna(nativeStructuredReplyContent({
       decision: 'no_reply',
       outbound_messages: null,
     }));
@@ -454,7 +455,7 @@ describe('affinity proactive task prompt and provider adapter', () => {
     const { mainTarget } = createTestModelRuntime();
     const chatluna = {
       chat: vi.fn(async () => ({
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'reply',
           outbound_messages: [{ type: 'message', content: '这不该被调用。' }],
         }),

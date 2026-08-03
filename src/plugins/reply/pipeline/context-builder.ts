@@ -2,19 +2,39 @@ import type { Session } from 'koishi';
 import { resolveSessionDisplayName } from '../../shared/session/index.js';
 import { normalizeMentionLikeText } from '../../shared/mention-text.js';
 import type { ReplyRuntimeRoomLike } from '../runtime/index.js';
-import { classifyReplyRoute, type ReplyRoute, type TurnContext, type TurnInput } from './types.js';
+import {
+  classifyReplyRoute,
+  type ReplyRoute,
+  type TurnContext,
+  type TurnInput,
+  type TurnInputImagePart,
+  type TurnInputImageReference,
+} from './types.js';
 
 type SessionWithContent = Session & {
   stripped?: { content?: string };
+  state?: Record<string, unknown> & {
+    qqVoice?: {
+      transcript?: unknown;
+    };
+  };
 };
 
 type InputMessageLike = {
   content?: unknown;
+  additional_kwargs?: {
+    qqbot_input_content_meta?: {
+      hasImageInput?: unknown;
+      imageCount?: unknown;
+      hasVoiceInput?: unknown;
+    };
+  };
 } | null | undefined;
 
 type ContentPart = {
   type?: unknown;
   text?: unknown;
+  image_url?: unknown;
 };
 
 function sanitizeInputText(text: string): string {
@@ -47,17 +67,44 @@ export function normalizeReplyRouteHint(chatMode: unknown): ReplyRoute | null {
   return null;
 }
 
-function collectInputContentInfo(content: unknown): { text: string; imageCount: number } {
+function normalizeImageReference(value: unknown): TurnInputImageReference {
+  if (typeof value === 'string' && value.trim()) {
+    return value;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('reply input image_url must be a non-empty string or object.');
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.url !== 'string' || !record.url.trim()) {
+    throw new Error('reply input image_url.url must be a non-empty string.');
+  }
+  if (
+    record.detail !== undefined
+    && record.detail !== 'auto'
+    && record.detail !== 'low'
+    && record.detail !== 'high'
+  ) {
+    throw new Error('reply input image_url.detail must be auto, low, or high.');
+  }
+
+  return {
+    url: record.url,
+    ...(record.detail === undefined ? {} : { detail: record.detail }),
+  };
+}
+
+function collectInputContentInfo(content: unknown): { text: string; imageParts: TurnInputImagePart[] } {
   if (typeof content === 'string') {
-    return { text: normalizeInputText(content), imageCount: 0 };
+    return { text: normalizeInputText(content), imageParts: [] };
   }
 
   if (!Array.isArray(content)) {
-    return { text: '', imageCount: 0 };
+    return { text: '', imageParts: [] };
   }
 
   let text = '';
-  let imageCount = 0;
+  const imageParts: TurnInputImagePart[] = [];
 
   for (const part of content as ContentPart[]) {
     if (!part || typeof part !== 'object') continue;
@@ -66,11 +113,14 @@ function collectInputContentInfo(content: unknown): { text: string; imageCount: 
       continue;
     }
     if (part.type === 'image_url') {
-      imageCount += 1;
+      imageParts.push({
+        type: 'image_url',
+        image_url: normalizeImageReference(part.image_url),
+      });
     }
   }
 
-  return { text: normalizeInputText(text), imageCount };
+  return { text: normalizeInputText(text), imageParts };
 }
 
 export function buildReplyTurnInput(
@@ -79,12 +129,20 @@ export function buildReplyTurnInput(
   inputMessage?: InputMessageLike,
 ): TurnInput {
   const stripped = typeof session.stripped?.content === 'string' ? session.stripped.content : '';
-  const { text: inputMessageText, imageCount } = collectInputContentInfo(inputMessage?.content);
+  const { text: inputMessageText, imageParts } = collectInputContentInfo(inputMessage?.content);
+  const inputMeta = inputMessage?.additional_kwargs?.qqbot_input_content_meta;
+  const imageCount = imageParts.length;
+  const hasVoiceInput = typeof inputMeta?.hasVoiceInput === 'boolean'
+    ? inputMeta.hasVoiceInput
+    : typeof session.state?.qqVoice?.transcript === 'string'
+      && session.state.qqVoice.transcript.trim().length > 0;
   const rawText = inputMessageText.trim() || normalizeInputText(stripped) || normalizeInputText(String(session.content ?? ''));
   return {
     text: rawText,
+    imageParts,
     hasImageInput: imageCount > 0,
     imageCount,
+    hasVoiceInput,
     displayName: resolveSessionDisplayName(session),
     userId: session.userId?.trim() || '用户',
     isDirect: Boolean(session.isDirect),

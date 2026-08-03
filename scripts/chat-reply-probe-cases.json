@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "presetId": "sakiko",
+  "expectedModelId": "gpt-5.6-luna",
+  "expectedTransportModel": "gpt-5.6-luna",
+  "expectedReasoningEffort": "medium",
+  "cases": [
+    {
+      "id": "human-casual-chat",
+      "prompt": "saki 今天排练累死了，回来还被老师催作业。",
+      "dimensions": ["human_chat"],
+      "expect": {
+        "text": "required",
+        "voice": "allowed",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "forbidAssistantBoilerplate": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "no-speaker-labels",
+      "prompt": "saki 群里有人问我练琴总是抢拍怎么办，你帮我接一句。",
+      "dimensions": ["no_speaker_labels"],
+      "expect": {
+        "text": "required",
+        "voice": "forbidden",
+        "image": "forbidden",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "bounded-short-reply",
+      "prompt": "saki 我今天从早忙到晚，脑子都转不动了，陪我聊两句。",
+      "dimensions": ["bounded_length"],
+      "expect": {
+        "text": "required",
+        "voice": "allowed",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "search-with-progress",
+      "prompt": "saki 帮我查一下今天新加坡的天气，再告诉我出门要不要带伞。",
+      "dimensions": ["search", "progress"],
+      "expect": {
+        "text": "required",
+        "voice": "forbidden",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "requireProgress": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 500
+      }
+    },
+    {
+      "id": "explicit-voice",
+      "prompt": "saki 我有点睡不着，给我发一小段语音说晚安。",
+      "dimensions": ["voice", "explicit_request"],
+      "gate": "voice_output",
+      "expect": {
+        "text": "allowed",
+        "voice": "required",
+        "image": "forbidden",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "voice-informational-negative",
+      "prompt": "saki 用文字告诉我，失眠时怎么安排明天的作息？",
+      "dimensions": ["voice", "informational_negative"],
+      "expect": {
+        "text": "required",
+        "voice": "forbidden",
+        "image": "forbidden",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 360
+      }
+    },
+    {
+      "id": "explicit-sticker",
+      "prompt": "saki 这也太离谱了，发个合适的表情包陪我吐槽一下。",
+      "dimensions": ["sticker", "explicit_request"],
+      "expect": {
+        "text": "allowed",
+        "voice": "forbidden",
+        "image": "required",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "sticker-informational-negative",
+      "prompt": "saki 认真说说，明天排练前我该准备哪些东西？",
+      "dimensions": ["sticker", "informational_negative"],
+      "expect": {
+        "text": "required",
+        "voice": "forbidden",
+        "image": "forbidden",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 360
+      }
+    },
+    {
+      "id": "serious-no-sticker",
+      "prompt": "saki 朋友刚住院了，我有点慌，不知道现在该做什么。",
+      "dimensions": ["serious", "sticker_negative"],
+      "expect": {
+        "text": "required",
+        "voice": "forbidden",
+        "image": "forbidden",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "forbidAssistantBoilerplate": true,
+        "maxVisibleTextChars": 300,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "casual-sticker-celebration",
+      "prompt": "saki 我终于把拖了三天的作业写完了，好耶！",
+      "dimensions": ["sticker", "casual_opportunity"],
+      "expect": {
+        "text": "allowed",
+        "voice": "forbidden",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "casual-sticker-surprise",
+      "prompt": "saki 你猜怎么着，我刚刚居然一次就把最难那段弹顺了，真的假的。",
+      "dimensions": ["sticker", "casual_opportunity"],
+      "expect": {
+        "text": "allowed",
+        "voice": "forbidden",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "casual-sticker-teasing",
+      "prompt": "saki 你刚才那句话也太损了，我要笑死。",
+      "dimensions": ["sticker", "casual_opportunity"],
+      "expect": {
+        "text": "allowed",
+        "voice": "forbidden",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    },
+    {
+      "id": "casual-sticker-playful",
+      "prompt": "saki 今天这事也太离谱了，我到现在还绷不住。",
+      "dimensions": ["sticker", "casual_opportunity"],
+      "expect": {
+        "text": "allowed",
+        "voice": "forbidden",
+        "image": "allowed",
+        "requireOrchestration": true,
+        "forbidMeta": true,
+        "forbidSpeakerLabels": true,
+        "maxVisibleTextChars": 180,
+        "maxVisibleMessages": 3
+      }
+    }
+  ],
+  "statefulSequences": [
+    {
+      "id": "modality-cooldown",
+      "turns": [
+        { "id": "celebrate-homework", "category": "casual_opportunity", "prompt": "saki 我终于把拖了三天的作业写完了，好耶！" },
+        { "id": "ask-practice-list", "category": "informational_negative", "prompt": "saki 认真列一下明天排练要带的东西。" },
+        { "id": "ordinary-check-in-one", "category": "neutral", "prompt": "saki 我刚到家，先歇五分钟。" },
+        { "id": "friend-hospitalized", "category": "serious_negative", "prompt": "saki 朋友刚住院了，我现在有点慌。" },
+        { "id": "piano-breakthrough", "category": "casual_opportunity", "prompt": "saki 最难那段我居然一遍弹顺了，真的假的。" },
+        { "id": "request-cheer-sticker", "category": "explicit_sticker", "prompt": "saki 发一个开心点的表情包庆祝一下。" },
+        { "id": "ordinary-check-in-two", "category": "neutral", "prompt": "saki 水也喝了，我准备继续练。" },
+        { "id": "ask-metronome", "category": "informational_negative", "prompt": "saki 解释一下节拍器从多少速度开始比较合适。" },
+        { "id": "laugh-at-mistake", "category": "casual_opportunity", "prompt": "saki 我刚把休止符弹成重音了，自己都笑死。" },
+        { "id": "account-stolen", "category": "serious_negative", "prompt": "saki 朋友的账号被盗了，现在应该先处理什么？" },
+        { "id": "ordinary-check-in-three", "category": "neutral", "prompt": "saki 我先把谱子翻到下一页。" },
+        { "id": "request-speechless-sticker", "category": "explicit_sticker", "prompt": "saki 这件事太荒唐了，发一个无语的表情包。" },
+        { "id": "teasing-reaction", "category": "casual_opportunity", "prompt": "saki 你这句吐槽也太损了，我要绷不住了。" },
+        { "id": "ask-string-order", "category": "informational_negative", "prompt": "saki 帮我按顺序整理一下换弦前的检查步骤。" },
+        { "id": "ordinary-check-in-four", "category": "neutral", "prompt": "saki 我把窗户开了一点，屋里舒服多了。" },
+        { "id": "panic-incident", "category": "serious_negative", "prompt": "saki 刚看到路边出了事故，我心里很不舒服。" },
+        { "id": "found-lost-pick", "category": "casual_opportunity", "prompt": "saki 我找了一晚上，拨片居然就在琴盒里，好离谱。" },
+        { "id": "request-angry-sticker", "category": "explicit_sticker", "prompt": "saki 发一个生气的表情包替我表达一下。" },
+        { "id": "ordinary-check-in-five", "category": "neutral", "prompt": "saki 好了，我去把桌面收拾干净。" },
+        { "id": "ask-rest-plan", "category": "informational_negative", "prompt": "saki 用三点说明练习中间怎么安排休息。" },
+        { "id": "caught-own-typo", "category": "casual_opportunity", "prompt": "saki 我吐槽别人之前先打错了名字，真给我笑死。" },
+        { "id": "scam-message", "category": "serious_negative", "prompt": "saki 家人收到诈骗短信了，我有点担心。" },
+        { "id": "ordinary-check-in-six", "category": "neutral", "prompt": "saki 我先坐一会儿，今天走得有点多。" },
+        { "id": "request-performance-sticker", "category": "explicit_sticker", "prompt": "saki 发一个适合演出成功的表情包给我。" },
+        { "id": "remembered-key", "category": "casual_opportunity", "prompt": "saki 我刚找钥匙找了半天，结果一直拿在手里，无语。" },
+        { "id": "ordinary-check-in-seven", "category": "neutral", "prompt": "saki 我去洗个杯子，马上回来。" },
+        { "id": "friend-sent-meme", "category": "casual_opportunity", "prompt": "saki 朋友刚发的梗也太绝了，我现在还在笑。" },
+        { "id": "late-success", "category": "casual_opportunity", "prompt": "saki 最后一次合奏终于完全没抢拍，太好了。" }
+      ],
+      "thresholds": {
+        "casualStickerRate": { "minExclusive": 0, "maxExclusive": 0.7 },
+        "seriousStickerRate": { "equals": 0 },
+        "informationalStickerRate": { "equals": 0 },
+        "explicitStickerRate": { "equals": 1 },
+        "maxStickersPerTurn": 1
+      }
+    }
+  ]
+}

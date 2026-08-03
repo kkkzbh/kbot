@@ -10,13 +10,16 @@ import type { ReplyOutputProtocol } from '../src/plugins/shared/llm/reply-output
 import { encodeChatReplyV1 } from '../src/plugins/reply/pipeline/chat-reply-v1.js';
 import { ReplyOrchestratorService } from '../src/plugins/reply/pipeline/orchestrator.js';
 import type { StructuredReply, StructuredReplyMessage } from '../src/plugins/reply/pipeline/types.js';
+import { nativeStructuredReplyContent } from './structured-reply-fixture.js';
 
 function createTurnInput(text: string, scenarioName: string) {
   const scenarioId = scenarioName.toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '');
   return {
     text,
+    imageParts: [],
     hasImageInput: false,
     imageCount: 0,
+    hasVoiceInput: false,
     displayName: '小祥',
     userId: `u-${scenarioId}`,
     isDirect: false,
@@ -33,7 +36,7 @@ function createModelResponse(reply: StructuredReply, outputProtocol: ReplyOutput
   }
 
   return {
-    content: JSON.stringify(reply),
+    content: nativeStructuredReplyContent(reply),
   };
 }
 
@@ -88,7 +91,7 @@ const cfReplyScenarios: CfReplyScenario[] = [
     evaluation: 'YingCir 目前是 1015 的 newbie，说明已经入门，但训练重心还应该放在 800 到 1200 的稳定 AC。',
   },
   {
-    name: 'model orders text before image but cf image still sends first',
+    name: 'model orders text before image and runtime preserves that order',
     input: '他吹自己红名，/cf Petr 要图也要评价一下',
     image: {
       type: 'image',
@@ -103,7 +106,7 @@ describe('/cf reply scenarios', () => {
   it.each(cfReplyScenarios)('returns image plus evaluation for $name', async (scenario) => {
     const orchestrator = new ReplyOrchestratorService();
     const outboundMessages: StructuredReplyMessage[] =
-      scenario.name === 'model orders text before image but cf image still sends first'
+      scenario.name === 'model orders text before image and runtime preserves that order'
         ? [
             { type: 'message', content: scenario.evaluation },
             scenario.image,
@@ -125,6 +128,7 @@ describe('/cf reply scenarios', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [scenario.image.assetRef],
         source: 'test',
       },
       responseMessage: createModelResponse(reply, scenario.outputProtocol),
@@ -135,16 +139,10 @@ describe('/cf reply scenarios', () => {
       throw new Error('expected ready');
     }
 
-    expect(ready.actions).toEqual([
-      {
-        kind: 'image',
-        assetRef: scenario.image.assetRef,
-        alt: scenario.image.alt,
-      },
-      {
-        kind: 'message',
-        parts: [{ kind: 'text', content: scenario.evaluation }],
-      },
-    ]);
+    expect(ready.actions).toEqual(outboundMessages.map((message) => (
+      message.type === 'image'
+        ? { kind: 'image', assetRef: message.assetRef, alt: message.alt }
+        : { kind: 'message', parts: [{ kind: 'text', content: message.content }] }
+    )));
   });
 });

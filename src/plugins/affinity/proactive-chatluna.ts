@@ -113,10 +113,11 @@ function buildCapabilitySnapshot(args: {
   return {
     canMultiline: true,
     canMention: true,
-    canVoice: isVoiceOutputConfigured(args.runtime),
+    canVoice: false,
     voiceOutputLanguage: args.runtime.voiceOutputLanguage,
-    canSticker: stickerAvailableCount > 0,
+    canSticker: false,
     stickerAvailableCount,
+    imageAssetRefs: [],
     source: 'affinity_proactive',
   };
 }

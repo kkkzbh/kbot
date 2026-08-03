@@ -5,175 +5,208 @@ import {
 } from '../voice/language.js';
 
 export interface StructuredReplySchemaOptions {
-  canMention?: boolean;
   canVoice?: boolean;
   canMeme?: boolean;
+  stickerIntentHints?: readonly string[];
   voiceOutputLanguage?: VoiceOutputLanguage;
 }
 
-const MESSAGE_MESSAGE_SCHEMA = {
-  type: 'object',
-  title: 'MessageItem',
-  description: 'Ordinary chat message.',
-  additionalProperties: false,
-  required: ['type', 'content'],
-  properties: {
+type JsonSchema = Record<string, unknown>;
+
+function strictObject(properties: Record<string, JsonSchema>): JsonSchema {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: Object.keys(properties),
+    properties,
+  };
+}
+
+function decisionSchema(value: 'reply' | 'no_reply'): JsonSchema {
+  return {
+    type: 'string',
+    enum: [value],
+  };
+}
+
+function messageItemSchema(
+  type: 'message' | 'structured_block',
+  description: string,
+): JsonSchema {
+  return {
+    ...strictObject({
     type: {
-      title: 'Type',
       type: 'string',
-      enum: ['message'],
-      description: 'Ordinary chat message.',
+      enum: [type],
     },
     content: {
-      title: 'Content',
       type: 'string',
-      description: 'Ordinary conversational plain text for this chat message. To mention a group member, write @name followed by a space directly in this text.',
+      minLength: 1,
+      description,
     },
-  },
-} as const;
+    }),
+    title: type === 'message' ? 'MessageItem' : 'StructuredBlockItem',
+  };
+}
 
-const STRUCTURED_BLOCK_SCHEMA = {
-  type: 'object',
-  title: 'StructuredBlockItem',
-  description: 'Structured text that should stay intact in one message.',
-  additionalProperties: false,
-  required: ['type', 'content'],
-  properties: {
+const MESSAGE_SCHEMA = messageItemSchema(
+  'message',
+  'A concise natural chat message, usually one or two sentences and one idea. To mention a group member, write @name followed by a space.',
+);
+
+const STRUCTURED_BLOCK_SCHEMA = messageItemSchema(
+  'structured_block',
+  'Structured text that must stay intact, such as code, a list, or a quotation.',
+);
+
+const IMAGE_SCHEMA = {
+  ...strictObject({
     type: {
-      title: 'Type',
       type: 'string',
-      enum: ['structured_block'],
-      description: 'Structured text that should stay intact in one message.',
+      enum: ['image'],
     },
-    content: {
-      title: 'Content',
+    assetRef: {
       type: 'string',
-      description: 'Structured text to keep intact, such as code, lists, or quotes.',
+      minLength: 1,
+      description: 'An image asset reference returned by a tool during this reply run.',
     },
-  },
-} as const;
+    alt: {
+      type: 'string',
+      minLength: 1,
+      description: 'A short description of the image.',
+    },
+  }),
+  title: 'ImageItem',
+};
 
-function buildVoiceMessageSchema(options: StructuredReplySchemaOptions) {
+function buildVoiceSchema(options: StructuredReplySchemaOptions): JsonSchema {
   const language = normalizeVoiceOutputLanguage(options.voiceOutputLanguage);
   const languageDescription = language === 'auto'
     ? 'Use the most natural spoken language for this turn.'
     : `Write this content directly in ${VOICE_OUTPUT_LANGUAGE_LABELS[language]}.`;
-
   return {
-    type: 'object',
-    title: 'VoiceItem',
-    description: 'Voice message to send.',
-    additionalProperties: false,
-    required: ['type', 'content'],
-    properties: {
+    ...strictObject({
       type: {
-        title: 'Type',
         type: 'string',
         enum: ['voice'],
-        description: 'Voice message to send.',
       },
       content: {
-        title: 'Content',
         type: 'string',
-        description: `Final text to speak in the voice message. ${languageDescription} TTS reads this text and does not translate it.`,
+        minLength: 1,
+        maxLength: 180,
+        description: `One short spoken utterance. ${languageDescription} Do not put links, code, lists, or essential facts here.`,
       },
-    },
-  } as const;
+    }),
+    title: 'VoiceItem',
+  };
 }
 
-const IMAGE_MESSAGE_SCHEMA = {
-  type: 'object',
-  title: 'ImageItem',
-  description: 'Image message to send.',
-  additionalProperties: false,
-  required: ['type', 'assetRef', 'alt'],
-  properties: {
-    type: {
-      title: 'Type',
-      type: 'string',
-      enum: ['image'],
-      description: 'Image message to send.',
-    },
-    assetRef: {
-      title: 'AssetRef',
-      type: 'string',
-      description: 'Resolvable image asset reference returned by a tool.',
-    },
-    alt: {
-      title: 'Alt',
-      type: 'string',
-      description: 'Short alt text for this image message.',
-    },
-  },
-} as const;
+function buildMemeSchema(options: StructuredReplySchemaOptions): JsonSchema {
+  const hints = options.stickerIntentHints?.map((value) => value.trim()).filter(Boolean) ?? [];
+  return {
+    ...strictObject({
+      type: {
+        type: 'string',
+        enum: ['meme'],
+      },
+      content: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 80,
+        description: hints.length > 0
+          ? `A specific, nonessential sticker intent matching one of these available moods: ${hints.join(', ')}.`
+          : 'A specific, nonessential sticker intent for a light social moment.',
+      },
+    }),
+    title: 'MemeItem',
+  };
+}
 
-const MEME_MESSAGE_SCHEMA = {
-  type: 'object',
-  title: 'MemeItem',
-  description: 'Meme intent to send.',
-  additionalProperties: false,
-  required: ['type', 'content'],
-  properties: {
-    type: {
-      title: 'Type',
-      type: 'string',
-      enum: ['meme'],
-      description: 'Meme intent to send.',
+function contentMessagesSchema(minItems: number, maxItems: number): JsonSchema {
+  return {
+    type: 'array',
+    minItems,
+    maxItems,
+    description: 'Ordered text messages, structured blocks, and tool-produced images.',
+    items: {
+      anyOf: [MESSAGE_SCHEMA, STRUCTURED_BLOCK_SCHEMA, IMAGE_SCHEMA],
     },
-    content: {
-      title: 'Content',
-      type: 'string',
-      description: 'Natural-language meme intent for this turn.',
-    },
-  },
-} as const;
+  };
+}
 
-export function buildStructuredReplyJsonSchema(options: StructuredReplySchemaOptions = {}): Record<string, unknown> {
-  const outboundSchemas: Record<string, unknown>[] = [
-    MESSAGE_MESSAGE_SCHEMA,
-    STRUCTURED_BLOCK_SCHEMA,
+export function buildStructuredReplyJsonSchema(
+  options: StructuredReplySchemaOptions = {},
+): Record<string, unknown> {
+  const canVoice = options.canVoice !== false;
+  const canMeme = options.canMeme !== false;
+  const voiceSchema = buildVoiceSchema(options);
+  const memeSchema = buildMemeSchema(options);
+
+  const noReplyProperties: Record<string, JsonSchema> = {
+    decision: decisionSchema('no_reply'),
+    messages: { type: 'null' },
+  };
+  if (canVoice) noReplyProperties.voice_message = { type: 'null' };
+  if (canMeme) noReplyProperties.meme_message = { type: 'null' };
+
+  const replyVariant = (args: {
+    minMessages: number;
+    maxMessages: number;
+    voice: JsonSchema;
+    meme: JsonSchema;
+  }): JsonSchema => {
+    const properties: Record<string, JsonSchema> = {
+      decision: decisionSchema('reply'),
+      messages: contentMessagesSchema(args.minMessages, args.maxMessages),
+    };
+    if (canVoice) properties.voice_message = args.voice;
+    if (canMeme) properties.meme_message = args.meme;
+    return strictObject(properties);
+  };
+
+  const variants: JsonSchema[] = [
+    strictObject(noReplyProperties),
+    replyVariant({
+      minMessages: 1,
+      maxMessages: 4,
+      voice: { type: 'null' },
+      meme: { type: 'null' },
+    }),
   ];
-
-  if (options.canVoice !== false) {
-    outboundSchemas.push(buildVoiceMessageSchema(options));
+  if (canVoice) {
+    variants.push(replyVariant({
+      minMessages: 0,
+      maxMessages: 3,
+      voice: voiceSchema,
+      meme: { type: 'null' },
+    }));
   }
-
-  outboundSchemas.push(IMAGE_MESSAGE_SCHEMA);
-
-  if (options.canMeme !== false) {
-    outboundSchemas.push(MEME_MESSAGE_SCHEMA);
+  if (canMeme) {
+    variants.push(replyVariant({
+      minMessages: 0,
+      maxMessages: 3,
+      voice: { type: 'null' },
+      meme: memeSchema,
+    }));
+  }
+  if (canVoice && canMeme) {
+    variants.push(replyVariant({
+      minMessages: 0,
+      maxMessages: 2,
+      voice: voiceSchema,
+      meme: memeSchema,
+    }));
   }
 
   return {
-    type: 'object',
-    title: 'StructuredReply',
-    description: 'Reply decision and final outbound messages for one qqbot turn.',
-    additionalProperties: false,
-    required: ['decision', 'outbound_messages'],
-    properties: {
-      decision: {
-        title: 'Decision',
-        type: 'string',
-        enum: ['reply', 'no_reply'],
-        description: 'Whether to reply in this turn.',
+    ...strictObject({
+      result: {
+        anyOf: variants,
       },
-      outbound_messages: {
-        title: 'OutboundMessages',
-        description: 'Final outbound messages to send, in order. Use null when there is no reply.',
-        anyOf: [
-          {
-            type: 'array',
-            items: {
-              anyOf: outboundSchemas,
-            },
-          },
-          {
-            type: 'null',
-          },
-        ],
-      },
-    },
-  } as const satisfies Record<string, unknown>;
+    }),
+    title: 'StructuredReplyEnvelope',
+    description: 'A constrained reply decision and its outbound content for one QQBot turn.',
+  };
 }
 
 export const STRUCTURED_REPLY_JSON_SCHEMA = buildStructuredReplyJsonSchema();

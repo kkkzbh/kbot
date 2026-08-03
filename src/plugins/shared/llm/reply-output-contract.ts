@@ -2,7 +2,6 @@ import { buildStructuredReplyJsonSchema } from './structured-reply-schema.js';
 import {
   buildVoiceOutputLanguageContractLines,
   normalizeVoiceOutputLanguage,
-  VOICE_OUTPUT_LANGUAGE_EXAMPLES,
   type VoiceOutputLanguage,
 } from '../voice/language.js';
 
@@ -34,57 +33,65 @@ export function buildReplyOutputContractAdditionalKwargs(
 
 export interface ReplyOutputLanguageOptions {
   voiceOutputLanguage?: VoiceOutputLanguage;
+  canVoice?: boolean;
+  canMeme?: boolean;
+  stickerIntentHints?: readonly string[];
 }
 
 export function buildReplySemanticContractLines(options: ReplyOutputLanguageOptions = {}): string[] {
   const voiceOutputLanguage = normalizeVoiceOutputLanguage(options.voiceOutputLanguage);
-  return [
+  const lines = [
     '结构化回复语义规则：',
+    '- 文本是默认表达方式。日常聊天通常用一到三条短消息，每条只讲一件事；确实需要解释或保留结构时再展开。',
+    '- 不要为了显得热情而重复结论、追加总结，或习惯性地用问题收尾。',
     '- 普通聊天文本用 `message`。',
     '- 需要 @ 群成员时，直接在 `message.content` 里写 `@群名片 `、`@昵称 ` 或 `@QQ号 `，注意 @ 目标后必须有空格。',
     '- 只有需要呼叫当前未参与该群聊天的人时才 @；即使是在回应当前说话人，也不要默认 @。',
     '- 代码、列表、引用等需要保留结构的内容用 `structured_block`。',
-    '- 发送图片用 `image`，并填写工具返回的 `assetRef` 与 `alt`。',
+    '- 只有工具为本轮答案返回了图片 `assetRef` 时才使用 `image`，并填写该 `assetRef` 与简短 `alt`。',
     '- 如果工具结果里带有 `image.assetRef`，且该图片就是当前答案的一部分，最终回复必须包含对应 `image` 消息，不能只复述文字摘要。',
-    '- 当用户要求查询 Codeforces/CF 信息时，必须先调用 Codeforces 查询工具；工具会返回本地生成的卡片/曲线图 `image.assetRef`，最终回复先发该图，再用简短中文评价具体信息。',
-    '- 需要表达情绪时可使用 `meme`，并用自然意图描述。',
-    '- 只有在情绪明显非常强烈，且属于“非常生气”或“非常高兴”时，才使用 `voice`。',
-    ...buildVoiceOutputLanguageContractLines(voiceOutputLanguage),
     '- 不要输出 `[CQ:at]`、`<at ...>` 或任何平台控制标签。',
-    '- `decision=no_reply` 表示本轮不发送消息；`decision=reply` 必须至少给出一条 outbound message。',
+    '- `result.decision=no_reply` 表示本轮不发送消息；`result.decision=reply` 必须至少给出一项实际内容。',
   ];
+
+  if (options.canMeme === true) {
+    const stickerHintLine = options.stickerIntentHints?.length
+      ? `- 可匹配的表情意图包括：${options.stickerIntentHints.join('、')}。从中选择最贴近当前语境的一种。`
+      : null;
+    lines.splice(-2, 0,
+      '- 当前回合允许使用一个 `meme` 作为非必要的情绪反应；只在接梗、调侃或轻松回应中使用，`content` 写具体自然的表情意图。',
+      '- `meme` 不承载事实或行动信息。严肃话题、道歉、故障说明和重要建议只用文字。',
+      ...(stickerHintLine ? [stickerHintLine] : []),
+    );
+  }
+
+  if (options.canVoice === true) {
+    lines.splice(-2, 0,
+      '- 当前回合允许使用一条简短 `voice`。语音适合承接对方的语音、明确的语音请求，或私聊中的短暂安慰与祝福。',
+      '- 链接、代码、列表、事实说明和需要回看的内容保留为文字。',
+      ...buildVoiceOutputLanguageContractLines(voiceOutputLanguage),
+    );
+  }
+
+  return lines;
 }
 
-export function buildNativeJsonOutputContractLines(options: ReplyOutputLanguageOptions = {}): string[] {
-  const voiceOutputLanguage = normalizeVoiceOutputLanguage(options.voiceOutputLanguage);
-  const example = {
-    decision: 'reply',
-    outbound_messages: [
-      { type: 'message', content: '收到。' },
-      { type: 'message', content: '@123456 来群里看一下。' },
-      { type: 'structured_block', content: '1. 第一项\n2. 第二项' },
-      { type: 'image', assetRef: 'https://example.com/image.png', alt: '图像说明' },
-      { type: 'meme', content: '无语地看对方一眼' },
-      { type: 'voice', content: VOICE_OUTPUT_LANGUAGE_EXAMPLES[voiceOutputLanguage] },
-    ],
-  };
-
+export function buildNativeJsonOutputContractLines(_options: ReplyOutputLanguageOptions = {}): string[] {
   return [
     '输出格式规则：',
-    '- 最终回复必须是一个 JSON object，不要包裹 markdown fence，不要输出解释文字。',
-    '- JSON object 必须符合 StructuredReply：',
-    JSON.stringify(example, null, 2),
+    '- 最终只返回符合请求所附 StructuredReplyEnvelope JSON Schema 的 object。',
+    '- `result.messages` 保留文字、结构块和图片的发送顺序；语音与表情包使用各自的单项字段。',
+    '- 不要包裹 markdown fence，也不要在 object 前后输出解释文字。',
   ];
 }
 
 export function buildChatReplyV1OutputContractLines(options: ReplyOutputLanguageOptions = {}): string[] {
-  const voiceOutputLanguage = normalizeVoiceOutputLanguage(options.voiceOutputLanguage);
-  return [
+  const lines = [
     '输出格式规则：',
     '- 最终回复必须严格使用 CHAT_REPLY_V1 文本协议，不要包裹 markdown fence，不要输出解释文字。',
     '- 第一条非空行必须是 `CHAT_REPLY_V1 <nonce>`；最后用 `DONE <nonce>`，首尾 nonce 必须一致。',
     '- `DECISION no_reply` 后只能输出 `DONE <nonce>`。',
-    '- `DECISION reply` 必须至少输出一个 `BEGIN ... END` block。',
+    '- `DECISION reply` 必须输出一到四个 `BEGIN ... END` block。',
     '- payload 内容行必须以 `|` 开头；空行也写成单独的 `|`，不要输出裸空行。裸 `END` 才结束 block。内容里需要写 END/DONE/BEGIN 时也必须写成 `|END`、`|DONE ...`、`|BEGIN ...`。',
     'no_reply 示例：',
     ['CHAT_REPLY_V1 abc12345', 'DECISION no_reply', 'DONE abc12345'].join('\n'),
@@ -93,12 +100,16 @@ export function buildChatReplyV1OutputContractLines(options: ReplyOutputLanguage
     'structured_block 示例：',
     ['BEGIN structured_block', 'CONTENT', '|1. 第一项', '|2. 第二项', 'END'].join('\n'),
     'image 示例：',
-    ['BEGIN image', 'ASSET_REF asset:tool:image:01ABC', 'ALT', '|图像说明', 'END'].join('\n'),
-    'meme 示例：',
-    ['BEGIN meme', 'CONTENT', '|无语地看对方一眼', 'END'].join('\n'),
-    'voice 示例：',
-    ['BEGIN voice', 'CONTENT', `|${VOICE_OUTPUT_LANGUAGE_EXAMPLES[voiceOutputLanguage]}`, 'END'].join('\n'),
+    ['BEGIN image', 'ASSET_REF <工具返回的 assetRef>', 'ALT', '|简短图像说明', 'END'].join('\n'),
   ];
+
+  if (options.canMeme === true) {
+    lines.push('meme block：', ['BEGIN meme', 'CONTENT', '|<具体自然的表情意图>', 'END'].join('\n'));
+  }
+  if (options.canVoice === true) {
+    lines.push('voice block：', ['BEGIN voice', 'CONTENT', '|<要朗读的简短话语>', 'END'].join('\n'));
+  }
+  return lines;
 }
 
 export function buildReplyOutputInstruction(
@@ -120,17 +131,17 @@ export function createReplyOutputContract(args: {
   protocol: ReplyOutputProtocol;
   overrideRequestParams: Record<string, unknown> | null;
   name?: string;
-  canMention?: boolean;
   canVoice?: boolean;
   canMeme?: boolean;
+  stickerIntentHints?: readonly string[];
   voiceOutputLanguage?: VoiceOutputLanguage;
 }): ReplyOutputContract {
   const schema = args.protocol === 'chat_reply_v1'
     ? null
     : buildStructuredReplyJsonSchema({
-      canMention: args.canMention,
       canVoice: args.canVoice,
       canMeme: args.canMeme,
+      stickerIntentHints: args.stickerIntentHints,
       voiceOutputLanguage: args.voiceOutputLanguage,
     });
 
@@ -141,6 +152,9 @@ export function createReplyOutputContract(args: {
     schema,
     instruction: buildReplyOutputInstruction(args.protocol, {
       voiceOutputLanguage: args.voiceOutputLanguage,
+      canVoice: args.canVoice,
+      canMeme: args.canMeme,
+      stickerIntentHints: args.stickerIntentHints,
     }),
     overrideRequestParams: args.overrideRequestParams,
   };

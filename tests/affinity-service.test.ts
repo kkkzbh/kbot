@@ -11,6 +11,7 @@ import { decodeStoredMessageJson, decodeStoredMessageText } from '../src/plugins
 import { createVoiceRuntimeConfig } from '../src/plugins/reply/index.js';
 import type { AffinityEventRecord, AffinityRandomPlanRecord, AffinityScopeConfigRecord } from '../src/types/affinity.js';
 import { createTestModelRuntime } from './model-runtime-fixture.js';
+import { nativeStructuredReplyContent } from './structured-reply-fixture.js';
 
 vi.mock('koishi', () => {
   class MockLogger {
@@ -328,7 +329,7 @@ function createHarness(options: {
     sendMessage: vi.fn(async () => undefined),
   };
   const chat = options.chat ?? vi.fn(async () => options.chatResponse ?? ({
-    content: JSON.stringify({
+    content: nativeStructuredReplyContent({
       decision: 'reply',
       outbound_messages: [{ type: 'message', content: RANDOM_MESSAGE }],
     }),
@@ -821,7 +822,7 @@ describe('affinity service random history sync', () => {
       sendMessage: vi.fn(async () => undefined),
     };
     const chat = vi.fn(async () => ({
-      content: JSON.stringify({
+      content: nativeStructuredReplyContent({
         decision: 'reply',
         outbound_messages: [{ type: 'message', content: RANDOM_MESSAGE }],
       }),
@@ -1057,7 +1058,7 @@ describe('affinity service random history sync', () => {
       expect(tempConversation).not.toHaveProperty('legacyRoomId');
       expect(tempConversation).not.toHaveProperty('legacyMeta');
       return {
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'reply',
           outbound_messages: [{ type: 'message', content: RANDOM_MESSAGE }],
         }),
@@ -1186,7 +1187,7 @@ describe('affinity service random history sync', () => {
   it('skips the proactive plan instead of falling back to a fixed sentence when generation declines', async () => {
     const { db, service, bot, chat } = createHarness({
       chatResponse: {
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'no_reply',
           outbound_messages: null,
         }),
@@ -1290,7 +1291,7 @@ describe('affinity service random history sync', () => {
     const { db, service, bot, chat, contextManager } = createHarness({
       plan: { direction: 'local_thread' },
       chatResponse: {
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'reply',
           outbound_messages: [
             {
@@ -1390,7 +1391,7 @@ describe('affinity service random history sync', () => {
     const { service, contextManager } = createHarness({
       plan: { direction: 'local_thread' },
       chatResponse: {
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'no_reply',
           outbound_messages: null,
         }),
@@ -1444,7 +1445,7 @@ describe('affinity service random history sync', () => {
     const { db, service, bot, chat } = createHarness({
       plan: { direction: 'local_thread' },
       chatResponse: {
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'no_reply',
           outbound_messages: null,
         }),

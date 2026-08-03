@@ -15,7 +15,48 @@ import {
 } from '../src/plugins/reply/pipeline/compiler.js';
 import { ReplyOrchestratorService } from '../src/plugins/reply/pipeline/orchestrator.js';
 
-function createStructuredResponse(content: unknown) {
+function createStructuredResponse(
+  content: unknown,
+  capabilities: { canVoice?: boolean; canMeme?: boolean } = {},
+) {
+  if (content && typeof content === 'object' && !Array.isArray(content) && 'decision' in content) {
+    const reply = content as {
+      decision: unknown;
+      outbound_messages?: unknown;
+    };
+    const result: Record<string, unknown> = {
+      decision: reply.decision,
+    };
+    if ('outbound_messages' in reply) {
+      const outboundMessages = reply.outbound_messages;
+      if (Array.isArray(outboundMessages)) {
+        result.messages = outboundMessages.filter((message) => (
+          !message
+          || typeof message !== 'object'
+          || Array.isArray(message)
+          || !('type' in message)
+          || (message.type !== 'voice' && message.type !== 'meme')
+        ));
+        const voiceMessage = outboundMessages.find((message) => (
+          message && typeof message === 'object' && !Array.isArray(message) && message.type === 'voice'
+        ));
+        const memeMessage = outboundMessages.find((message) => (
+          message && typeof message === 'object' && !Array.isArray(message) && message.type === 'meme'
+        ));
+        const canVoice = capabilities.canVoice ?? Boolean(voiceMessage);
+        const canMeme = capabilities.canMeme ?? Boolean(memeMessage);
+        if (canVoice) result.voice_message = voiceMessage ?? null;
+        if (canMeme) result.meme_message = memeMessage ?? null;
+      } else {
+        result.messages = outboundMessages;
+      }
+    }
+
+    return {
+      content: JSON.stringify({ result }),
+    };
+  }
+
   return {
     content: JSON.stringify(content),
   };
@@ -24,8 +65,10 @@ function createStructuredResponse(content: unknown) {
 function createTurnInput(text: string) {
   return {
     text,
+    imageParts: [],
     hasImageInput: false,
     imageCount: 0,
+    hasVoiceInput: false,
     displayName: '小祥',
     userId: 'u1',
     isDirect: true,
@@ -131,6 +174,35 @@ describe('reply pipeline v3', () => {
     });
   });
 
+  it('uses aggregated transient input metadata after an interrupted voice turn', () => {
+    const turnInput = buildReplyTurnInput(
+      {
+        content: '语音转写内容\n还有一句',
+        stripped: { content: '还有一句' },
+        userId: 'u1',
+        isDirect: true,
+      } as never,
+      { conversationId: 'conv-1' },
+      {
+        content: '语音转写内容\n还有一句',
+        additional_kwargs: {
+          qqbot_input_content_meta: {
+            hasImageInput: false,
+            imageCount: 0,
+            hasVoiceInput: true,
+          },
+        },
+      },
+    );
+
+    expect(turnInput).toMatchObject({
+      text: '语音转写内容\n还有一句',
+      hasVoiceInput: true,
+      hasImageInput: false,
+      imageCount: 0,
+    });
+  });
+
   it('normalizes incoming mention tags into readable text on the text route', () => {
     const turnInput = buildReplyTurnInput(
       {
@@ -165,6 +237,64 @@ describe('reply pipeline v3', () => {
     expect(result.route).toBe('agent');
   });
 
+  it('unwraps a native no_reply envelope into the internal StructuredReply', () => {
+    const compiler = new StructuredReplyCompilerService(JSON.stringify({
+      result: {
+        decision: 'no_reply',
+        messages: null,
+        voice_message: null,
+        meme_message: null,
+      },
+    }));
+
+    expect(compiler.compile()).toEqual({
+      decision: 'no_reply',
+      outbound_messages: null,
+    });
+  });
+
+  it('unwraps ordered native text content into internal outbound messages', () => {
+    const compiler = new StructuredReplyCompilerService(JSON.stringify({
+      result: {
+        decision: 'reply',
+        messages: [
+          { type: 'message', content: '先说结论。' },
+          { type: 'structured_block', content: '1. 第一项\n2. 第二项' },
+        ],
+        voice_message: null,
+        meme_message: null,
+      },
+    }));
+
+    expect(compiler.compile()).toEqual({
+      decision: 'reply',
+      outbound_messages: [
+        { type: 'message', content: '先说结论。' },
+        { type: 'structured_block', content: '1. 第一项\n2. 第二项' },
+      ],
+    });
+  });
+
+  it('unwraps native voice and meme singleton fields after ordered content', () => {
+    const compiler = new StructuredReplyCompilerService(JSON.stringify({
+      result: {
+        decision: 'reply',
+        messages: [{ type: 'message', content: '文字在前。' }],
+        voice_message: { type: 'voice', content: '收到。' },
+        meme_message: { type: 'meme', content: '无语地看对方一眼' },
+      },
+    }));
+
+    expect(compiler.compile()).toEqual({
+      decision: 'reply',
+      outbound_messages: [
+        { type: 'message', content: '文字在前。' },
+        { type: 'voice', content: '收到。' },
+        { type: 'meme', content: '无语地看对方一眼' },
+      ],
+    });
+  });
+
   it('resolves structured reply voice and meme actions against capability snapshot', async () => {
     const orchestrator = new ReplyOrchestratorService();
     const turnInput = createTurnInput('用语音说收到，再配个无语表情包');
@@ -176,6 +306,7 @@ describe('reply pipeline v3', () => {
         canVoice: true,
         canSticker: true,
         stickerAvailableCount: 2,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -214,6 +345,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -267,6 +399,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -318,6 +451,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -353,6 +487,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -436,6 +571,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -470,6 +606,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: ['https://example.com/cf.png'],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -495,7 +632,28 @@ describe('reply pipeline v3', () => {
     ]);
   });
 
-  it('sends Codeforces card images before text evaluation even if the model orders them late', async () => {
+  it('rejects image references that were not produced in the current reply run', async () => {
+    const orchestrator = new ReplyOrchestratorService();
+    await expect(orchestrator.handle(createTurnInput('给我图'), {} as never, {
+      routeHint: 'agent',
+      capabilitySnapshot: {
+        canMultiline: true,
+        canVoice: false,
+        canSticker: false,
+        stickerAvailableCount: 0,
+        imageAssetRefs: ['asset:tool:authorized'],
+        source: 'test',
+      },
+      responseMessage: createStructuredResponse({
+        decision: 'reply',
+        outbound_messages: [
+          { type: 'image', assetRef: 'https://hallucinated.example/image.png', alt: '图片' },
+        ],
+      }),
+    })).rejects.toThrow('not produced by this reply run');
+  });
+
+  it('preserves the model-authored order for image and text output', async () => {
     const orchestrator = new ReplyOrchestratorService();
     const ready = await orchestrator.handle(createTurnInput('cf liuliu00'), {} as never, {
       routeHint: 'agent',
@@ -504,6 +662,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: ['https://example.com/cf.png'],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -527,8 +686,8 @@ describe('reply pipeline v3', () => {
       ],
     });
     expect(ready.actions).toEqual([
-      { kind: 'image', assetRef: 'https://example.com/cf.png', alt: 'liuliu00 的 Codeforces 分数卡' },
       { kind: 'message', parts: [{ kind: 'text', content: 'liuliu00 目前 rating 896，段位 newbie。' }] },
+      { kind: 'image', assetRef: 'https://example.com/cf.png', alt: 'liuliu00 的 Codeforces 分数卡' },
     ]);
   });
 
@@ -541,6 +700,7 @@ describe('reply pipeline v3', () => {
         canVoice: false,
         canSticker: false,
         stickerAvailableCount: 0,
+        imageAssetRefs: [],
         source: 'test',
       },
       responseMessage: createStructuredResponse({
@@ -566,7 +726,7 @@ describe('reply pipeline v3', () => {
     ]);
   });
 
-  it('rejects decision=reply when messages are missing', async () => {
+  it('rejects a native reply envelope when messages are missing', async () => {
     const orchestrator = new ReplyOrchestratorService();
 
     await expect(
@@ -576,10 +736,10 @@ describe('reply pipeline v3', () => {
           decision: 'reply',
         }),
       }),
-    ).rejects.toThrow('must include at least one outbound message');
+    ).rejects.toThrow('invalid provider envelope');
   });
 
-  it('treats reply outputs with only empty normalized messages as no_reply', async () => {
+  it('rejects reply outputs with only empty normalized messages', async () => {
     const orchestrator = new ReplyOrchestratorService();
 
     await expect(
@@ -590,14 +750,7 @@ describe('reply pipeline v3', () => {
           outbound_messages: [{ type: 'message', content: '' }],
         }),
       }),
-    ).resolves.toMatchObject({
-      status: 'ready',
-      reply: {
-        decision: 'reply',
-        outbound_messages: [{ type: 'message', content: '' }],
-      },
-      actions: [{ kind: 'no_reply' }],
-    });
+    ).rejects.toThrow('invalid provider envelope');
   });
 
   it('accepts strict JSON strings and rejects non-JSON text immediately', async () => {
@@ -609,7 +762,7 @@ describe('reply pipeline v3', () => {
         responseMessage: createStructuredResponse({
           decision: 'reply',
           outbound_messages: [{ type: 'message', content: '收到。' }],
-        }),
+        }, { canVoice: true, canMeme: true }),
       }),
     ).resolves.toMatchObject({
       status: 'ready',
@@ -812,7 +965,7 @@ describe('reply pipeline v3', () => {
       orchestrator.handle(createTurnInput('回一句'), {} as never, {
         routeHint: 'agent',
         responseMessage: {
-          content: ['```json', '{"decision":"reply","outbound_messages":[{"type":"message","content":"收到。"}]}', '```'].join(
+          content: ['```json', '{"result":{"decision":"reply","messages":[{"type":"message","content":"收到。"}],"voice_message":null,"meme_message":null}}', '```'].join(
             '\n',
           ),
         },
@@ -828,7 +981,9 @@ describe('reply pipeline v3', () => {
   it('classifies schema-invalid JSON separately from non-JSON text', () => {
     const compiler = new StructuredReplyCompilerService(
       JSON.stringify({
-        decision: 'reply',
+        result: {
+          decision: 'reply',
+        },
       }),
     );
 
@@ -867,7 +1022,7 @@ describe('reply pipeline v3', () => {
     }
   });
 
-  it('rejects unavailable voice and meme outputs instead of downgrading them', async () => {
+  it('rejects provider fields that are unavailable for the current turn', async () => {
     const orchestrator = new ReplyOrchestratorService();
 
     await expect(
@@ -878,6 +1033,7 @@ describe('reply pipeline v3', () => {
           canVoice: false,
           canSticker: false,
           stickerAvailableCount: 0,
+          imageAssetRefs: [],
           source: 'test',
         },
         responseMessage: createStructuredResponse({
@@ -888,7 +1044,7 @@ describe('reply pipeline v3', () => {
           ],
         }),
       }),
-    ).rejects.toThrow('voice output but voice capability is unavailable');
+    ).rejects.toThrow('invalid provider envelope');
   });
 
   it('rejects obsolete message mentions fields', async () => {
@@ -900,8 +1056,8 @@ describe('reply pipeline v3', () => {
         responseMessage: createStructuredResponse({
           decision: 'reply',
           outbound_messages: [{ type: 'message', content: 'hi', mentions: ['u1'] }],
-        }),
+        }, { canVoice: true, canMeme: true }),
       }),
-    ).rejects.toThrow('outbound_messages.0 Unrecognized key');
+    ).rejects.toThrow('result.messages.0 Unrecognized key');
   });
 });

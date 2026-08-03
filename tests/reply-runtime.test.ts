@@ -1,15 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReplyRuntime } from '../src/plugins/reply/runtime/index.js';
+import type { TurnInput } from '../src/plugins/reply/pipeline/types.js';
 
 function createArgs(overrides: Record<string, unknown> = {}) {
+  const inputOverrides = (overrides.input ?? {}) as Partial<TurnInput>;
+  const { imageParts = [], ...inputRest } = inputOverrides;
+  const { input: _input, ...runOverrides } = overrides;
+  const input: TurnInput = {
+    text: '第一条',
+    hasImageInput: false,
+    imageCount: 0,
+    hasVoiceInput: false,
+    displayName: '用户',
+    userId: 'u1',
+    isDirect: true,
+    ...inputRest,
+    imageParts,
+  };
   return {
     runId: 'run-1',
     queueKey: 'queue:group-1',
     actorKey: 'queue:group-1:user:u1',
     conversationId: 'conv-1',
     room: { conversationId: 'conv-1' },
-    input: { text: '第一条', hasImageInput: false, imageCount: 0, displayName: '用户', userId: 'u1', isDirect: true },
-    ...overrides,
+    input,
+    ...runOverrides,
   };
 }
 
@@ -24,7 +39,8 @@ describe('ReplyRuntime', () => {
 
   it('queues the next run until the previous run finishes in queue mode', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
     });
 
     const first = await runtime.prepareRun({
@@ -57,9 +73,10 @@ describe('ReplyRuntime', () => {
   });
 
   it('queues a different group speaker instead of interrupting the current run', async () => {
-    const stopChat = vi.fn(async () => undefined);
+    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopChat,
+      stopConversationRequest,
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -87,7 +104,7 @@ describe('ReplyRuntime', () => {
     await vi.advanceTimersByTimeAsync(60);
     await Promise.resolve();
 
-    expect(stopChat).not.toHaveBeenCalled();
+    expect(stopConversationRequest).not.toHaveBeenCalled();
     expect(secondResolved).toBe(false);
 
     runtime.finishRun('run-1');
@@ -100,7 +117,8 @@ describe('ReplyRuntime', () => {
 
   it('does not enable first-reply quote for single-speaker group runs', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
     });
 
     const first = await runtime.prepareRun({
@@ -127,7 +145,8 @@ describe('ReplyRuntime', () => {
 
   it('snapshots first-reply quote for queued multi-speaker group runs', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -178,7 +197,8 @@ describe('ReplyRuntime', () => {
 
   it('consumes first-reply quote on the first dispatched segment even when unsupported', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -224,7 +244,8 @@ describe('ReplyRuntime', () => {
 
   it('starts computing the next queued speaker while the previous speaker is sending', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -258,9 +279,10 @@ describe('ReplyRuntime', () => {
   });
 
   it('drops stale compute results and refreshes the cooldown window for repeated self-interruptions', async () => {
-    const stopChat = vi.fn(async () => undefined);
+    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopChat,
+      stopConversationRequest,
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -297,7 +319,7 @@ describe('ReplyRuntime', () => {
       mode: 'interrupt',
     });
 
-    expect(stopChat).toHaveBeenCalledTimes(1);
+    expect(stopConversationRequest).toHaveBeenCalledTimes(1);
     expect(runtime.completeCompute('run-2')).toBe(false);
 
     await vi.advanceTimersByTimeAsync(40);
@@ -329,9 +351,10 @@ describe('ReplyRuntime', () => {
   });
 
   it('requeues self-interruption to the group tail behind other queued speakers', async () => {
-    const stopChat = vi.fn(async () => undefined);
+    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopChat,
+      stopConversationRequest,
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -371,7 +394,7 @@ describe('ReplyRuntime', () => {
       run: expect.objectContaining({ id: 'run-2' }),
       inputText: 'B1',
     });
-    expect(stopChat).toHaveBeenCalledTimes(1);
+    expect(stopConversationRequest).toHaveBeenCalledTimes(1);
     expect(runtime.isCurrentRun('run-1')).toBe(false);
     expect(selfRerunResolved).toBe(false);
 
@@ -387,7 +410,8 @@ describe('ReplyRuntime', () => {
 
   it('merges same-actor queued messages and only lets the latest carrier continue', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -438,9 +462,10 @@ describe('ReplyRuntime', () => {
   });
 
   it('builds actor-only continuation context when a sent reply is interrupted and requeued', async () => {
-    const stopChat = vi.fn(async () => undefined);
+    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopChat,
+      stopConversationRequest,
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -483,7 +508,7 @@ describe('ReplyRuntime', () => {
     await vi.advanceTimersByTimeAsync(60);
 
     expect(sendSignal?.aborted).toBe(true);
-    expect(stopChat).not.toHaveBeenCalled();
+    expect(stopConversationRequest).not.toHaveBeenCalled();
     await expect(speakerBPromise).resolves.toMatchObject({
       action: 'continue',
       inputText: 'B1',
@@ -506,7 +531,8 @@ describe('ReplyRuntime', () => {
 
   it('allows forced cleanup to release a blocked queue and stays safe on repeated finishRun calls', async () => {
     const runtime = new ReplyRuntime({
-      stopChat: vi.fn(async () => undefined),
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
 
@@ -533,6 +559,231 @@ describe('ReplyRuntime', () => {
       action: 'continue',
       run: expect.objectContaining({ id: 'run-2' }),
       inputText: 'B1',
+    });
+  });
+
+  it('stops the active ChatLuna conversation and snapshots progress after outbound drain', async () => {
+    const stopConversationRequest = vi.fn(async () => undefined);
+    let releaseDrain: () => void = () => {};
+    const drainOutbound = vi.fn(() => new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    }));
+    const runtime = new ReplyRuntime({
+      stopConversationRequest,
+      drainOutbound,
+      collectWindowMs: 50,
+    });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const nextPromise = runtime.prepareRun({
+      ...createArgs({
+        runId: 'run-2',
+        input: {
+          text: '再补一句',
+          hasImageInput: false,
+          imageCount: 0,
+          hasVoiceInput: false,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    });
+
+    await Promise.resolve();
+    expect(stopConversationRequest).toHaveBeenCalledWith('conv-1');
+    expect(drainOutbound).toHaveBeenCalledWith('queue:group-1');
+    expect(runtime.recordProgressVisibleLine('run-1', '我搜一下。', 123)).toBe(true);
+    releaseDrain();
+    await vi.advanceTimersByTimeAsync(60);
+
+    await expect(nextPromise).resolves.toMatchObject({
+      action: 'continue',
+      continuationContext: {
+        progressVisibleLines: ['我搜一下。'],
+      },
+      run: {
+        transientProgress: {
+          visibleLines: ['我搜一下。'],
+          lastSentAt: 123,
+        },
+      },
+    });
+  });
+
+  it('does not start the collection window until interrupted outbound work has drained', async () => {
+    let releaseDrain: () => void = () => {};
+    const runtime = new ReplyRuntime({
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(() => new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      })),
+      collectWindowMs: 50,
+    });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const secondPromise = runtime.prepareRun({
+      ...createArgs({
+        runId: 'run-2',
+        input: {
+          text: '第二条',
+          hasImageInput: false,
+          imageCount: 0,
+          hasVoiceInput: false,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    });
+    await Promise.resolve();
+
+    let thirdResolved = false;
+    const thirdPromise = runtime.prepareRun({
+      ...createArgs({
+        runId: 'run-3',
+        input: {
+          text: '第三条',
+          hasImageInput: false,
+          imageCount: 0,
+          hasVoiceInput: false,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    }).then((result) => {
+      thirdResolved = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(thirdResolved).toBe(false);
+    expect(runtime.recordProgressVisibleLine('run-1', '我还在查。', 123)).toBe(true);
+
+    releaseDrain();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(49);
+    expect(thirdResolved).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(secondPromise).resolves.toEqual({ action: 'stop' });
+    await expect(thirdPromise).resolves.toMatchObject({
+      action: 'continue',
+      inputText: '第一条\n第二条\n第三条',
+      continuationContext: {
+        progressVisibleLines: ['我还在查。'],
+      },
+    });
+  });
+
+  it('preserves voice-input metadata when a text follow-up interrupts before model output', async () => {
+    const runtime = new ReplyRuntime({
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
+      collectWindowMs: 50,
+    });
+
+    await runtime.prepareRun({
+      ...createArgs({
+        input: {
+          text: '语音转写内容',
+          hasImageInput: false,
+          imageCount: 0,
+          hasVoiceInput: true,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    });
+    const nextPromise = runtime.prepareRun({
+      ...createArgs({
+        runId: 'run-2',
+        input: {
+          text: '还有一句',
+          hasImageInput: false,
+          imageCount: 0,
+          hasVoiceInput: false,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    });
+
+    await vi.advanceTimersByTimeAsync(60);
+    await expect(nextPromise).resolves.toMatchObject({
+      action: 'continue',
+      inputText: '语音转写内容\n还有一句',
+      run: {
+        input: {
+          text: '语音转写内容\n还有一句',
+          hasVoiceInput: true,
+        },
+      },
+    });
+  });
+
+  it('preserves image content owned by an interrupted input when the carrier is text-only', async () => {
+    const runtime = new ReplyRuntime({
+      stopConversationRequest: vi.fn(async () => undefined),
+      drainOutbound: vi.fn(async () => undefined),
+      collectWindowMs: 50,
+    });
+    const imagePart = {
+      type: 'image_url' as const,
+      image_url: { url: 'https://example.com/interrupted.png', detail: 'high' as const },
+    };
+
+    await runtime.prepareRun({
+      ...createArgs({
+        input: {
+          text: '先看这张图',
+          imageParts: [imagePart],
+          hasImageInput: true,
+          imageCount: 1,
+          hasVoiceInput: false,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    });
+    const nextPromise = runtime.prepareRun({
+      ...createArgs({
+        runId: 'run-2',
+        input: {
+          text: '里面是什么？',
+          imageParts: [],
+          hasImageInput: false,
+          imageCount: 0,
+          hasVoiceInput: false,
+          displayName: '用户',
+          userId: 'u1',
+          isDirect: true,
+        },
+      }),
+      mode: 'interrupt',
+    });
+
+    await vi.advanceTimersByTimeAsync(60);
+    await expect(nextPromise).resolves.toMatchObject({
+      action: 'continue',
+      run: {
+        input: {
+          text: '先看这张图\n里面是什么？',
+          imageParts: [imagePart],
+          hasImageInput: true,
+          imageCount: 1,
+        },
+      },
     });
   });
 });

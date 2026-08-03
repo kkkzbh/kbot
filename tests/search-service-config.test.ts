@@ -58,15 +58,23 @@ describe('chatluna search service wiring', () => {
     expect(content).not.toContain('WEB_SEARCH_LLM_RERANK_ENABLED');
   });
 
-  it('keeps the real bot prompts unchanged and validates answers locally', () => {
-    const content = readFileSync(resolve(process.cwd(), 'scripts/smoke-chat-replies.sh'), 'utf8');
-
-    expect(content).toContain('run_case "联网固定URL研究" "no-meta"');
-    expect(content).toContain('https://example.com/');
-    expect(content).toContain('QQBOT_RUN_SEARCH_DIAGNOSTIC');
-    expect(content).toContain('run_case_optional "联网搜索诊断" "no-meta" "液态玻璃是什么？" "macos26-ui"');
-    expect(content).toContain('expected semantic match for Example Domain');
-    expect(content).toContain('expected semantic match for MacOS26 UI');
+  it('uses the shared live-search probe and validates progress locally', () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'scripts/chat-reply-probe-cases.json'), 'utf8'),
+    ) as {
+      cases: Array<{
+        id: string;
+        prompt: string;
+        dimensions: string[];
+        expect: { requireProgress?: boolean };
+      }>;
+    };
+    const searchCase = manifest.cases.find((probeCase) => probeCase.id === 'search-with-progress');
+    expect(searchCase).toEqual(expect.objectContaining({
+      prompt: 'saki 帮我查一下今天新加坡的天气，再告诉我出门要不要带伞。',
+      dimensions: ['search', 'progress'],
+      expect: expect.objectContaining({ requireProgress: true }),
+    }));
   });
 
   it('keeps runtime search policy out of the sakiko persona preset', () => {

@@ -427,8 +427,10 @@ describe('prompt assembly', () => {
         {
           input: {
             text: '当前是 agent reply 主链路',
+            imageParts: [{ type: 'image_url', image_url: { url: 'https://example.com/input.png' } }],
             hasImageInput: true,
             imageCount: 1,
+            hasVoiceInput: false,
             displayName: '小祥',
             userId: 'u1',
             isDirect: true,
@@ -459,7 +461,10 @@ describe('prompt assembly', () => {
     expect(envelope?.fragments.map((fragment) => fragment.source)).toContain('qqbot_structured_reply_contract');
     expect(compiledContent).toContain('speaker_id=<id>');
     expect(compiledContent).toContain('直接在 `message.content` 里写 `@群名片 `');
-    expect(compiledContent).toContain('"type": "structured_block"');
+    expect(compiledContent).toContain('代码、列表、引用等需要保留结构的内容用 `structured_block`');
+    expect(compiledContent).toContain('StructuredReplyEnvelope JSON Schema');
+    expect(compiledContent).toContain('`result.messages` 保留文字、结构块和图片的发送顺序');
+    expect(compiledContent).not.toContain('outbound_messages');
     expect(compiledContent).not.toContain('qqbot_reply_chat_style');
     expect(compiledContent).not.toContain('"displayName": "小祥"');
     expect(compiledContent).not.toContain('"userId": "u1"');
@@ -473,8 +478,10 @@ describe('prompt assembly', () => {
         {
           input: {
             text: '当前走文本协议',
+            imageParts: [],
             hasImageInput: false,
             imageCount: 0,
+            hasVoiceInput: false,
             displayName: '小祥',
             userId: 'u1',
             isDirect: true,
@@ -489,8 +496,10 @@ describe('prompt assembly', () => {
 
     const compiledContent = envelope?.fragments.map((fragment) => fragment.content).join('\n\n') ?? '';
     expect(compiledContent).toContain('CHAT_REPLY_V1 <nonce>');
+    expect(compiledContent).toContain('一到四个 `BEGIN ... END` block');
     expect(compiledContent).toContain('payload 内容行必须以 `|` 开头');
-    expect(compiledContent).toContain('当用户要求查询 Codeforces/CF 信息时，必须先调用 Codeforces 查询工具；工具会返回本地生成的卡片/曲线图 `image.assetRef`，最终回复先发该图，再用简短中文评价具体信息。');
+    expect(compiledContent).toContain('只有工具为本轮答案返回了图片 `assetRef` 时才使用 `image`');
+    expect(compiledContent).not.toContain('Codeforces/CF');
     expect(compiledContent).not.toContain('"outbound_messages"');
   });
 
@@ -500,8 +509,10 @@ describe('prompt assembly', () => {
         {
           input: {
             text: '请发一句语音',
+            imageParts: [],
             hasImageInput: false,
             imageCount: 0,
+            hasVoiceInput: false,
             displayName: '小祥',
             userId: 'u1',
             isDirect: true,
@@ -512,6 +523,7 @@ describe('prompt assembly', () => {
             voiceOutputLanguage: 'ja',
             canSticker: false,
             stickerAvailableCount: 0,
+            imageAssetRefs: [],
             source: 'cached',
           },
           continuationContext: null,
@@ -524,7 +536,7 @@ describe('prompt assembly', () => {
     const compiledContent = envelope?.fragments.map((fragment) => fragment.content).join('\n\n') ?? '';
     expect(compiledContent).toContain('当前语音输出目标语言：日语');
     expect(compiledContent).toContain('`voice.content` 必须直接写成自然日语');
-    expect(compiledContent).toContain('|本当にうれしいです。');
+    expect(compiledContent).toContain('|<要朗读的简短话语>');
   });
 
   it('keeps reply interrupt continuation state in a single prompt fragment', () => {
@@ -533,8 +545,10 @@ describe('prompt assembly', () => {
         {
           input: {
             text: '继续刚才的话题',
+            imageParts: [],
             hasImageInput: false,
             imageCount: 0,
+            hasVoiceInput: false,
             displayName: '小祥',
             userId: 'u1',
             isDirect: false,
@@ -544,6 +558,7 @@ describe('prompt assembly', () => {
             alreadySentText: '前半句已经发出',
             pendingUnitTexts: ['后半句尚未发送'],
             supplementalMessages: ['补充消息'],
+            progressVisibleLines: [],
           },
         },
         [

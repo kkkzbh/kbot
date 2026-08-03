@@ -25,6 +25,12 @@ export { buildReplyTurnInput } from './pipeline/context-builder.js';
 export { ReplyOrchestratorService } from './pipeline/orchestrator.js';
 export type { TurnContext } from './pipeline/types.js';
 export {
+  DEFAULT_MODALITY_PREFERENCE,
+  deriveModalityPolicy,
+  type ModalityPolicySnapshot,
+  type ModalityPreferenceSnapshot,
+} from './modality/director.js';
+export {
   buildReplyPromptCompilerInput,
   buildReplyRuntimeContractFragments,
   buildReplyStructuredReplyContractFragments,

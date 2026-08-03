@@ -12,6 +12,7 @@ import {
   buildNativeJsonOutputContractLines,
   buildReplySemanticContractLines,
 } from '../src/plugins/shared/llm/reply-output-contract.js';
+import { buildStructuredReplyJsonSchema } from '../src/plugins/shared/llm/structured-reply-schema.js';
 import { syncRoomModelToMainBinding } from '../src/plugins/model-guard/hot-switch.js';
 import {
   deriveOneBotAvatarUrl,
@@ -48,13 +49,52 @@ describe('canonical main chat reply contract', () => {
     expect(buildReplySemanticContractLines().join('\n')).toContain(
       '如果工具结果里带有 `image.assetRef`，且该图片就是当前答案的一部分',
     );
-    expect(buildNativeJsonOutputContractLines().join('\n')).toContain(
-      '"type": "image"',
-    );
+    expect(buildNativeJsonOutputContractLines().join('\n')).toContain('请求所附 StructuredReplyEnvelope JSON Schema');
+    expect(JSON.stringify(buildStructuredReplyJsonSchema())).toContain('"enum":["image"]');
     expect(buildChatReplyV1OutputContractLines().join('\n')).toContain(
       'image 示例：',
     );
     expect(buildReplySemanticContractLines().join('\n')).not.toContain('cf_user_profile');
+  });
+
+  it('exposes only the current scoped sticker moods when stickers are admitted', () => {
+    const options = {
+      canMeme: true,
+      stickerIntentHints: ['无语', '气恼'],
+    } as const;
+    expect(buildReplySemanticContractLines(options).join('\n')).toContain('无语、气恼');
+    expect(JSON.stringify(buildStructuredReplyJsonSchema(options))).toContain('无语, 气恼');
+  });
+
+  it('models voice and meme as singleton fields outside ordered provider messages', () => {
+    const schema = buildStructuredReplyJsonSchema();
+    const rootProperties = schema.properties as Record<string, unknown>;
+    const resultSchema = rootProperties.result as Record<string, unknown>;
+    const variants = resultSchema.anyOf as Array<Record<string, unknown>>;
+
+    expect(variants).toHaveLength(5);
+    for (const variant of variants) {
+      const properties = variant.properties as Record<string, Record<string, unknown>>;
+      const messages = properties.messages;
+      if (messages.type === 'array') {
+        const items = messages.items as Record<string, unknown>;
+        const itemVariants = items.anyOf as Array<Record<string, unknown>>;
+        const itemTypes = itemVariants.map((itemVariant) => {
+          const itemProperties = itemVariant.properties as Record<string, Record<string, unknown>>;
+          return (itemProperties.type.enum as string[])[0];
+        });
+        expect(itemTypes).toEqual(['message', 'structured_block', 'image']);
+      }
+      expect(properties.voice_message?.type).not.toBe('array');
+      expect(properties.meme_message?.type).not.toBe('array');
+    }
+
+    expect(variants.some((variant) => (
+      (variant.properties as Record<string, Record<string, unknown>>).voice_message?.type === 'object'
+    ))).toBe(true);
+    expect(variants.some((variant) => (
+      (variant.properties as Record<string, Record<string, unknown>>).meme_message?.type === 'object'
+    ))).toBe(true);
   });
 
   it('derives native chat JSON schema and request overrides from model metadata', () => {
@@ -71,7 +111,6 @@ describe('canonical main chat reply contract', () => {
     const contract = buildModelReplyOutputContract({
       canonicalModel: mainTarget.canonicalModel,
       model: mainTarget.model,
-      canMention: true,
       canVoice: true,
       voiceOutputLanguage: 'ja',
     });
@@ -79,7 +118,7 @@ describe('canonical main chat reply contract', () => {
     expect(contract).toMatchObject({
       requestMode: 'chat_completions',
       protocol: 'native_chat_json_schema',
-      schema: expect.objectContaining({ title: 'StructuredReply' }),
+      schema: expect.objectContaining({ title: 'StructuredReplyEnvelope' }),
       instruction: null,
       overrideRequestParams: {
         qqbot_request_mode: 'chat_completions',
@@ -97,7 +136,7 @@ describe('canonical main chat reply contract', () => {
       'Write this content directly in 日语',
     );
     expect(JSON.stringify(contract.schema)).toContain(
-      'To mention a group member, write @name followed by a space directly in this text.',
+      'To mention a group member, write @name followed by a space.',
     );
     assertStrictRequiredForAllObjects(contract.schema);
   });
@@ -115,7 +154,7 @@ describe('canonical main chat reply contract', () => {
     })).toMatchObject({
       requestMode: 'responses',
       protocol: 'native_responses_json_schema',
-      schema: expect.objectContaining({ title: 'StructuredReply' }),
+      schema: expect.objectContaining({ title: 'StructuredReplyEnvelope' }),
       instruction: null,
       overrideRequestParams: expect.objectContaining({
         qqbot_request_mode: 'responses',

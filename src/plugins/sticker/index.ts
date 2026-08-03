@@ -1,7 +1,5 @@
 import { Context, Logger, Schema, type Session } from 'koishi';
 import {
-  buildStickerCapabilityDescriptor,
-  buildStickerCapabilityPolicy,
   loadStickerCatalog,
   type LoadedStickerCatalog,
   type StickerCapabilityState,
@@ -28,7 +26,6 @@ export {
   createStickerHistoryLine,
   resolveStickerSelection,
   type LoadedStickerEntry,
-  type StickerCapabilityDescriptor,
   type StickerCapabilityState,
   type StickerCatalogDocument,
   type StickerCatalogEntry,
@@ -125,14 +122,6 @@ export function resolveStickerCapabilityArtifacts(preset?: string | null): {
     preset: normalizedPreset,
     availableCount,
   };
-  const capability = catalog ? buildStickerCapabilityDescriptor({ catalog, preset: normalizedPreset }) : null;
-  if (!capability || !catalog) {
-    return { state };
-  }
-
-  const policy = buildStickerCapabilityPolicy({ catalog, preset: normalizedPreset });
-  void capability;
-  void policy;
   return { state };
 }
 

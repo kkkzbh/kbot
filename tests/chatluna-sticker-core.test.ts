@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildStickerCapabilityPolicy,
   resolveStickerMatches,
   resolveStickerSelection,
   type LoadedStickerCatalog,
@@ -63,23 +62,8 @@ function createCatalog(): LoadedStickerCatalog {
 }
 
 describe('chatluna sticker core', () => {
-  it('describes how to split multi-sticker intent into distinct sticker segments', () => {
-    const policy = buildStickerCapabilityPolicy({
-      catalog: createCatalog(),
-      preset: 'sakiko',
-    });
-
-    expect(policy).toContain('如果要发表情包，就在最终 structured reply 的 outbound_messages 里加入一个或多个 meme 消息');
-    expect(policy).toContain('格式：{"type":"meme","content":"自然语言意图"}');
-    expect(policy).toContain('meme.content 不是标签名、文件名或素材 id，而是一句自然语言意图');
-    expect(policy).toContain('meme 可以和 message / voice 混排；多个 meme 会按顺序一张张发送');
-    expect(policy).toContain('单张示例：{"decision":"reply","outbound_messages":[{"type":"meme","content":"无语地看对方一眼"}]}');
-    expect(policy).toContain(
-      '文本混排示例：{"decision":"reply","outbound_messages":[{"type":"message","content":"……随你"},{"type":"meme","content":"冷淡拒绝，被追问私事"}]}',
-    );
-    expect(policy).toContain(
-      '多张示例：{"decision":"reply","outbound_messages":[{"type":"meme","content":"无语地看对方一眼"},{"type":"meme","content":"生气地噘嘴表达不满"}]}',
-    );
+  it('abstains when the natural-language intent has no semantic match', () => {
+    expect(resolveStickerSelection(createCatalog(), '帮我算一下二次函数的导数', 'sakiko')).toBeNull();
   });
 
   it('maps narrow per-sticker intents to different sticker assets', () => {

@@ -78,6 +78,7 @@ vi.mock('koishi', () => {
 import { apply, inject as automationInject } from '../src/plugins/automation/index.js';
 import { apply as applySticker } from '../src/plugins/sticker/index.js';
 import { TOOL_CATALOG } from '../src/plugins/shared/tool-policy-catalog.js';
+import { nativeStructuredReplyContent } from './structured-reply-fixture.js';
 import {
   createTestModelRuntime,
   type TestModelRuntimeOptions,
@@ -203,7 +204,7 @@ function createHarness(
         }),
       },
       chat: vi.fn(async (_session: any, _room: any, _message: any, _events: any, _stream: boolean, _vars: any, _post: any, _req: string, _toolMask: any) => ({
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'reply',
           outbound_messages: [
             {
@@ -550,7 +551,7 @@ describe('task automation tools and execution', () => {
         qqbot_final_response_contract: expect.objectContaining({
           protocol: 'native_chat_json_schema',
           schema: expect.objectContaining({
-            title: 'StructuredReply',
+            title: 'StructuredReplyEnvelope',
           }),
           instruction: null,
         }),
@@ -796,7 +797,7 @@ describe('task automation tools and execution', () => {
       { user_id: 3623807220, card: '刘若希', nickname: '希娃儿' },
     ]);
     harness.ctx.chatluna.chat.mockResolvedValueOnce({
-      content: JSON.stringify({
+      content: nativeStructuredReplyContent({
         decision: 'reply',
         outbound_messages: [
           {
@@ -831,8 +832,9 @@ describe('task automation tools and execution', () => {
       automation_job: [createJob({ runAt: Date.now() - 1 })],
     });
     harness.ctx.chatluna.chat.mockResolvedValueOnce({
-      content: JSON.stringify({
+      content: nativeStructuredReplyContent({
         decision: 'no_reply',
+        outbound_messages: null,
       }),
       additional_kwargs: {},
     });
@@ -868,10 +870,13 @@ describe('task automation tools and execution', () => {
       }));
       const harness = createHarness({
         chathub_room: [createRoom({ roomName: '当前群房间' })],
-        automation_job: [createJob({ runAt: Date.now() - 1 })],
+        automation_job: [createJob({
+          runAt: Date.now() - 1,
+          goal: '请用语音发送一句提醒',
+        })],
       });
       harness.ctx.chatluna.chat.mockResolvedValueOnce({
-        content: JSON.stringify({
+        content: nativeStructuredReplyContent({
           decision: 'reply',
           outbound_messages: [
             {
@@ -907,10 +912,13 @@ describe('task automation tools and execution', () => {
   it('delivers meme replies through the shared reply transport executor', async () => {
     const harness = createHarness({
       chathub_room: [createRoom({ roomName: '当前群房间' })],
-      automation_job: [createJob({ runAt: Date.now() - 1 })],
+      automation_job: [createJob({
+        runAt: Date.now() - 1,
+        goal: '请发一个表情包庆祝任务完成',
+      })],
     });
     harness.ctx.chatluna.chat.mockResolvedValueOnce({
-      content: JSON.stringify({
+      content: nativeStructuredReplyContent({
         decision: 'reply',
         outbound_messages: [
           {

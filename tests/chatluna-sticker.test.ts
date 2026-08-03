@@ -32,23 +32,11 @@ vi.mock('koishi', () => {
 });
 
 const stickerCoreMocks = vi.hoisted(() => ({
-  buildStickerCapabilityDescriptor: vi.fn(),
-  buildStickerCapabilityPolicy: vi.fn(),
   loadStickerCatalog: vi.fn(),
 }));
 
-const promptAssemblyMocks = vi.hoisted(() => ({
-  registerPromptFragment: vi.fn(),
-}));
-
 vi.mock('../src/plugins/sticker/selection.js', () => ({
-  buildStickerCapabilityDescriptor: stickerCoreMocks.buildStickerCapabilityDescriptor,
-  buildStickerCapabilityPolicy: stickerCoreMocks.buildStickerCapabilityPolicy,
   loadStickerCatalog: stickerCoreMocks.loadStickerCatalog,
-}));
-
-vi.mock('../src/plugins/shared/prompt-context/index.js', () => ({
-  registerPromptFragment: promptAssemblyMocks.registerPromptFragment,
 }));
 
 import { apply, inject } from '../src/plugins/sticker/index.js';
@@ -140,10 +128,7 @@ function createSession(overrides: Record<string, unknown> = {}): Record<string, 
 describe('chatluna sticker plugin', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    stickerCoreMocks.buildStickerCapabilityDescriptor.mockReset();
-    stickerCoreMocks.buildStickerCapabilityPolicy.mockReset();
     stickerCoreMocks.loadStickerCatalog.mockReset();
-    promptAssemblyMocks.registerPromptFragment.mockReset();
   });
 
   afterEach(() => {
@@ -165,18 +150,6 @@ describe('chatluna sticker plugin', () => {
         },
       ],
     });
-    stickerCoreMocks.buildStickerCapabilityDescriptor.mockReturnValue({
-      sticker: {
-        available: true,
-        available_count: 1,
-        scope: 'persona:sakiko',
-        selection_mode: 'natural_intent',
-        sequence_mode: 'ordered_segments',
-        content_rule: 'single_image_intent',
-      },
-    });
-    stickerCoreMocks.buildStickerCapabilityPolicy.mockReturnValue('sticker policy');
-
     const { ready, getPolicy } = createHarness();
     await ready();
 
@@ -228,19 +201,6 @@ describe('chatluna sticker plugin', () => {
       byId: new Map(),
     };
     stickerCoreMocks.loadStickerCatalog.mockReturnValue(catalog);
-    const capability = {
-      sticker: {
-        available: true,
-        available_count: 1,
-        scope: 'persona:sakiko',
-        selection_mode: 'natural_intent',
-        sequence_mode: 'ordered_segments',
-        content_rule: 'single_image_intent',
-      },
-    };
-    stickerCoreMocks.buildStickerCapabilityDescriptor.mockReturnValue(capability);
-    stickerCoreMocks.buildStickerCapabilityPolicy.mockReturnValue('sticker policy');
-
     const { ready, getPolicy } = createHarness();
     await ready();
 
@@ -266,7 +226,6 @@ describe('chatluna sticker plugin', () => {
       preset: 'sakiko',
       availableCount: 1,
     });
-    expect(promptAssemblyMocks.registerPromptFragment).not.toHaveBeenCalled();
   });
 
   it('resolves sticker persona from ChatLuna conversation resolution without legacy room data', async () => {
@@ -293,18 +252,6 @@ describe('chatluna sticker plugin', () => {
       byId: new Map(),
     };
     stickerCoreMocks.loadStickerCatalog.mockReturnValue(catalog);
-    stickerCoreMocks.buildStickerCapabilityDescriptor.mockReturnValue({
-      sticker: {
-        available: true,
-        available_count: 1,
-        scope: 'persona:sakiko',
-        selection_mode: 'natural_intent',
-        sequence_mode: 'ordered_segments',
-        content_rule: 'single_image_intent',
-      },
-    });
-    stickerCoreMocks.buildStickerCapabilityPolicy.mockReturnValue('sticker policy');
-
     const { ready, getPolicy, getConstraints } = createHarness();
     await ready();
 
@@ -365,9 +312,6 @@ describe('chatluna sticker plugin', () => {
       byId: new Map(),
     };
     stickerCoreMocks.loadStickerCatalog.mockReturnValue(catalog);
-    stickerCoreMocks.buildStickerCapabilityDescriptor.mockReturnValue(null);
-    stickerCoreMocks.buildStickerCapabilityPolicy.mockReturnValue(null);
-
     const { ready, getPolicy } = createHarness();
     await ready();
 
@@ -391,6 +335,5 @@ describe('chatluna sticker plugin', () => {
       preset: 'other',
       availableCount: 0,
     });
-    expect(promptAssemblyMocks.registerPromptFragment).not.toHaveBeenCalled();
   });
 });

@@ -94,11 +94,14 @@ const CONTEXT_INTERPRETATION_FRAGMENT = createPromptTextFragment(
 export function buildReplyStructuredReplyContractFragments(options: {
   outputProtocol?: ReplyOutputProtocol;
   voiceOutputLanguage?: VoiceOutputLanguage;
+  canVoice?: boolean;
+  canMeme?: boolean;
+  stickerIntentHints?: readonly string[];
 } = {}): PromptFragment[] {
   const outputProtocol = options.outputProtocol ?? 'native_chat_json_schema';
   const outputLines = outputProtocol === 'chat_reply_v1'
-    ? buildChatReplyV1OutputContractLines({ voiceOutputLanguage: options.voiceOutputLanguage })
-    : buildNativeJsonOutputContractLines({ voiceOutputLanguage: options.voiceOutputLanguage });
+    ? buildChatReplyV1OutputContractLines(options)
+    : buildNativeJsonOutputContractLines(options);
 
   return [
     createPromptTextFragment(
@@ -108,7 +111,7 @@ export function buildReplyStructuredReplyContractFragments(options: {
       'sticky',
       'required',
       [
-        ...buildReplySemanticContractLines({ voiceOutputLanguage: options.voiceOutputLanguage }),
+        ...buildReplySemanticContractLines(options),
         '',
         ...outputLines,
       ].join('\n'),
@@ -119,6 +122,9 @@ export function buildReplyStructuredReplyContractFragments(options: {
 export function buildReplyRuntimeContractFragments(options: {
   outputProtocol?: ReplyOutputProtocol;
   voiceOutputLanguage?: VoiceOutputLanguage;
+  canVoice?: boolean;
+  canMeme?: boolean;
+  stickerIntentHints?: readonly string[];
 } = {}): PromptFragment[] {
   return [
     CONTEXT_INTERPRETATION_FRAGMENT,
@@ -137,6 +143,9 @@ export function buildReplyPromptCompilerInput(
     runtimeContract: buildReplyRuntimeContractFragments({
       ...options,
       voiceOutputLanguage,
+      canVoice: turnContext.capabilitySnapshot?.canVoice === true,
+      canMeme: turnContext.capabilitySnapshot?.canSticker === true,
+      stickerIntentHints: turnContext.capabilitySnapshot?.stickerIntentHints,
     }),
     workingContext: [...workingContext],
   };

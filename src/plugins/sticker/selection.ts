@@ -3,6 +3,10 @@ import { resolve } from 'node:path';
 
 export const STICKER_CATALOG_FILENAME = 'catalog.generated.json';
 const PERSONA_SCOPE_PREFIX = 'persona:';
+const MIN_STICKER_MATCH_SCORE = 18;
+const GENERIC_INTENT_TOKENS = new Set([
+  '一个', '一张', '发个', '来个', '图片', '表情', '表情包', '贴图', 'meme', '聊天', '二次元', '少女',
+]);
 const STICKER_INTENT_SEGMENTER =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
     ? new Intl.Segmenter('zh', { granularity: 'word' })
@@ -52,17 +56,6 @@ export interface StickerCapabilityState {
   availableCount: number;
 }
 
-export interface StickerCapabilityDescriptor {
-  sticker: {
-    available: boolean;
-    available_count: number;
-    scope: string;
-    selection_mode: 'natural_intent';
-    sequence_mode: 'ordered_segments';
-    content_rule: 'single_image_intent';
-  };
-}
-
 export function mimeFromExtension(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   switch (ext) {
@@ -107,7 +100,10 @@ function tokenizeIntent(intent: string): string[] {
   if (normalized && !tokens.includes(normalized)) {
     tokens.unshift(normalized);
   }
-  return [...new Set(tokens)];
+  return [...new Set(tokens)].filter((token) => (
+    !GENERIC_INTENT_TOKENS.has(token)
+    && (!/^\p{Script=Han}$/u.test(token) || token === normalized)
+  ));
 }
 
 function extractIntentFragments(intent: string): string[] {
@@ -157,7 +153,7 @@ function scoreEntry(entry: LoadedStickerEntry, intent: string, tokens: string[])
 
   const normalizedIntent = normalizeText(intent);
   const terms = collectEntryTerms(entry);
-  let score = Math.max(0, Math.round(entry.confidence * 100));
+  let score = 0;
 
   if (normalizeText(entry.id) === normalizedIntent) score += 200;
   if (normalizeText(entry.historyLabel) === normalizedIntent) score += 120;
@@ -195,7 +191,9 @@ function scoreEntry(entry: LoadedStickerEntry, intent: string, tokens: string[])
     if (normalizeText(entry.historyLabel).includes(token)) score += 10;
   }
 
-  return score;
+  if (score <= 0) return score;
+  const catalogConfidenceWeight = 0.5 + Math.min(1, Math.max(0, entry.confidence)) * 0.5;
+  return Math.round(score * catalogConfidenceWeight);
 }
 
 export function loadStickerCatalog(stickerDir: string): LoadedStickerCatalog | null {
@@ -262,8 +260,8 @@ export function resolveStickerMatches(
       entry,
       score: scoreEntry(entry, intent, tokens),
     }))
-    .filter((match) => match.score > 0)
-    .sort((left, right) => right.score - left.score);
+    .filter((match) => match.score >= MIN_STICKER_MATCH_SCORE)
+    .sort((left, right) => right.score - left.score || left.entry.id.localeCompare(right.entry.id));
 
   return matches;
 }
@@ -314,43 +312,4 @@ export function resolveStickerSelection(
 
 export function createStickerHistoryLine(entry: LoadedStickerEntry): string {
   return `（发送表情包：${entry.historyLabel || entry.id}）`;
-}
-
-export function buildStickerCapabilityPolicy(args: {
-  catalog: LoadedStickerCatalog;
-  preset?: string | null;
-}): string | null {
-  const { catalog, preset } = args;
-  const available = catalog.entries.filter((entry) => matchesScope(entry.scopes, preset));
-  if (!available.length) return null;
-
-  return [
-    '如果要发表情包，就在最终 structured reply 的 outbound_messages 里加入一个或多个 meme 消息。',
-    '格式：{"type":"meme","content":"自然语言意图"}',
-    'meme.content 不是标签名、文件名或素材 id，而是一句自然语言意图，例如“冷淡拒绝，被追问私事”或“聊到音乐时的得意感”。',
-    'meme 可以和 message / voice 混排；多个 meme 会按顺序一张张发送。',
-    '单张示例：{"decision":"reply","outbound_messages":[{"type":"meme","content":"无语地看对方一眼"}]}',
-    '文本混排示例：{"decision":"reply","outbound_messages":[{"type":"message","content":"……随你"},{"type":"meme","content":"冷淡拒绝，被追问私事"}]}',
-    '多张示例：{"decision":"reply","outbound_messages":[{"type":"meme","content":"无语地看对方一眼"},{"type":"meme","content":"生气地噘嘴表达不满"}]}',
-  ].join('\n');
-}
-
-export function buildStickerCapabilityDescriptor(args: {
-  catalog: LoadedStickerCatalog;
-  preset?: string | null;
-}): StickerCapabilityDescriptor | null {
-  const { catalog, preset } = args;
-  const available = catalog.entries.filter((entry) => matchesScope(entry.scopes, preset));
-  if (!available.length) return null;
-
-  return {
-    sticker: {
-      available: true,
-      available_count: available.length,
-      scope: preset ? `persona:${preset}` : 'shared',
-      selection_mode: 'natural_intent',
-      sequence_mode: 'ordered_segments',
-      content_rule: 'single_image_intent',
-    },
-  };
 }

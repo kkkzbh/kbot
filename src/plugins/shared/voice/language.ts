@@ -17,13 +17,6 @@ export const VOICE_OUTPUT_LANGUAGE_NATIVE_NAMES: Record<Exclude<VoiceOutputLangu
   en: 'English',
 };
 
-export const VOICE_OUTPUT_LANGUAGE_EXAMPLES: Record<VoiceOutputLanguage, string> = {
-  zh: '太好了，我现在真的很高兴。',
-  ja: '本当にうれしいです。',
-  en: "I'm really happy right now.",
-  auto: '太好了，我现在真的很高兴。',
-};
-
 export function normalizeVoiceOutputLanguage(value: unknown): VoiceOutputLanguage {
   const normalized = String(value ?? '').trim().toLowerCase();
   return VOICE_OUTPUT_LANGUAGE_SET.has(normalized) ? normalized as VoiceOutputLanguage : 'zh';

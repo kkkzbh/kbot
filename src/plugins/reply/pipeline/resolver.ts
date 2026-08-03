@@ -3,19 +3,6 @@ import type { ResolvedAction, StructuredReply, TurnContext } from './types.js';
 import { GroupMemberMentionResolver } from './mention-resolver.js';
 import type { Session } from 'koishi';
 
-function isCodeforcesImageAction(action: ResolvedAction): boolean {
-  return action.kind === 'image' && /(?:Codeforces|CF|分数卡|rating)/iu.test(`${action.alt} ${action.assetRef}`);
-}
-
-function preferCodeforcesImagesFirst(actions: ResolvedAction[]): ResolvedAction[] {
-  const codeforcesImages = actions.filter(isCodeforcesImageAction);
-  if (!codeforcesImages.length) return actions;
-  return [
-    ...codeforcesImages,
-    ...actions.filter((action) => !isCodeforcesImageAction(action)),
-  ];
-}
-
 export class ActionResolverService {
   constructor(private readonly mentionResolver = new GroupMemberMentionResolver()) {}
 
@@ -59,6 +46,10 @@ export class ActionResolverService {
         const assetRef = message.assetRef.trim();
         const alt = sanitizeStructuredReplyText(message.alt, 'image_alt');
         if (!assetRef) continue;
+        const authorizedImageAssetRefs = capabilitySnapshot?.imageAssetRefs ?? [];
+        if (!authorizedImageAssetRefs.includes(assetRef)) {
+          throw new Error('structured reply referenced an image that was not produced by this reply run.');
+        }
         resolved.push({
           kind: 'image',
           assetRef,
@@ -90,9 +81,9 @@ export class ActionResolverService {
     }
 
     if (!resolved.length) {
-      return [{ kind: 'no_reply' }];
+      throw new Error('structured reply resolved to an empty outbound plan.');
     }
 
-    return preferCodeforcesImagesFirst(resolved);
+    return resolved;
   }
 }

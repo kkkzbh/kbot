@@ -54,8 +54,10 @@ describe('chatluna prompt pollution regression', () => {
         {
           input: {
             text: '只回复一句',
+            imageParts: [{ type: 'image_url', image_url: { url: 'https://example.com/input.png' } }],
             hasImageInput: true,
             imageCount: 1,
+            hasVoiceInput: false,
             displayName: '小祥',
             userId: 'u1',
             isDirect: true,
