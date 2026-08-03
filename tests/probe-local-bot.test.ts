@@ -40,6 +40,7 @@ const shared = require('../scripts/lib/probe-local-bot-shared.cjs') as {
   evaluateTurnTerminal: (
     orchestrations: unknown[],
     captures: unknown[],
+    deliveryCompletions: unknown[],
   ) => { terminal: boolean; status: string | null; at: number | null };
   evaluateVisualDeliveryExpectation: (
     mode: 'allowed' | 'forbidden' | 'required',
@@ -166,6 +167,7 @@ describe('probe-local-bot.sh', () => {
     expect(content).not.toContain('finalReplyPreview');
     expect(content).toContain('visibleMessages');
     expect(content).toContain('payloadCaptures');
+    expect(content).toContain('deliveryCompletions');
     expect(content).toContain('Another group probe is already running');
     expect(content).toContain('flock -n 9');
     expect(content).not.toContain('kill -0');
@@ -188,6 +190,8 @@ describe('probe-local-bot.sh', () => {
     expect(content).toContain("writeOwnershipJournal({ phase: 'installed' })");
     expect(content).toContain("writeOwnershipJournal({ phase: 'runtime-restored' })");
     expect(content).toContain('evaluateTurnTerminal');
+    expect(content).toContain("runtimeModule.ReplyRuntime");
+    expect(content).toContain('ReplyRuntime.prototype.finishRun');
     expect(content).not.toContain('Date.now() - stableSince >= 6000');
     expect(content).toContain('firstErrorSignature');
     expect(content).toContain("db.create('chatluna_conversation'");
@@ -528,7 +532,7 @@ describe('probe-local-bot shared helpers', () => {
 
   it('waits for ready plus successful final delivery instead of stopping at progress', () => {
     const progress = [{ at: 100, ordinal: 1, delivered: true, receipt: ['progress'], payload: '我查一下。' }];
-    expect(shared.evaluateTurnTerminal([], progress)).toEqual({
+    expect(shared.evaluateTurnTerminal([], progress, [])).toEqual({
       terminal: false,
       status: null,
       at: null,
@@ -539,7 +543,7 @@ describe('probe-local-bot shared helpers', () => {
       ordinal: 2,
       result: { status: 'ready', actions: [{ kind: 'message', parts: [{ kind: 'text', content: '找到了' }] }] },
     }];
-    expect(shared.evaluateTurnTerminal(orchestrations, progress)).toEqual({
+    expect(shared.evaluateTurnTerminal(orchestrations, progress, [])).toEqual({
       terminal: false,
       status: 'awaiting_delivery',
       at: 200,
@@ -547,7 +551,13 @@ describe('probe-local-bot shared helpers', () => {
     expect(shared.evaluateTurnTerminal(orchestrations, [
       ...progress,
       { at: 300, ordinal: 3, delivered: true, receipt: ['final'], payload: '找到了' },
-    ])).toEqual({ terminal: true, status: 'delivered', at: 200 });
+    ], [{
+      at: 400,
+      ordinal: 4,
+      plannedUnitCount: 1,
+      committedUnitCount: 1,
+      completed: true,
+    }])).toEqual({ terminal: true, status: 'delivered', at: 200 });
   });
 
   it('keeps an owned turn active until every final action is delivered', () => {
@@ -569,7 +579,7 @@ describe('probe-local-bot shared helpers', () => {
       receipt: ['first'],
       payload: '结论',
     };
-    expect(shared.evaluateTurnTerminal(orchestrations, [firstDelivery])).toEqual({
+    expect(shared.evaluateTurnTerminal(orchestrations, [firstDelivery], [])).toEqual({
       terminal: false,
       status: 'awaiting_delivery',
       at: 200,
@@ -583,7 +593,48 @@ describe('probe-local-bot shared helpers', () => {
         receipt: ['second'],
         payload: '来源',
       },
-    ])).toEqual({ terminal: true, status: 'delivered', at: 200 });
+    ], [{
+      at: 500,
+      ordinal: 5,
+      plannedUnitCount: 2,
+      committedUnitCount: 2,
+      completed: true,
+    }])).toEqual({ terminal: true, status: 'delivered', at: 200 });
+  });
+
+  it('accepts no-reply and error terminals that do not create a delivery run', () => {
+    const noReply = [{
+      at: 100,
+      ordinal: 1,
+      result: { status: 'no_reply', actions: [{ kind: 'no_reply' }] },
+    }];
+    expect(shared.evaluateTurnTerminal(noReply, [], [])).toEqual({
+      terminal: true,
+      status: 'no_reply',
+      at: 100,
+    });
+
+    const error = [{ at: 100, ordinal: 1, result: { status: 'error' } }];
+    expect(shared.evaluateTurnTerminal(error, [], [])).toEqual({
+      terminal: true,
+      status: 'error',
+      at: 100,
+    });
+  });
+
+  it('fails a completed runtime transaction that did not commit every planned unit', () => {
+    const ready = [{
+      at: 100,
+      ordinal: 1,
+      result: { status: 'ready', actions: [{ kind: 'message', parts: [{ kind: 'text', content: '回复' }] }] },
+    }];
+    expect(shared.evaluateTurnTerminal(ready, [], [{
+      at: 200,
+      ordinal: 2,
+      plannedUnitCount: 1,
+      committedUnitCount: 0,
+      completed: false,
+    }])).toEqual({ terminal: true, status: 'incomplete_delivery', at: 100 });
   });
 
   it('counts media only when typed action and successful matching receipt agree', () => {

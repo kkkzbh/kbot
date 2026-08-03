@@ -777,14 +777,23 @@ async function main() {
 
           const originalSendMessage = bot.sendMessage
           let ReplyOrchestratorService = null
+          let ReplyRuntime = null
           let completedProbeResult = null
           try {
             const orchestratorModule = process.mainModule.require(process.cwd() + '/dist/plugins/reply/pipeline/orchestrator.js')
             ReplyOrchestratorService = orchestratorModule && orchestratorModule.ReplyOrchestratorService
           } catch {}
+          try {
+            const runtimeModule = process.mainModule.require(process.cwd() + '/dist/plugins/reply/runtime/index.js')
+            ReplyRuntime = runtimeModule && runtimeModule.ReplyRuntime
+          } catch {}
           const originalOrchestratorHandle =
             ReplyOrchestratorService && ReplyOrchestratorService.prototype && typeof ReplyOrchestratorService.prototype.handle === 'function'
               ? ReplyOrchestratorService.prototype.handle
+              : null
+          const originalFinishRun =
+            ReplyRuntime && ReplyRuntime.prototype && typeof ReplyRuntime.prototype.finishRun === 'function'
+              ? ReplyRuntime.prototype.finishRun
               : null
 
           if (originalOrchestratorHandle) {
@@ -830,6 +839,45 @@ async function main() {
             }
           }
 
+          if (originalFinishRun) {
+            ReplyRuntime.prototype.finishRun = function(runId) {
+              const run = typeof this.getRun === 'function' ? this.getRun(runId) : null
+              const turnCapture = run && run.input
+                ? turnCapturesByMessageId.get(Number(run.input.messageId ?? 0)) || null
+                : null
+              const ownsCapture = Boolean(
+                turnCapture &&
+                run &&
+                run.input &&
+                String(run.input.userId ?? '') === String(fakeUserId) &&
+                String(run.input.channelId ?? '') === fakeChannelId
+              )
+              const result = originalFinishRun.call(this, runId)
+              if (ownsCapture) {
+                const plannedUnitCount = Array.isArray(run.plannedUnitHistoryLines)
+                  ? run.plannedUnitHistoryLines.length
+                  : 0
+                const committedUnitCount = Array.isArray(run.committedHistoryLines)
+                  ? run.committedHistoryLines.length
+                  : 0
+                turnCapture.deliveryCompletions.push({
+                  at: Date.now(),
+                  ordinal: ++turnCapture.eventOrdinal,
+                  runId: String(runId),
+                  state: run.state ?? null,
+                  cancelled: run.cancelled === true,
+                  plannedUnitCount,
+                  committedUnitCount,
+                  completed:
+                    run.cancelled !== true &&
+                    plannedUnitCount > 0 &&
+                    committedUnitCount >= plannedUnitCount,
+                })
+              }
+              return result
+            }
+          }
+
           bot.sendMessage = async function(channelId, content, guildId, options) {
             const turnCapture = resolveProbeTurnCapture(channelId, options)
             if (turnCapture) {
@@ -855,6 +903,7 @@ async function main() {
                 eventOrdinal: 0,
                 captures: [],
                 orchestrations: [],
+                deliveryCompletions: [],
               }
               turnCapturesByMessageId.set(probeMessageId, activeTurnCapture)
               const baseMessageEvent = {
@@ -893,18 +942,21 @@ async function main() {
               let terminalState = evaluateTurnTerminal(
                 activeTurnCapture.orchestrations,
                 activeTurnCapture.captures,
+                activeTurnCapture.deliveryCompletions,
               )
               while (Date.now() < deadline) {
                 await sleep(500)
                 terminalState = evaluateTurnTerminal(
                   activeTurnCapture.orchestrations,
                   activeTurnCapture.captures,
+                  activeTurnCapture.deliveryCompletions,
                 )
                 if (!terminalState.terminal) continue
                 const lastActivityAt = Math.max(
                   terminalState.at ?? 0,
                   ...activeTurnCapture.captures.map((capture) => Number(capture.at) || 0),
                   ...activeTurnCapture.orchestrations.map((orchestration) => Number(orchestration.at) || 0),
+                  ...activeTurnCapture.deliveryCompletions.map((completion) => Number(completion.at) || 0),
                 )
                 if (Date.now() - lastActivityAt >= terminalStableWindowMs) {
                   break
@@ -913,6 +965,7 @@ async function main() {
 
               const captures = activeTurnCapture.captures
               const orchestrations = activeTurnCapture.orchestrations
+              const deliveryCompletions = activeTurnCapture.deliveryCompletions
               const visibleMessages = captures.map((item) => item.visibleText).filter((value) => value.length > 0)
               const payloadCaptures = captures.map((item) => ({
                 route: item.route,
@@ -935,7 +988,9 @@ async function main() {
                 dispatchedInput: requestedTurn.input,
                 captureCount: captures.length,
                 orchestrationCount: orchestrations.length,
+                deliveryCompletionCount: deliveryCompletions.length,
                 orchestrations,
+                deliveryCompletions,
                 visibleMessages,
                 payloadCaptures,
                 combined: visibleMessages.join('\\n'),
@@ -1019,6 +1074,9 @@ async function main() {
             activeTurnCapture = null
             if (originalOrchestratorHandle) {
               ReplyOrchestratorService.prototype.handle = originalOrchestratorHandle
+            }
+            if (originalFinishRun) {
+              ReplyRuntime.prototype.finishRun = originalFinishRun
             }
             bot.sendMessage = originalSendMessage
             if (isolatedRoom) {

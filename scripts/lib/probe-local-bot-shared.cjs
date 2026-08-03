@@ -134,7 +134,7 @@ function isCaptureAfterOrchestration(capture, orchestration) {
   )
 }
 
-function evaluateTurnTerminal(orchestrations, captures) {
+function evaluateTurnTerminal(orchestrations, captures, deliveryCompletions) {
   const terminal = latestTerminalOrchestration(orchestrations)
   if (!terminal || !Number.isFinite(terminal.at) || !Number.isInteger(terminal.ordinal)) {
     return { terminal: false, status: null, at: null }
@@ -149,13 +149,27 @@ function evaluateTurnTerminal(orchestrations, captures) {
   if (actions.length === 1 && actions[0] && actions[0].kind === 'no_reply') {
     return { terminal: true, status: 'no_reply', at: terminal.at }
   }
-  const expectedDeliveryCount = actions.filter(
-    (action) => action && action.kind !== 'no_reply',
-  ).length
+  const completion = Array.isArray(deliveryCompletions)
+    ? [...deliveryCompletions].reverse().find((item) => (
+        item
+        && Number.isInteger(item.ordinal)
+        && item.ordinal > terminal.ordinal
+      ))
+    : null
+  if (!completion) {
+    return { terminal: false, status: 'awaiting_delivery', at: terminal.at }
+  }
+  if (completion.completed !== true) {
+    return { terminal: true, status: 'incomplete_delivery', at: terminal.at }
+  }
+  const expectedDeliveryCount = Number(completion.plannedUnitCount)
+  if (!Number.isSafeInteger(expectedDeliveryCount) || expectedDeliveryCount < 1) {
+    return { terminal: false, status: 'awaiting_delivery', at: terminal.at }
+  }
   const deliveredCaptureCount = Array.isArray(captures)
     ? captures.filter((capture) => isCaptureAfterOrchestration(capture, terminal)).length
     : 0
-  const delivered = expectedDeliveryCount > 0 && deliveredCaptureCount >= expectedDeliveryCount
+  const delivered = deliveredCaptureCount >= expectedDeliveryCount
   return { terminal: delivered, status: delivered ? 'delivered' : 'awaiting_delivery', at: terminal.at }
 }
 
