@@ -69,14 +69,13 @@ await writeFile(
   `${JSON.stringify({
     version: 4,
     computer: {
-      defaultProvider: 'local',
-      local: {
+      defaultProvider: 'podman',
+      podman: {
         enabled: true,
-        sandboxMode: 'workspace-write',
-        approvalMode: 'never',
-        dangerouslySkipPermissions: true,
-        scopePath: process.env.CHATLUNA_COMMON_FS_SCOPE_PATH,
-        networkPolicy: 'allow',
+        image: 'localhost/qqbot-agent-workspace:latest',
+        memoryMb: 1024,
+        pidsLimit: 256,
+        commandTimeoutMs: 30_000,
       },
     },
   }, null, 2)}\n`,

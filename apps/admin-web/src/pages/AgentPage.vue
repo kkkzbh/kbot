@@ -37,6 +37,7 @@ import {
   type AgentMcpServerAdmin,
   type AgentMcpToolAdmin,
   type AgentPluginAdmin,
+  type AgentPodmanWorkspace,
   type AgentSecretUpdate,
   type AgentSkillAdmin,
   type AgentSkillConfigPut,
@@ -133,6 +134,7 @@ const skillContent = ref('');
 
 const pluginEditing = ref<AgentPluginAdmin | null>(null);
 const computerDraft = ref<AgentComputerAdminConfig | null>(null);
+const podmanWorkspaces = ref<AgentPodmanWorkspace[]>([]);
 const computerE2bKey = ref<SecretDraft>({ value: '', clear: false, configured: false });
 const computerOpenTerminalKey = ref<SecretDraft>({ value: '', clear: false, configured: false });
 const savedComputerDraftText = ref('');
@@ -634,6 +636,39 @@ function openPlugin(plugin: AgentPluginAdmin): void {
   };
   savedComputerDraftText.value = JSON.stringify(computerDraft.value);
   savedComputerSecretsText.value = computerSecretsText.value;
+  void refreshWorkspaces().catch((error) => {
+    podmanWorkspaces.value = [];
+    ElMessage.error(error instanceof Error ? error.message : 'Workspace 列表读取失败');
+  });
+}
+
+async function refreshWorkspaces(): Promise<void> {
+  podmanWorkspaces.value = await rawApi<AgentPodmanWorkspace[]>(
+    '/agent/plugins/workspace/instances',
+  );
+}
+
+async function stopWorkspace(workspace: AgentPodmanWorkspace): Promise<void> {
+  await runAction(`workspace-stop-${workspace.id}`, 'Workspace 已停止', async () => {
+    await rawApi(`/agent/plugins/workspace/instances/${workspace.id}/stop`, { method: 'POST' });
+    await refreshWorkspaces();
+  });
+}
+
+async function resetWorkspace(workspace: AgentPodmanWorkspace): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `清除 ${workspace.kind === 'group' ? '群聊' : workspace.kind === 'private' ? '私聊' : '控制台'} ${workspace.subjectId} 的 Workspace？文件无法恢复。`,
+      '清除 Workspace',
+      { type: 'warning', confirmButtonText: '清除', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  await runAction(`workspace-reset-${workspace.id}`, 'Workspace 已清除', async () => {
+    await rawApi(`/agent/plugins/workspace/instances/${workspace.id}/reset`, { method: 'POST' });
+    await refreshWorkspaces();
+  });
 }
 
 function openTool(name: string): void {
@@ -661,7 +696,7 @@ function computerConfigBody(
     config: {
       defaultProvider: draft.defaultProvider,
       idleTimeoutMs: draft.idleTimeoutMs,
-      local: draft.local,
+      podman: draft.podman,
       e2b,
       openTerminal,
     },
@@ -771,7 +806,7 @@ async function navigateFromPlugin(section: 'mcp' | 'tools' | 'skills'): Promise<
   await selectSection(section);
 }
 
-async function probeComputerBackend(type: 'local' | 'e2b' | 'open-terminal'): Promise<void> {
+async function probeComputerBackend(type: 'podman' | 'e2b' | 'open-terminal'): Promise<void> {
   await runAction(`probe-${type}`, `${type} backend 探测完成`, async () => {
     await rawApi(`/agent/plugins/workspace/backends/${type}/probe`, { method: 'POST' });
   });
@@ -845,10 +880,13 @@ onBeforeUnmount(() => {
     :pending="pending"
     :dirty="workspaceDirty"
     :save-disabled="runtime.restartInProgress"
+    :workspaces="podmanWorkspaces"
     @back="closePlugin"
     @save="saveWorkspacePlugin"
     @toggle-plugin="setPluginEnabled(workspacePlugin, $event)"
     @probe="probeComputerBackend"
+    @stop-workspace="stopWorkspace"
+    @reset-workspace="resetWorkspace"
     @toggle-tool="toggleTool"
     @open-tool="openTool"
     @navigate="navigateFromPlugin"

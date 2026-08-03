@@ -24,6 +24,7 @@ CLOUDFLARED_GENSHIN_UNIT="${QQBOT_CLOUDFLARED_GENSHIN_UNIT:-cloudflared-qqbot-ge
 KOISHI_PORT="${KOISHI_PORT:-5140}"
 VERIFY_SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QQBOT_APP_DIR="${QQBOT_APP_DIR:-$(dirname "${VERIFY_SCRIPT_DIR}")}"
+QQBOT_DATA_DIR="${QQBOT_DATA_DIR:-$(dirname "$(dirname "${QQBOT_APP_DIR}")")/data}"
 MEMORY_READY_FILE="${QQBOT_MEMORY_READY_FILE:-/run/qqbot/memory-v3-ready.json}"
 
 require_cmd() {
@@ -36,6 +37,7 @@ require_cmd() {
 require_cmd node
 require_cmd journalctl
 require_cmd systemctl
+require_cmd runuser
 if [[ "${SCOPE}" == "full" ]]; then
   require_cmd podman
 fi
@@ -126,6 +128,17 @@ systemd_unit_active() {
   systemctl is-active --quiet "${unit}"
 }
 
+koishi_runs_as_qqbot() {
+  [[ "$(systemctl show "${KOISHI_UNIT}" --property User --value)" == "qqbot" ]]
+}
+
+agent_workspace_image_available() {
+  runuser -u qqbot -- env \
+    HOME="${QQBOT_DATA_DIR}/qqbot-home" \
+    XDG_RUNTIME_DIR=/run/qqbot \
+    podman image exists localhost/qqbot-agent-workspace:latest
+}
+
 memory_v3_runtime_ready() {
   local control_group
   control_group="$(systemctl show "${KOISHI_UNIT}" --property ControlGroup --value)"
@@ -192,6 +205,8 @@ print_full_diagnostics() {
 trap 'code=$?; if [ "$code" -ne 0 ]; then if [ "${SCOPE}" = full ]; then print_full_diagnostics; else print_koishi_diagnostics; fi; fi; exit "$code"' EXIT
 
 wait_until "${KOISHI_UNIT} is active" systemd_unit_active "${KOISHI_UNIT}"
+wait_until "${KOISHI_UNIT} runs as qqbot" koishi_runs_as_qqbot
+wait_until "rootless Agent Workspace image is available" agent_workspace_image_available
 wait_until "koishi http endpoint is reachable" \
   node_http_probe "http://127.0.0.1:${KOISHI_PORT}/" "koishi http"
 if [[ "${MEMORY_ENABLED:-true}" != "false" ]]; then

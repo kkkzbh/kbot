@@ -554,6 +554,10 @@ describe('server runtime artifact rendering', () => {
     expect(koishi).toContain(`ExecStartPre=/usr/bin/install -d -m 700 ${dataDir}/chatluna/agents`);
     expect(koishi).toContain('RuntimeDirectory=qqbot');
     expect(koishi).toContain('RuntimeDirectoryMode=0700');
+    expect(koishi).toContain('User=qqbot');
+    expect(koishi).toContain('Group=qqbot');
+    expect(koishi).toContain(`Environment=HOME=${dataDir}/qqbot-home`);
+    expect(koishi).toContain('Environment=XDG_RUNTIME_DIR=/run/qqbot');
     expect(koishi).toContain('Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v3-ready.json');
     expect(koishi).toContain('ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v3-ready.json');
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
@@ -656,6 +660,10 @@ describe('server runtime artifact rendering', () => {
       '"CHATLUNA_SEARCH_SERVICE_ARTIFACT_DIR=${DATA_DIR}/chatluna/web-artifacts"',
     );
     expect(installer).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
+    expect(installer).toContain('migrate-agent-workspace-podman.mjs');
+    expect(installer).toContain('podman build');
+    expect(installer).toContain('podman info --format');
+    expect(installer).toContain('chown -R qqbot:qqbot "${DATA_DIR}"');
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
@@ -688,6 +696,40 @@ describe('server runtime artifact rendering', () => {
     expect(deploy).toContain(
       '${REMOTE_SHARED}/deployment-transaction.state',
     );
+  });
+
+  it('migrates the persisted Local workspace configuration to Podman once', () => {
+    const root = createTempDir();
+    const configDir = join(root, 'agents');
+    const configPath = join(configDir, 'config.json');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({
+      version: 4,
+      computer: {
+        defaultProvider: 'local',
+        idleTimeoutMs: 600_000,
+        local: { enabled: true, commandTimeoutMs: 45_000 },
+        e2b: { enabled: false },
+      },
+    }));
+
+    const script = join(process.cwd(), 'scripts/migrate-agent-workspace-podman.mjs');
+    execFileSync('node', [script, configPath]);
+    const migrated = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(migrated.computer).toMatchObject({
+      defaultProvider: 'podman',
+      podman: {
+        enabled: true,
+        image: 'localhost/qqbot-agent-workspace:latest',
+        memoryMb: 1024,
+        pidsLimit: 256,
+        commandTimeoutMs: 45_000,
+      },
+    });
+    expect(migrated.computer).not.toHaveProperty('local');
+
+    execFileSync('node', [script, configPath]);
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual(migrated);
   });
 
   it('executes each context cutover argument once and publishes V3 before the app swap', () => {

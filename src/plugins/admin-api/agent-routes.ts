@@ -25,7 +25,8 @@ type AgentRouteRegister = (
 ) => void;
 
 const pathNameSchema = z.string().trim().min(1).max(512);
-const computerBackendSchema = z.enum(['local', 'e2b', 'open-terminal']);
+const computerBackendSchema = z.enum(['podman', 'e2b', 'open-terminal']);
+const workspaceIdSchema = z.string().regex(/^[a-f0-9]{20}$/);
 
 function parse<T extends z.ZodTypeAny>(schema: T, input: unknown): z.output<T> {
   const result = schema.safeParse(input);
@@ -229,5 +230,18 @@ export function registerAgentAdminRoutes(
   register('post', '/agent/plugins/workspace/backends/:type/probe', async (koaCtx) => {
     const type = parse(computerBackendSchema, koaCtx.params.type);
     return await run('探测 Workspace Backend', () => agent.probeComputerBackend(type));
+  }, { mutation: true });
+  register('get', '/agent/plugins/workspace/instances', async () => {
+    return await run('列出 Workspace', () => agent.listWorkspaces());
+  });
+  register('post', '/agent/plugins/workspace/instances/:id/stop', async (koaCtx) => {
+    const id = parse(workspaceIdSchema, koaCtx.params.id);
+    await run('停止 Workspace', () => agent.stopWorkspace(id));
+    return { success: true };
+  }, { mutation: true });
+  register('post', '/agent/plugins/workspace/instances/:id/reset', async (koaCtx) => {
+    const id = parse(workspaceIdSchema, koaCtx.params.id);
+    await run('清除 Workspace', () => agent.resetWorkspace(id));
+    return { success: true };
   }, { mutation: true });
 }

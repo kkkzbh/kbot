@@ -646,6 +646,7 @@ describe('independent admin API plugin', () => {
     expect(getPaths).toContain('/api/admin/v1/agent');
     expect(getPaths).toContain('/api/admin/v1/agent/tools/policy');
     expect(getPaths).toContain('/api/admin/v1/agent/skills/:id/content');
+    expect(getPaths).toContain('/api/admin/v1/agent/plugins/workspace/instances');
     expect(getPaths).toContain('/api/admin/v1/context-presets');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id');
     expect(getPaths).toContain('/api/admin/v1/context-presets/:id/qqbot-fragments');
@@ -683,6 +684,8 @@ describe('independent admin API plugin', () => {
     expect(postPaths).toContain('/api/admin/v1/agent/mcp/reload');
     expect(postPaths).toContain('/api/admin/v1/agent/skills/reload');
     expect(postPaths).toContain('/api/admin/v1/agent/plugins/workspace/backends/:type/probe');
+    expect(postPaths).toContain('/api/admin/v1/agent/plugins/workspace/instances/:id/stop');
+    expect(postPaths).toContain('/api/admin/v1/agent/plugins/workspace/instances/:id/reset');
     expect(postPaths).not.toContain('/api/admin/v1/agent/sub-agents');
     expect(postPaths).not.toContain('/api/admin/v1/agent/trigger/tasks');
     expect(postPaths).toContain('/api/admin/v1/memory/forget');

@@ -266,9 +266,33 @@ require_cmd() {
   fi
 }
 
-for cmd in bash tar node pnpm python3 systemctl journalctl curl podman cloudflared sync flock; do
+for cmd in bash tar node pnpm python3 systemctl journalctl curl podman cloudflared sync flock runuser useradd usermod groupadd getent newuidmap newgidmap pasta fuse-overlayfs; do
   require_cmd "${cmd}"
 done
+
+ensure_qqbot_account() {
+  if getent passwd 1000 >/dev/null && [[ "$(getent passwd 1000 | cut -d: -f1)" != "qqbot" ]]; then
+    echo "[installer] UID 1000 is already assigned to another account" >&2
+    exit 2
+  fi
+  if getent group 1000 >/dev/null && [[ "$(getent group 1000 | cut -d: -f1)" != "qqbot" ]]; then
+    echo "[installer] GID 1000 is already assigned to another group" >&2
+    exit 2
+  fi
+  if ! getent group qqbot >/dev/null; then
+    groupadd --gid 1000 qqbot
+  fi
+  if ! getent passwd qqbot >/dev/null; then
+    useradd --uid 1000 --gid qqbot --home-dir "${DATA_DIR}/qqbot-home" --create-home --shell /usr/sbin/nologin qqbot
+  fi
+  if ! grep -q '^qqbot:' /etc/subuid; then
+    usermod --add-subuids 524288-589823 qqbot
+  fi
+  if ! grep -q '^qqbot:' /etc/subgid; then
+    usermod --add-subgids 524288-589823 qqbot
+  fi
+}
+ensure_qqbot_account
 
 if [[ ! -s "${CLOUDFLARED_HBU_JW_TOKEN_FILE}" ]]; then
   echo "[installer] missing Cloudflare tunnel token file: ${CLOUDFLARED_HBU_JW_TOKEN_FILE}" >&2
@@ -308,6 +332,7 @@ mkdir -p \
   "${DATA_DIR}/chathub/stickers" \
   "${DATA_DIR}/cache/yarn" \
   "${DATA_DIR}/cache/pnpm-store" \
+  "${DATA_DIR}/qqbot-home" \
   "${SHARED_DIR}" \
   "${INCOMING_DIR}" \
   "${STAGING_DIR}"
@@ -316,6 +341,7 @@ chmod 700 \
   "${SHARED_DIR}" \
   "${DATA_DIR}/chatluna/archive" \
   "${DATA_DIR}/chatluna/web-artifacts"
+chown -R qqbot:qqbot "${DATA_DIR}"
 exec 9>"${SHARED_DIR}/deployment-installer.lock"
 chmod 600 "${SHARED_DIR}/deployment-installer.lock"
 if ! flock -n 9; then
@@ -328,7 +354,8 @@ if [[ ! -f "${ENV_SERVER}" ]]; then
   echo "[installer] deploy.sh must install a real .env.server before running installer" >&2
   exit 2
 fi
-chmod 600 "${ENV_SERVER}"
+chown root:qqbot "${ENV_SERVER}"
+chmod 640 "${ENV_SERVER}"
 
 ensure_server_env_key() {
   local key="$1"
@@ -350,6 +377,10 @@ remove_env_key() {
   awk -v prefix="${key}=" 'index($0, prefix) != 1' "${file}" > "${tmp}"
   chmod 600 "${tmp}"
   mv "${tmp}" "${file}"
+  if [[ "${file}" == "${ENV_SERVER}" || "${file}" == "${ENV_RUNTIME}" ]]; then
+    chown root:qqbot "${file}"
+    chmod 640 "${file}"
+  fi
 }
 
 set_env_key() {
@@ -364,6 +395,10 @@ set_env_key() {
   printf '%s=%s\n' "${key}" "${value}" >> "${tmp}"
   chmod 600 "${tmp}"
   mv "${tmp}" "${file}"
+  if [[ "${file}" == "${ENV_SERVER}" || "${file}" == "${ENV_RUNTIME}" ]]; then
+    chown root:qqbot "${file}"
+    chmod 640 "${file}"
+  fi
 }
 
 adopt_loaded_deployment_transaction() {
@@ -512,7 +547,8 @@ ensure_server_env_defaults() {
     remove_env_key "${file}" "MEMORY_QUERY_TOPK"
     remove_env_key "${file}" "MEMORY_PROMPT_BUDGET_TOKENS"
   done
-  chmod 600 "${ENV_SERVER}"
+  chown root:qqbot "${ENV_SERVER}"
+  chmod 640 "${ENV_SERVER}"
 }
 ensure_server_env_defaults
 
@@ -563,6 +599,8 @@ require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
 require_bundle_entry "qqbot/scripts/verify-memory-v3-readiness.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
+require_bundle_entry "qqbot/scripts/migrate-agent-workspace-podman.mjs"
+require_bundle_entry "qqbot/docker/agent-workspace/Dockerfile"
 require_bundle_entry "chatluna/packages/core/package.json"
 
 clear_managed_dir() {
@@ -677,6 +715,8 @@ write_runtime_env() {
   printf '%s\n' "PUPPETEER_EXECUTABLE_PATH=/usr/lib64/chromium-browser/headless_shell" >> "${tmp}"
   chmod 600 "${tmp}"
   mv "${tmp}" "${ENV_RUNTIME}"
+  chown root:qqbot "${ENV_RUNTIME}"
+  chmod 640 "${ENV_RUNTIME}"
 }
 write_runtime_env
 
@@ -951,6 +991,12 @@ if [[ "${MEMORY_V3_CUTOVER_REQUIRED}" == "1" ]]; then
   remove_env_key "${ENV_RUNTIME}" "MEMORY_READ_ENABLED"
   remove_env_key "${ENV_RUNTIME}" "MEMORY_WRITE_ENABLED"
 fi
+node "${STAGE_QQBOT}/scripts/migrate-agent-workspace-podman.mjs" \
+  "${PERSISTENT_AGENT_DIR}/config.json"
+chown -R qqbot:qqbot "${DATA_DIR}"
+chgrp -R qqbot "${SHARED_DIR}"
+chmod 750 "${SHARED_DIR}"
+find "${SHARED_DIR}" -type f -exec chmod g+r {} +
 deployment_transaction_fsync_tree "${WORK_DIR}"
 deployment_transaction_swap_application \
   "${APP_ROOT}" \
@@ -958,6 +1004,17 @@ deployment_transaction_swap_application \
   "${PREVIOUS_APP_ROOT}"
 APP_SWAPPED=1
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
+install -d -o qqbot -g qqbot -m 700 /run/qqbot
+runuser -u qqbot -- env \
+  HOME="${DATA_DIR}/qqbot-home" \
+  XDG_RUNTIME_DIR=/run/qqbot \
+  podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
+runuser -u qqbot -- env \
+  HOME="${DATA_DIR}/qqbot-home" \
+  XDG_RUNTIME_DIR=/run/qqbot \
+  podman build \
+    --tag localhost/qqbot-agent-workspace:latest \
+    "${APP_DIR}/docker/agent-workspace"
 if [[ "${ACTIVATION_MODE}" == "start" ]]; then
   deployment_transaction_transfer_runtime_ownership
   run_runtime_gates

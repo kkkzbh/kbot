@@ -129,6 +129,8 @@ PartOf=qqbot.target qqbot-llbot.service
 
 [Service]
 Type=simple
+User=qqbot
+Group=qqbot
 WorkingDirectory=${app}
 RuntimeDirectory=qqbot
 RuntimeDirectoryMode=0700
@@ -137,6 +139,8 @@ EnvironmentFile=-${runtime}
 Environment=QQBOT_ENV_BASE_FILE=${server}
 Environment=QQBOT_ENV_OVERRIDE_FILE=${runtime}
 Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v3-ready.json
+Environment=HOME=${data}/qqbot-home
+Environment=XDG_RUNTIME_DIR=/run/qqbot
 Environment=CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${app}/data/chathub/context-presets
 Environment=CHATLUNA_RUNTIME_CONTEXT_PRESET_DIR=${data}/chathub/context-presets
 Environment=CHATLUNA_BUNDLED_ROLE_PRESET_DIR=${app}/data/chathub/role-presets

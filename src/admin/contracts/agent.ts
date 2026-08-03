@@ -97,22 +97,14 @@ export const agentSkillGithubImportSchema = z.object({
 
 export const agentComputerConfigPutSchema = z.object({
   config: z.object({
-    defaultProvider: z.enum(['local', 'e2b', 'open-terminal']),
+    defaultProvider: z.enum(['podman', 'e2b', 'open-terminal']),
     idleTimeoutMs: z.number().int().min(10_000).max(86_400_000),
-    local: z.object({
+    podman: z.object({
       enabled: z.boolean(),
-      sandboxMode: z.enum(['read-only', 'workspace-write']),
-      approvalMode: z.enum(['on-request', 'never']),
-      dangerouslySkipPermissions: z.boolean(),
-      preferredShell: z.enum(['git-bash', 'powershell', 'cmd', 'auto']),
-      scopePath: z.string().trim().max(4096),
-      readOnlyRoots: stringListSchema,
-      denyRoots: stringListSchema,
-      ignores: stringListSchema,
-      allowedCommands: stringListSchema,
-      blockedCommands: stringListSchema,
+      image: z.string().trim().min(1).max(1024),
+      memoryMb: z.number().int().min(128).max(65_536),
+      pidsLimit: z.number().int().min(16).max(32_768),
       commandTimeoutMs: z.number().int().min(1_000).max(3_600_000),
-      networkPolicy: z.enum(['block', 'allow']),
     }).strict(),
     e2b: z.object({
       enabled: z.boolean(),
@@ -252,20 +244,12 @@ export interface AgentSkillAdmin {
   diagnostics: string[];
 }
 
-export interface AgentLocalComputerConfig {
+export interface AgentPodmanComputerConfig {
   enabled: boolean;
-  sandboxMode: 'read-only' | 'workspace-write';
-  approvalMode: 'on-request' | 'never';
-  dangerouslySkipPermissions: boolean;
-  preferredShell: 'git-bash' | 'powershell' | 'cmd' | 'auto';
-  scopePath: string;
-  readOnlyRoots: string[];
-  denyRoots: string[];
-  ignores: string[];
-  allowedCommands: string[];
-  blockedCommands: string[];
+  image: string;
+  memoryMb: number;
+  pidsLimit: number;
   commandTimeoutMs: number;
-  networkPolicy: 'block' | 'allow';
 }
 
 export type AgentComputerCapability =
@@ -282,7 +266,7 @@ export type AgentComputerCapability =
   | 'desktop_action';
 
 export interface AgentComputerBackendStatus {
-  type: 'local' | 'e2b' | 'open-terminal';
+  type: 'podman' | 'e2b' | 'open-terminal';
   state: 'idle' | 'connecting' | 'connected' | 'error' | 'unsupported';
   error?: string;
   capabilities: AgentComputerCapability[];
@@ -291,15 +275,15 @@ export interface AgentComputerBackendStatus {
 
 export interface AgentComputerStatus {
   enabled: boolean;
-  defaultProvider: 'local' | 'e2b' | 'open-terminal';
-  backends: Record<'local' | 'e2b' | 'open-terminal', AgentComputerBackendStatus>;
+  defaultProvider: 'podman' | 'e2b' | 'open-terminal';
+  backends: Record<'podman' | 'e2b' | 'open-terminal', AgentComputerBackendStatus>;
   activeSessions: number;
 }
 
 export interface AgentComputerAdminConfig {
-  defaultProvider: 'local' | 'e2b' | 'open-terminal';
+  defaultProvider: 'podman' | 'e2b' | 'open-terminal';
   idleTimeoutMs: number;
-  local: AgentLocalComputerConfig;
+  podman: AgentPodmanComputerConfig;
   e2b: {
     enabled: boolean;
     template: string;
@@ -315,6 +299,13 @@ export interface AgentComputerAdminConfig {
     userIsolation: boolean;
     apiKeyConfigured: boolean;
   };
+}
+
+export interface AgentPodmanWorkspace {
+  id: string;
+  kind: 'group' | 'private' | 'console';
+  subjectId: string;
+  state: string;
 }
 
 export interface AgentToolAdmin {

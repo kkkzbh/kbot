@@ -35,22 +35,14 @@ function createRuntime(): ChatLunaAgentRuntimeService {
       registry: {},
     },
     computer: {
-      defaultProvider: 'local' as const,
+      defaultProvider: 'podman' as const,
       idleTimeoutMs: 600_000,
-      local: {
+      podman: {
         enabled: true,
-        sandboxMode: 'workspace-write' as const,
-        approvalMode: 'on-request' as const,
-        dangerouslySkipPermissions: false,
-        preferredShell: 'auto' as const,
-        scopePath: '/opt/qqbot/app',
-        readOnlyRoots: [],
-        denyRoots: ['/opt/qqbot/shared'],
-        ignores: ['**/.git/**'],
-        allowedCommands: [],
-        blockedCommands: [],
+        image: 'localhost/qqbot-agent-workspace:latest',
+        memoryMb: 1024,
+        pidsLimit: 256,
         commandTimeoutMs: 30_000,
-        networkPolicy: 'block' as const,
       },
       e2b: {
         enabled: false,
@@ -91,10 +83,10 @@ function createRuntime(): ChatLunaAgentRuntimeService {
   });
   const computerStatus = {
     enabled: true,
-    defaultProvider: 'local' as const,
+    defaultProvider: 'podman' as const,
     backends: {
-      local: {
-        type: 'local' as const,
+      podman: {
+        type: 'podman' as const,
         state: 'connected' as const,
         capabilities: ['file_read' as const, 'bash' as const],
         sessionCount: 0,
@@ -182,6 +174,9 @@ function createRuntime(): ChatLunaAgentRuntimeService {
     },
     computer: {
       testBackend: vi.fn(),
+      listWorkspaces: vi.fn().mockResolvedValue([]),
+      stopWorkspace: vi.fn(),
+      resetWorkspace: vi.fn(),
     },
   };
 }
@@ -387,7 +382,7 @@ describe('ChatLuna Agent Admin boundary', () => {
 
     expect(runtime.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
       computer: expect.objectContaining({
-        local: expect.objectContaining({ enabled: false }),
+        podman: expect.objectContaining({ enabled: false }),
         e2b: expect.objectContaining({ enabled: false }),
         openTerminal: expect.objectContaining({ enabled: false }),
       }),
@@ -408,20 +403,12 @@ describe('ChatLuna Agent Admin boundary', () => {
       config: {
         defaultProvider: 'e2b',
         idleTimeoutMs: 900_000,
-        local: {
+        podman: {
           enabled: false,
-          sandboxMode: 'read-only',
-          approvalMode: 'never',
-          dangerouslySkipPermissions: false,
-          preferredShell: 'auto',
-          scopePath: '/opt/qqbot/app',
-          readOnlyRoots: ['/opt/qqbot/data'],
-          denyRoots: ['/opt/qqbot/shared'],
-          ignores: ['**/.git/**'],
-          allowedCommands: ['git status'],
-          blockedCommands: ['curl'],
+          image: 'localhost/qqbot-agent-workspace:latest',
+          memoryMb: 2048,
+          pidsLimit: 512,
           commandTimeoutMs: 45_000,
-          networkPolicy: 'block',
         },
         e2b: {
           enabled: true,
@@ -444,20 +431,12 @@ describe('ChatLuna Agent Admin boundary', () => {
     expect(runtime.saveComputerConfig).toHaveBeenCalledWith({
       defaultProvider: 'e2b',
       idleTimeoutMs: 900_000,
-      local: {
+      podman: {
         enabled: false,
-        sandboxMode: 'read-only',
-        approvalMode: 'never',
-        dangerouslySkipPermissions: false,
-        preferredShell: 'auto',
-        scopePath: '/opt/qqbot/app',
-        readOnlyRoots: ['/opt/qqbot/data'],
-        denyRoots: ['/opt/qqbot/shared'],
-        ignores: ['**/.git/**'],
-        allowedCommands: ['git status'],
-        blockedCommands: ['curl'],
+        image: 'localhost/qqbot-agent-workspace:latest',
+        memoryMb: 2048,
+        pidsLimit: 512,
         commandTimeoutMs: 45_000,
-        networkPolicy: 'block',
       },
       e2b: {
         enabled: true,
@@ -477,5 +456,22 @@ describe('ChatLuna Agent Admin boundary', () => {
     });
     expect(runtime.saveToolConfig).not.toHaveBeenCalled();
     expect(runtime.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it('lists, stops and resets Podman workspaces through the runtime boundary', async () => {
+    const runtime = createRuntime();
+    vi.mocked(runtime.computer.listWorkspaces).mockResolvedValue([
+      { id: '0123456789abcdef0123', kind: 'private', subjectId: '10001', state: 'running' },
+    ]);
+    const service = new ChatLunaAgentAdminService(runtime);
+
+    await expect(service.listWorkspaces()).resolves.toEqual([
+      { id: '0123456789abcdef0123', kind: 'private', subjectId: '10001', state: 'running' },
+    ]);
+    await service.stopWorkspace('0123456789abcdef0123');
+    await service.resetWorkspace('0123456789abcdef0123');
+
+    expect(runtime.computer.stopWorkspace).toHaveBeenCalledWith('0123456789abcdef0123');
+    expect(runtime.computer.resetWorkspace).toHaveBeenCalledWith('0123456789abcdef0123');
   });
 });

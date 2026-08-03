@@ -5,6 +5,7 @@ import type {
   AgentMcpServerPut,
   AgentMcpServerStatus,
   AgentMcpToolAdmin,
+  AgentPodmanWorkspace,
   AgentSecretEntry,
   AgentSecretUpdate,
   AgentSkillAdmin,
@@ -132,8 +133,11 @@ export interface ChatLunaAgentRuntimeService {
   };
   computer: {
     testBackend(
-      type: 'local' | 'e2b' | 'open-terminal',
+      type: 'podman' | 'e2b' | 'open-terminal',
     ): Promise<AgentComputerBackendStatus>;
+    listWorkspaces(): Promise<AgentPodmanWorkspace[]>;
+    stopWorkspace(id: string): Promise<void>;
+    resetWorkspace(id: string): Promise<void>;
   };
 }
 
@@ -218,7 +222,7 @@ function computerAdminConfig(config: RuntimeComputerConfig) {
   return {
     defaultProvider: config.defaultProvider,
     idleTimeoutMs: config.idleTimeoutMs,
-    local: structuredClone(config.local),
+    podman: structuredClone(config.podman),
     e2b: {
       enabled: config.e2b.enabled,
       apiKeyConfigured: Boolean(config.e2b.apiKey),
@@ -487,11 +491,11 @@ export class ChatLunaAgentAdminService {
 
     const computer = structuredClone(data.config.computer);
     if (!enabled) {
-      computer.local.enabled = false;
+      computer.podman.enabled = false;
       computer.e2b.enabled = false;
       computer.openTerminal.enabled = false;
-    } else if (computer.defaultProvider === 'local') {
-      computer.local.enabled = true;
+    } else if (computer.defaultProvider === 'podman') {
+      computer.podman.enabled = true;
     } else if (computer.defaultProvider === 'e2b') {
       computer.e2b.enabled = true;
     } else {
@@ -581,7 +585,19 @@ export class ChatLunaAgentAdminService {
     await this.runtime.saveComputerConfig(computer);
   }
 
-  async probeComputerBackend(type: 'local' | 'e2b' | 'open-terminal') {
+  async probeComputerBackend(type: 'podman' | 'e2b' | 'open-terminal') {
     return await this.runtime.computer.testBackend(type);
+  }
+
+  async listWorkspaces(): Promise<AgentPodmanWorkspace[]> {
+    return await this.runtime.computer.listWorkspaces();
+  }
+
+  async stopWorkspace(id: string): Promise<void> {
+    await this.runtime.computer.stopWorkspace(id);
+  }
+
+  async resetWorkspace(id: string): Promise<void> {
+    await this.runtime.computer.resetWorkspace(id);
   }
 }

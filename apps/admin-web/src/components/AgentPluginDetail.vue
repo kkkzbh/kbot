@@ -15,13 +15,14 @@ import {
 } from '@lucide/vue';
 import type {
   AgentComputerAdminConfig,
+  AgentPodmanWorkspace,
   AgentPluginAdmin,
   SettingsField,
 } from '@contracts';
 import ManagedSettingsGrid from '@/components/ManagedSettingsGrid.vue';
 
 type SecretDraft = { value: string; clear: boolean; configured: boolean };
-type ComputerBackend = 'local' | 'e2b' | 'open-terminal';
+type ComputerBackend = 'podman' | 'e2b' | 'open-terminal';
 type AgentSection = 'mcp' | 'tools' | 'skills';
 type PluginToolRow = {
   name: string;
@@ -44,6 +45,7 @@ const props = defineProps<{
   pending: string;
   dirty: boolean;
   saveDisabled: boolean;
+  workspaces: AgentPodmanWorkspace[];
 }>();
 
 const emit = defineEmits<{
@@ -54,6 +56,8 @@ const emit = defineEmits<{
   navigate: [section: AgentSection];
   toggleTool: [name: string, enabled: boolean];
   openTool: [name: string];
+  stopWorkspace: [workspace: AgentPodmanWorkspace];
+  resetWorkspace: [workspace: AgentPodmanWorkspace];
 }>();
 
 const draft = defineModel<AgentComputerAdminConfig>('draft', { required: true });
@@ -61,7 +65,7 @@ const e2bKey = defineModel<SecretDraft>('e2bKey', { required: true });
 const openTerminalKey = defineModel<SecretDraft>('openTerminalKey', { required: true });
 const fileSystemDraft = defineModel<Record<string, string>>('fileSystemDraft', { required: true });
 const fileSystemClearSecrets = defineModel<Record<string, boolean>>('fileSystemClearSecrets', { required: true });
-const expandedBackend = ref<ComputerBackend | null>('local');
+const expandedBackend = ref<ComputerBackend | null>('podman');
 
 const idleMinutes = computed({
   get: () => Math.max(1, Math.round(draft.value.idleTimeoutMs / 60_000)),
@@ -110,7 +114,7 @@ const contentSummary = computed(() => [
 
 function backendState(backend: ComputerBackend): string {
   const status = props.plugin.computer.status.backends[backend];
-  if (backend === 'local' && !draft.value.local.enabled) return '未启用';
+  if (backend === 'podman' && !draft.value.podman.enabled) return '未启用';
   if (backend === 'e2b' && !draft.value.e2b.enabled) return '未启用';
   if (backend === 'open-terminal' && !draft.value.openTerminal.enabled) return '未启用';
   if (status.state === 'connected') return '可用';
@@ -234,7 +238,7 @@ function toolState(tool: PluginToolRow): string {
         <div class="form-grid two">
           <el-form-item label="Default backend">
             <el-select v-model="draft.defaultProvider">
-              <el-option label="Local" value="local" />
+              <el-option label="Podman" value="podman" />
               <el-option label="E2B" value="e2b" />
               <el-option label="OpenTerminal" value="open-terminal" />
             </el-select>
@@ -249,47 +253,36 @@ function toolState(tool: PluginToolRow): string {
             <div class="backend-row">
               <div class="backend-main">
                 <span class="row-icon"><Laptop :size="17" /></span>
-                <span class="row-copy"><strong>Local</strong><small>{{ backendState('local') }}</small></span>
+                <span class="row-copy"><strong>Podman</strong><small>{{ backendState('podman') }}</small></span>
               </div>
               <div class="backend-actions">
-                <el-switch v-model="draft.local.enabled" aria-label="启用 Local backend" />
-                <el-button text @click="toggleBackend('local')">
-                  {{ expandedBackend === 'local' ? '收起' : '配置' }}
-                  <ChevronUp v-if="expandedBackend === 'local'" :size="15" />
+                <el-switch v-model="draft.podman.enabled" aria-label="启用 Podman backend" />
+                <el-button text @click="toggleBackend('podman')">
+                  {{ expandedBackend === 'podman' ? '收起' : '配置' }}
+                  <ChevronUp v-if="expandedBackend === 'podman'" :size="15" />
                   <ChevronDown v-else :size="15" />
                 </el-button>
-                <el-button text :loading="pending === 'probe-local'" @click="emit('probe', 'local')">
+                <el-button text :loading="pending === 'probe-podman'" @click="emit('probe', 'podman')">
                   <RotateCw :size="15" />探测
                 </el-button>
               </div>
             </div>
             <transition name="detail-reveal">
-              <div v-if="expandedBackend === 'local'" class="backend-fields">
-                <div class="form-grid two">
-                  <el-form-item label="Sandbox">
-                    <el-select v-model="draft.local.sandboxMode">
-                      <el-option label="Read only" value="read-only" />
-                      <el-option label="Workspace write" value="workspace-write" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="Network">
-                    <el-select v-model="draft.local.networkPolicy">
-                      <el-option label="Block" value="block" />
-                      <el-option label="Allow" value="allow" />
-                    </el-select>
-                  </el-form-item>
-                </div>
-                <el-form-item label="Workspace scope">
-                  <el-input v-model="draft.local.scopePath" />
+              <div v-if="expandedBackend === 'podman'" class="backend-fields">
+                <el-form-item label="Image">
+                  <el-input v-model="draft.podman.image" />
                 </el-form-item>
                 <div class="form-grid two">
-                  <el-form-item label="Allowed commands">
-                    <el-select v-model="draft.local.allowedCommands" multiple filterable allow-create default-first-option />
+                  <el-form-item label="Memory（MiB）">
+                    <el-input-number v-model="draft.podman.memoryMb" :min="128" :max="65536" />
                   </el-form-item>
-                  <el-form-item label="Blocked commands">
-                    <el-select v-model="draft.local.blockedCommands" multiple filterable allow-create default-first-option />
+                  <el-form-item label="PID limit">
+                    <el-input-number v-model="draft.podman.pidsLimit" :min="16" :max="32768" />
                   </el-form-item>
                 </div>
+                <el-form-item label="Command timeout（毫秒）">
+                  <el-input-number v-model="draft.podman.commandTimeoutMs" :min="1000" :max="3600000" />
+                </el-form-item>
               </div>
             </transition>
           </section>
@@ -372,6 +365,28 @@ function toolState(tool: PluginToolRow): string {
     <section class="detail-section">
       <div class="detail-section-head">
         <div>
+          <h2>Workspace 实例</h2>
+          <p>{{ workspaces.length }} 个群聊、私聊或控制台沙盒。清除会删除对应容器与持久卷。</p>
+        </div>
+      </div>
+      <div v-if="workspaces.length" class="workspace-instances">
+        <article v-for="workspace in workspaces" :key="workspace.id" class="workspace-instance-row">
+          <span class="row-copy">
+            <strong>{{ workspace.kind === 'group' ? '群聊' : workspace.kind === 'private' ? '私聊' : '控制台' }} · {{ workspace.subjectId }}</strong>
+            <small>{{ workspace.state }}</small>
+          </span>
+          <div class="backend-actions">
+            <el-button text :loading="pending === `workspace-stop-${workspace.id}`" @click="emit('stopWorkspace', workspace)">停止</el-button>
+            <el-button text type="danger" :loading="pending === `workspace-reset-${workspace.id}`" @click="emit('resetWorkspace', workspace)">清除</el-button>
+          </div>
+        </article>
+      </div>
+      <p v-else class="empty-line">当前没有已创建的 Workspace。</p>
+    </section>
+
+    <section class="detail-section">
+      <div class="detail-section-head">
+        <div>
           <h2>文件与 Shell 边界</h2>
           <p>管理公共文件工具的总开关、作用域目录与允许使用的群聊。</p>
         </div>
@@ -412,6 +427,7 @@ function toolState(tool: PluginToolRow): string {
 .capability-row{display:flex;width:100%;min-height:68px;align-items:center;justify-content:space-between;gap:16px;padding:12px 6px;border:0;border-bottom:1px solid var(--line);background:transparent;color:inherit;text-align:left;cursor:pointer;transition:background-color .14s ease}.capability-row:hover{background:color-mix(in srgb,var(--surface) 88%,var(--accent) 12%)}.capability-main,.backend-main{display:flex;align-items:center;gap:12px;min-width:0}.row-icon{width:38px;height:38px;border-radius:9px}.row-copy{display:flex;min-width:0;flex-direction:column;gap:4px}.row-copy>span{display:flex;align-items:center;gap:8px}.row-copy strong{font-size:13px}.row-copy small{color:var(--muted);font-size:11px}.row-copy em{padding:2px 6px;border-radius:5px;background:var(--accent-soft);color:var(--accent);font-size:10px;font-style:normal}.capability-count{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;white-space:nowrap}.empty-line{margin:0;padding:18px 4px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
 .workspace-tools{border-top:1px solid var(--line)}.workspace-tool-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:12px;min-height:66px;padding:9px 6px;border-bottom:1px solid var(--line);transition:background-color .14s ease}.workspace-tool-row:hover{background:color-mix(in srgb,var(--surface) 88%,var(--accent) 12%)}.workspace-tool-select{display:grid;grid-template-columns:38px minmax(0,1fr);align-items:center;gap:12px;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.workspace-tool-row .row-copy>span:nth-child(2){overflow:hidden;color:var(--muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}.tool-state{color:var(--muted);font-size:11px;white-space:nowrap}.tool-chevron{color:var(--muted)}
 .runtime-form :deep(.el-select),.runtime-form :deep(.el-input-number){width:100%}.form-grid{display:grid;gap:14px}.form-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.backend-list{margin-top:2px}.backend-item{border-bottom:1px solid var(--line)}.backend-row{display:flex;min-height:66px;align-items:center;justify-content:space-between;gap:16px;padding:10px 6px}.backend-actions{display:flex;align-items:center;gap:4px}.backend-actions :deep(.el-button){display:inline-flex;align-items:center;gap:5px;margin-left:0}.backend-fields{padding:2px 6px 20px 50px}.backend-fields :deep(.el-form-item:last-child){margin-bottom:0}.built-in-note{grid-template-columns:minmax(0,1fr);padding-bottom:2px}
+.workspace-instances{border-top:1px solid var(--line)}.workspace-instance-row{display:flex;min-height:58px;align-items:center;justify-content:space-between;gap:16px;padding:9px 6px;border-bottom:1px solid var(--line)}
 .detail-savebar{display:flex;min-height:54px;align-items:center;justify-content:space-between;gap:16px;padding-top:16px;border-top:1px solid var(--line)}.detail-savebar p{margin:0;color:var(--muted);font-size:12px}.detail-reveal-enter-active,.detail-reveal-leave-active{transition:opacity .14s ease,transform .14s ease}.detail-reveal-enter-from,.detail-reveal-leave-to{opacity:0;transform:translateY(-3px)}
 @keyframes detail-enter{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:720px){.detail-identity,.detail-section-head,.detail-savebar{align-items:stretch;flex-direction:column}.identity-state{justify-content:space-between}.form-grid.two{grid-template-columns:1fr}.backend-row{align-items:flex-start;flex-direction:column}.backend-actions{width:100%;justify-content:flex-end}.backend-fields{padding-left:6px}.workspace-tool-row{grid-template-columns:minmax(0,1fr) auto auto}.tool-state{grid-column:1}.workspace-tool-row>.el-switch{grid-column:2;grid-row:1/3}.tool-chevron{grid-column:3;grid-row:1/3}}
