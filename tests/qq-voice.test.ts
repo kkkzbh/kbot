@@ -2038,6 +2038,50 @@ describe('qq voice plugin', () => {
     expect(finalContract.instruction).toContain('当前语音输出目标语言：日语');
   });
 
+  it('keeps the authorized sticker catalog for the whole reply run', async () => {
+    const { ready, getPrepare, getPolicy, getPromptCompiler, getExecutor, bot } = createHarness({
+      modelOptions: { mainProtocol: 'chat_reply_v1' },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+
+    await ready();
+    await flushMicrotasks();
+
+    const session = createSession(bot, {
+      content: '发一个开心点的表情包庆祝一下。',
+      strippedContent: '发一个开心点的表情包庆祝一下。',
+      state: { qqSticker: createStickerState() },
+    });
+    const context: Record<string, any> = {
+      options: {
+        conversation: createPluginConversation('conv-sticker-run-snapshot'),
+        inputMessage: {
+          content: '发一个开心点的表情包庆祝一下。',
+          additional_kwargs: {},
+        },
+      },
+    };
+
+    await getPrepare()?.(session, context);
+    await getPolicy()?.(session, context);
+    await getPromptCompiler()?.(session, context);
+
+    delete session.state.qqSticker;
+    context.options.responseMessage = createRawChatReplyV1Response([
+      'CHAT_REPLY_V1 abc12345',
+      'DECISION reply',
+      'BEGIN meme',
+      '|无语地看对方一眼',
+      'END',
+      'DONE abc12345',
+    ]);
+
+    await expect(getExecutor()?.(session, context)).resolves.toEqual(expect.any(Number));
+    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
+    const sends = bot.sendMessage.mock.calls as any[][];
+    expect(extractVisibleMessageText(sends[0]?.[1])).toContain('<img src="data:image/png;base64,');
+  });
+
   it('removes mention modality from the injected schema for private chats', async () => {
     const { ready, getPrepare, getPolicy, getPromptCompiler, bot } = createHarness();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));

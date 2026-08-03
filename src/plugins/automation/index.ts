@@ -1046,6 +1046,7 @@ async function prepareAutomationExecutionContext(
       canVoice: requestedPolicy.canVoice && requestedPolicy.voiceReason === 'explicit_request',
       canSticker: requestedPolicy.canSticker && requestedPolicy.stickerReason === 'explicit_request',
     },
+    stickerArtifacts.state,
     [],
   );
   const recentContextTurns = await loadRecentConversationTurns(ctx, sourceRoom.conversationId);

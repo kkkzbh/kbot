@@ -87,13 +87,19 @@ export function buildNativeJsonOutputContractLines(_options: ReplyOutputLanguage
 }
 
 export function buildChatReplyV1OutputContractLines(options: ReplyOutputLanguageOptions = {}): string[] {
+  const payloadTypes = [
+    '`message`',
+    '`structured_block`',
+    ...(options.canMeme === true ? ['`meme`'] : []),
+    ...(options.canVoice === true ? ['`voice`'] : []),
+  ];
   const lines = [
     '输出格式规则：',
     '- 最终回复必须严格使用 CHAT_REPLY_V1 文本协议，不要包裹 markdown fence，不要输出解释文字。',
     '- 第一条非空行必须是 `CHAT_REPLY_V1 <nonce>`；最后用 `DONE <nonce>`，首尾 nonce 必须一致。',
     '- `DECISION no_reply` 后只能输出 `DONE <nonce>`。',
     '- `DECISION reply` 必须输出一到四个 `BEGIN ... END` block。',
-    '- `message`、`structured_block`、`meme`、`voice` 在 `BEGIN <type>` 后直接写以 `|` 开头的 payload 行。',
+    `- ${payloadTypes.join('、')} 在 \`BEGIN <type>\` 后直接写以 \`|\` 开头的 payload 行。`,
     '- `image` 依次写 `ASSET_REF ...`、`ALT` 和 payload。',
     '- payload 内容行必须以 `|` 开头；空行也写成单独的 `|`，不要输出裸空行。裸 `END` 才结束 block。内容里需要写 END/DONE/BEGIN 时也必须写成 `|END`、`|DONE ...`、`|BEGIN ...`。',
     'no_reply 示例：',

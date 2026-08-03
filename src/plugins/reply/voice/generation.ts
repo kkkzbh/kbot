@@ -1303,9 +1303,9 @@ export function buildTurnCapabilitySnapshot(
   session: SessionWithVoiceState,
   snapshot: ReplyCapabilitySnapshot,
   modalityPolicy: ModalityPolicySnapshot,
+  stickerState: StickerCapabilityState | null,
   imageAssetRefs: readonly string[],
 ): NonNullable<TurnContext['capabilitySnapshot']> {
-  const stickerState = session.state?.qqSticker;
   const stickerAvailableCount = stickerState?.availableCount ?? 0;
   return {
     canMultiline: snapshot.canMultiline,
@@ -1314,7 +1314,7 @@ export function buildTurnCapabilitySnapshot(
     voiceOutputLanguage: snapshot.voiceOutputLanguage,
     canSticker: modalityPolicy.canSticker,
     stickerAvailableCount,
-    stickerIntentHints: resolveStickerIntentHints(stickerState),
+    stickerIntentHints: resolveStickerIntentHints(stickerState ?? undefined),
     imageAssetRefs: [...imageAssetRefs],
     source: snapshot.source,
   };
@@ -1914,17 +1914,16 @@ async function prepareVoiceDeliveries(args: {
 }
 
 async function prepareStickerDeliveries(args: {
-  session: SessionWithVoiceState;
+  stickerState: StickerCapabilityState | null;
   plan: ReplyTransportPlan;
   explicitStickerRequested: boolean;
 }): Promise<{ preparedByRaw: Map<string, PreparedStickerDelivery>; effectivePlan: ReplyTransportPlan }> {
-  const { session, plan, explicitStickerRequested } = args;
+  const { stickerState, plan, explicitStickerRequested } = args;
   const outboundPlan = buildOutboundMessagePlanFromReplyPlan(plan);
   if (!hasStickerSegments(outboundPlan)) {
     return { preparedByRaw: new Map(), effectivePlan: plan };
   }
 
-  const stickerState = session.state?.qqSticker;
   if (!stickerState?.catalog) {
     return {
       preparedByRaw: new Map(),
@@ -1982,6 +1981,7 @@ async function prepareStickerDeliveries(args: {
 async function deliverReplyPlanCore(args: {
   runtime: RuntimeConfig;
   session: SessionWithVoiceState;
+  stickerState: StickerCapabilityState | null;
   plan: ReplyTransportPlan;
   sendStrand?: ReturnType<typeof createKeyedStrandRunner>;
   canSendRecordCache?: Map<string, boolean>;
@@ -2000,6 +2000,7 @@ async function deliverReplyPlanCore(args: {
   const {
     runtime,
     session,
+    stickerState,
     plan,
     sendStrand = sharedReplyTransportSendStrand,
     canSendRecordCache = sharedReplyTransportCanSendRecordCache,
@@ -2029,7 +2030,7 @@ async function deliverReplyPlanCore(args: {
     explicitVoiceRequested,
   });
   const preparedSticker = await prepareStickerDeliveries({
-    session,
+    stickerState,
     plan: preparedVoice.effectivePlan,
     explicitStickerRequested,
   });
@@ -2216,6 +2217,7 @@ async function deliverReplyPlanCore(args: {
 async function deliverReplyPlan(args: {
   runtime: RuntimeConfig;
   session: SessionWithVoiceState;
+  stickerState: StickerCapabilityState | null;
   plan: ReplyTransportPlan;
   replyRuntime: ReplyRuntime;
   runId: string;
@@ -2226,6 +2228,7 @@ async function deliverReplyPlan(args: {
   const {
     runtime,
     session,
+    stickerState,
     plan,
     replyRuntime,
     runId,
@@ -2236,6 +2239,7 @@ async function deliverReplyPlan(args: {
   return deliverReplyPlanCore({
     runtime,
     session,
+    stickerState,
     plan,
     queueKey: resolveReplyQueueKey(session),
     beginSend: () => {
@@ -2264,6 +2268,7 @@ export async function deliverStandaloneReplyPlan(args: {
   const result = await deliverReplyPlanCore({
     runtime: args.runtime,
     session: args.session,
+    stickerState: args.session.state?.qqSticker ?? null,
     plan: args.plan,
     queueKey: resolveReplyQueueKey(args.session),
     onDeliveryReceipt: (receipt) => {
@@ -2357,6 +2362,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     maxPendingInputs: runtime.replyInterruptMaxPendingInputs,
   });
   const modalityDirector = new ModalityDirector();
+  const modalityTurnContexts = new Map<string, {
+    policy: ModalityPolicySnapshot;
+    stickerState: StickerCapabilityState | null;
+  }>();
   const modalityPreferenceStore = new ModalityPreferenceStore(
     services.database as StructuredReplyHistoryDatabaseLike & ModalityPreferenceDatabase,
   );
@@ -2366,6 +2375,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const finishReplyRun = (session: SessionWithVoiceState, runId: string): boolean => {
     progressCallbacksController?.disposeRun(runId);
     modalityDirector.finishTurn(runId);
+    modalityTurnContexts.delete(runId);
     artifactRegistry.finishRun(runId);
     setReplyRequestModelErrorHandler(session, undefined);
     if (getReplyRunId(session) === runId) clearReplyRunId(session);
@@ -2378,15 +2388,19 @@ export function apply(ctx: Context, config: Config = {}): void {
     conversationId: string;
     turnInput: TurnInput;
     capability: ReplyCapabilitySnapshot;
-  }): Promise<ModalityPolicySnapshot> => {
-    const stickerAvailableCount = args.session.state?.qqSticker?.availableCount ?? 0;
+  }): Promise<{ policy: ModalityPolicySnapshot; stickerState: StickerCapabilityState | null }> => {
+    const active = modalityTurnContexts.get(args.runId);
+    if (active) return active;
+
+    const stickerState = args.session.state?.qqSticker ?? null;
+    const stickerAvailableCount = stickerState?.availableCount ?? 0;
     const preference = await modalityPreferenceStore.resolveForTurn({
       platform: args.session.platform,
       botSelfId: String(args.session.bot?.selfId ?? '').trim(),
       userId: String(args.session.userId ?? '').trim(),
       conversationId: args.conversationId,
     }, args.turnInput.text);
-    return modalityDirector.beginTurn({
+    const policy = modalityDirector.beginTurn({
       turnId: args.runId,
       conversationKey: args.conversationId,
       input: args.turnInput,
@@ -2397,6 +2411,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
       preference,
     });
+    const context = { policy, stickerState };
+    modalityTurnContexts.set(args.runId, context);
+    return context;
   };
 
   let progressCallbacksDispose: (() => void) | null = null;
@@ -2685,11 +2702,18 @@ export function apply(ctx: Context, config: Config = {}): void {
           }
           const turnInput = buildReplyTurnInput(session, room, context.options?.inputMessage);
           applyReplyTurnInputMetadata(context.options?.inputMessage, turnInput);
-          const modalityPolicy = await beginModalityTurn({ session, runId, conversationId, turnInput, capability });
+          const { policy: modalityPolicy, stickerState } = await beginModalityTurn({
+            session,
+            runId,
+            conversationId,
+            turnInput,
+            capability,
+          });
           const turnCapabilitySnapshot = buildTurnCapabilitySnapshot(
             session,
             capability,
             modalityPolicy,
+            stickerState,
             artifactRegistry.list(runId),
           );
           const schemaCapabilitySnapshot = {
@@ -2854,7 +2878,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!conversationId) {
             throw new Error('reply plan executor requires conversationId.');
           }
-          const modalityPolicy = await beginModalityTurn({
+          const { policy: modalityPolicy, stickerState } = await beginModalityTurn({
             session,
             runId,
             conversationId,
@@ -2865,6 +2889,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             session,
             snapshot,
             modalityPolicy,
+            stickerState,
             artifactRegistry.list(runId),
           );
           const outputProtocol = resolveReplyOutputProtocolFromMessage(context.options?.inputMessage);
@@ -2975,6 +3000,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           const result = await deliverReplyPlan({
             runtime,
             session,
+            stickerState,
             plan: executablePlan,
             replyRuntime,
             runId,

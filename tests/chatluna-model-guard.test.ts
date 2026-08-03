@@ -72,6 +72,17 @@ describe('canonical main chat reply contract', () => {
     expect(JSON.stringify(buildStructuredReplyJsonSchema(options))).toContain('无语, 气恼');
   });
 
+  it('omits unavailable media block types from the text protocol contract', () => {
+    const textOnly = buildChatReplyV1OutputContractLines({
+      canMeme: false,
+      canVoice: false,
+    }).join('\n');
+    expect(textOnly).not.toContain('`meme`');
+    expect(textOnly).not.toContain('`voice`');
+    expect(textOnly).not.toContain('meme block：');
+    expect(textOnly).not.toContain('voice block：');
+  });
+
   it('models voice and meme as singleton fields outside ordered provider messages', () => {
     const schema = buildStructuredReplyJsonSchema();
     const rootProperties = schema.properties as Record<string, unknown>;

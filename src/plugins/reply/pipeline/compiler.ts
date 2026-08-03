@@ -319,6 +319,17 @@ export class StructuredReplyCompilerService {
       );
     }
 
+    const unavailableModality = parsedReply.data.outbound_messages?.find((message) => (
+      (message.type === 'voice' && this.options.canVoice === false)
+      || (message.type === 'meme' && this.options.canMeme === false)
+    ));
+    if (unavailableModality) {
+      throw new StructuredReplyCompilerError(
+        `structured reply requested unavailable ${unavailableModality.type} output.`,
+        buildCompilerDiagnostic(normalizedOutput, rawText, 'invalid_structured_schema', outputProtocol),
+      );
+    }
+
     const normalized = normalizeStructuredReply(parsedReply.data);
     if (!normalized) {
       throw new StructuredReplyCompilerError(

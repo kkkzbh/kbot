@@ -815,6 +815,40 @@ describe('reply pipeline v3', () => {
     });
   });
 
+  it('rejects CHAT_REPLY_V1 media blocks that the turn did not authorize', async () => {
+    const orchestrator = new ReplyOrchestratorService();
+
+    await expect(
+      orchestrator.handle(createTurnInput('发个表情包'), {} as never, {
+        routeHint: 'agent',
+        outputProtocol: 'chat_reply_v1',
+        capabilitySnapshot: {
+          canMultiline: true,
+          canVoice: false,
+          canSticker: false,
+          stickerAvailableCount: 0,
+          imageAssetRefs: [],
+          source: 'test',
+        },
+        responseMessage: {
+          content: [
+            'CHAT_REPLY_V1 abc12345',
+            'DECISION reply',
+            'BEGIN meme',
+            '|开心庆祝',
+            'END',
+            'DONE abc12345',
+          ].join('\n'),
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'StructuredReplyCompilerError',
+      diagnostic: expect.objectContaining({
+        failureKind: 'invalid_structured_schema',
+      }),
+    });
+  });
+
   it('compiles CHAT_REPLY_V1 text protocol with explicit empty payload lines', async () => {
     const orchestrator = new ReplyOrchestratorService();
 
