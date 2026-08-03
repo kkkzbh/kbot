@@ -51,6 +51,14 @@ const shared = require('../scripts/lib/probe-local-bot-shared.cjs') as {
   isSuccessfulDeliveryCapture: (capture: unknown) => boolean;
   latestTerminalOrchestration: (orchestrations: unknown[]) => unknown;
   normalizeVisibleContent: (content: unknown) => string;
+  resolveOwnedProbeTurnCapture: (input: {
+    channelId: unknown;
+    fakeChannelId: string;
+    fakeUserId: string;
+    options: unknown;
+    activeTurnCapture: unknown;
+    turnCapturesByMessageId: Map<number, unknown>;
+  }) => unknown;
   serializePayload: (content: unknown) => unknown;
 };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -150,7 +158,7 @@ describe('probe-local-bot.sh', () => {
     expect(output).not.toContain('PROBE_ROOM_MODEL');
   });
 
-  it('resolves isolated probes from canonical main.chat and captures by exact session identity', () => {
+  it('resolves isolated probes from canonical main.chat and contains every owned-channel send', () => {
     const content = readFileSync(resolve(process.cwd(), 'scripts/probe-local-bot.sh'), 'utf8');
 
     expect(content).not.toContain('send_private_msg');
@@ -171,7 +179,8 @@ describe('probe-local-bot.sh', () => {
     expect(content).toContain('modelSource: resolvedModelSource');
     expect(content).toContain('transportModel: resolvedModelProfile.transportModel');
     expect(content).toContain('turnCapturesByMessageId');
-    expect(content).toContain('options.session');
+    expect(content).toContain('resolveOwnedProbeTurnCapture');
+    expect(content).toContain('isolated probe outbound did not belong to the active turn');
     expect(content).not.toContain('directGroupCaptureAllowed');
     expect(content).toContain('Failed to clean owned probe state');
     expect(content).toContain('QQBOT_PROBE_OWNERSHIP_JOURNAL');
@@ -237,6 +246,7 @@ describe('probe-local-bot.sh', () => {
       isCaptureAfterOrchestrationSource: shared.isCaptureAfterOrchestration.toString(),
       evaluateTurnTerminalSource: shared.evaluateTurnTerminal.toString(),
       normalizeVisibleContentSource: shared.normalizeVisibleContent.toString(),
+      resolveOwnedProbeTurnCaptureSource: shared.resolveOwnedProbeTurnCapture.toString(),
       serializePayloadSource: shared.serializePayload.toString(),
     };
     for (const [name, implementation] of Object.entries(replacements)) {
@@ -469,6 +479,51 @@ describe('probe-local-bot shared helpers', () => {
     expect(shared.isOwnedTemporaryProbeUserId(OWNED_USER_ID)).toBe(true);
     expect(shared.isOwnedTemporaryProbeGroupId(shared.LIVE_ACCEPTANCE_GROUP_ID)).toBe(false);
     expect(shared.isOwnedTemporaryProbeUserId('9177543201')).toBe(false);
+  });
+
+  it('attributes sessionless owned-channel sends to the active turn without claiming other channels', () => {
+    const activeTurn = { messageId: 101 };
+    const exactTurn = { messageId: 102 };
+    const captures = new Map([[102, exactTurn]]);
+    const base = {
+      fakeChannelId: OWNED_GROUP_ID,
+      fakeUserId: OWNED_USER_ID,
+      activeTurnCapture: activeTurn,
+      turnCapturesByMessageId: captures,
+    };
+
+    expect(shared.resolveOwnedProbeTurnCapture({
+      ...base,
+      channelId: OWNED_GROUP_ID,
+      options: undefined,
+    })).toBe(activeTurn);
+    expect(shared.resolveOwnedProbeTurnCapture({
+      ...base,
+      channelId: OWNED_GROUP_ID,
+      options: {
+        session: {
+          channelId: OWNED_GROUP_ID,
+          userId: OWNED_USER_ID,
+          messageId: 102,
+        },
+      },
+    })).toBe(exactTurn);
+    expect(shared.resolveOwnedProbeTurnCapture({
+      ...base,
+      channelId: '123456789',
+      options: undefined,
+    })).toBeNull();
+    expect(shared.resolveOwnedProbeTurnCapture({
+      ...base,
+      channelId: OWNED_GROUP_ID,
+      options: {
+        session: {
+          channelId: OWNED_GROUP_ID,
+          userId: '890000999999999',
+          messageId: 102,
+        },
+      },
+    })).toBeNull();
   });
 
   it('waits for ready plus successful final delivery instead of stopping at progress', () => {

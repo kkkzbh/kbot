@@ -14,6 +14,25 @@ function isOwnedTemporaryProbeUserId(value) {
   return new RegExp(`^${TEMP_PROBE_USER_PREFIX}\\d{9}$`).test(String(value ?? ''))
 }
 
+function resolveOwnedProbeTurnCapture({
+  channelId,
+  fakeChannelId,
+  fakeUserId,
+  options,
+  activeTurnCapture,
+  turnCapturesByMessageId,
+}) {
+  if (String(channelId) !== String(fakeChannelId)) return null
+
+  const session = options && typeof options === 'object' ? options.session : null
+  if (session == null) return activeTurnCapture || null
+  if (typeof session !== 'object') return null
+  if (String(session.channelId ?? '') !== String(fakeChannelId)) return null
+  if (String(session.userId ?? '') !== String(fakeUserId)) return null
+
+  return turnCapturesByMessageId.get(Number(session.messageId ?? 0)) || null
+}
+
 function normalizeVisibleContent(content) {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) return content.map(normalizeVisibleContent).join('')
@@ -200,5 +219,6 @@ module.exports = {
   latestTerminalOrchestration,
   normalizeVisibleContent,
   payloadHasKind,
+  resolveOwnedProbeTurnCapture,
   serializePayload,
 }

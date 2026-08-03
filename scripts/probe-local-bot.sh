@@ -309,6 +309,7 @@ const {
   isSuccessfulDeliveryCapture,
   latestTerminalOrchestration,
   normalizeVisibleContent,
+  resolveOwnedProbeTurnCapture,
   serializePayload,
 } = require(path.join(process.cwd(), 'scripts/lib/probe-local-bot-shared.cjs'))
 const evaluateTurnTerminalSource = evaluateTurnTerminal.toString()
@@ -316,6 +317,7 @@ const isCaptureAfterOrchestrationSource = isCaptureAfterOrchestration.toString()
 const isSuccessfulDeliveryCaptureSource = isSuccessfulDeliveryCapture.toString()
 const latestTerminalOrchestrationSource = latestTerminalOrchestration.toString()
 const normalizeVisibleContentSource = normalizeVisibleContent.toString()
+const resolveOwnedProbeTurnCaptureSource = resolveOwnedProbeTurnCapture.toString()
 const serializePayloadSource = serializePayload.toString()
 
 const prompt = Buffer.from(process.env.QQBOT_TEST_PROMPT_B64 || '', 'base64').toString('utf8')
@@ -485,6 +487,7 @@ async function main() {
           const isCaptureAfterOrchestration = ${isCaptureAfterOrchestrationSource}
           const evaluateTurnTerminal = ${evaluateTurnTerminalSource}
           const normalizeVisibleContent = ${normalizeVisibleContentSource}
+          const resolveOwnedProbeTurnCapture = ${resolveOwnedProbeTurnCaptureSource}
           const serializePayload = ${serializePayloadSource}
           const requestedTurns = sequence
             ? sequence.turns.map((turn, index) => ({
@@ -649,14 +652,14 @@ async function main() {
           const turnCapturesByMessageId = new Map()
           let isolatedRoom = null
           let isolatedPreviousBinding = null
-          const resolveProbeTurnCapture = (channelId, options) => {
-            if (String(channelId) !== fakeChannelId) return null
-            const session = options && typeof options === 'object' ? options.session : null
-            if (!session || typeof session !== 'object') return null
-            if (String(session.channelId ?? '') !== fakeChannelId) return null
-            if (String(session.userId ?? '') !== String(fakeUserId)) return null
-            return turnCapturesByMessageId.get(Number(session.messageId ?? 0)) || null
-          }
+          const resolveProbeTurnCapture = (channelId, options) => resolveOwnedProbeTurnCapture({
+            channelId,
+            fakeChannelId,
+            fakeUserId,
+            options,
+            activeTurnCapture,
+            turnCapturesByMessageId,
+          })
           const capture = (turnCapture, route, content, extra = {}) => {
             if (!turnCapture) throw new Error('probe capture has no target turn')
             const visibleText = normalizeVisibleContent(content).trim()
@@ -835,6 +838,9 @@ async function main() {
               captured.receipt = serializePayload(receipt)
               captured.delivered = true
               return receipt
+            }
+            if (String(channelId) === fakeChannelId) {
+              throw new Error('isolated probe outbound did not belong to the active turn')
             }
             return originalSendMessage.call(this, channelId, content, guildId, options)
           }
