@@ -14,17 +14,23 @@ const props = withDefaults(defineProps<{
   roles?: readonly string[];
   compact?: boolean;
   copyable?: boolean;
+  rawString?: boolean;
 }>(), {
   meta: '',
   roles: () => [],
   compact: false,
   copyable: true,
+  rawString: false,
 });
 
 const copied = ref(false);
 let copiedTimer: number | undefined;
 
-const json = computed(() => JSON.stringify(props.value, null, 2)!);
+const json = computed(() => (
+  props.rawString && typeof props.value === 'string'
+    ? props.value
+    : JSON.stringify(props.value, null, 2)!
+));
 const tokens = computed<JsonToken[]>(() => {
   const result: JsonToken[] = [];
   const pattern = /"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g;

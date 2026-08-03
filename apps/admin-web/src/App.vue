@@ -295,7 +295,13 @@ watch(() => route.path, activateRouteBranch, { immediate: true });
           <span class="topbar-health"><i class="status-dot ok" />运行中</span>
         </div>
       </header>
-      <main class="content" :class="{ 'content-logs': route.name === 'logs' }">
+      <main
+        class="content"
+        :class="{
+          'content-logs': route.name === 'logs',
+          'content-context': route.name === 'context-presets',
+        }"
+      >
         <router-view />
       </main>
     </div>

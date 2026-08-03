@@ -5,20 +5,32 @@ import {
   onMounted,
   ref,
   watch,
+  type Component,
 } from 'vue';
 import { onBeforeRouteLeave, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
+  Bot,
+  FileText,
+  History,
+  ListChecks,
+  MessageSquareText,
+  SquareTerminal,
+  TextCursorInput,
+  Wrench,
+} from '@lucide/vue';
+import {
   agentMcpToolPutSchema,
   agentToolPutSchema,
+  modelAdminAggregateSchema,
   type AgentAdminState,
   type AgentMcpToolAdmin,
   type AgentToolPolicyState,
+  type ModelConfigAdminAggregate,
 } from '@contracts';
-import { ApiError, jsonBody, rawApi } from '@/api/client';
+import { ApiError, api, jsonBody, rawApi } from '@/api/client';
 import ContextPayloadPreview from '@/components/ContextPayloadPreview.vue';
-import ContextRuntimeInspector from '@/components/ContextRuntimeInspector.vue';
-import PendingChangesBar from '@/components/PendingChangesBar.vue';
+import ContextReadablePreview from '@/components/ContextReadablePreview.vue';
 import {
   createContextPreset,
   createRolePreset,
@@ -61,20 +73,18 @@ import {
 import {
   agentScratchpadExample,
   chatHistoryExample,
-  contextBlockGuides,
   currentInputExample,
   defaultKnowledgePrompt,
-  modelOutputExample,
   requestDocumentExample,
   runtimeInstructionExample,
-  toolDefinitionsExample,
   configurableQqbotFragmentChannels,
   type ContextPayloadExample,
-  type GuidedContextBlockType,
 } from './context-preset-guides';
 
 type EditableStoredContextBlockType = Exclude<StoredContextBlockType, 'longMemory'>;
 type TokenLimitChoice = 'auto' | '1024' | '2048' | '4096' | '8192' | 'custom';
+type ContextViewMode = 'reading' | 'source' | 'config';
+type AgentCapabilityKind = 'tools' | 'mcp' | 'skills';
 
 const router = useRouter();
 const contextCatalog = ref<ContextPresetCatalogResponse | null>(null);
@@ -90,6 +100,7 @@ const fragmentPolicyState = ref<PromptFragmentPolicyState | null>(null);
 const fragmentPolicyDraft = ref<PromptFragmentPolicyConfig | null>(null);
 const savedFragmentPolicyText = ref('');
 const selectedBlockId = ref('');
+const contextViewMode = ref<ContextViewMode>('reading');
 const preview = ref<ContextPresetPreviewResponse | null>(null);
 const previewError = ref<{ message: string; details: Record<string, unknown> | null } | null>(null);
 const loading = ref(false);
@@ -104,6 +115,8 @@ const agentToolPolicy = ref<AgentToolPolicyState | null>(null);
 const agentToolsLoading = ref(false);
 const pendingAgentTool = ref('');
 const agentToolQuery = ref('');
+const activeAgentCapability = ref<AgentCapabilityKind>('tools');
+const mainOutputProtocol = ref<ModelConfigAdminAggregate['models'][number]['structuredOutputProtocol']>(null);
 let previewTimer: number | undefined;
 let previewSequence = 0;
 
@@ -120,15 +133,34 @@ const blockLabels: Record<ResolvedContextBlock['type'], string> = {
   role: '角色提示',
   chatHistory: '聊天历史',
   requestDocuments: '请求文档',
-  lore: 'Lore',
+  lore: '设定条目',
   authorsNote: '作者注',
   knowledge: '知识来源',
   currentInput: '当前输入',
-  agentScratchpad: 'Agent Scratchpad',
+  agentScratchpad: 'Agent 过程',
   modelOutput: '模型输出',
-  qqbotFragments: 'Runtime 指令',
-  toolDefinitions: '工具定义',
+  qqbotFragments: '运行时上下文',
+  toolDefinitions: 'Agent 能力',
 };
+
+const blockIcons: Record<ResolvedContextBlock['type'], Component> = {
+  role: Bot,
+  chatHistory: History,
+  requestDocuments: FileText,
+  lore: FileText,
+  authorsNote: FileText,
+  knowledge: FileText,
+  currentInput: TextCursorInput,
+  agentScratchpad: ListChecks,
+  modelOutput: MessageSquareText,
+  qqbotFragments: SquareTerminal,
+  toolDefinitions: Wrench,
+};
+const agentCapabilityTabs: Array<{ value: AgentCapabilityKind; label: string }> = [
+  { value: 'tools', label: 'Tools' },
+  { value: 'mcp', label: 'MCP' },
+  { value: 'skills', label: 'Skills' },
+];
 
 const contextDirty = computed(() => (
   contextDraft.value !== null
@@ -157,20 +189,34 @@ const selectedBlockType = computed<ResolvedContextBlock['type'] | null>(() => {
   const type = selectedResolvedBlock.value?.type ?? selectedStoredBlock.value?.type ?? null;
   return type === 'longMemory' ? null : type;
 });
+const selectedBlockConfigurable = computed(() => {
+  const type = selectedBlockType.value;
+  if (!type) return false;
+  if (type === 'qqbotFragments' || type === 'toolDefinitions') return true;
+  if (type === 'chatHistory' || type === 'currentInput' || type === 'agentScratchpad') return false;
+  return selectedStoredBlock.value !== null;
+});
+const contextViewModes = computed<Array<{ value: ContextViewMode; label: string }>>(() => {
+  const modes: Array<{ value: ContextViewMode; label: string }> = [
+    { value: 'reading', label: '阅读' },
+    { value: 'source', label: '源码' },
+  ];
+  if (selectedBlockConfigurable.value) modes.push({ value: 'config', label: '配置' });
+  return modes;
+});
+const selectedPayloadIsExample = computed(() => {
+  const type = selectedBlockType.value;
+  return type === 'chatHistory'
+    || type === 'requestDocuments'
+    || type === 'qqbotFragments'
+    || type === 'currentInput'
+    || type === 'agentScratchpad'
+    || type === 'modelOutput';
+});
 const selectedBudgetBlock = computed<BudgetedContextBlock | null>(() => {
   const block = selectedStoredBlock.value;
   return block && 'budgetPriority' in block ? block as BudgetedContextBlock : null;
 });
-const selectedBlockGuide = computed(() => {
-  const type = selectedBlockType.value;
-  if (!type || type === 'role') return null;
-  return contextBlockGuides[type as GuidedContextBlockType];
-});
-const selectedBlockRule = computed(() => (
-  selectedBlockType.value === 'role'
-    ? 'Role preset 按消息原顺序展开，并组成模型输入的开头。'
-    : selectedBlockGuide.value?.summary ?? ''
-));
 const selectedBudgetLimitLabel = computed(() => {
   const block = selectedBudgetBlock.value;
   if (!block) return '';
@@ -258,71 +304,74 @@ interface ContextToolRow {
   main: boolean;
   management: 'editable' | 'locked_off';
   managementNote?: string;
+  pluginId?: string;
   mcpTool?: AgentMcpToolAdmin;
 }
 
-const contextToolRows = computed<ContextToolRow[]>(() => {
-  const query = agentToolQuery.value.trim().toLowerCase();
+const allContextToolRows = computed<ContextToolRow[]>(() => {
   const runtimeTools = new Map(
     (agentState.value?.tools.catalog ?? []).map((tool) => [tool.name, tool]),
   );
   const mcpTools = new Map(
     (agentState.value?.mcp.tools ?? []).map((tool) => [tool.name, tool]),
   );
-  return (agentToolPolicy.value?.catalog ?? [])
-    .filter((entry) => entry.visibility === 'standalone')
-    .map((entry): ContextToolRow => ({
-      name: entry.toolName,
-      title: entry.title || entry.toolName,
-      description: entry.description,
-      registered: entry.registered ?? runtimeTools.has(entry.toolName),
-      enabled: runtimeTools.get(entry.toolName)?.enabled ?? false,
-      main: runtimeTools.get(entry.toolName)?.main ?? false,
-      management: entry.management,
-      managementNote: entry.managementNote,
-      mcpTool: mcpTools.get(entry.toolName),
-    }))
-    .filter((tool) => (
-      !query || `${tool.title} ${tool.name} ${tool.description}`.toLowerCase().includes(query)
-    ))
-    .sort((left, right) => left.title.localeCompare(right.title));
+  const rows = (agentToolPolicy.value?.catalog ?? [])
+    .filter((entry) => entry.visibility !== 'internal')
+    .map((entry): ContextToolRow => {
+      const runtimeTool = runtimeTools.get(entry.toolName);
+      const mcpTool = mcpTools.get(entry.toolName);
+      return {
+        name: entry.toolName,
+        title: entry.title || entry.toolName,
+        description: entry.description,
+        registered: entry.registered ?? runtimeTools.has(entry.toolName),
+        enabled: mcpTool ? mcpTool.enabled : runtimeTool?.enabled ?? false,
+        main: mcpTool ? true : runtimeTool?.main ?? false,
+        management: entry.management,
+        managementNote: entry.managementNote,
+        pluginId: entry.pluginId,
+        mcpTool,
+      };
+    });
+  const knownNames = new Set(rows.map((row) => row.name));
+  for (const mcpTool of mcpTools.values()) {
+    if (knownNames.has(mcpTool.name)) continue;
+    rows.push({
+      name: mcpTool.name,
+      title: mcpTool.title || mcpTool.name,
+      description: mcpTool.description,
+      registered: true,
+      enabled: mcpTool.enabled,
+      main: true,
+      management: 'editable',
+      mcpTool,
+    });
+  }
+  return rows.sort((left, right) => left.title.localeCompare(right.title));
+});
+const contextToolRows = computed<ContextToolRow[]>(() => {
+  const query = agentToolQuery.value.trim().toLowerCase();
+  return allContextToolRows.value.filter((tool) => (
+    (activeAgentCapability.value === 'mcp' ? Boolean(tool.mcpTool) : !tool.mcpTool)
+    && (!query || `${tool.title} ${tool.name} ${tool.description}`.toLowerCase().includes(query))
+  ));
+});
+const contextSkillRows = computed(() => {
+  const query = agentToolQuery.value.trim().toLowerCase();
+  return (agentState.value?.skills.catalog ?? [])
+    .filter((skill) => skill.visible)
+    .filter((skill) => !query || `${skill.name} ${skill.description}`.toLowerCase().includes(query))
+    .sort((left, right) => left.name.localeCompare(right.name));
 });
 
 interface SelectedContextPayload extends ContextPayloadExample {
-  channel: 'messages[]' | 'tools[]' | 'request options';
-}
-
-function renderPayloadTemplate(source: string): string {
-  const variables: Record<string, string> = {
-    name: roleDraft.value?.displayName ?? 'Sakiko',
-    sender_id: '10001',
-    sender: '小明',
-    prompt: '请总结这个文件，并解释第二张图。',
-    date: '2026-08-01 13:42:18',
-    time: '13:42:18',
-    weekday: '星期六',
-    user_id: '10001',
-    user: '小明',
-    platform: 'onebot',
-    group_id: '778899',
-    group_name: 'Agent 设计讨论',
-    bot_id: '123456',
-    is_group: 'true',
-    is_private: 'false',
-    idle_duration: '2 分钟',
-    noop: '',
-  };
-  let rendered = source;
-  for (const [name, value] of Object.entries(variables)) {
-    rendered = rendered.replaceAll(`{${name}}`, value);
-  }
-  return rendered;
+  channel: 'messages[]' | 'agent capabilities' | 'model output' | 'runtime config';
 }
 
 function roleContentForPreview(content: RolePresetMessage['content']): unknown {
-  if (typeof content === 'string') return renderPayloadTemplate(content);
+  if (typeof content === 'string') return content;
   return content.map((part) => {
-    if (part.type === 'text') return { type: 'text', text: renderPayloadTemplate(part.text) };
+    if (part.type === 'text') return { type: 'text', text: part.text };
     if (part.type === 'image') {
       return {
         type: 'image_url',
@@ -347,6 +396,56 @@ function roleContentForPreview(content: RolePresetMessage['content']): unknown {
     };
   });
 }
+
+const modelOutputExampleValue = computed<unknown>(() => {
+  if (mainOutputProtocol.value === 'chat_reply_v1') {
+    return [
+      'CHAT_REPLY_V1 abc12345',
+      'DECISION reply',
+      'BEGIN message',
+      'CONTENT',
+      '|今晚排练需要调整三点，我整理好了。',
+      'END',
+      'BEGIN structured_block',
+      'CONTENT',
+      '|1. 演奏：第二段节拍保持稳定',
+      '|2. 编曲：间奏减少一层铺底',
+      '|3. 配合：结尾统一看鼓手手势',
+      'END',
+      'BEGIN image',
+      'ASSET_REF asset:tool:image:rehearsal-01',
+      'ALT',
+      '|排练段落标注图',
+      'END',
+      'BEGIN meme',
+      'CONTENT',
+      '|满意地点头',
+      'END',
+      'BEGIN voice',
+      'CONTENT',
+      '|辛苦了，明天按这个版本继续。',
+      'END',
+      'DONE abc12345',
+    ].join('\n');
+  }
+  if (
+    mainOutputProtocol.value === 'native_chat_json_schema'
+    || mainOutputProtocol.value === 'native_responses_json_schema'
+    || mainOutputProtocol.value === 'json_mode'
+  ) {
+    return {
+      decision: 'reply',
+      outbound_messages: [
+        { type: 'message', content: '今晚排练需要调整三点，我整理好了。' },
+        { type: 'structured_block', content: '1. 演奏：第二段节拍保持稳定\n2. 编曲：间奏减少一层铺底\n3. 配合：结尾统一看鼓手手势' },
+        { type: 'image', assetRef: 'asset:tool:image:rehearsal-01', alt: '排练段落标注图' },
+        { type: 'meme', content: '满意地点头' },
+        { type: 'voice', content: '辛苦了，明天按这个版本继续。' },
+      ],
+    };
+  }
+  return '今晚排练需要调整三点：第二段节拍保持稳定；间奏减少一层铺底；结尾统一看鼓手手势。';
+});
 
 const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
   const type = selectedBlockType.value;
@@ -381,7 +480,23 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
 
   if (type === 'qqbotFragments') {
     const source = runtimeInstructionExample.value as unknown[];
-    const messages = [source[0], source[1], source[2]];
+    const skills = (agentState.value?.skills.catalog ?? [])
+      .filter((skill) => skill.visible && skill.modelEnabled);
+    const skillMessage = {
+      role: 'system',
+      content: [
+        '<available_skills>',
+        ...skills.flatMap((skill) => [
+          '  <skill>',
+          `    <name>${skill.name}</name>`,
+          `    <description>${skill.description}</description>`,
+          `    <mode>${skill.mode}</mode>`,
+          '  </skill>',
+        ]),
+        '</available_skills>',
+      ].join('\n'),
+    };
+    const messages = [skillMessage, source[1], source[2]];
     if (fragmentPolicyDraft.value?.relationshipState !== false) messages.push(source[3]);
     if (fragmentPolicyDraft.value?.attachmentReferences !== false) messages.push(source[4]);
     if (fragmentPolicyDraft.value?.nativeCapabilities !== false) messages.push(source[5]);
@@ -394,7 +509,66 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
   }
 
   if (type === 'toolDefinitions') {
-    return { channel: 'tools[]', ...toolDefinitionsExample };
+    const state = agentState.value;
+    const policyByTool = new Map(
+      (agentToolPolicy.value?.catalog ?? []).map((entry) => [entry.toolName, entry]),
+    );
+    const activePlugins = (state?.plugins.catalog ?? []).filter((plugin) => plugin.state === 'active');
+    const pluginNamesByTool = new Map<string, string[]>();
+    const pluginNamesByMcpServer = new Map<string, string[]>();
+    const pluginNamesBySkill = new Map<string, string[]>();
+    const addPluginSource = (target: Map<string, string[]>, key: string, displayName: string) => {
+      const names = target.get(key) ?? [];
+      if (!names.includes(displayName)) names.push(displayName);
+      target.set(key, names);
+    };
+    for (const plugin of activePlugins) {
+      for (const name of plugin.contents.tools) addPluginSource(pluginNamesByTool, name, plugin.displayName);
+      for (const name of plugin.contents.mcpServers) addPluginSource(pluginNamesByMcpServer, name, plugin.displayName);
+      for (const name of plugin.contents.skills) addPluginSource(pluginNamesBySkill, name, plugin.displayName);
+    }
+    const activePluginIds = new Set(activePlugins.map((plugin) => plugin.id));
+    const tools = (state?.tools.catalog ?? [])
+      .filter((tool) => tool.enabled && tool.main)
+      .filter((tool) => {
+        const pluginId = policyByTool.get(tool.name)?.pluginId;
+        return pluginId === undefined || activePluginIds.has(pluginId);
+      })
+      .map((tool) => {
+        const mcpTool = tool.isMcp
+          ? state?.mcp.tools.find((candidate) => candidate.name === tool.name)
+          : undefined;
+        const policy = policyByTool.get(tool.name);
+        const providers = tool.isMcp
+          ? pluginNamesByMcpServer.get(mcpTool?.server ?? '') ?? []
+          : pluginNamesByTool.get(tool.name) ?? [];
+        return {
+          name: policy?.title || tool.name,
+          technicalName: tool.name,
+          description: policy?.description || tool.description || mcpTool?.description || '',
+          source: tool.isMcp ? 'mcp' as const : 'native' as const,
+          providers,
+          ...(mcpTool?.server ? { server: mcpTool.server } : {}),
+        };
+      });
+    const skills = (agentState.value?.skills.catalog ?? [])
+      .filter((skill) => skill.visible && skill.modelEnabled)
+      .map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        mode: skill.mode,
+        providers: pluginNamesBySkill.get(skill.name) ?? [],
+      }));
+    return {
+      channel: 'agent capabilities',
+      meta: `tools[${tools.length}] · skills[${skills.length}]`,
+      roles: ['native', 'mcp', 'system'],
+      value: {
+        tools: tools.filter((tool) => tool.source === 'native'),
+        mcp: tools.filter((tool) => tool.source === 'mcp'),
+        skills,
+      },
+    };
   }
 
   if (type === 'currentInput') {
@@ -404,26 +578,9 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
     }
     return {
       channel: 'messages[]',
-      meta: currentInputExample.meta,
-      roles: currentInputExample.roles,
-      value: [
-        {
-          role: 'human',
-          content: [
-            {
-              type: 'text',
-              text: renderPayloadTemplate(block.inputFormat),
-            },
-            {
-              type: 'file_url',
-              file_url: {
-                url: 'qqbot-file://att_pdf01/需求说明.pdf',
-                mimeType: 'application/pdf',
-              },
-            },
-          ],
-        },
-      ],
+      meta: 'messages[1]',
+      roles: ['human'],
+      value: [{ role: 'human', content: block.inputFormat }],
     };
   }
 
@@ -435,18 +592,13 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
   }
 
   if (type === 'modelOutput') {
-    const block = selectedOutputBlock.value;
-    return block
-      ? {
-          channel: 'request options',
-          meta: modelOutputExample.meta,
-          roles: modelOutputExample.roles,
-          value: {
-            maxOutputTokens: block.maxOutputTokens,
-            postHandler: block.postHandler,
-          },
-        }
-      : { channel: 'request options', ...modelOutputExample };
+    const protocol = mainOutputProtocol.value ?? 'plain_text';
+    return {
+      channel: 'model output',
+      meta: protocol,
+      roles: ['ai'],
+      value: modelOutputExampleValue.value,
+    };
   }
 
   if (type === 'lore') {
@@ -454,11 +606,11 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
     const entries = block?.enabled
       ? block.entries.filter((entry) => entry.enabled !== false)
       : [];
-    const content = entries.map((entry) => renderPayloadTemplate(entry.content)).join('\n');
+    const content = entries.map((entry) => entry.content).join('\n');
     const messages = content
       ? [{
           role: 'human',
-          content: renderPayloadTemplate((block?.prompt ?? '{input}').replaceAll('{input}', content)),
+          content: (block?.prompt ?? '{input}').replaceAll('{input}', content),
         }]
       : [];
     return {
@@ -472,7 +624,7 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
   if (type === 'authorsNote') {
     const block = selectedAuthorsNoteBlock.value;
     const messages = block?.enabled && block.insertFrequency > 0
-      ? [{ role: 'human', content: renderPayloadTemplate(block.content) }]
+      ? [{ role: 'human', content: block.content }]
       : [];
     return {
       channel: 'messages[]',
@@ -486,15 +638,11 @@ const selectedContextPayload = computed<SelectedContextPayload | null>(() => {
   if (!block?.enabled || block.sources.length === 0) {
     return { channel: 'messages[]', meta: 'messages[0]', roles: ['human'], value: [] };
   }
-  const document = `<doc metadata="${JSON.stringify({ source: block.sources[0], blockId: block.id })}" id="knowledge-01">Agent 页面使用单一工作区，并在上下文块旁直接提供相关配置。</doc>`;
   return {
-    channel: 'messages[]',
-    meta: 'messages[1]',
-    roles: ['human'],
-    value: [{
-      role: 'human',
-      content: renderPayloadTemplate((block.prompt ?? defaultKnowledgePrompt).replaceAll('{knowledge}', document)),
-    }],
+    channel: 'runtime config',
+    meta: `sources[${block.sources.length}]`,
+    roles: [],
+    value: { sources: block.sources, prompt: block.prompt ?? defaultKnowledgePrompt },
   };
 });
 
@@ -506,18 +654,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function blockPlacement(type: ResolvedContextBlock['type']): string {
-  return type === 'role'
-    ? '消息开头'
-    : contextBlockGuides[type as GuidedContextBlockType].placement;
-}
-
-function blockOrderLabel(type: ResolvedContextBlock['type'], index: number): string {
-  if (type === 'toolDefinitions') return '↗';
-  const parallelBefore = preview.value?.blocks
-    .slice(0, index)
-    .filter((block) => block.type === 'toolDefinitions').length ?? 0;
-  return String(index + 1 - parallelBefore).padStart(2, '0');
+function skillModeLabel(mode: string): string {
+  if (mode === 'full') return '完整内容';
+  if (mode === 'description') return '说明';
+  return '关闭';
 }
 
 function apiErrorDetails(error: unknown): Record<string, unknown> | null {
@@ -561,10 +701,11 @@ async function loadAgentTools(): Promise<void> {
   }
 }
 
-function contextToolState(tool: ContextToolRow): string {
-  if (tool.management === 'locked_off') return tool.managementNote ?? '策略锁定关闭';
-  if (!tool.registered) return '未注册';
-  return tool.enabled && tool.main ? '已启用' : '已停用';
+async function loadMainOutputProtocol(): Promise<void> {
+  const aggregate = await api('/models', modelAdminAggregateSchema);
+  const binding = aggregate.liveBindings.find((item) => item.workload === 'main.chat');
+  const model = aggregate.models.find((item) => item.id === binding?.modelId);
+  mainOutputProtocol.value = model?.structuredOutputProtocol ?? null;
 }
 
 async function toggleContextTool(tool: ContextToolRow, enabled: boolean): Promise<void> {
@@ -631,7 +772,7 @@ async function loadContext(id: string): Promise<void> {
 async function initialize(): Promise<void> {
   loading.value = true;
   try {
-    await refreshCatalogs();
+    await Promise.all([refreshCatalogs(), loadMainOutputProtocol(), loadAgentTools()]);
     const preferred = contextCatalog.value?.globalDefaultContextPresetId
       ?? contextCatalog.value?.contextPresets[0]?.id;
     if (preferred) await loadContext(preferred);
@@ -1261,7 +1402,11 @@ function beforeUnload(event: BeforeUnloadEvent): void {
 
 watch(contextDraft, schedulePreview, { deep: true });
 watch(selectedBlockType, (type) => {
+  contextViewMode.value = 'reading';
   if (type === 'toolDefinitions' && agentState.value === null) void loadAgentTools();
+  if (type === 'modelOutput') {
+    void loadMainOutputProtocol().catch((error) => ElMessage.error(errorText(error)));
+  }
 });
 
 onBeforeRouteLeave(async () => {
@@ -1285,14 +1430,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="context-workbench">
     <header class="context-page-head">
-      <div>
-        <h1>上下文</h1>
-        <p>按输入顺序排列；选择一项即可编辑。</p>
-      </div>
-      <div class="context-budget">
-        <span>Input <strong>{{ preview?.inputBudgetTokens ?? 'runtime' }}</strong></span>
-        <span>Output <strong>{{ preview?.outputBudgetTokens ?? '—' }}</strong></span>
-      </div>
+      <h1>上下文</h1>
     </header>
 
     <section class="preset-bar">
@@ -1309,11 +1447,8 @@ onBeforeUnmount(() => {
         </el-select>
       </div>
       <div class="preset-actions-inline">
-        <span v-if="contextCatalog?.globalDefaultContextPresetId === selectedContextId" class="preset-status">全局默认</span>
-        <el-button text @click="createContext">新建</el-button>
         <el-button
           v-if="contextCatalog?.globalDefaultContextPresetId !== selectedContextId"
-          text
           :disabled="!selectedContextId || contextCatalog?.globalDefaultContextPresetId === selectedContextId"
           :loading="mutating"
           @click="makeDefault"
@@ -1322,21 +1457,29 @@ onBeforeUnmount(() => {
         </el-button>
         <el-button
           v-if="contextDetail?.hasOverride"
-          text
           :loading="mutating"
           @click="revertCurrentContext"
         >
           恢复 bundled
         </el-button>
+        <el-button @click="createContext">新建</el-button>
         <el-button
           v-if="contextDetail?.source === 'runtime' && !contextDetail.hasOverride"
-          text
           type="danger"
+          plain
           :disabled="!contextDetail || contextDetail.source !== 'runtime' || contextDetail.hasOverride"
           :loading="mutating"
           @click="removeCurrentContext"
         >
           删除
+        </el-button>
+        <el-button
+          type="primary"
+          :disabled="!hasDirtyResources || mutating"
+          :loading="savingContext || savingRole || savingFragmentPolicy"
+          @click="saveDirtyResources"
+        >
+          保存
         </el-button>
       </div>
     </section>
@@ -1353,7 +1496,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-else class="context-stack">
           <article
-            v-for="(block, index) in preview.blocks"
+            v-for="block in preview.blocks"
             :key="block.id"
             class="stack-block"
             :class="{
@@ -1374,67 +1517,70 @@ onBeforeUnmount(() => {
             @drop="dropOn(block, $event)"
             @dragend="draggingBlockId = null"
           >
-            <span class="stack-index">{{ blockOrderLabel(block.type, index) }}</span>
-            <span class="stack-copy">
-              <strong>{{ blockLabels[block.type] }}</strong>
-              <small>{{ blockPlacement(block.type) }}</small>
-            </span>
-            <span v-if="!block.enabled" class="stack-state">关闭</span>
-            <span v-else-if="block.source === 'runtime'" class="stack-state">Runtime</span>
+            <component :is="blockIcons[block.type]" :size="17" :stroke-width="1.8" aria-hidden="true" />
+            <strong>{{ blockLabels[block.type] }}</strong>
           </article>
-        </div>
-
-        <div v-if="!previewError && preview" class="add-block-tray">
-          <button
-            v-for="type in addableTypes"
-            :key="type"
-            type="button"
-            @click="addBlock(type)"
-          >
-            {{ blockLabels[type] }}
-          </button>
         </div>
       </section>
 
       <section class="editor-panel">
         <div class="panel-head editor-head">
-          <div>
-            <div class="editor-title-row">
-              <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
-              <code v-if="selectedContextPayload">{{ selectedContextPayload.channel }}</code>
-            </div>
-            <small v-if="selectedBlockRule">{{ selectedBlockRule }}</small>
+          <div class="editor-heading">
+            <h2>{{ selectedBlockType ? blockLabels[selectedBlockType] : '选择一个块' }}</h2>
+            <span v-if="selectedPayloadIsExample && contextViewMode !== 'config'" class="example-tag">示例</span>
           </div>
-          <div class="block-tools">
-            <el-button v-if="canDuplicateSelected" size="small" @click="duplicateSelectedBlock">
-              复制块
-            </el-button>
-            <el-button v-if="canRemoveSelected" size="small" type="danger" plain @click="removeSelectedBlock">
-              移除
-            </el-button>
+          <div class="editor-controls">
+            <div v-if="selectedBlockType" class="view-tabs" role="tablist" aria-label="内容视图">
+              <button
+                v-for="mode in contextViewModes"
+                :key="mode.value"
+                type="button"
+                role="tab"
+                :aria-selected="contextViewMode === mode.value"
+                @click="contextViewMode = mode.value"
+              >
+                {{ mode.label }}
+              </button>
+            </div>
+            <div v-if="contextViewMode === 'config'" class="block-tools">
+              <el-button v-if="canDuplicateSelected" size="small" @click="duplicateSelectedBlock">
+                复制块
+              </el-button>
+              <el-button v-if="canRemoveSelected" size="small" type="danger" plain @click="removeSelectedBlock">
+                移除
+              </el-button>
+            </div>
           </div>
         </div>
 
         <div v-if="selectedBlockType" class="editor-body">
-          <div class="context-editor-grid">
-            <ContextPayloadPreview
-              v-if="selectedContextPayload"
-              class="context-payload"
-              :value="selectedContextPayload.value"
-              :meta="selectedContextPayload.meta"
-              :roles="selectedContextPayload.roles"
-            />
+          <ContextReadablePreview
+            v-if="contextViewMode === 'reading' && selectedContextPayload"
+            class="context-reading"
+            :value="selectedContextPayload.value"
+            :kind="selectedBlockType"
+            :empty-label="selectedBlockType === 'chatHistory'
+              ? '聊天历史在实际会话中生成'
+              : selectedBlockType === 'agentScratchpad'
+                ? 'Agent 过程在执行时生成'
+                : '当前没有内容'"
+          />
+          <ContextPayloadPreview
+            v-else-if="contextViewMode === 'source' && selectedContextPayload"
+            class="context-payload"
+            :value="selectedContextPayload.value"
+            :meta="selectedContextPayload.meta"
+            :roles="selectedContextPayload.roles"
+            :raw-string="selectedBlockType === 'modelOutput' && typeof selectedContextPayload.value === 'string'"
+          />
 
-            <section class="block-settings">
-              <header class="settings-head">
-                <h3>配置</h3>
-              </header>
+          <section v-else-if="contextViewMode === 'config'" class="block-settings">
 
               <template v-if="selectedResolvedBlock?.source === 'runtime'">
             <template v-if="selectedResolvedBlock.type === 'qqbotFragments'">
               <div class="runtime-link-row">
-                <span><strong>Skills</strong><small>description / full</small></span>
-                <el-button text @click="router.push('/intelligence/agent?section=skills')">管理</el-button>
+                <strong>Skills</strong>
+                <el-button @click="router.push('/intelligence/agent?section=skills')">管理 Skills</el-button>
               </div>
               <section v-if="fragmentPolicyDraft" class="fragment-policy">
                 <div
@@ -1444,7 +1590,6 @@ onBeforeUnmount(() => {
                 >
                   <div>
                     <strong>{{ channel.label }}</strong>
-                    <p>{{ channel.description }}</p>
                   </div>
                   <el-switch
                     v-model="fragmentPolicyDraft[channel.key]"
@@ -1466,32 +1611,59 @@ onBeforeUnmount(() => {
             </template>
             <section v-else-if="selectedResolvedBlock.type === 'toolDefinitions'" class="context-tools">
               <div class="context-tools-head">
+                <div class="capability-tabs" aria-label="Agent 能力类型">
+                  <button
+                    v-for="item in agentCapabilityTabs"
+                    :key="item.value"
+                    type="button"
+                    :aria-pressed="activeAgentCapability === item.value"
+                    @click="activeAgentCapability = item.value; agentToolQuery = ''"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
                 <el-input
                   v-model="agentToolQuery"
                   clearable
                   size="small"
-                  placeholder="搜索 Tools"
-                  aria-label="搜索 Tools"
+                  :placeholder="`搜索 ${activeAgentCapability}`"
+                  :aria-label="`搜索 ${activeAgentCapability}`"
                 />
-                <el-button text @click="router.push('/intelligence/agent?section=tools')">全部</el-button>
+                <el-button
+                  @click="router.push(`/intelligence/agent?section=${activeAgentCapability}`)"
+                >
+                  管理
+                </el-button>
               </div>
               <div v-loading="agentToolsLoading" class="context-tool-list">
-                <article v-for="tool in contextToolRows" :key="tool.name" class="context-tool-row">
+                <article
+                  v-for="tool in activeAgentCapability === 'skills' ? [] : contextToolRows"
+                  :key="tool.name"
+                  class="context-tool-row"
+                >
                   <div>
                     <strong>{{ tool.title }}</strong>
-                    <small>{{ tool.name }}</small>
-                    <span>{{ contextToolState(tool) }}</span>
                   </div>
                   <el-switch
-                    :model-value="tool.enabled && tool.main"
+                    :model-value="tool.management !== 'locked_off' && tool.enabled && tool.main"
                     :disabled="!tool.registered || tool.management === 'locked_off'"
                     :loading="pendingAgentTool === tool.name"
-                    :aria-label="`${tool.enabled && tool.main ? '停用' : '启用'} ${tool.title}`"
+                    :aria-label="`${tool.management !== 'locked_off' && tool.enabled && tool.main ? '停用' : '启用'} ${tool.title}`"
                     @change="toggleContextTool(tool, Boolean($event))"
                   />
                 </article>
-                <p v-if="!agentToolsLoading && contextToolRows.length === 0" class="empty-setting">
-                  {{ agentToolQuery ? '没有匹配的 Tool' : '没有可配置的 Tool' }}
+                <article v-for="skill in activeAgentCapability === 'skills' ? contextSkillRows : []" :key="skill.id" class="context-tool-row">
+                  <div>
+                    <strong>{{ skill.name }}</strong>
+                  </div>
+                  <b>{{ skill.modelEnabled ? skillModeLabel(skill.mode) : '关闭' }}</b>
+                </article>
+                <p
+                  v-if="!agentToolsLoading
+                    && (activeAgentCapability === 'skills' ? contextSkillRows.length === 0 : contextToolRows.length === 0)"
+                  class="empty-setting"
+                >
+                  {{ agentToolQuery ? '没有匹配结果' : `当前没有 ${agentCapabilityTabs.find((item) => item.value === activeAgentCapability)?.label}` }}
                 </p>
               </div>
             </section>
@@ -1584,18 +1756,6 @@ onBeforeUnmount(() => {
                     </el-button>
                   </div>
                 </template>
-              </template>
-
-              <template v-else-if="selectedStoredBlock.type === 'currentInput'">
-                <el-form-item label="输入格式">
-                  <el-input
-                    v-model="selectedStoredBlock.inputFormat"
-                    type="textarea"
-                    :autosize="{ minRows: 6, maxRows: 18 }"
-                    placeholder="留空时使用运行时默认格式"
-                  />
-                </el-form-item>
-                <p class="field-note">可使用运行时提供的变量，例如 <code>{prompt}</code>、<code>{date}</code>。</p>
               </template>
 
               <template v-else-if="selectedOutputBlock">
@@ -1705,8 +1865,7 @@ onBeforeUnmount(() => {
 
             </el-form>
               </template>
-            </section>
-          </div>
+          </section>
         </div>
         <div v-else class="editor-empty">从左侧选择一个上下文块。</div>
       </section>
@@ -1715,16 +1874,6 @@ onBeforeUnmount(() => {
     <div v-else-if="!loading" class="panel empty-workbench">
       当前没有可编辑的上下文预设。
     </div>
-    <ContextRuntimeInspector />
-    <PendingChangesBar
-      v-if="hasDirtyResources"
-      :saving="savingContext || savingRole"
-      :disabled="mutating"
-      message="上下文预设有未保存修改"
-      save-label="保存全部"
-      @discard="discardDirtyResources"
-      @save="saveDirtyResources"
-    />
   </div>
 </template>
 
@@ -2055,12 +2204,31 @@ onBeforeUnmount(() => {
 
 .context-tools-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
   align-items: center;
   gap: 5px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
+
+.capability-tabs {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.capability-tabs button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.capability-tabs button:last-child { border-right: 0; }
+.capability-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 
 .context-tool-list {
   min-height: 54px;
@@ -2107,6 +2275,20 @@ onBeforeUnmount(() => {
   grid-column: 1 / -1;
   color: var(--muted);
   font-size: 10.5px;
+}
+
+.context-tool-row p {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.context-tool-row > b {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .empty-setting {
@@ -2414,5 +2596,191 @@ onBeforeUnmount(() => {
   .message-meta .el-button {
     margin-left: 0;
   }
+}
+
+/* Unified context workspace */
+.context-workbench {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 50px 62px minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.context-page-head {
+  max-width: none;
+  min-height: 50px;
+  margin: 0;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.context-page-head h1 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.preset-bar {
+  max-width: none;
+  min-height: 62px;
+  margin: 0;
+  padding: 9px 16px;
+  border-top: 0;
+}
+
+.preset-picker .el-select { width: 180px; }
+.picker-label { color: var(--ink); font-size: 13px; font-weight: 600; }
+.preset-actions-inline { flex-wrap: nowrap; }
+.preset-actions-inline :deep(.el-button + .el-button) { margin-left: 0; }
+
+.workbench-grid {
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  margin: 0;
+  grid-template-columns: 210px minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.stack-panel,
+.editor-panel {
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 0;
+}
+
+.stack-panel { border-right: 1px solid var(--line); }
+.context-stack { flex: 1; overflow: auto; }
+
+.stack-block {
+  min-height: 66px;
+  flex: 1 0 66px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.stack-block strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-block.disabled { opacity: .5; }
+
+.editor-panel { background: #f6f8fb; }
+.editor-head {
+  min-height: 52px;
+  padding: 0 14px;
+  background: var(--surface);
+}
+
+.editor-head h2 { font-size: 14px; font-weight: 600; }
+.editor-heading { display: flex; align-items: center; gap: 8px; }
+.example-tag {
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+.editor-controls { display: flex; align-items: center; gap: 10px; }
+
+.view-tabs {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.view-tabs button {
+  min-width: 56px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.view-tabs button:last-child { border-right: 0; }
+.view-tabs button[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
+
+.editor-body {
+  flex: 1;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+}
+
+.context-reading,
+.context-payload,
+.block-settings {
+  width: 100%;
+  min-height: 100%;
+}
+
+.context-payload { background: var(--surface); }
+.block-settings {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 22px 26px 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.block-settings :deep(.el-form-item__label),
+.fragment-policy-row strong,
+.context-tool-row strong,
+.context-tool-row small,
+.context-tool-row span,
+.runtime-link-row small,
+.field-note,
+.field-note code { color: var(--ink); }
+
+.fragment-policy-row p { display: none; }
+.settings-head,
+.editor-title-row code,
+.stack-index,
+.stack-copy small,
+.stack-state,
+.add-block-tray { display: none; }
+
+.empty-workbench {
+  grid-row: 3;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink);
+}
+
+@media (max-width: 820px) {
+  .context-workbench { height: 100%; grid-template-rows: auto auto minmax(0, 1fr); }
+  .preset-bar { align-items: stretch; }
+  .preset-actions-inline { flex-wrap: wrap; justify-content: flex-start; }
+  .workbench-grid { grid-template-columns: 58px minmax(0, 1fr); }
+  .context-stack { max-height: none; padding: 0; }
+  .stack-block { justify-content: center; grid-template-columns: 18px; padding: 0; }
+  .stack-block strong { display: none; }
+  .editor-head { align-items: center; flex-wrap: wrap; padding-block: 8px; }
+  .editor-controls { margin-left: auto; }
+}
+
+@media (max-width: 560px) {
+  .preset-bar { gap: 8px; }
+  .preset-picker { flex-direction: row; align-items: center; }
+  .preset-picker .el-select { width: min(180px, calc(100vw - 110px)); }
+  .preset-actions-inline :deep(.el-button:not(.el-button--primary)) { display: none; }
+  .editor-body { padding: 8px; }
+  .block-settings { padding: 18px 16px 32px; }
+  .view-tabs button { min-width: 50px; padding: 0 9px; }
 }
 </style>
