@@ -674,7 +674,11 @@ describe('codex oauth bridge helpers', () => {
         {
           id: 'gpt-5.5',
           supported_endpoints: ['/v1/responses'],
-          capabilities: { structured_outputs: true },
+          capabilities: { structured_outputs: false },
+          qqbot: {
+            requestMode: 'responses',
+            structuredOutputProtocol: 'chat_reply_v1',
+          },
         },
       ],
     });

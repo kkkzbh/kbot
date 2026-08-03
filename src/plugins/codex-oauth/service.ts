@@ -441,7 +441,11 @@ function buildOpenAIModelsPayload(models: readonly CodexModelOption[], catalog: 
       owned_by: 'codex',
       supported_endpoints: ['/v1/responses'],
       capabilities: {
-        structured_outputs: true,
+        structured_outputs: false,
+      },
+      qqbot: {
+        requestMode: 'responses',
+        structuredOutputProtocol: 'chat_reply_v1',
       },
     })),
     qqbot: {

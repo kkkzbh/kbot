@@ -243,7 +243,6 @@ export class ModelConnectionOperations {
     } else if (runtime.connection.catalogDriver === 'openaiModels') {
       models = parseCatalogPayload(
         (await this.fetchOpenAiModels(runtime, 'catalog')).payload,
-        'openaiCompatible',
       );
     } else if (runtime.connection.catalogDriver === 'codexBridge') {
       const response = await this.requireBridgeModels(
@@ -255,7 +254,7 @@ export class ModelConnectionOperations {
           () => this.options.codexBridge.proxyModels({ forceRefresh: true }),
         ),
       );
-      models = parseCatalogPayload(parseJson(response.body, connectionId), 'codexBridge');
+      models = parseCatalogPayload(parseJson(response.body, connectionId));
     } else {
       const response = await this.requireBridgeModels(
         connectionId,
@@ -266,7 +265,7 @@ export class ModelConnectionOperations {
           () => this.options.copilotBridge.proxyModels(),
         ),
       );
-      models = parseCatalogPayload(parseJson(response.body, connectionId), 'copilotBridge');
+      models = parseCatalogPayload(parseJson(response.body, connectionId));
     }
     if (models.length === 0) {
       throw new AdminHttpError(
@@ -575,10 +574,7 @@ function createAuthState(
   };
 }
 
-function parseCatalogPayload(
-  payload: unknown,
-  adapter: 'openaiCompatible' | 'codexBridge' | 'copilotBridge',
-): ModelCatalogEntry[] {
+function parseCatalogPayload(payload: unknown): ModelCatalogEntry[] {
   if (!isRecord(payload) || !Array.isArray(payload.data)) return [];
   const seen = new Set<string>();
   const entries: ModelCatalogEntry[] = [];
@@ -588,23 +584,19 @@ function parseCatalogPayload(
     if (seen.has(transportModel)) continue;
     seen.add(transportModel);
     const qqbot = isRecord(item.qqbot) ? item.qqbot : {};
-    const requestMode = adapter === 'codexBridge'
+    const requestMode = qqbot.requestMode === 'responses'
       ? 'responses'
-      : qqbot.requestMode === 'responses'
-        ? 'responses'
-        : qqbot.requestMode === 'chat_completions'
-          ? 'chat_completions'
-          : null;
-    const structuredOutputProtocol = adapter === 'codexBridge'
-      ? 'native_responses_json_schema'
-      : [
-          'native_chat_json_schema',
-          'native_responses_json_schema',
-          'chat_reply_v1',
-          'json_mode',
-        ].includes(String(qqbot.structuredOutputProtocol))
-        ? qqbot.structuredOutputProtocol as ModelCatalogEntry['structuredOutputProtocol']
+      : qqbot.requestMode === 'chat_completions'
+        ? 'chat_completions'
         : null;
+    const structuredOutputProtocol = [
+      'native_chat_json_schema',
+      'native_responses_json_schema',
+      'chat_reply_v1',
+      'json_mode',
+    ].includes(String(qqbot.structuredOutputProtocol))
+      ? qqbot.structuredOutputProtocol as ModelCatalogEntry['structuredOutputProtocol']
+      : null;
     entries.push({
       transportModel,
       displayName: typeof item.name === 'string' && item.name.trim()

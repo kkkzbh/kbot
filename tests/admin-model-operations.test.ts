@@ -62,7 +62,15 @@ function bridge(status: 'ready' | 'error' = 'ready') {
     proxyModels: vi.fn(async () => ({
       status: 200,
       headers: {},
-      body: JSON.stringify({ data: [{ id: 'bridge-model' }] }),
+      body: JSON.stringify({
+        data: [{
+          id: 'bridge-model',
+          qqbot: {
+            requestMode: 'responses',
+            structuredOutputProtocol: 'chat_reply_v1',
+          },
+        }],
+      }),
     })),
   };
 }
@@ -153,6 +161,38 @@ describe('admin model connection operations', () => {
       },
     });
     expect(JSON.stringify(error)).not.toContain('bridge-secret');
+  });
+
+  it('uses the Codex bridge declared text reply protocol', async () => {
+    const operations = new ModelConnectionOperations({
+      modelConfig: {
+        getConnectionRuntime: vi.fn(() => ({
+          revision: 2,
+          connection: {
+            id: 'codex',
+            displayName: 'Codex',
+            adapter: 'codexBridge',
+            baseUrl: null,
+            auth: { kind: 'oauth', provider: 'codex' },
+            catalogDriver: 'codexBridge',
+            apiKey: null,
+          },
+          models: [],
+        })),
+      } as unknown as ModelConfigService,
+      codexBridge: bridge() as unknown as CodexOAuthBridgeService,
+      copilotBridge: bridge() as unknown as CopilotOAuthBridgeService,
+    });
+
+    const result = await operations.catalog('codex');
+
+    expect(result.models).toEqual([{
+      transportModel: 'bridge-model',
+      displayName: 'bridge-model',
+      requestMode: 'responses',
+      structuredOutputProtocol: 'chat_reply_v1',
+      metadataTags: [],
+    }]);
   });
 
   it('redacts OAuth diagnostics and attempt errors in aggregate auth state', async () => {
