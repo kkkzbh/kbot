@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { StructuredTool } from '@langchain/core/tools';
 import type { Session } from 'koishi';
 import type {
@@ -12,6 +12,7 @@ import type {
 } from '../../types/memory.js';
 import { resolveCurrentMemoryAudience } from './address.js';
 import { MemoryRuntimeError } from './errors.js';
+import { auditMemoryRecallSelection } from './recall.js';
 import type { MemoryStatusService } from './status.js';
 import type { MemoryStore } from './store.js';
 
@@ -357,12 +358,14 @@ class MemorySearchTool extends StructuredTool {
     );
     const page = available.slice(offset, offset + input.limit);
     const items: Array<Record<string, unknown>> = [];
+    const selectedItems: MemoryLedgerItem[] = [];
     for (const item of page) {
       const candidate = publicItem(item, address);
       const cost = estimateTokens(JSON.stringify(candidate));
       if (budget.resultTokens + cost > MAX_RESULT_TOKENS_PER_REQUEST) break;
       budget.resultTokens += cost;
       items.push(candidate);
+      selectedItems.push(item);
     }
     let nextCursor: string | null = null;
     if (
@@ -377,6 +380,14 @@ class MemorySearchTool extends StructuredTool {
         expiresAt: now + CURSOR_TTL_MS,
       });
     }
+    const recallKey = createHash('sha256')
+      .update(JSON.stringify({ signature, offset }))
+      .digest('hex');
+    await auditMemoryRecallSelection(this.store, address, selectedItems, {
+      idempotencyKey: `recall:${conversationId}:${currentRequestKey}:tool:${recallKey}`,
+      reasonCode: input.mode === 'search' ? 'lexical' : 'recent',
+      createdAt: address.observedAt,
+    });
     this.status.recordSearch(input.mode, items.length);
     return JSON.stringify({
       trust: 'untrusted_historical_reference',

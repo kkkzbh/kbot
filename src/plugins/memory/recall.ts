@@ -14,6 +14,36 @@ export interface MemoryRecallResult {
   items: MemoryLedgerItem[];
 }
 
+export interface MemoryRecallAuditOptions {
+  idempotencyKey: string;
+  reasonCode: 'lexical' | 'recent';
+  createdAt?: number;
+}
+
+export async function auditMemoryRecallSelection(
+  store: MemoryStore,
+  address: MemoryAddress,
+  items: readonly MemoryLedgerItem[],
+  options: MemoryRecallAuditOptions,
+): Promise<void> {
+  if (!items.length) return;
+  await store.audit({
+    idempotencyKey: options.idempotencyKey,
+    subjectKey: address.userKey,
+    contextKey: address.contextKey,
+    eventType: 'recall_selected',
+    detail: {
+      selected: items.map((item) => ({
+        streamId: item.streamId,
+        revision: item.revision,
+        score: Number((item.lexicalScore ?? 0).toFixed(4)),
+        reasonCode: options.reasonCode,
+      })),
+    },
+    createdAt: options.createdAt ?? address.observedAt,
+  });
+}
+
 export async function retrieveMemoryForContext(
   store: MemoryStore,
   address: MemoryAddress,
@@ -30,19 +60,9 @@ export async function retrieveMemoryForContext(
   if (items.length) {
     const requestKey = address.requestId?.trim()
       || `${address.observedAt}:${createHash('sha256').update(query).digest('hex')}`;
-    await store.audit({
+    await auditMemoryRecallSelection(store, address, items, {
       idempotencyKey: `recall:${address.conversationId}:${requestKey}`,
-      subjectKey: address.userKey,
-      contextKey: address.contextKey,
-      eventType: 'recall_selected',
-      detail: {
-        selected: items.map((item) => ({
-          streamId: item.streamId,
-          revision: item.revision,
-          score: Number((item.lexicalScore ?? 0).toFixed(4)),
-          reasonCode: 'lexical',
-        })),
-      },
+      reasonCode: query.trim() ? 'lexical' : 'recent',
       createdAt: address.observedAt,
     });
   }

@@ -21,6 +21,7 @@ async function runtime(): Promise<MemoryV3TestRuntime> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(runtimes.splice(0).map(closeMemoryV3TestRuntime));
 });
 
@@ -96,6 +97,112 @@ function createTool(
 }
 
 describe('memory_search Tool', () => {
+  it('persists one content-safe recall audit for an idempotent Tool result', async () => {
+    const { store, database } = await runtime();
+    const head = await store.appendAssertion(assertion({
+      content: 'PRIVATE_RECALL_SENTINEL 喜欢古典音乐。',
+      retrievalText: 'PRIVATE_RECALL_SENTINEL preference 古典音乐',
+    }));
+    const { tool } = createTool(store);
+    const config = toolConfig('main', 'request:audit');
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = JSON.parse(String(await tool.invoke(
+        { mode: 'search', query: '古典', limit: 5 },
+        config as never,
+      ))) as { returned: number };
+      expect(result.returned).toBe(1);
+    }
+
+    const audits = await database.get('memory_v3_audit', {
+      subjectKey: 'onebot:user:10001',
+      contextKey: 'onebot:bot:bot:group:group-b',
+      eventType: 'recall_selected',
+    }) as Array<{
+      id: number;
+      idempotencyKey: string;
+      detailJson: string;
+    }>;
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.idempotencyKey).toMatch(
+      /^recall:conversation:group-b:request:audit:tool:[a-f0-9]{64}$/u,
+    );
+    expect(JSON.parse(audits[0]!.detailJson)).toEqual({
+      selected: [{
+        streamId: head.streamId,
+        revision: head.revision,
+        score: expect.any(Number),
+        reasonCode: 'lexical',
+      }],
+    });
+    expect(JSON.stringify(audits[0])).not.toContain('PRIVATE_RECALL_SENTINEL');
+    expect(await store.getLatestRecallAudit(
+      'onebot:user:10001',
+      'onebot:bot:bot:group:group-b',
+    )).toMatchObject({ id: audits[0]!.id });
+  });
+
+  it('makes memory.why observe the latest paged Tool recall at the same timestamp', async () => {
+    const { store, database } = await runtime();
+    const firstHead = await store.appendAssertion(assertion({
+      idempotencyKey: 'tool:audit:first',
+      topicKey: 'tool:audit:first',
+      content: '第一条审计记忆',
+      retrievalText: '第一条审计记忆',
+      createdAt: 1_000,
+    }));
+    const secondHead = await store.appendAssertion(assertion({
+      idempotencyKey: 'tool:audit:second',
+      topicKey: 'tool:audit:second',
+      content: '第二条审计记忆',
+      retrievalText: '第二条审计记忆',
+      createdAt: 2_000,
+    }));
+    vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const { tool } = createTool(store);
+    const config = toolConfig('main', 'request:paged-audit');
+
+    const first = JSON.parse(String(await tool.invoke(
+      { mode: 'recent', limit: 1 },
+      config as never,
+    ))) as {
+      items: Array<{ statement: string }>;
+      nextCursor: string;
+    };
+    const second = JSON.parse(String(await tool.invoke(
+      { mode: 'recent', limit: 1, cursor: first.nextCursor },
+      config as never,
+    ))) as { items: Array<{ statement: string }> };
+    expect(first.items).toHaveLength(1);
+    expect(second.items).toHaveLength(1);
+
+    const streamByStatement = new Map([
+      ['第一条审计记忆', firstHead.streamId],
+      ['第二条审计记忆', secondHead.streamId],
+    ]);
+    const audits = await database.get('memory_v3_audit', {
+      subjectKey: 'onebot:user:10001',
+      contextKey: 'onebot:bot:bot:group:group-b',
+      eventType: 'recall_selected',
+    }) as Array<{ id: number; detailJson: string; createdAt: number }>;
+    expect(audits).toHaveLength(2);
+    expect(audits.every((audit) => audit.createdAt === 10_000)).toBe(true);
+
+    const latest = await store.getLatestRecallAudit(
+      'onebot:user:10001',
+      'onebot:bot:bot:group:group-b',
+    );
+    expect(latest?.id).toBe(Math.max(...audits.map((audit) => audit.id)));
+    expect(JSON.parse(latest!.detailJson!)).toEqual({
+      selected: [{
+        streamId: streamByStatement.get(second.items[0]!.statement),
+        revision: 1,
+        score: 0,
+        reasonCode: 'recent',
+      }],
+    });
+  });
+
   it('returns only public verified fields for main Agent and Automation', async () => {
     const { store } = await runtime();
     await store.appendAssertion(assertion());

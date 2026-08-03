@@ -2847,7 +2847,9 @@ export class MemoryStore {
       contextKey,
       eventType: 'recall_selected',
     }) as MemoryV3AuditRecord[];
-    return rows.sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
+    return rows.sort((left, right) => (
+      right.createdAt - left.createdAt || right.id - left.id
+    ))[0] ?? null;
   }
 
   async listDeadLetterWork(): Promise<MemoryV3WorkRecord[]> {
