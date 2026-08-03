@@ -48,6 +48,7 @@ export function buildReplySemanticContractLines(options: ReplyOutputLanguageOpti
     '- 需要 @ 群成员时，直接在 `message.content` 里写 `@群名片 `、`@昵称 ` 或 `@QQ号 `，注意 @ 目标后必须有空格。',
     '- 只有需要呼叫当前未参与该群聊天的人时才 @；即使是在回应当前说话人，也不要默认 @。',
     '- 代码、列表、引用等需要保留结构的内容用 `structured_block`。',
+    '- 工具没拿到预期信息时，说清楚哪件事没查到并继续使用可行的方法；面向用户用日常语言，避免“来源失败”“响应异常”“获取失败”等系统词。',
     '- 只有工具为本轮答案返回了图片 `assetRef` 时才使用 `image`，并填写该 `assetRef` 与简短 `alt`。',
     '- 如果工具结果里带有 `image.assetRef`，且该图片就是当前答案的一部分，最终回复必须包含对应 `image` 消息，不能只复述文字摘要。',
     '- 不要输出 `[CQ:at]`、`<at ...>` 或任何平台控制标签。',

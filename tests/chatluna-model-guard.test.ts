@@ -49,6 +49,9 @@ describe('canonical main chat reply contract', () => {
     expect(buildReplySemanticContractLines().join('\n')).toContain(
       '如果工具结果里带有 `image.assetRef`，且该图片就是当前答案的一部分',
     );
+    expect(buildReplySemanticContractLines().join('\n')).toContain(
+      '面向用户用日常语言',
+    );
     expect(buildNativeJsonOutputContractLines().join('\n')).toContain('请求所附 StructuredReplyEnvelope JSON Schema');
     expect(JSON.stringify(buildStructuredReplyJsonSchema())).toContain('"enum":["image"]');
     expect(buildChatReplyV1OutputContractLines().join('\n')).toContain(
