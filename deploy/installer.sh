@@ -294,6 +294,42 @@ ensure_qqbot_account() {
 }
 ensure_qqbot_account
 
+run_qqbot_podman() {
+  (
+    cd "${DATA_DIR}/qqbot-home"
+    runuser -u qqbot -- env \
+      HOME="${DATA_DIR}/qqbot-home" \
+      XDG_RUNTIME_DIR=/run/qqbot \
+      podman --cgroup-manager=cgroupfs "$@"
+  )
+}
+
+remove_agent_workspace_containers() {
+  install -d -o qqbot -g qqbot -m 700 /run/qqbot
+  local listed
+  listed="$(run_qqbot_podman ps -aq --filter label=io.qqbot.agent-workspace=true)"
+  if [[ -n "${listed}" ]]; then
+    local containers=()
+    mapfile -t containers <<< "${listed}"
+    run_qqbot_podman rm -f -- "${containers[@]}"
+  fi
+  if [[ -n "$(run_qqbot_podman ps -aq --filter label=io.qqbot.agent-workspace=true)" ]]; then
+    echo "[installer] Agent workspace containers remain after shutdown" >&2
+    return 1
+  fi
+}
+
+adopt_runtime_data_ownership() {
+  chown qqbot:qqbot "${DATA_DIR}" "${DATA_DIR}/qqbot-home"
+  local runtime_path
+  while IFS= read -r -d '' runtime_path; do
+    chown -R qqbot:qqbot "${runtime_path}"
+  done < <(
+    find "${DATA_DIR}" -mindepth 1 -maxdepth 1 \
+      ! -path "${DATA_DIR}/qqbot-home" -print0
+  )
+}
+
 if [[ ! -s "${CLOUDFLARED_HBU_JW_TOKEN_FILE}" ]]; then
   echo "[installer] missing Cloudflare tunnel token file: ${CLOUDFLARED_HBU_JW_TOKEN_FILE}" >&2
   echo "[installer] install the qqbot-hbu-jw token before deploying" >&2
@@ -338,10 +374,11 @@ mkdir -p \
   "${STAGING_DIR}"
 chmod 700 \
   "${DATA_DIR}" \
-  "${SHARED_DIR}" \
   "${DATA_DIR}/chatluna/archive" \
   "${DATA_DIR}/chatluna/web-artifacts"
-chown -R qqbot:qqbot "${DATA_DIR}"
+chown qqbot:qqbot "${DATA_DIR}" "${DATA_DIR}/qqbot-home"
+chown root:qqbot "${SHARED_DIR}"
+chmod 750 "${SHARED_DIR}"
 exec 9>"${SHARED_DIR}/deployment-installer.lock"
 chmod 600 "${SHARED_DIR}/deployment-installer.lock"
 if ! flock -n 9; then
@@ -514,6 +551,9 @@ deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "env-pmhq" "${SH
 TRANSACTION_BACKUP_CREATED=1
 
 ensure_server_env_defaults() {
+  ensure_server_env_key "HBU_JW_CREDENTIAL_KEK_PATH" "${SHARED_DIR}/hbu-jw/credential-kek.key"
+  ensure_server_env_key "CHAOXING_CREDENTIAL_KEK_PATH" "${SHARED_DIR}/chaoxing/credential-kek.key"
+  ensure_server_env_key "CAMPUS_AUTH_CREDENTIAL_KEK_PATH" "${SHARED_DIR}/campus-auth/credential-kek.key"
   ensure_server_env_key "GENSHIN_PUBLIC_BASE_URL" "https://genshin.kkkzbh.cn"
   ensure_server_env_key "GENSHIN_BIND_PAGE_PATH" "/genshin/bind"
   ensure_server_env_key "GENSHIN_BIND_TOKEN_TTL_MS" "600000"
@@ -597,6 +637,7 @@ require_bundle_catalog "qqbot/data/chathub/context-presets"
 require_bundle_catalog "qqbot/data/chathub/role-presets"
 require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
 require_bundle_entry "qqbot/deploy/render-systemd.mjs"
+require_bundle_entry "qqbot/scripts/stop-agent-workspace-containers.sh"
 require_bundle_entry "qqbot/scripts/verify-memory-v3-readiness.mjs"
 require_bundle_entry "qqbot/scripts/wait-pmhq-login-network.sh"
 require_bundle_entry "qqbot/scripts/migrate-agent-workspace-podman.mjs"
@@ -719,6 +760,59 @@ write_runtime_env() {
   chmod 640 "${ENV_RUNTIME}"
 }
 write_runtime_env
+
+prepare_koishi_kek_ownership() {
+  (
+    set -a
+    # shellcheck disable=SC1090
+    . "${ENV_SERVER}"
+    # shellcheck disable=SC1090
+    . "${ENV_RUNTIME}"
+    set +a
+
+    local variable
+    local configured_path
+    local resolved_path
+    local parent_dir
+    for variable in \
+      QQBOT_MODEL_CONFIG_KEK_PATH \
+      HBU_JW_CREDENTIAL_KEK_PATH \
+      CHAOXING_CREDENTIAL_KEK_PATH \
+      CAMPUS_AUTH_CREDENTIAL_KEK_PATH \
+      GENSHIN_CREDENTIAL_KEK_PATH; do
+      configured_path="${!variable:-}"
+      if [[ -z "${configured_path}" || "${configured_path}" != /* ]]; then
+        echo "[installer] ${variable} must be an absolute managed path" >&2
+        exit 2
+      fi
+      resolved_path="$(realpath -m -- "${configured_path}")"
+      if [[ "${resolved_path}" != "${configured_path}" ]]; then
+        echo "[installer] ${variable} must be normalized: ${configured_path}" >&2
+        exit 2
+      fi
+      case "${resolved_path}" in
+        "${DATA_DIR}/"*|"${SHARED_DIR}/"*) ;;
+        *) echo "[installer] ${variable} is outside the managed runtime roots" >&2; exit 2 ;;
+      esac
+
+      parent_dir="$(dirname -- "${resolved_path}")"
+      if [[ "${parent_dir}" != "${SHARED_DIR}" ]]; then
+        install -d -o qqbot -g qqbot -m 700 "${parent_dir}"
+      fi
+      if [[ -e "${resolved_path}" || -L "${resolved_path}" ]]; then
+        if [[ ! -f "${resolved_path}" || -L "${resolved_path}" ]]; then
+          echo "[installer] ${variable} must name a regular file" >&2
+          exit 2
+        fi
+        chown qqbot:qqbot "${resolved_path}"
+        chmod 600 "${resolved_path}"
+      elif [[ "${variable}" == "QQBOT_MODEL_CONFIG_KEK_PATH" ]]; then
+        echo "[installer] model config KEK is missing: ${resolved_path}" >&2
+        exit 2
+      fi
+    done
+  )
+}
 
 write_pmhq_env() {
   local pmhq_env="${SHARED_DIR}/.env.pmhq"
@@ -895,6 +989,7 @@ deployment_transaction_begin_offline_activation \
 if systemctl cat qqbot.target >/dev/null 2>&1; then
   stop_deployment_stack
 fi
+remove_agent_workspace_containers
 
 deployment_transaction_snapshot_database "${TRANSACTION_PATHS_DIR}" "${DATA_DIR}/koishi.db"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "persistent-agents" "${PERSISTENT_AGENT_DIR}"
@@ -993,10 +1088,11 @@ if [[ "${MEMORY_V3_CUTOVER_REQUIRED}" == "1" ]]; then
 fi
 node "${STAGE_QQBOT}/scripts/migrate-agent-workspace-podman.mjs" \
   "${PERSISTENT_AGENT_DIR}/config.json"
-chown -R qqbot:qqbot "${DATA_DIR}"
+adopt_runtime_data_ownership
 chgrp -R qqbot "${SHARED_DIR}"
 chmod 750 "${SHARED_DIR}"
 find "${SHARED_DIR}" -type f -exec chmod g+r {} +
+prepare_koishi_kek_ownership
 deployment_transaction_fsync_tree "${WORK_DIR}"
 deployment_transaction_swap_application \
   "${APP_ROOT}" \
@@ -1005,16 +1101,10 @@ deployment_transaction_swap_application \
 APP_SWAPPED=1
 chmod 755 "${APP_ROOT}" "${APP_DIR}"
 install -d -o qqbot -g qqbot -m 700 /run/qqbot
-runuser -u qqbot -- env \
-  HOME="${DATA_DIR}/qqbot-home" \
-  XDG_RUNTIME_DIR=/run/qqbot \
-  podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
-runuser -u qqbot -- env \
-  HOME="${DATA_DIR}/qqbot-home" \
-  XDG_RUNTIME_DIR=/run/qqbot \
-  podman build \
-    --tag localhost/qqbot-agent-workspace:latest \
-    "${APP_DIR}/docker/agent-workspace"
+run_qqbot_podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
+run_qqbot_podman build \
+  --tag localhost/qqbot-agent-workspace:latest \
+  "${APP_DIR}/docker/agent-workspace"
 if [[ "${ACTIVATION_MODE}" == "start" ]]; then
   deployment_transaction_transfer_runtime_ownership
   run_runtime_gates

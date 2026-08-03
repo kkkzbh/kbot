@@ -141,6 +141,7 @@ verify_bundle() {
   require_bundle_entry "qqbot/deploy/installer.sh"
   require_bundle_entry "qqbot/deploy/deployment-transaction.sh"
   require_bundle_entry "qqbot/deploy/render-systemd.mjs"
+  require_bundle_entry "qqbot/scripts/stop-agent-workspace-containers.sh"
   require_bundle_entry "qqbot/scripts/verify-memory-v3-readiness.mjs"
   require_bundle_entry "qqbot/scripts/migrate-agent-workspace-podman.mjs"
   require_bundle_entry "qqbot/docker/agent-workspace/Dockerfile"

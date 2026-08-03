@@ -97,6 +97,8 @@ describe('runtime startup contract', () => {
     expect(koishi).not.toContain('CHATLUNA_ARCHIVE_DIR ||');
     expect(hostVerifier).toContain('verify-memory-v3-readiness.mjs');
     expect(hostVerifier).toContain('systemctl show "${KOISHI_UNIT}" --property ControlGroup --value');
+    expect(hostVerifier).toContain('cd "${QQBOT_DATA_DIR}/qqbot-home"');
+    expect(hostVerifier).toContain('podman --cgroup-manager=cgroupfs image exists');
     expect(hostVerifier).toContain('if [[ "${MEMORY_ENABLED:-true}" != "false" ]]');
   });
 

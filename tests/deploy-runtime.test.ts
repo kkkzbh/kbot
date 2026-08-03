@@ -500,6 +500,42 @@ describe('Memory V3 process readiness contract', () => {
 });
 
 describe('server runtime artifact rendering', () => {
+  it('removes labeled Agent containers while preserving their volumes', () => {
+    const root = createTempDir();
+    const binDir = join(root, 'bin');
+    const podman = join(binDir, 'podman');
+    const log = join(root, 'podman.log');
+    const removed = join(root, 'removed');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(podman, [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'printf "%s\\n" "$*" >> "${PODMAN_LOG}"',
+      'if [[ "$*" == *" ps -aq "* ]]; then',
+      '  [[ -f "${PODMAN_REMOVED}" ]] || printf "agent-one\\nagent-two\\n"',
+      'elif [[ "$*" == *" rm -f -- agent-one agent-two"* ]]; then',
+      '  : > "${PODMAN_REMOVED}"',
+      'fi',
+    ].join('\n'));
+    chmodSync(podman, 0o755);
+
+    execFileSync('bash', [join(process.cwd(), 'scripts/stop-agent-workspace-containers.sh')], {
+      env: {
+        ...process.env,
+        HOME: root,
+        XDG_RUNTIME_DIR: join(root, 'run'),
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        PODMAN_LOG: log,
+        PODMAN_REMOVED: removed,
+      },
+    });
+
+    const calls = readFileSync(log, 'utf8');
+    expect(calls.match(/ps -aq/gu)).toHaveLength(2);
+    expect(calls).toContain('rm -f -- agent-one agent-two');
+    expect(calls).not.toContain('rm -v');
+  });
+
   it('renders PMHQ as a health-bound Quadlet service and removes legacy boot ownership', () => {
     const root = createTempDir();
     const systemdDir = join(root, 'systemd');
@@ -560,6 +596,8 @@ describe('server runtime artifact rendering', () => {
     expect(koishi).toContain('Environment=XDG_RUNTIME_DIR=/run/qqbot');
     expect(koishi).toContain('Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v3-ready.json');
     expect(koishi).toContain('ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v3-ready.json');
+    expect(koishi).toContain(`ExecStop=${appDir}/scripts/stop-agent-workspace-containers.sh`);
+    expect(koishi).toContain('TimeoutStopSec=60');
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
   });
@@ -649,6 +687,8 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('start|keep-stopped');
     expect(installer).toContain('"${DATA_DIR}/chatluna/archive"');
     expect(installer).toContain('chmod 700 \\\n  "${DATA_DIR}"');
+    expect(installer).toContain('chown root:qqbot "${SHARED_DIR}"');
+    expect(installer).toContain('chmod 750 "${SHARED_DIR}"');
     expect(installer).toContain('"${DATA_DIR}/chatluna/web-artifacts"');
     expect(installer).toContain(
       '"CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${APP_DIR}/data/chathub/context-presets"',
@@ -661,13 +701,35 @@ describe('server runtime artifact rendering', () => {
     );
     expect(installer).toContain('node ./scripts/verify-runtime-artifacts.mjs --config koishi.yml');
     expect(installer).toContain('migrate-agent-workspace-podman.mjs');
-    expect(installer).toContain('podman build');
-    expect(installer).toContain('podman info --format');
-    expect(installer).toContain('chown -R qqbot:qqbot "${DATA_DIR}"');
+    expect(installer).toContain('run_qqbot_podman()');
+    expect(installer).toContain('cd "${DATA_DIR}/qqbot-home"');
+    expect(installer).toContain('podman --cgroup-manager=cgroupfs "$@"');
+    expect(installer).toContain('run_qqbot_podman info --format');
+    expect(installer).toContain('run_qqbot_podman build \\');
+    expect(installer).toContain('remove_agent_workspace_containers');
+    expect(installer).toContain('label=io.qqbot.agent-workspace=true');
+    expect(installer).toContain('adopt_runtime_data_ownership');
+    expect(installer).toContain('! -path "${DATA_DIR}/qqbot-home" -print0');
+    expect(installer).not.toContain('chown -R qqbot:qqbot "${DATA_DIR}"');
+    expect(installer.indexOf('remove_agent_workspace_containers\n\n'))
+      .toBeGreaterThan(installer.indexOf('stop_deployment_stack\nfi'));
+    expect(installer).toContain('prepare_koishi_kek_ownership');
+    expect(installer).toContain('QQBOT_MODEL_CONFIG_KEK_PATH \\');
+    expect(installer).toContain('CAMPUS_AUTH_CREDENTIAL_KEK_PATH \\');
+    expect(installer).toContain('chown qqbot:qqbot "${resolved_path}"');
+    expect(installer).toContain('chmod 600 "${resolved_path}"');
+    expect(installer.indexOf('prepare_koishi_kek_ownership\ndeployment_transaction_fsync_tree'))
+      .toBeGreaterThan(installer.indexOf('find "${SHARED_DIR}" -type f -exec chmod g+r {} +'));
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
     expect(installer).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/context-presets"');
     expect(deploy).toContain('require_bundle_catalog "qqbot/data/chathub/role-presets"');
+    expect(installer).toContain(
+      'require_bundle_entry "qqbot/scripts/stop-agent-workspace-containers.sh"',
+    );
+    expect(deploy).toContain(
+      'require_bundle_entry "qqbot/scripts/stop-agent-workspace-containers.sh"',
+    );
     expect(deploy).toContain(
       'require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"',
     );

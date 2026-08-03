@@ -155,6 +155,8 @@ ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/web-artifacts
 ExecStartPre=/usr/bin/install -d -m 700 ${data}/chatluna/agents
 ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v3-ready.json
 ExecStart=/usr/bin/env bash -lc 'cd "${app}" && exec pnpm start:server'
+ExecStop=${app}/scripts/stop-agent-workspace-containers.sh
+TimeoutStopSec=60
 Restart=always
 RestartSec=5
 

@@ -133,10 +133,13 @@ koishi_runs_as_qqbot() {
 }
 
 agent_workspace_image_available() {
-  runuser -u qqbot -- env \
-    HOME="${QQBOT_DATA_DIR}/qqbot-home" \
-    XDG_RUNTIME_DIR=/run/qqbot \
-    podman image exists localhost/qqbot-agent-workspace:latest
+  (
+    cd "${QQBOT_DATA_DIR}/qqbot-home"
+    runuser -u qqbot -- env \
+      HOME="${QQBOT_DATA_DIR}/qqbot-home" \
+      XDG_RUNTIME_DIR=/run/qqbot \
+      podman --cgroup-manager=cgroupfs image exists localhost/qqbot-agent-workspace:latest
+  )
 }
 
 memory_v3_runtime_ready() {
