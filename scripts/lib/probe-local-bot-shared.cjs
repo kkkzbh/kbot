@@ -149,9 +149,13 @@ function evaluateTurnTerminal(orchestrations, captures) {
   if (actions.length === 1 && actions[0] && actions[0].kind === 'no_reply') {
     return { terminal: true, status: 'no_reply', at: terminal.at }
   }
-  const delivered = Array.isArray(captures) && captures.some(
-    (capture) => isCaptureAfterOrchestration(capture, terminal),
-  )
+  const expectedDeliveryCount = actions.filter(
+    (action) => action && action.kind !== 'no_reply',
+  ).length
+  const deliveredCaptureCount = Array.isArray(captures)
+    ? captures.filter((capture) => isCaptureAfterOrchestration(capture, terminal)).length
+    : 0
+  const delivered = expectedDeliveryCount > 0 && deliveredCaptureCount >= expectedDeliveryCount
   return { terminal: delivered, status: delivered ? 'delivered' : 'awaiting_delivery', at: terminal.at }
 }
 

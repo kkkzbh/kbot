@@ -550,6 +550,42 @@ describe('probe-local-bot shared helpers', () => {
     ])).toEqual({ terminal: true, status: 'delivered', at: 200 });
   });
 
+  it('keeps an owned turn active until every final action is delivered', () => {
+    const orchestrations = [{
+      at: 200,
+      ordinal: 2,
+      result: {
+        status: 'ready',
+        actions: [
+          { kind: 'message', parts: [{ kind: 'text', content: '结论' }] },
+          { kind: 'message', parts: [{ kind: 'text', content: '来源' }] },
+        ],
+      },
+    }];
+    const firstDelivery = {
+      at: 300,
+      ordinal: 3,
+      delivered: true,
+      receipt: ['first'],
+      payload: '结论',
+    };
+    expect(shared.evaluateTurnTerminal(orchestrations, [firstDelivery])).toEqual({
+      terminal: false,
+      status: 'awaiting_delivery',
+      at: 200,
+    });
+    expect(shared.evaluateTurnTerminal(orchestrations, [
+      firstDelivery,
+      {
+        at: 400,
+        ordinal: 4,
+        delivered: true,
+        receipt: ['second'],
+        payload: '来源',
+      },
+    ])).toEqual({ terminal: true, status: 'delivered', at: 200 });
+  });
+
   it('counts media only when typed action and successful matching receipt agree', () => {
     const imageCapture = [{
       at: 200,
