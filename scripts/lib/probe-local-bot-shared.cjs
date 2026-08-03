@@ -202,7 +202,7 @@ function classifyDeliveredTypedMedia(orchestrations, captures) {
 }
 
 function evaluateVisualDeliveryExpectation(mode, deliveredMedia) {
-  if (!['allowed', 'forbidden', 'required'].includes(mode)) {
+  if (!['allowed', 'discouraged', 'required'].includes(mode)) {
     throw new Error(`invalid visual delivery expectation: ${String(mode)}`)
   }
   if (deliveredMedia && deliveredMedia.ambiguous === true) {
@@ -213,8 +213,8 @@ function evaluateVisualDeliveryExpectation(mode, deliveredMedia) {
   if (mode === 'required') {
     return { ok: sticker, reason: sticker ? null : 'sticker_required' }
   }
-  if (mode === 'forbidden' && (sticker || image)) {
-    return { ok: false, reason: 'visual_forbidden' }
+  if (mode === 'discouraged' && (sticker || image)) {
+    return { ok: false, reason: 'visual_discouraged' }
   }
   return { ok: true, reason: null }
 }

@@ -1,6 +1,6 @@
 const fs = require('fs')
 
-const ALLOWED_MEDIA_EXPECTATIONS = new Set(['required', 'allowed', 'forbidden'])
+const ALLOWED_MEDIA_EXPECTATIONS = new Set(['required', 'allowed', 'discouraged'])
 const ALLOWED_GATES = new Set(['voice_output'])
 const ALLOWED_REASONING_EFFORTS = new Set(['low', 'medium', 'high'])
 const ALLOWED_SEQUENCE_CATEGORIES = new Set([
@@ -70,7 +70,7 @@ function loadProbeManifest(filePath) {
     if (!expect || typeof expect !== 'object') throw new Error(`${probeCase.id}: expect is required`)
     for (const field of ['text', 'voice', 'image']) {
       if (!ALLOWED_MEDIA_EXPECTATIONS.has(expect[field])) {
-        throw new Error(`${probeCase.id}: expect.${field} must be required, allowed, or forbidden`)
+        throw new Error(`${probeCase.id}: expect.${field} must be required, allowed, or discouraged`)
       }
     }
     for (const field of ['requireOrchestration', 'requireProgress', 'forbidMeta', 'forbidSpeakerLabels', 'forbidAssistantBoilerplate']) {
@@ -125,6 +125,9 @@ function loadProbeManifest(filePath) {
       }
       if (!ALLOWED_SEQUENCE_CATEGORIES.has(turn.category)) {
         throw new Error(`${probeSequence.id}/${turn.id}: unsupported category ${String(turn.category)}`)
+      }
+      if (turn.mustInclude !== undefined) {
+        requireNonEmptyString(turn.mustInclude, `${probeSequence.id}/${turn.id}: mustInclude`)
       }
       categoryCounts.set(turn.category, (categoryCounts.get(turn.category) || 0) + 1)
     }
@@ -206,11 +209,6 @@ function evaluateStatefulStickerRates(rates, thresholds) {
   ) {
     warnings.push(
       `casual sticker rate ${rates.casual} is outside the recommended >${thresholds.casualStickerRate.minExclusive} and <${thresholds.casualStickerRate.maxExclusive} range`,
-    )
-  }
-  if (rates.explicit !== thresholds.explicitStickerRate.equals) {
-    warnings.push(
-      `explicit sticker rate ${rates.explicit} is below the recommended ${thresholds.explicitStickerRate.equals}`,
     )
   }
   if (rates.serious !== thresholds.seriousStickerRate.equals) {

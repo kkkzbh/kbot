@@ -16,7 +16,7 @@ Environment:
   PROBE_SEQUENCE_IDS    Optional comma-separated sequence IDs (default: all)
   PROBE_REPETITIONS     Runs per case, from 1 to 50 (default: 1)
   BOT_TIMEOUT_SECONDS   Per-probe timeout (default: 90)
-  QQBOT_RUN_VOICE_SMOKE Set to 1 to require the voice case when voice is not enabled
+  QQBOT_RUN_VOICE_SMOKE Set to 1 to enable the required voice case
 EOF
 }
 
@@ -219,7 +219,7 @@ const warnings = []
 
 function assertMedia(name, mode, present) {
   if (mode === 'required' && !present) throw new Error(`${caseId}: expected ${name}`)
-  if (mode === 'forbidden' && present) warnings.push(`unexpected ${name}`)
+  if (mode === 'discouraged' && present) warnings.push(`unexpected ${name}`)
 }
 
 assertMedia('text', expect.text, hasText)
@@ -452,6 +452,16 @@ for (let index = 0; index < expected.turns.length; index += 1) {
   if (!terminalOrchestration || turn.terminalStatus !== 'delivered') {
     throw new Error(`${sequenceId}/${expectedTurn.id}: reply did not reach successful final delivery`)
   }
+  const finalVisibleText = turn.payloadCaptures
+    .filter((capture) => isCaptureAfterOrchestration(capture, terminalOrchestration))
+    .map((capture) => String(capture.visibleText ?? '').trim())
+    .filter(Boolean)
+    .join('\n')
+  if (expectedTurn.mustInclude && !finalVisibleText.includes(expectedTurn.mustInclude)) {
+    throw new Error(
+      `${sequenceId}/${expectedTurn.id}: final reply did not preserve required conversation context`,
+    )
+  }
   const actions = Array.isArray(terminalOrchestration.result?.actions)
     ? terminalOrchestration.result.actions
     : []
@@ -471,6 +481,9 @@ for (let index = 0; index < expected.turns.length; index += 1) {
     : 0
   if (typedStickerCount > 0 && !deliveredMedia.sticker) {
     throw new Error(`${sequenceId}/${expectedTurn.id}: typed sticker action had no successful sticker delivery`)
+  }
+  if (expectedTurn.category === 'explicit_sticker' && !deliveredMedia.sticker) {
+    throw new Error(`${sequenceId}/${expectedTurn.id}: explicit sticker request was not delivered`)
   }
   const stickerCount = deliveredMedia.sticker
     ? Math.max(typedStickerCount, deliveredStickerPayloadCount)
@@ -557,21 +570,8 @@ if [[ "$PROBE_MODE" == "cases" || "$PROBE_MODE" == "all" ]]; then
     expected_transport_model="$(printf '%s' "$expected_transport_b64" | base64 --decode)"
     for (( repetition = 1; repetition <= PROBE_REPETITIONS; repetition += 1 )); do
       if [[ "$gate" == "voice_output" && "${QQBOT_RUN_VOICE_SMOKE:-0}" != "1" && "${QQ_VOICE_OUTPUT_ENABLED:-}" != "true" ]]; then
-        echo "=== CASE: $case_id [$repetition/$PROBE_REPETITIONS] ==="
-        echo "SKIP: voice output is disabled (set QQBOT_RUN_VOICE_SMOKE=1 to force)."
-        CASE_ID="$case_id" CASE_REPETITION="$repetition" CASE_PROMPT="$prompt" CASE_PRESET_ID="$preset_id" node <<'NODE'
-console.log(`PROBE_RESULT_JSON: ${JSON.stringify({
-  type: 'full_pipeline_probe_result',
-  caseId: process.env.CASE_ID,
-  repetition: Number(process.env.CASE_REPETITION),
-  status: 'skipped',
-  gate: 'voice_output',
-  originalInput: process.env.CASE_PROMPT,
-  configuredPreset: process.env.CASE_PRESET_ID,
-})}`)
-NODE
-        echo
-        continue
+        echo "[error] $case_id requires voice output; set QQBOT_RUN_VOICE_SMOKE=1 or exclude the case explicitly." >&2
+        exit 2
       fi
       run_case \
         "$case_id" \

@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 interface StatefulProbeSequence {
   id: string;
-  turns: Array<{ id: string; prompt: string; category: string }>;
+  turns: Array<{ id: string; prompt: string; category: string; mustInclude?: string }>;
   thresholds: {
     casualStickerRate: { minExclusive: number; maxExclusive: number };
     seriousStickerRate: { equals: number };
@@ -43,7 +43,7 @@ const shared = require('../scripts/lib/probe-local-bot-shared.cjs') as {
     deliveryCompletions: unknown[],
   ) => { terminal: boolean; status: string | null; at: number | null };
   evaluateVisualDeliveryExpectation: (
-    mode: 'allowed' | 'forbidden' | 'required',
+    mode: 'allowed' | 'discouraged' | 'required',
     media: { voice: boolean; sticker: boolean; image: boolean; ambiguous: boolean },
   ) => { ok: boolean; reason: string | null };
   isOwnedTemporaryProbeGroupId: (value: unknown) => boolean;
@@ -342,6 +342,29 @@ describe('probe-local-bot.sh', () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('controlled temporary');
   });
+
+  it('fails explicitly when a selected voice acceptance case is not enabled', () => {
+    const result = spawnSync(
+      'bash',
+      [resolve(process.cwd(), 'scripts/smoke-chat-replies.sh')],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          FAKE_GROUP_ID: OWNED_GROUP_ID,
+          FAKE_USER_ID: OWNED_USER_ID,
+          PROBE_MODE: 'cases',
+          PROBE_CASE_IDS: 'explicit-voice',
+          QQBOT_RUN_VOICE_SMOKE: '0',
+          QQ_VOICE_OUTPUT_ENABLED: 'false',
+        },
+      },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('explicit-voice requires voice output');
+  });
 });
 
 describe('chat reply probe corpus', () => {
@@ -403,13 +426,16 @@ describe('chat reply probe corpus', () => {
     );
 
     expect(sequence.id).toBe('modality-cooldown');
-    expect(sequence.turns).toHaveLength(28);
+    expect(sequence.turns).toHaveLength(30);
     expect(new Set(sequence.turns.map((turn) => turn.id)).size).toBe(sequence.turns.length);
     expect(sequence.turns.every((turn) => turn.prompt.startsWith('saki '))).toBe(true);
     expect(categoryCount('casual_opportunity')).toBe(9);
     expect(categoryCount('explicit_sticker')).toBe(4);
     expect(categoryCount('serious_negative')).toBe(4);
     expect(categoryCount('informational_negative')).toBe(4);
+    expect(sequence.turns.find((turn) => turn.id === 'context-recall')).toMatchObject({
+      mustInclude: '银羽-Q7M4',
+    });
     expect(sequence.thresholds).toEqual({
       casualStickerRate: { minExclusive: 0, maxExclusive: 0.7 },
       seriousStickerRate: { equals: 0 },
@@ -426,7 +452,7 @@ describe('chat reply probe corpus', () => {
       serious: 0,
       informational: 0,
     }, sequence.thresholds);
-    expect(softMiss.warnings).toHaveLength(2);
+    expect(softMiss.warnings).toHaveLength(1);
     expect(softMiss.verdict).toBe('passed_with_warnings');
 
     const offTarget = probeCorpus.evaluateStatefulStickerRates({
@@ -699,12 +725,12 @@ describe('probe-local-bot shared helpers', () => {
       ambiguous: true,
     });
 
-    expect(shared.evaluateVisualDeliveryExpectation('forbidden', {
+    expect(shared.evaluateVisualDeliveryExpectation('discouraged', {
       voice: false,
       sticker: false,
       image: true,
       ambiguous: false,
-    })).toEqual({ ok: false, reason: 'visual_forbidden' });
+    })).toEqual({ ok: false, reason: 'visual_discouraged' });
     expect(shared.evaluateVisualDeliveryExpectation('required', {
       voice: false,
       sticker: false,

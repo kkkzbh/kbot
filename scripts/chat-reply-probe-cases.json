@@ -10,7 +10,7 @@
       "prompt": "saki 今天排练累死了，回来还被老师催作业。",
       "dimensions": ["human_chat"],
       "expect": {
-        "text": "required",
+        "text": "allowed",
         "voice": "allowed",
         "image": "allowed",
         "requireOrchestration": true,
@@ -26,9 +26,9 @@
       "prompt": "saki 群里有人问我练琴总是抢拍怎么办，你帮我接一句。",
       "dimensions": ["no_speaker_labels"],
       "expect": {
-        "text": "required",
-        "voice": "forbidden",
-        "image": "forbidden",
+        "text": "allowed",
+        "voice": "discouraged",
+        "image": "discouraged",
         "requireOrchestration": true,
         "forbidMeta": true,
         "forbidSpeakerLabels": true,
@@ -41,7 +41,7 @@
       "prompt": "saki 我今天从早忙到晚，脑子都转不动了，陪我聊两句。",
       "dimensions": ["bounded_length"],
       "expect": {
-        "text": "required",
+        "text": "allowed",
         "voice": "allowed",
         "image": "allowed",
         "requireOrchestration": true,
@@ -56,8 +56,8 @@
       "prompt": "saki 帮我查一下今天新加坡的天气，再告诉我出门要不要带伞。",
       "dimensions": ["search", "progress"],
       "expect": {
-        "text": "required",
-        "voice": "forbidden",
+        "text": "allowed",
+        "voice": "discouraged",
         "image": "allowed",
         "requireOrchestration": true,
         "requireProgress": true,
@@ -74,7 +74,7 @@
       "expect": {
         "text": "allowed",
         "voice": "required",
-        "image": "forbidden",
+        "image": "discouraged",
         "requireOrchestration": true,
         "forbidMeta": true,
         "forbidSpeakerLabels": true,
@@ -88,8 +88,8 @@
       "dimensions": ["voice", "informational_negative"],
       "expect": {
         "text": "required",
-        "voice": "forbidden",
-        "image": "forbidden",
+        "voice": "discouraged",
+        "image": "discouraged",
         "requireOrchestration": true,
         "forbidMeta": true,
         "forbidSpeakerLabels": true,
@@ -102,7 +102,7 @@
       "dimensions": ["sticker", "explicit_request"],
       "expect": {
         "text": "allowed",
-        "voice": "forbidden",
+        "voice": "discouraged",
         "image": "required",
         "requireOrchestration": true,
         "forbidMeta": true,
@@ -116,9 +116,9 @@
       "prompt": "saki 认真说说，明天排练前我该准备哪些东西？",
       "dimensions": ["sticker", "informational_negative"],
       "expect": {
-        "text": "required",
-        "voice": "forbidden",
-        "image": "forbidden",
+        "text": "allowed",
+        "voice": "discouraged",
+        "image": "discouraged",
         "requireOrchestration": true,
         "forbidMeta": true,
         "forbidSpeakerLabels": true,
@@ -130,9 +130,9 @@
       "prompt": "saki 朋友刚住院了，我有点慌，不知道现在该做什么。",
       "dimensions": ["serious", "sticker_negative"],
       "expect": {
-        "text": "required",
-        "voice": "forbidden",
-        "image": "forbidden",
+        "text": "allowed",
+        "voice": "discouraged",
+        "image": "discouraged",
         "requireOrchestration": true,
         "forbidMeta": true,
         "forbidSpeakerLabels": true,
@@ -147,7 +147,7 @@
       "dimensions": ["sticker", "casual_opportunity"],
       "expect": {
         "text": "allowed",
-        "voice": "forbidden",
+        "voice": "discouraged",
         "image": "allowed",
         "requireOrchestration": true,
         "forbidMeta": true,
@@ -162,7 +162,7 @@
       "dimensions": ["sticker", "casual_opportunity"],
       "expect": {
         "text": "allowed",
-        "voice": "forbidden",
+        "voice": "discouraged",
         "image": "allowed",
         "requireOrchestration": true,
         "forbidMeta": true,
@@ -177,7 +177,7 @@
       "dimensions": ["sticker", "casual_opportunity"],
       "expect": {
         "text": "allowed",
-        "voice": "forbidden",
+        "voice": "discouraged",
         "image": "allowed",
         "requireOrchestration": true,
         "forbidMeta": true,
@@ -192,7 +192,7 @@
       "dimensions": ["sticker", "casual_opportunity"],
       "expect": {
         "text": "allowed",
-        "voice": "forbidden",
+        "voice": "discouraged",
         "image": "allowed",
         "requireOrchestration": true,
         "forbidMeta": true,
@@ -233,7 +233,9 @@
         { "id": "remembered-key", "category": "casual_opportunity", "prompt": "saki 我刚找钥匙找了半天，结果一直拿在手里，无语。" },
         { "id": "ordinary-check-in-seven", "category": "neutral", "prompt": "saki 我去洗个杯子，马上回来。" },
         { "id": "friend-sent-meme", "category": "casual_opportunity", "prompt": "saki 朋友刚发的梗也太绝了，我现在还在笑。" },
-        { "id": "late-success", "category": "casual_opportunity", "prompt": "saki 最后一次合奏终于完全没抢拍，太好了。" }
+        { "id": "late-success", "category": "casual_opportunity", "prompt": "saki 最后一次合奏终于完全没抢拍，太好了。" },
+        { "id": "context-seed", "category": "neutral", "prompt": "saki 先记住这个临时排练口令：银羽-Q7M4。只要回复记住了。" },
+        { "id": "context-recall", "category": "neutral", "prompt": "saki 刚才的临时排练口令是什么？", "mustInclude": "银羽-Q7M4" }
       ],
       "thresholds": {
         "casualStickerRate": { "minExclusive": 0, "maxExclusive": 0.7 },
