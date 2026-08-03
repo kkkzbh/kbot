@@ -30,15 +30,22 @@ export class ChatReplyV1ParseError extends Error {
 }
 
 type BlockType = StructuredReplyMessage['type'];
-type PayloadSection = 'CONTENT' | 'ALT';
+type ContentBlockType = Exclude<BlockType, 'image'>;
 
-interface BlockBuilder {
-  type: BlockType;
+interface ContentBlockBuilder {
+  type: ContentBlockType;
   startLine: number;
-  headers: Map<string, string>;
-  payloads: Map<PayloadSection, string[]>;
-  activePayload: PayloadSection | null;
+  payload: string[];
 }
+
+interface ImageBlockBuilder {
+  type: 'image';
+  startLine: number;
+  assetRef: string | null;
+  alt: string[] | null;
+}
+
+type BlockBuilder = ContentBlockBuilder | ImageBlockBuilder;
 
 function stripBom(value: string): string {
   return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
@@ -60,29 +67,17 @@ function isBlockType(value: string): value is BlockType {
   return value === 'message' || value === 'structured_block' || value === 'image' || value === 'meme' || value === 'voice';
 }
 
-function parseTypedEnd(line: string): BlockType | null {
-  const match = line.match(/^END\s+([a-z_]+)$/u);
-  if (!match) return null;
-  const blockType = match[1]!;
-  return isBlockType(blockType) ? blockType : null;
-}
-
-function isMatchingEnd(line: string, block: BlockBuilder): boolean {
-  return line === 'END' || parseTypedEnd(line) === block.type;
-}
-
-function requirePayload(block: BlockBuilder, key: PayloadSection): string {
-  const lines = block.payloads.get(key);
+function requirePayload(block: BlockBuilder, lines: string[] | null, field: 'content' | 'ALT'): string {
   if (!lines?.length) {
-    throw parseError('MISSING_FIELD', block.startLine, `BEGIN ${block.type}`, `${block.type} requires ${key}.`);
+    throw parseError('MISSING_FIELD', block.startLine, `BEGIN ${block.type}`, `${block.type} requires ${field}.`);
   }
   return lines.join('\n');
 }
 
-function requireHeader(block: BlockBuilder, key: string): string {
-  const value = block.headers.get(key);
+function requireAssetRef(block: ImageBlockBuilder): string {
+  const value = block.assetRef;
   if (value == null || value.trim().length === 0) {
-    throw parseError('MISSING_FIELD', block.startLine, `BEGIN ${block.type}`, `${block.type} requires ${key}.`);
+    throw parseError('MISSING_FIELD', block.startLine, `BEGIN ${block.type}`, `${block.type} requires ASSET_REF.`);
   }
   return value.trim();
 }
@@ -92,30 +87,40 @@ function finalizeBlock(block: BlockBuilder): StructuredReplyMessage {
     case 'message':
       return {
         type: 'message',
-        content: requirePayload(block, 'CONTENT'),
+        content: requirePayload(block, block.payload, 'content'),
       };
     case 'structured_block':
       return {
         type: 'structured_block',
-        content: requirePayload(block, 'CONTENT'),
+        content: requirePayload(block, block.payload, 'content'),
       };
     case 'image':
       return {
         type: 'image',
-        assetRef: requireHeader(block, 'ASSET_REF'),
-        alt: requirePayload(block, 'ALT'),
+        assetRef: requireAssetRef(block),
+        alt: requirePayload(block, block.alt, 'ALT'),
       };
     case 'meme':
       return {
         type: 'meme',
-        content: requirePayload(block, 'CONTENT'),
+        content: requirePayload(block, block.payload, 'content'),
       };
     case 'voice':
       return {
         type: 'voice',
-        content: requirePayload(block, 'CONTENT'),
+        content: requirePayload(block, block.payload, 'content'),
       };
   }
+}
+
+function rejectRemovedContentSection(lineNumber: number, line: string): void {
+  if (line !== 'CONTENT') return;
+  throw parseError(
+    'UNKNOWN_COMMAND',
+    lineNumber,
+    line,
+    'CONTENT section is not supported; write payload lines directly after BEGIN.',
+  );
 }
 
 export class ChatReplyV1Parser {
@@ -148,7 +153,6 @@ export class ChatReplyV1Parser {
     const messages: StructuredReplyMessage[] = [];
     let block: BlockBuilder | null = null;
     let done = false;
-    let lastClosedBlockType: BlockType | null = null;
 
     for (; index < lines.length; index += 1) {
       const lineNumber = index + 1;
@@ -160,35 +164,6 @@ export class ChatReplyV1Parser {
         }
         continue;
       }
-
-      if (block?.activePayload) {
-        if (isMatchingEnd(line, block)) {
-          lastClosedBlockType = block.type;
-          messages.push(finalizeBlock(block));
-          block = null;
-          continue;
-        }
-        if (isBlank(line)) {
-          block.payloads.get(block.activePayload)!.push('');
-          continue;
-        }
-        if (line.startsWith('|')) {
-          block.payloads.get(block.activePayload)!.push(line.slice(1));
-          continue;
-        }
-
-        block.payloads.get(block.activePayload)!.push(line);
-        continue;
-      }
-
-      if (isBlank(line)) continue;
-
-      const typedEnd = parseTypedEnd(line);
-      if (typedEnd && typedEnd === lastClosedBlockType) {
-        lastClosedBlockType = null;
-        continue;
-      }
-      lastClosedBlockType = null;
 
       const doneMatch = line.match(/^DONE\s+([A-Za-z0-9_-]{6,32})$/u);
       if (doneMatch) {
@@ -203,35 +178,55 @@ export class ChatReplyV1Parser {
       }
 
       if (block) {
-        if (isMatchingEnd(line, block)) {
-          lastClosedBlockType = block.type;
+        if (line === 'END') {
           messages.push(finalizeBlock(block));
           block = null;
           continue;
         }
-        if (line === 'CONTENT' || line === 'ALT') {
-          const key = line as PayloadSection;
-          if (block.payloads.has(key)) {
-            throw parseError('DUPLICATE_FIELD', lineNumber, line, `${key} already exists in this block.`);
+        rejectRemovedContentSection(lineNumber, line);
+        if (/^END(?:\s|$)/u.test(line)) {
+          throw parseError('UNKNOWN_COMMAND', lineNumber, line, 'Blocks must close with bare END.');
+        }
+
+        if (block.type !== 'image') {
+          if (!line.startsWith('|')) {
+            throw parseError('PAYLOAD_LINE_WITHOUT_PIPE', lineNumber, line, 'Payload lines must start with |.');
           }
-          block.payloads.set(key, []);
-          block.activePayload = key;
+          block.payload.push(line.slice(1));
           continue;
         }
-        const headerMatch = line.match(/^([A-Z_]+)\s+(.+)$/u);
-        if (!headerMatch) {
-          throw parseError('UNKNOWN_COMMAND', lineNumber, line, 'Expected block header, payload section, or END.');
+
+        if (block.alt != null) {
+          if (line === 'ALT' || /^ASSET_REF(?:\s|$)/u.test(line)) {
+            const field = line === 'ALT' ? 'ALT' : 'ASSET_REF';
+            throw parseError('DUPLICATE_FIELD', lineNumber, line, `${field} already exists in this block.`);
+          }
+          if (!line.startsWith('|')) {
+            throw parseError('PAYLOAD_LINE_WITHOUT_PIPE', lineNumber, line, 'Payload lines must start with |.');
+          }
+          block.alt.push(line.slice(1));
+          continue;
         }
-        const key = headerMatch[1]!;
-        if (key === 'MENTIONS') {
-          throw parseError('UNKNOWN_COMMAND', lineNumber, line, 'MENTIONS header is no longer supported; write @name in CONTENT instead.');
+
+        if (line === 'ALT') {
+          if (block.assetRef == null) {
+            throw parseError('MISSING_FIELD', lineNumber, line, 'image requires ASSET_REF before ALT.');
+          }
+          block.alt = [];
+          continue;
         }
-        if (block.headers.has(key)) {
-          throw parseError('DUPLICATE_FIELD', lineNumber, line, `${key} already exists in this block.`);
+        const assetRefMatch = line.match(/^ASSET_REF\s+(.+)$/u);
+        if (assetRefMatch) {
+          if (block.assetRef != null) {
+            throw parseError('DUPLICATE_FIELD', lineNumber, line, 'ASSET_REF already exists in this block.');
+          }
+          block.assetRef = assetRefMatch[1]!;
+          continue;
         }
-        block.headers.set(key, headerMatch[2]!);
-        continue;
+        throw parseError('UNKNOWN_COMMAND', lineNumber, line, 'Expected ASSET_REF followed by ALT.');
       }
+
+      if (isBlank(line)) continue;
 
       const beginMatch = line.match(/^BEGIN\s+([a-z_]+)$/u);
       if (beginMatch) {
@@ -242,13 +237,12 @@ export class ChatReplyV1Parser {
         if (!isBlockType(blockType)) {
           throw parseError('UNKNOWN_BLOCK_TYPE', lineNumber, line, `Unknown block type: ${blockType}.`);
         }
-        block = {
-          type: blockType,
-          startLine: lineNumber,
-          headers: new Map(),
-          payloads: new Map(),
-          activePayload: null,
-        };
+        if (messages.length >= 4) {
+          throw parseError('UNKNOWN_COMMAND', lineNumber, line, 'DECISION reply allows at most four blocks.');
+        }
+        block = blockType === 'image'
+          ? { type: 'image', startLine: lineNumber, assetRef: null, alt: null }
+          : { type: blockType, startLine: lineNumber, payload: [] };
         continue;
       }
 
@@ -280,11 +274,11 @@ export function encodeChatReplyV1(reply: StructuredReply, nonce: string): string
     for (const message of reply.outbound_messages ?? []) {
       lines.push(`BEGIN ${message.type}`);
       if (message.type === 'message') {
-        lines.push('CONTENT', ...message.content.split('\n').map((line) => `|${line}`));
+        lines.push(...message.content.split('\n').map((line) => `|${line}`));
       } else if (message.type === 'image') {
         lines.push(`ASSET_REF ${message.assetRef}`, 'ALT', ...message.alt.split('\n').map((line) => `|${line}`));
       } else {
-        lines.push('CONTENT', ...message.content.split('\n').map((line) => `|${line}`));
+        lines.push(...message.content.split('\n').map((line) => `|${line}`));
       }
       lines.push('END');
     }

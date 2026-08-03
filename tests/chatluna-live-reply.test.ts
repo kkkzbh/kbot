@@ -138,7 +138,6 @@ function encodeChatReplyV1History(content: string): string {
     'CHAT_REPLY_V1 history',
     'DECISION reply',
     'BEGIN message',
-    'CONTENT',
     ...content.split('\n').map((line) => `|${line}`),
     'END',
     'DONE history',
@@ -191,30 +190,29 @@ describe('research reply history compatibility', () => {
     expect(assistantMessages.some((message) => /^第 \d+ 轮回复$/u.test(message.content.trim()))).toBe(false);
   });
 
-  it('keeps real chat history protocol-shaped when the third of five CHAT_REPLY_V1 turns has bare payload paragraphs', async () => {
+  it('keeps real chat history protocol-shaped with canonical multi-paragraph payloads', async () => {
     const { history } = await createChatHistory({
       conversationId: 'conv-five-chat-reply-v1-turns-with-payload-slip',
       latestId: null,
       messages: [],
     });
     const rawOutputs = [
-      ['CHAT_REPLY_V1 abc12341', 'DECISION reply', 'BEGIN message', 'CONTENT', '|第 1 轮回复', 'END', 'DONE abc12341'].join('\n'),
-      ['CHAT_REPLY_V1 abc12342', 'DECISION reply', 'BEGIN message', 'CONTENT', '|第 2 轮回复', 'END', 'DONE abc12342'].join('\n'),
+      ['CHAT_REPLY_V1 abc12341', 'DECISION reply', 'BEGIN message', '|第 1 轮回复', 'END', 'DONE abc12341'].join('\n'),
+      ['CHAT_REPLY_V1 abc12342', 'DECISION reply', 'BEGIN message', '|第 2 轮回复', 'END', 'DONE abc12342'].join('\n'),
       [
         'CHAT_REPLY_V1 history',
         'DECISION reply',
         'BEGIN message',
-        'CONTENT',
         '|篮球……国一？',
-        '',
-        '这问题问得没头没脑的。我对篮球没什么兴趣，也不清楚你指的是哪个所谓"国一"。',
-        '',
-        '如果你是想讨论体育话题，建议你找别人。不过如果是和音乐或演出相关的事，我倒可以听听。',
+        '|',
+        '|这问题问得没头没脑的。我对篮球没什么兴趣，也不清楚你指的是哪个所谓"国一"。',
+        '|',
+        '|如果你是想讨论体育话题，建议你找别人。不过如果是和音乐或演出相关的事，我倒可以听听。',
         'END',
         'DONE history',
       ].join('\n'),
-      ['CHAT_REPLY_V1 abc12344', 'DECISION reply', 'BEGIN message', 'CONTENT', '|第 4 轮回复', 'END', 'DONE abc12344'].join('\n'),
-      ['CHAT_REPLY_V1 abc12345', 'DECISION reply', 'BEGIN message', 'CONTENT', '|第 5 轮回复', 'END', 'DONE abc12345'].join('\n'),
+      ['CHAT_REPLY_V1 abc12344', 'DECISION reply', 'BEGIN message', '|第 4 轮回复', 'END', 'DONE abc12344'].join('\n'),
+      ['CHAT_REPLY_V1 abc12345', 'DECISION reply', 'BEGIN message', '|第 5 轮回复', 'END', 'DONE abc12345'].join('\n'),
     ];
 
     for (let turn = 1; turn <= rawOutputs.length; turn += 1) {

@@ -93,22 +93,24 @@ export function buildChatReplyV1OutputContractLines(options: ReplyOutputLanguage
     '- 第一条非空行必须是 `CHAT_REPLY_V1 <nonce>`；最后用 `DONE <nonce>`，首尾 nonce 必须一致。',
     '- `DECISION no_reply` 后只能输出 `DONE <nonce>`。',
     '- `DECISION reply` 必须输出一到四个 `BEGIN ... END` block。',
+    '- `message`、`structured_block`、`meme`、`voice` 在 `BEGIN <type>` 后直接写以 `|` 开头的 payload 行。',
+    '- `image` 依次写 `ASSET_REF ...`、`ALT` 和 payload。',
     '- payload 内容行必须以 `|` 开头；空行也写成单独的 `|`，不要输出裸空行。裸 `END` 才结束 block。内容里需要写 END/DONE/BEGIN 时也必须写成 `|END`、`|DONE ...`、`|BEGIN ...`。',
     'no_reply 示例：',
     ['CHAT_REPLY_V1 abc12345', 'DECISION no_reply', 'DONE abc12345'].join('\n'),
     'message 示例：',
-    ['CHAT_REPLY_V1 abc12345', 'DECISION reply', 'BEGIN message', 'CONTENT', '|收到，我看一下。', 'END', 'DONE abc12345'].join('\n'),
+    ['CHAT_REPLY_V1 abc12345', 'DECISION reply', 'BEGIN message', '|收到，我看一下。', 'END', 'DONE abc12345'].join('\n'),
     'structured_block 示例：',
-    ['BEGIN structured_block', 'CONTENT', '|1. 第一项', '|2. 第二项', 'END'].join('\n'),
+    ['BEGIN structured_block', '|1. 第一项', '|2. 第二项', 'END'].join('\n'),
     'image 示例：',
     ['BEGIN image', 'ASSET_REF <工具返回的 assetRef>', 'ALT', '|简短图像说明', 'END'].join('\n'),
   ];
 
   if (options.canMeme === true) {
-    lines.push('meme block：', ['BEGIN meme', 'CONTENT', '|<具体自然的表情意图>', 'END'].join('\n'));
+    lines.push('meme block：', ['BEGIN meme', '|<具体自然的表情意图>', 'END'].join('\n'));
   }
   if (options.canVoice === true) {
-    lines.push('voice block：', ['BEGIN voice', 'CONTENT', '|<要朗读的简短话语>', 'END'].join('\n'));
+    lines.push('voice block：', ['BEGIN voice', '|<要朗读的简短话语>', 'END'].join('\n'));
   }
   return lines;
 }

@@ -497,7 +497,9 @@ describe('prompt assembly', () => {
     const compiledContent = envelope?.fragments.map((fragment) => fragment.content).join('\n\n') ?? '';
     expect(compiledContent).toContain('CHAT_REPLY_V1 <nonce>');
     expect(compiledContent).toContain('一到四个 `BEGIN ... END` block');
+    expect(compiledContent).toContain('在 `BEGIN <type>` 后直接写以 `|` 开头的 payload 行');
     expect(compiledContent).toContain('payload 内容行必须以 `|` 开头');
+    expect(compiledContent).not.toContain('\nCONTENT\n');
     expect(compiledContent).toContain('只有工具为本轮答案返回了图片 `assetRef` 时才使用 `image`');
     expect(compiledContent).not.toContain('Codeforces/CF');
     expect(compiledContent).not.toContain('"outbound_messages"');

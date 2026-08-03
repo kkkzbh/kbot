@@ -266,7 +266,7 @@ function chatReplyItems(source: string): ReadableItem[] {
       title: '',
       content,
       kind,
-      alt: body.match(/^ALT (.+)$/m)?.[1] ?? '',
+      alt: kind === 'image' ? content : '',
     });
   }
   return result.length ? result : [{ label: '模型回复', title: '', content: source, kind: 'message' }];

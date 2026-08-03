@@ -46,6 +46,7 @@ function assertStrictRequiredForAllObjects(schema: unknown): void {
 
 describe('canonical main chat reply contract', () => {
   it('documents generic image final replies without tool-specific coupling', () => {
+    const textProtocolContract = buildChatReplyV1OutputContractLines().join('\n');
     expect(buildReplySemanticContractLines().join('\n')).toContain(
       '如果工具结果里带有 `image.assetRef`，且该图片就是当前答案的一部分',
     );
@@ -54,9 +55,11 @@ describe('canonical main chat reply contract', () => {
     );
     expect(buildNativeJsonOutputContractLines().join('\n')).toContain('请求所附 StructuredReplyEnvelope JSON Schema');
     expect(JSON.stringify(buildStructuredReplyJsonSchema())).toContain('"enum":["image"]');
-    expect(buildChatReplyV1OutputContractLines().join('\n')).toContain(
+    expect(textProtocolContract).toContain(
       'image 示例：',
     );
+    expect(textProtocolContract).toContain('在 `BEGIN <type>` 后直接写以 `|` 开头的 payload 行');
+    expect(textProtocolContract).not.toContain('\nCONTENT\n');
     expect(buildReplySemanticContractLines().join('\n')).not.toContain('cf_user_profile');
   });
 

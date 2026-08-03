@@ -772,7 +772,6 @@ describe('affinity service random history sync', () => {
         'CHAT_REPLY_V1 abc12345',
         'DECISION reply',
         'BEGIN message',
-        'CONTENT',
         `|${RANDOM_MESSAGE}`,
         'END',
         'DONE abc12345',

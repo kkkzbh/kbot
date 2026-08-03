@@ -388,7 +388,6 @@ describe('affinity proactive task prompt and provider adapter', () => {
       'CHAT_REPLY_V1 abc12345',
       'DECISION reply',
       'BEGIN structured_block',
-      'CONTENT',
       '|前面那道缩点题，可以先把“缩完后还有环”反过来想：它们仍然互相可达。',
       'END',
       'DONE abc12345',
