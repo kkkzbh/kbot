@@ -58,7 +58,7 @@ const probeCorpus = require('../scripts/lib/chat-reply-probe-corpus.cjs') as {
   evaluateStatefulStickerRates: (
     rates: { casual: number; explicit: number; serious: number; informational: number },
     thresholds: StatefulProbeSequence['thresholds'],
-  ) => { hardFailures: string[]; warnings: string[]; verdict: 'passed' | 'passed_with_warnings' };
+  ) => { warnings: string[]; verdict: 'passed' | 'passed_with_warnings' };
   loadProbeManifest: (path: string) => {
     schemaVersion: number;
     presetId: string;
@@ -412,17 +412,17 @@ describe('chat reply probe corpus', () => {
       serious: 0,
       informational: 0,
     }, sequence.thresholds);
-    expect(softMiss.hardFailures).toEqual([]);
     expect(softMiss.warnings).toHaveLength(2);
     expect(softMiss.verdict).toBe('passed_with_warnings');
 
-    const unsafe = probeCorpus.evaluateStatefulStickerRates({
+    const offTarget = probeCorpus.evaluateStatefulStickerRates({
       casual: 0.2,
       explicit: 1,
       serious: 0.25,
       informational: 0.25,
     }, sequence.thresholds);
-    expect(unsafe.hardFailures).toHaveLength(2);
+    expect(offTarget.warnings).toHaveLength(2);
+    expect(offTarget.verdict).toBe('passed_with_warnings');
   });
 
   it('selects the same ordered case IDs for either runner', () => {

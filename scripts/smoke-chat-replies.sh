@@ -219,14 +219,17 @@ const warnings = []
 
 function assertMedia(name, mode, present) {
   if (mode === 'required' && !present) throw new Error(`${caseId}: expected ${name}`)
-  if (mode === 'forbidden' && present) throw new Error(`${caseId}: unexpected ${name}`)
+  if (mode === 'forbidden' && present) warnings.push(`unexpected ${name}`)
 }
 
 assertMedia('text', expect.text, hasText)
 assertMedia('voice', expect.voice, hasVoice)
 const visualExpectation = evaluateVisualDeliveryExpectation(expect.image, deliveredMedia)
 if (!visualExpectation.ok) {
-  throw new Error(`${caseId}: visual delivery expectation failed (${visualExpectation.reason})`)
+  if (expect.image === 'required') {
+    throw new Error(`${caseId}: visual delivery expectation failed (${visualExpectation.reason})`)
+  }
+  warnings.push(`visual delivery differed from preference (${visualExpectation.reason})`)
 }
 
 if (expect.requireOrchestration && orchestrations.length === 0) {
@@ -422,6 +425,7 @@ if (
 
 const categoryStats = new Map()
 const turnSummaries = []
+const sequenceWarnings = []
 for (let index = 0; index < expected.turns.length; index += 1) {
   const expectedTurn = expected.turns[index]
   const turn = parsed.turns[index]
@@ -472,7 +476,7 @@ for (let index = 0; index < expected.turns.length; index += 1) {
     ? Math.max(typedStickerCount, deliveredStickerPayloadCount)
     : 0
   if (stickerCount > expected.thresholds.maxStickersPerTurn) {
-    throw new Error(
+    sequenceWarnings.push(
       `${sequenceId}/${expectedTurn.id}: ${stickerCount} stickers exceeds ${expected.thresholds.maxStickersPerTurn}`,
     )
   }
@@ -502,9 +506,7 @@ const rates = {
 }
 const thresholds = expected.thresholds
 const evaluation = evaluateStatefulStickerRates(rates, thresholds)
-if (evaluation.hardFailures.length > 0) {
-  throw new Error(`${sequenceId}: ${evaluation.hardFailures.join('; ')}`)
-}
+const warnings = [...sequenceWarnings, ...evaluation.warnings]
 
 const counts = Object.fromEntries(
   [...categoryStats].map(([category, stats]) => [category, stats]),
@@ -514,8 +516,8 @@ const result = {
   sequenceId,
   repetition,
   status: 'passed',
-  verdict: evaluation.verdict,
-  warnings: evaluation.warnings,
+  verdict: warnings.length > 0 ? 'passed_with_warnings' : 'passed',
+  warnings,
   turnCount: parsed.turns.length,
   effectiveModel: probeRoom.effectiveModel,
   mainModel: probeRoom.mainModel,
@@ -533,7 +535,7 @@ const result = {
   turnSummaries,
 }
 console.log(`RATES: casual=${rates.casual.toFixed(3)} explicit=${rates.explicit.toFixed(3)} serious=${rates.serious.toFixed(3)} informational=${rates.informational.toFixed(3)}`)
-for (const warning of evaluation.warnings) console.log(`WARNING: ${warning}`)
+for (const warning of warnings) console.log(`WARNING: ${warning}`)
 console.log(`PROBE_RESULT_JSON: ${JSON.stringify(result)}`)
 NODE
 

@@ -59,6 +59,17 @@ function send(method, params = {}) {
   })
 }
 
+function parseCallValue(call, label) {
+  const exception = call?.exceptionDetails?.exception?.description
+    || call?.exceptionDetails?.text
+  if (exception) throw new Error(`${label} failed: ${exception}`)
+  const value = call?.result?.value
+  if (typeof value !== 'string') {
+    throw new Error(`${label} returned no serialized result`)
+  }
+  return JSON.parse(value)
+}
+
 ws.on('message', (buffer) => {
   const message = JSON.parse(buffer.toString())
   if (!message.id) return
@@ -162,7 +173,7 @@ try {
     awaitPromise: true,
     returnByValue: true,
   })
-  const metadata = JSON.parse(metadataCall.result.value)
+  const metadata = parseCallValue(metadataCall, 'direct probe metadata')
   if (metadata.modelId !== manifest.expectedModelId) {
     throw new Error(
       `direct probe model mismatch: expected ${manifest.expectedModelId}, received ${String(metadata.modelId)}`,
@@ -190,7 +201,7 @@ try {
     for (let repetition = 1; repetition <= repetitions; repetition += 1) {
       const sampleCall = await send('Runtime.callFunctionOn', {
         objectId: loader,
-        functionDeclaration: `async function(probeCase, repetition, presetId, reasoningEffort, maxTokens) {
+        functionDeclaration: String.raw`async function(probeCase, repetition, presetId, reasoningEffort, maxTokens) {
           const contentToText = (content) => {
             if (typeof content === 'string') return content
             if (!Array.isArray(content)) return String(content ?? '')
@@ -341,7 +352,7 @@ try {
         awaitPromise: true,
         returnByValue: true,
       })
-      const sample = JSON.parse(sampleCall.result.value)
+      const sample = parseCallValue(sampleCall, `direct probe sample ${probeCase.id}/${repetition}`)
       console.log(JSON.stringify(sample))
       if (sample.status !== 'passed') exitCode = 1
     }
