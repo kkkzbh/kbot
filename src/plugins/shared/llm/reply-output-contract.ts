@@ -121,18 +121,38 @@ export function buildChatReplyV1OutputContractLines(options: ReplyOutputLanguage
   return lines;
 }
 
+export function buildChatReplyV1FinalInstruction(options: ReplyOutputLanguageOptions = {}): string {
+  const payloadTypes = [
+    'message',
+    'structured_block',
+    ...(options.canMeme === true ? ['meme'] : []),
+    ...(options.canVoice === true ? ['voice'] : []),
+  ];
+  return [
+    '最终只输出 CHAT_REPLY_V1 协议。直接输出普通聊天文本、Markdown 或解释文字均无效。',
+    '`<nonce>` 使用任意 8 位以上字母数字串，首尾必须相同。',
+    '回复格式：',
+    'CHAT_REPLY_V1 <nonce>',
+    'DECISION reply',
+    `BEGIN <${payloadTypes.join('|')}>`,
+    '|<内容；每一行都以 | 开头>',
+    'END',
+    'DONE <nonce>',
+    '最多四个 BEGIN...END block。image block 依次写 BEGIN image、ASSET_REF <本轮工具返回值>、ALT、|<说明>、END。',
+    '不回复时只写 CHAT_REPLY_V1 <nonce>、DECISION no_reply、DONE <nonce>。不要写 CONTENT。',
+    ...(options.canVoice === true
+      ? buildVoiceOutputLanguageContractLines(normalizeVoiceOutputLanguage(options.voiceOutputLanguage))
+      : []),
+  ].join('\n');
+}
+
 export function buildReplyOutputInstruction(
   protocol: ReplyOutputProtocol,
   options: ReplyOutputLanguageOptions = {},
 ): string | null {
   if (protocol !== 'chat_reply_v1') return null;
 
-  return [
-    '最终回复格式强制规则：',
-    ...buildReplySemanticContractLines(options),
-    '',
-    ...buildChatReplyV1OutputContractLines(options),
-  ].join('\n');
+  return buildChatReplyV1FinalInstruction(options);
 }
 
 export function createReplyOutputContract(args: {

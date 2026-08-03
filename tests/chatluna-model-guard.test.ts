@@ -9,6 +9,7 @@ import {
 } from '../src/plugins/shared/llm/index.js';
 import {
   buildChatReplyV1OutputContractLines,
+  buildChatReplyV1FinalInstruction,
   buildNativeJsonOutputContractLines,
   buildReplySemanticContractLines,
 } from '../src/plugins/shared/llm/reply-output-contract.js';
@@ -81,6 +82,14 @@ describe('canonical main chat reply contract', () => {
     expect(textOnly).not.toContain('`voice`');
     expect(textOnly).not.toContain('meme block：');
     expect(textOnly).not.toContain('voice block：');
+    const finalInstruction = buildChatReplyV1FinalInstruction({
+      canMeme: false,
+      canVoice: false,
+    });
+    expect(finalInstruction).toContain('直接输出普通聊天文本、Markdown 或解释文字均无效');
+    expect(finalInstruction).toContain('BEGIN <message|structured_block>');
+    expect(finalInstruction).not.toContain('|meme');
+    expect(finalInstruction).not.toContain('|voice');
   });
 
   it('models voice and meme as singleton fields outside ordered provider messages', () => {
