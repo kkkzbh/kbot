@@ -695,7 +695,10 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('"${DATA_DIR}/chatluna/archive"');
     expect(installer).toContain('chmod 700 \\\n  "${DATA_DIR}"');
     expect(installer).toContain('chown root:qqbot "${SHARED_DIR}"');
-    expect(installer).toContain('chmod 750 "${SHARED_DIR}"');
+    expect(installer).toContain('install -d -o qqbot -g qqbot -m 700 "${SHARED_DIR}/backup"');
+    expect(installer).toContain('chown qqbot:qqbot "${ENV_RUNTIME}"');
+    expect(installer).toContain('chmod 600 "${ENV_RUNTIME}"');
+    expect(installer).toContain('chmod 1770 "${SHARED_DIR}"');
     expect(installer).toContain('"${DATA_DIR}/chatluna/web-artifacts"');
     expect(installer).toContain(
       '"CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${APP_DIR}/data/chathub/context-presets"',

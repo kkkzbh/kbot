@@ -1,6 +1,7 @@
 import { constants as fsConstants, existsSync } from 'node:fs';
 import {
   access,
+  chmod,
   copyFile,
   mkdir,
   readFile,
@@ -145,6 +146,7 @@ export type TtsAudioSample = {
 
 type FsLike = {
   access: typeof access;
+  chmod: typeof chmod;
   copyFile: typeof copyFile;
   mkdir: typeof mkdir;
   readFile: typeof readFile;
@@ -370,6 +372,7 @@ const RESTART_MONITOR_POLL_INTERVAL_MS = 250;
 function defaultFs(): FsLike {
   return {
     access,
+    chmod,
     copyFile,
     mkdir,
     readFile,
@@ -693,6 +696,7 @@ export async function writeFileAtomicWithBackup(
 
   try {
     await fsLike.writeFile(tempPath, content, 'utf8');
+    await fsLike.chmod(tempPath, 0o600);
     await fsLike.rename(tempPath, filePath);
   } catch (error) {
     await fsLike.rm(tempPath, { force: true }).catch(() => undefined);

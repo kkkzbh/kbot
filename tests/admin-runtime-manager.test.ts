@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -203,6 +203,18 @@ function restartJobUnitOutput(input: {
 
 
 describe('admin env helpers', () => {
+  it('keeps atomically written environment files private', async () => {
+    const dir = createTempDir();
+    const filePath = join(dir, '.env.runtime');
+    writeFileSync(filePath, 'QQBOT_ANTI_RECALL_ENABLED=false\n', { mode: 0o640 });
+
+    await writeFileAtomicWithBackup(filePath, 'QQBOT_ANTI_RECALL_ENABLED=true\n', {
+      backupDir: join(dir, 'backup'),
+    });
+
+    expect(statSync(filePath).mode & 0o777).toBe(0o600);
+  });
+
   it('preserves comments and unknown lines while patching managed keys', () => {
     const content = [
       '# comment',
@@ -232,6 +244,7 @@ describe('admin env helpers', () => {
         backupDir: join(dir, 'backup'),
         fs: {
           access: async () => undefined,
+          chmod: async () => undefined,
           copyFile: async (...args) => writeFile(args[1] as string, readFileSync(args[0] as string, 'utf8'), 'utf8'),
           mkdir: async () => undefined,
           readFile: (async (path: unknown, encoding: unknown) =>

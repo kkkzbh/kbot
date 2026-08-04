@@ -1097,8 +1097,14 @@ node "${STAGE_QQBOT}/scripts/migrate-agent-workspace-podman.mjs" \
   "${PERSISTENT_AGENT_DIR}/config.json"
 adopt_runtime_data_ownership
 chgrp -R qqbot "${SHARED_DIR}"
-chmod 750 "${SHARED_DIR}"
 find "${SHARED_DIR}" -type f -exec chmod g+r {} +
+install -d -o qqbot -g qqbot -m 700 "${SHARED_DIR}/backup"
+if [[ -f "${ENV_RUNTIME}" ]]; then
+  chown qqbot:qqbot "${ENV_RUNTIME}"
+  chmod 600 "${ENV_RUNTIME}"
+fi
+chown root:qqbot "${SHARED_DIR}"
+chmod 1770 "${SHARED_DIR}"
 prepare_koishi_kek_ownership
 deployment_transaction_fsync_tree "${WORK_DIR}"
 deployment_transaction_swap_application \
