@@ -13,7 +13,7 @@ inputs:
   chatluna-ref:
     description: ChatLuna ref or resolved commit SHA to checkout.
     required: false
-    default: qqbot-conversation-runtime
+    default: v1-dev
   node-version:
     description: Node.js version.
     required: false

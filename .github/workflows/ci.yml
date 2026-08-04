@@ -16,7 +16,7 @@ concurrency:
 
 env:
   CHATLUNA_REPO: kkkzbh/chatluna
-  CHATLUNA_REF: qqbot-conversation-runtime
+  CHATLUNA_REF: v1-dev
 
 jobs:
   resolve-revisions:
