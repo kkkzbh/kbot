@@ -62,13 +62,21 @@ export class HbuJwLoginError extends Error {
   readonly code: string;
   readonly diagnostic: string;
   readonly category: HbuJwLoginErrorCategory;
+  readonly retryable: boolean;
 
-  constructor(message: string, options: { code: string; diagnostic: string; category: HbuJwLoginErrorCategory; cause?: unknown }) {
+  constructor(message: string, options: {
+    code: string;
+    diagnostic: string;
+    category: HbuJwLoginErrorCategory;
+    retryable?: boolean;
+    cause?: unknown;
+  }) {
     super(message);
     this.name = 'HbuJwLoginError';
     this.code = options.code;
     this.diagnostic = options.diagnostic;
     this.category = options.category;
+    this.retryable = options.retryable === true;
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -129,107 +137,119 @@ export class HbuJwHttpClient {
   }
 
   async login(username: string, password: string): Promise<HbuJwLoginResult> {
-    try {
-      const jar = new CookieJar(this.webVpnBroker ? 'broker' : 'direct', this.baseOrigin);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return await this.loginOnce(username, password);
+      } catch (error) {
+        const failure = normalizeJwLoginFailure(error);
+        if (attempt === 1 && failure.retryable) continue;
+        throw failure;
+      }
+    }
+    throw new Error('unreachable login attempt loop');
+  }
+
+  private async loginOnce(username: string, password: string): Promise<HbuJwLoginResult> {
+    const jar = new CookieJar(this.webVpnBroker ? 'broker' : 'direct', this.baseOrigin);
+    if (jar.transport === 'broker') {
+      const logout = await this.request('/logout', { jar });
+      if (isTransientUpstreamStatus(logout.response.status)) {
+        throw transientLoginHttpError('logout', logout.response.status, logout.url);
+      }
+      if (isWebVpnLoginPageHtml(logout.text)) {
+        throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
+          code: 'webvpn_broker_session_missing',
+          diagnostic: 'broker-backed JW logout resolved to the WebVPN login page',
+          category: 'upstream',
+        });
+      }
+    }
+    let loginPage = await this.request('/login', { jar });
+    if (isWebVpnLoginPageHtml(loginPage.text)) {
       if (jar.transport === 'broker') {
-        const logout = await this.request('/logout', { jar });
-        if (isWebVpnLoginPageHtml(logout.text)) {
-          throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
-            code: 'webvpn_broker_session_missing',
-            diagnostic: 'broker-backed JW logout resolved to the WebVPN login page',
-            category: 'upstream',
-          });
-        }
+        throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
+          code: 'webvpn_broker_session_missing',
+          diagnostic: 'broker-backed JW login resolved to the WebVPN login page',
+          category: 'upstream',
+        });
       }
-      let loginPage = await this.request('/login', { jar });
+      await this.loginWebVpn(username, password, jar, loginPage.text);
+      loginPage = await this.request('/login', { jar });
       if (isWebVpnLoginPageHtml(loginPage.text)) {
-        if (jar.transport === 'broker') {
-          throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
-            code: 'webvpn_broker_session_missing',
-            diagnostic: 'broker-backed JW login resolved to the WebVPN login page',
-            category: 'upstream',
-          });
-        }
-        await this.loginWebVpn(username, password, jar, loginPage.text);
-        loginPage = await this.request('/login', { jar });
-        if (isWebVpnLoginPageHtml(loginPage.text)) {
-          throw new HbuJwLoginError('河北大学 WebVPN 登录成功后仍未建立教务访问会话，请稍后重试。', {
-            code: 'webvpn_session_missing',
-            diagnostic: `webvpn resource login resolved to ${loginPage.url}`,
-            category: 'upstream',
-          });
-        }
-      }
-      if (isAuthenticatedHtml(loginPage.text) && jar.transport === 'broker') {
-        throw new HbuJwLoginError('共享教务会话退出后仍保留了旧账号，已拒绝继续查询。', {
-          code: 'jw_shared_session_not_cleared',
-          diagnostic: `login page remained authenticated url=${loginPage.url}`,
-          category: 'protocol',
-        });
-      }
-      if (isAuthenticatedHtml(loginPage.text)) {
-        return { cookieJar: jar.serialize() };
-      }
-      if (loginPage.response.status !== 200) {
-        throw new HbuJwLoginError(`教务登录入口返回 HTTP ${loginPage.response.status}，自动登录暂时无法完成。`, {
-          code: 'login_page_failed',
-          diagnostic: `login_page status=${loginPage.response.status}`,
+        throw new HbuJwLoginError('河北大学 WebVPN 登录成功后仍未建立教务访问会话，请稍后重试。', {
+          code: 'webvpn_session_missing',
+          diagnostic: `webvpn resource login resolved to ${loginPage.url}`,
           category: 'upstream',
         });
       }
-      if (!isLoginPageHtml(loginPage.text)) {
-        throw new HbuJwLoginError('教务登录页结构发生变化，自动登录暂时无法完成。', {
-          code: 'login_page_changed',
-          diagnostic: `login_page url=${loginPage.url}`,
-          category: 'protocol',
-        });
-      }
-
-      const loginBody = new URLSearchParams({ username, password }).toString();
-      const login = await this.request('/sigin', {
-        jar,
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          origin: this.baseUrl,
-          referer: `${this.baseUrl}/login`,
-        },
-        body: loginBody,
-      });
-      if (isAuthenticatedHtml(login.text)) {
-        if (jar.transport === 'broker') await this.assertAuthenticatedStudent(jar, username);
-        return { cookieJar: jar.serialize() };
-      }
-
-      if (isWebVpnLoginPageHtml(login.text)) {
-        throw new HbuJwLoginError('河北大学 WebVPN 会话在教务登录过程中失效，请稍后重试。', {
-          code: 'webvpn_session_expired',
-          diagnostic: `jw login resolved to webvpn login url=${login.url}`,
-          category: 'upstream',
-        });
-      }
-      if (isLoginPageHtml(login.text)) {
-        const message = extractLoginFailureMessage(login.text) ?? '教务登录失败，教务系统未返回登录态。';
-        throw new HbuJwLoginError(message, {
-          code: 'login_rejected',
-          diagnostic: `login_submit status=${login.response.status} url=${login.url} message=${message}`,
-          category: message.includes('验证码') ? 'interaction_required' : 'credential',
-        });
-      }
-      throw new HbuJwLoginError('教务登录协议发生变化，提交账号后没有获得登录态。', {
-        code: 'not_authenticated',
-        diagnostic: `login_submit status=${login.response.status} url=${login.url}`,
+    }
+    if (isAuthenticatedHtml(loginPage.text) && jar.transport === 'broker') {
+      throw new HbuJwLoginError('共享教务会话退出后仍保留了旧账号，已拒绝继续查询。', {
+        code: 'jw_shared_session_not_cleared',
+        diagnostic: `login page remained authenticated url=${loginPage.url}`,
         category: 'protocol',
       });
-    } catch (error) {
-      if (error instanceof HbuJwLoginError) throw error;
-      throw new HbuJwLoginError('教务系统当前无法访问，自动登录未完成，请稍后重试。', {
-        code: 'request_failed',
-        diagnostic: describeError(error),
+    }
+    if (isAuthenticatedHtml(loginPage.text)) {
+      return { cookieJar: jar.serialize() };
+    }
+    if (loginPage.response.status !== 200) {
+      if (isTransientUpstreamStatus(loginPage.response.status)) {
+        throw transientLoginHttpError('login_page', loginPage.response.status, loginPage.url);
+      }
+      throw new HbuJwLoginError(`教务登录入口返回 HTTP ${loginPage.response.status}，自动登录暂时无法完成。`, {
+        code: 'login_page_failed',
+        diagnostic: `login_page status=${loginPage.response.status}`,
         category: 'upstream',
-        cause: error,
       });
     }
+    if (!isLoginPageHtml(loginPage.text)) {
+      throw new HbuJwLoginError('教务登录页结构发生变化，自动登录暂时无法完成。', {
+        code: 'login_page_changed',
+        diagnostic: `login_page url=${loginPage.url}`,
+        category: 'protocol',
+      });
+    }
+
+    const loginBody = new URLSearchParams({ username, password }).toString();
+    const login = await this.request('/sigin', {
+      jar,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: this.baseUrl,
+        referer: `${this.baseUrl}/login`,
+      },
+      body: loginBody,
+    });
+    if (isAuthenticatedHtml(login.text)) {
+      if (jar.transport === 'broker') await this.assertAuthenticatedStudent(jar, username);
+      return { cookieJar: jar.serialize() };
+    }
+
+    if (isTransientUpstreamStatus(login.response.status)) {
+      throw transientLoginHttpError('login_submit', login.response.status, login.url);
+    }
+    if (isWebVpnLoginPageHtml(login.text)) {
+      throw new HbuJwLoginError('河北大学 WebVPN 会话在教务登录过程中失效，请稍后重试。', {
+        code: 'webvpn_session_expired',
+        diagnostic: `jw login resolved to webvpn login url=${login.url}`,
+        category: 'upstream',
+      });
+    }
+    if (isLoginPageHtml(login.text)) {
+      const message = extractLoginFailureMessage(login.text) ?? '教务登录失败，教务系统未返回登录态。';
+      throw new HbuJwLoginError(message, {
+        code: 'login_rejected',
+        diagnostic: `login_submit status=${login.response.status} url=${login.url} message=${message}`,
+        category: message.includes('验证码') ? 'interaction_required' : 'credential',
+      });
+    }
+    throw new HbuJwLoginError('教务登录协议发生变化，提交账号后没有获得登录态。', {
+      code: 'not_authenticated',
+      diagnostic: `login_submit status=${login.response.status} url=${login.url}`,
+      category: 'protocol',
+    });
   }
 
   private async assertAuthenticatedStudent(jar: CookieJar, username: string): Promise<void> {
@@ -239,6 +259,9 @@ export class HbuJwHttpClient {
       headers: { referer: `${this.baseUrl}/index` },
     });
     if (page.response.status !== 200) {
+      if (isTransientUpstreamStatus(page.response.status)) {
+        throw transientLoginHttpError('identity_page', page.response.status, page.url);
+      }
       throw new HbuJwLoginError(`教务账号登录后无法校验学籍身份（HTTP ${page.response.status}），已拒绝继续查询。`, {
         code: 'jw_identity_page_failed',
         diagnostic: `identity_page status=${page.response.status}`,
@@ -991,6 +1014,37 @@ interface WebVpnLoginPayload {
 function normalizeOrigin(value: string): string {
   const target = new URL(value);
   return target.origin;
+}
+
+type TransientLoginStage = 'logout' | 'login_page' | 'login_submit' | 'identity_page';
+
+function isTransientUpstreamStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function transientLoginHttpError(stage: TransientLoginStage, status: number, url: string): HbuJwLoginError {
+  const stageLabels: Record<TransientLoginStage, string> = {
+    logout: '教务退出登录',
+    login_page: '教务登录入口',
+    login_submit: '教务登录提交',
+    identity_page: '教务身份校验',
+  };
+  return new HbuJwLoginError(`${stageLabels[stage]}暂时失败（HTTP ${status}），自动重试后仍未恢复，请稍后再试。`, {
+    code: `${stage}_upstream_failed`,
+    diagnostic: `stage=${stage} status=${status} path=${new URL(url).pathname}`,
+    category: 'upstream',
+    retryable: true,
+  });
+}
+
+function normalizeJwLoginFailure(error: unknown): HbuJwLoginError {
+  if (error instanceof HbuJwLoginError) return error;
+  return new HbuJwLoginError('教务系统当前无法访问，自动登录未完成，请稍后重试。', {
+    code: 'request_failed',
+    diagnostic: describeError(error),
+    category: 'upstream',
+    cause: error,
+  });
 }
 
 function rebaseAcademicHeaders(

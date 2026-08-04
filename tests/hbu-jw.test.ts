@@ -2977,6 +2977,62 @@ describe('hbu-jw http client', () => {
       .toBe('教务功能执行失败（TypeError）：成绩图片节点不存在。');
   });
 
+  it('restarts the complete login transaction once after a transient upstream gateway failure', async () => {
+    let indexCalls = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      const target = new URL(url);
+      if (target.pathname === '/login') {
+        return new Response('<form action="/sigin"><input name="password"></form>', { status: 200 });
+      }
+      if (target.pathname === '/sigin') {
+        return new Response('', { status: 302, headers: { location: '/index' } });
+      }
+      if (target.pathname === '/index') {
+        indexCalls += 1;
+        return indexCalls === 1
+          ? new Response('temporary gateway failure', { status: 502 })
+          : new Response('<html><body>URP综合教务系统首页</body></html>', { status: 200 });
+      }
+      return new Response('', { status: 404 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.login('20231202051', 'secret')).resolves.toMatchObject({
+      cookieJar: { version: 2, transport: 'direct', origin: 'https://zhjw.hbu.cn' },
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
+      '/login',
+      '/sigin',
+      '/index',
+      '/login',
+      '/sigin',
+      '/index',
+    ]);
+  });
+
+  it('reports the login stage and upstream status after the bounded retry is exhausted', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      const target = new URL(url);
+      if (target.pathname === '/login') {
+        return new Response('<form action="/sigin"><input name="password"></form>', { status: 200 });
+      }
+      if (target.pathname === '/sigin') {
+        return new Response('', { status: 302, headers: { location: '/index' } });
+      }
+      return new Response('temporary gateway failure', { status: 502 });
+    });
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.login('20231202051', 'secret')).rejects.toMatchObject({
+      code: 'login_submit_upstream_failed',
+      message: '教务登录提交暂时失败（HTTP 502），自动重试后仍未恢复，请稍后再试。',
+      diagnostic: 'stage=login_submit status=502 path=/index',
+      category: 'upstream',
+      retryable: true,
+    });
+    expect(fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/sigin')).toHaveLength(2);
+  });
+
   it('reports the failed WebVPN recovery stage without exposing broker internals', async () => {
     const client = new HbuJwHttpClient({
       webVpnBroker: {
