@@ -254,8 +254,12 @@ async function readTextIfExists(filePath: string): Promise<string | null> {
 async function writeFileAtomic(filePath: string, content: string): Promise<void> {
   const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(tempPath, content, 'utf8');
-  await rename(tempPath, filePath);
+  try {
+    await writeFile(tempPath, content, { encoding: 'utf8', mode: 0o600 });
+    await rename(tempPath, filePath);
+  } finally {
+    await rm(tempPath, { force: true });
+  }
 }
 
 async function readJsonIfExists<T>(filePath: string): Promise<T | null> {

@@ -699,6 +699,15 @@ describe('server runtime artifact rendering', () => {
     expect(installer).toContain('chown qqbot:qqbot "${ENV_RUNTIME}"');
     expect(installer).toContain('chmod 600 "${ENV_RUNTIME}"');
     expect(installer).toContain('chmod 1770 "${SHARED_DIR}"');
+    expect(installer).toContain('prepare_model_auth_runtime_ownership()');
+    expect(installer).toContain('codex-chatgpt.oauth.json');
+    expect(installer).toContain('codex-release-metadata.json');
+    expect(installer).toContain('github-copilot.oauth.json');
+    expect(installer).toContain('github-copilot.session.json');
+    expect(installer).toContain('chown qqbot:qqbot "${state_path}"');
+    expect(installer).toContain('chmod 600 "${state_path}"');
+    expect(installer.indexOf('prepare_model_auth_runtime_ownership\nprepare_koishi_kek_ownership'))
+      .toBeGreaterThan(installer.indexOf('stop_deployment_stack'));
     expect(installer).toContain('"${DATA_DIR}/chatluna/web-artifacts"');
     expect(installer).toContain(
       '"CHATLUNA_BUNDLED_CONTEXT_PRESET_DIR=${APP_DIR}/data/chathub/context-presets"',

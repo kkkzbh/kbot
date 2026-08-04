@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 function parseJson<T>(raw: string, label: string): T {
@@ -27,8 +27,12 @@ export async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
 export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
   const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(tempPath, content, 'utf8');
-  await rename(tempPath, filePath);
+  try {
+    await writeFile(tempPath, content, { encoding: 'utf8', mode: 0o600 });
+    await rename(tempPath, filePath);
+  } finally {
+    await rm(tempPath, { force: true });
+  }
 }
 
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {

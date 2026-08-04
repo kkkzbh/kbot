@@ -334,6 +334,38 @@ adopt_runtime_data_ownership() {
   )
 }
 
+prepare_model_auth_runtime_ownership() {
+  local state_name
+  local state_path
+  for state_name in \
+    codex-chatgpt.oauth.json \
+    codex-release-metadata.json \
+    github-copilot.oauth.json \
+    github-copilot.session.json; do
+    state_path="${SHARED_DIR}/${state_name}"
+    if [[ -L "${state_path}" ]]; then
+      echo "[installer] model auth runtime state must not be a symbolic link: ${state_path}" >&2
+      return 1
+    fi
+    if [[ ! -e "${state_path}" ]]; then
+      continue
+    fi
+    if [[ ! -f "${state_path}" ]]; then
+      echo "[installer] model auth runtime state must be a regular file: ${state_path}" >&2
+      return 1
+    fi
+    chown qqbot:qqbot "${state_path}"
+    chmod 600 "${state_path}"
+  done
+
+  find "${SHARED_DIR}" -maxdepth 1 -type f \( \
+    -name 'codex-chatgpt.oauth.json.tmp.*' -o \
+    -name 'codex-release-metadata.json.tmp.*' -o \
+    -name 'github-copilot.oauth.json.tmp.*' -o \
+    -name 'github-copilot.session.json.tmp.*' \
+  \) -delete
+}
+
 if [[ ! -s "${CLOUDFLARED_HBU_JW_TOKEN_FILE}" ]]; then
   echo "[installer] missing Cloudflare tunnel token file: ${CLOUDFLARED_HBU_JW_TOKEN_FILE}" >&2
   echo "[installer] install the qqbot-hbu-jw token before deploying" >&2
@@ -1105,6 +1137,7 @@ if [[ -f "${ENV_RUNTIME}" ]]; then
 fi
 chown root:qqbot "${SHARED_DIR}"
 chmod 1770 "${SHARED_DIR}"
+prepare_model_auth_runtime_ownership
 prepare_koishi_kek_ownership
 deployment_transaction_fsync_tree "${WORK_DIR}"
 deployment_transaction_swap_application \

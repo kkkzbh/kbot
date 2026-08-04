@@ -1,4 +1,11 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +22,7 @@ import {
   CODEX_RELEASE_METADATA_URL,
   CodexReleaseMetadataProvider,
 } from '../src/plugins/codex-oauth/release-metadata.js';
+import { writeFileAtomic } from '../src/plugins/codex-oauth/state-files.js';
 
 const tempDirs: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -86,6 +94,23 @@ function readCodexAuth(dir: string): any {
 }
 
 describe('codex oauth bridge helpers', () => {
+  it('writes private state atomically and removes a failed staged file', async () => {
+    const dir = createTempDir();
+    const statePath = join(dir, 'state.json');
+
+    await writeFileAtomic(statePath, '{"ok":true}\n');
+
+    expect(readFileSync(statePath, 'utf8')).toBe('{"ok":true}\n');
+    expect(statSync(statePath).mode & 0o777).toBe(0o600);
+
+    const directoryTarget = join(dir, 'directory-target');
+    mkdirSync(directoryTarget);
+    await expect(writeFileAtomic(directoryTarget, 'uncommitted')).rejects.toThrow();
+    expect(
+      readdirSync(dir).filter((name) => name.startsWith('directory-target.tmp.')),
+    ).toEqual([]);
+  });
+
   it('resolves state dir from env mode and derives bridge url from koishi port', () => {
     expect(
       resolveCodexStateDir('/repo', {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -105,7 +105,9 @@ describe('copilot oauth bridge helpers', () => {
     expect(config.apiKey).not.toBe('legacy-copilot-secret');
     expect(config.apiKey).not.toBe('legacy-generic-secret');
     expect(config.apiKey).toMatch(/^qqbot-copilot-[a-f0-9]{48}$/);
-    expect((await readFile(join(dir, '.runtime/github-copilot.bridge-secret'), 'utf8')).trim()).toBe(config.apiKey);
+    const secretPath = join(dir, '.runtime/github-copilot.bridge-secret');
+    expect((await readFile(secretPath, 'utf8')).trim()).toBe(config.apiKey);
+    expect(statSync(secretPath).mode & 0o777).toBe(0o600);
 
     vi.stubEnv('CHATLUNA_COPILOT_API_KEY', 'different-legacy-secret');
     const restarted = new CopilotOAuthBridgeService({
