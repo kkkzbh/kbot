@@ -241,8 +241,9 @@ function extractToken(link: string): string {
 
 function cookieJar(sessionId: string | null = 'abc'): SerializedCookieJar {
   return {
-    version: 1,
+    version: 2,
     transport: 'direct',
+    origin: 'https://zhjw.hbu.cn',
     cookies: sessionId === null ? [] : [{ name: 'JSESSIONID', value: sessionId }],
   };
 }
@@ -3055,6 +3056,8 @@ describe('hbu-jw http client', () => {
     const token = Buffer.alloc(32, 7);
     let currentAccount = '';
     const submittedAccounts: string[] = [];
+    let logoutCalls = 0;
+    let signinCalls = 0;
     const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const authorization = new Headers(init?.headers).get('authorization');
       expect(authorization).toBe(`Bearer ${token.toString('base64url')}`);
@@ -3062,6 +3065,7 @@ describe('hbu-jw http client', () => {
       const request = JSON.parse(String(init?.body)) as {
         targetUrl: string;
         method: string;
+        headers: Record<string, string>;
         cookies: Array<{ name: string; value: string }>;
         bodyBase64?: string;
       };
@@ -3080,7 +3084,10 @@ describe('hbu-jw http client', () => {
 
       if (target.pathname === '/logout') {
         currentAccount = '';
-        return response(302, '', { location: 'https://zhjw.hbu.cn/enterOut' });
+        logoutCalls += 1;
+        return response(302, '', {
+          location: logoutCalls === 1 ? '/enterOut' : 'https://zhjw.hbu.edu.cn/enterOut',
+        });
       }
       if (target.pathname === '/enterOut') {
         return response(200, '<html><body>logged out</body></html>');
@@ -3096,13 +3103,34 @@ describe('hbu-jw http client', () => {
         expect(request.cookies).toEqual([]);
         currentAccount = username ?? '';
         submittedAccounts.push(currentAccount);
-        return response(302, '', { location: 'https://zhjw.hbu.cn/index' });
+        signinCalls += 1;
+        return response(302, '', {
+          location: signinCalls === 1 ? '/index' : 'https://zhjw.hbu.edu.cn/index',
+        });
       }
       if (target.pathname === '/index') {
+        if (target.origin === 'https://zhjw.hbu.edu.cn') {
+          if (request.headers.origin) {
+            expect(request.headers.origin).toBe('https://zhjw.hbu.edu.cn');
+            expect(request.headers.referer).toBe('https://zhjw.hbu.edu.cn/login');
+          }
+          if (request.cookies.length > 0) {
+            expect(request.cookies).toEqual([{ name: 'JSESSIONID', value: 'alias-session' }]);
+          }
+          return response(
+            200,
+            '<html><body>URP综合教务系统首页</body></html>',
+            {},
+            ['JSESSIONID=alias-session; Path=/; HttpOnly'],
+          );
+        }
         expect(request.cookies).toEqual([]);
         return response(200, '<html><body>URP综合教务系统首页</body></html>');
       }
       if (target.pathname === '/student/rollManagement/rollInfo/index') {
+        if (target.origin === 'https://zhjw.hbu.edu.cn') {
+          expect(request.cookies).toEqual([{ name: 'JSESSIONID', value: 'alias-session' }]);
+        }
         return response(200, `<div class="profile-info-name">学号</div><div class="profile-info-value">${currentAccount}</div>`);
       }
       return response(404, 'missing');
@@ -3122,8 +3150,9 @@ describe('hbu-jw http client', () => {
         { name: 'JSESSIONID', value: 'obsolete' },
       ],
     })).toEqual({
-      version: 1,
+      version: 2,
       transport: 'broker',
+      origin: 'https://zhjw.hbu.cn',
       cookies: [],
     });
 
@@ -3131,18 +3160,34 @@ describe('hbu-jw http client', () => {
     const secondLogin = await client.login(accounts[1]!, 'password-b');
 
     expect(firstLogin.cookieJar).toEqual({
-      version: 1,
+      version: 2,
       transport: 'broker',
+      origin: 'https://zhjw.hbu.cn',
       cookies: [],
     });
     expect(secondLogin.cookieJar).toEqual({
-      version: 1,
+      version: 2,
       transport: 'broker',
-      cookies: [],
+      origin: 'https://zhjw.hbu.edu.cn',
+      cookies: [{ name: 'JSESSIONID', value: 'alias-session' }],
     });
+    await expect(client.validate(secondLogin.cookieJar)).resolves.toBe(true);
     expect(directFetch).not.toHaveBeenCalled();
     expect(submittedAccounts).toEqual(accounts);
-    expect(brokerFetch).toHaveBeenCalledTimes(12);
+    expect(brokerFetch).toHaveBeenCalledTimes(13);
+  });
+
+  it('rejects the canonical academic alias outside broker transport', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', {
+      status: 302,
+      headers: { location: 'https://zhjw.hbu.edu.cn/login' },
+    }));
+    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+
+    await expect(client.login('student', 'password')).rejects.toMatchObject({
+      code: 'cross_origin_redirect',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a shared JW slot whose returned student identity differs from the submitted account', async () => {
@@ -3270,8 +3315,9 @@ describe('hbu-jw http client', () => {
 
     await expect(client.login('student', 'password')).resolves.toEqual({
       cookieJar: {
-        version: 1,
+        version: 2,
         transport: 'direct',
+        origin: 'https://zhjw.hbu.cn',
         cookies: [
           { name: 'wengine_vpn_ticketv_hbu_cn', value: 'ticket' },
           { name: 'webvpn_session', value: 'active' },

@@ -55,6 +55,9 @@ type RequestOptions = Omit<RequestInit, 'headers'> & {
   headers?: Record<string, string>;
 };
 
+const PRIMARY_ACADEMIC_ORIGIN = 'https://zhjw.hbu.cn';
+const ACADEMIC_ORIGIN_ALIASES = ['https://zhjw.hbu.cn', 'https://zhjw.hbu.edu.cn'] as const;
+
 export class HbuJwLoginError extends Error {
   readonly code: string;
   readonly diagnostic: string;
@@ -85,6 +88,7 @@ export class HbuJwHttpClient {
   private readonly fetchImpl: typeof fetch;
   private readonly baseUrl: string;
   private readonly baseOrigin: string;
+  private readonly academicOrigins: ReadonlySet<string>;
   private readonly webVpnOrigin: string;
   private readonly webVpnTransportOrigin: string;
   private readonly webVpnDispatcher?: Dispatcher;
@@ -96,6 +100,11 @@ export class HbuJwHttpClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.baseUrl = normalizeOrigin(options.baseUrl ?? 'https://zhjw.hbu.cn');
     this.baseOrigin = new URL(this.baseUrl).origin;
+    this.academicOrigins = new Set(
+      options.webVpnBroker && this.baseOrigin === PRIMARY_ACADEMIC_ORIGIN
+        ? ACADEMIC_ORIGIN_ALIASES
+        : [this.baseOrigin],
+    );
     this.webVpnOrigin = normalizeOrigin(options.webVpnBaseUrl ?? 'https://v.hbu.cn');
     this.webVpnTransportOrigin = normalizeOrigin(options.webVpnTransportBaseUrl ?? 'https://v.hbu.edu.cn');
     this.webVpnDispatcher = options.webVpnDispatcher
@@ -112,15 +121,16 @@ export class HbuJwHttpClient {
     const transport = this.webVpnBroker ? 'broker' : 'direct';
     if (isCurrentCookieJar(cookieJar) && cookieJar.transport === transport) return cookieJar;
     return {
-      version: 1,
+      version: 2,
       transport,
+      origin: this.baseOrigin,
       cookies: [],
     };
   }
 
   async login(username: string, password: string): Promise<HbuJwLoginResult> {
     try {
-      const jar = new CookieJar(this.webVpnBroker ? 'broker' : 'direct');
+      const jar = new CookieJar(this.webVpnBroker ? 'broker' : 'direct', this.baseOrigin);
       if (jar.transport === 'broker') {
         const logout = await this.request('/logout', { jar });
         if (isWebVpnLoginPageHtml(logout.text)) {
@@ -696,16 +706,19 @@ export class HbuJwHttpClient {
       body: configuredBody,
       ...requestOptions
     } = options;
-    let currentUrl = this.resolveRequestUrl(url, jar.transport === 'broker');
+    let currentUrl = this.resolveRequestUrl(url, jar.transport === 'broker', jar.origin);
     let method = String(configuredMethod ?? 'GET').toUpperCase();
     let body = configuredBody;
+    let brokerHeaders = jar.transport === 'broker' && currentUrl.origin !== this.baseOrigin
+      ? rebaseAcademicHeaders(configuredHeaders, new URL(this.baseOrigin), currentUrl)
+      : { ...configuredHeaders };
 
     for (let redirectCount = 0; redirectCount <= 8; redirectCount += 1) {
       this.assertAllowedOrigin(currentUrl, 'cross_origin_request');
       const throughBroker = jar.transport === 'broker';
       const transportUrl = throughBroker ? currentUrl : this.toTransportUrl(currentUrl);
       const headers = throughBroker
-        ? { ...configuredHeaders }
+        ? brokerHeaders
         : this.createRequestHeaders(configuredHeaders, jar, currentUrl);
       if ((method === 'GET' || method === 'HEAD') && body !== undefined) body = undefined;
       const response = throughBroker
@@ -749,7 +762,8 @@ export class HbuJwHttpClient {
         : rawRedirectedUrl;
       if (currentUrl.origin === this.baseOrigin && redirectedUrl.origin === this.webVpnOrigin) {
         this.captureWebVpnResourceBase(currentUrl, redirectedUrl);
-      } else if (redirectedUrl.origin !== currentUrl.origin) {
+      } else if (redirectedUrl.origin !== currentUrl.origin
+        && !(this.academicOrigins.has(currentUrl.origin) && this.academicOrigins.has(redirectedUrl.origin))) {
         throw new HbuJwLoginError('教务系统返回了非预期跨域跳转。', {
           code: 'cross_origin_redirect',
           diagnostic: `redirect from=${currentUrl.origin} to=${redirectedUrl.origin}`,
@@ -757,6 +771,10 @@ export class HbuJwHttpClient {
         });
       }
       this.assertAllowedOrigin(redirectedUrl, 'cross_origin_redirect');
+      if (throughBroker && redirectedUrl.origin !== currentUrl.origin) {
+        jar.switchOrigin(redirectedUrl.origin);
+        brokerHeaders = rebaseAcademicHeaders(brokerHeaders, currentUrl, redirectedUrl);
+      }
       if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === 'POST')) {
         method = 'GET';
         body = undefined;
@@ -766,10 +784,10 @@ export class HbuJwHttpClient {
     throw new Error('unreachable redirect loop');
   }
 
-  private resolveRequestUrl(value: string, throughBroker = false): URL {
+  private resolveRequestUrl(value: string, throughBroker = false, brokerOrigin = this.baseOrigin): URL {
     if (throughBroker) {
-      const target = new URL(value, this.baseUrl);
-      if (target.origin !== this.baseOrigin) {
+      const target = new URL(value, brokerOrigin);
+      if (!this.academicOrigins.has(target.origin)) {
         throw new HbuJwLoginError('HBU WebVPN broker 收到非预期教务地址。', {
           code: 'webvpn_broker_cross_origin',
           diagnostic: `broker request origin=${target.origin}`,
@@ -809,8 +827,9 @@ export class HbuJwHttpClient {
   }
 
   private canonicalizeWebVpnUrl(target: URL): URL {
-    const base = new URL(this.baseUrl);
-    if (target.hostname === base.hostname && target.protocol === 'http:' && base.protocol === 'https:') {
+    const secureTarget = new URL(target);
+    secureTarget.protocol = 'https:';
+    if (target.protocol === 'http:' && !target.port && this.academicOrigins.has(secureTarget.origin)) {
       target.protocol = 'https:';
     }
     if (target.origin !== this.webVpnTransportOrigin) return target;
@@ -823,7 +842,7 @@ export class HbuJwHttpClient {
   }
 
   private assertAllowedOrigin(target: URL, code: 'cross_origin_request' | 'cross_origin_redirect'): void {
-    if (target.origin === this.baseOrigin || target.origin === this.webVpnOrigin) return;
+    if (this.academicOrigins.has(target.origin) || target.origin === this.webVpnOrigin) return;
     throw new HbuJwLoginError('教务系统返回了非预期跨域地址。', {
       code,
       diagnostic: `request origin=${target.origin}`,
@@ -974,6 +993,24 @@ function normalizeOrigin(value: string): string {
   return target.origin;
 }
 
+function rebaseAcademicHeaders(
+  headers: Record<string, string>,
+  source: URL,
+  target: URL,
+): Record<string, string> {
+  const next = { ...headers };
+  if (next.origin && new URL(next.origin).origin === source.origin) {
+    next.origin = target.origin;
+  }
+  if (next.referer) {
+    const referer = new URL(next.referer);
+    if (referer.origin === source.origin) {
+      next.referer = new URL(`${referer.pathname}${referer.search}${referer.hash}`, target.origin).href;
+    }
+  }
+  return next;
+}
+
 function normalizeBrokerOptions(options: HbuWebVpnBrokerOptions | undefined): NormalizedHbuWebVpnBrokerOptions | undefined {
   if (!options) return undefined;
   const target = new URL(options.url);
@@ -993,8 +1030,9 @@ function normalizeBrokerOptions(options: HbuWebVpnBrokerOptions | undefined): No
 function isCurrentCookieJar(value: unknown): value is SerializedCookieJar {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const jar = value as Partial<SerializedCookieJar>;
-  return jar.version === 1
+  return jar.version === 2
     && (jar.transport === 'direct' || jar.transport === 'broker')
+    && typeof jar.origin === 'string'
     && Array.isArray(jar.cookies);
 }
 
@@ -1215,11 +1253,15 @@ function clipDiagnostic(value: string): string {
 class CookieJar {
   private readonly cookies = new Map<string, string>();
 
-  constructor(readonly transport: SerializedCookieJar['transport']) {}
+  constructor(readonly transport: SerializedCookieJar['transport'], private activeOrigin: string) {}
+
+  get origin(): string {
+    return this.activeOrigin;
+  }
 
   static from(serialized: SerializedCookieJar): CookieJar {
     if (!isCurrentCookieJar(serialized)) throw new Error('HBU JW cookie jar has not been migrated');
-    const jar = new CookieJar(serialized.transport);
+    const jar = new CookieJar(serialized.transport, serialized.origin);
     for (const cookie of serialized.cookies ?? []) {
       if (cookie.name) jar.cookies.set(cookie.name, cookie.value);
     }
@@ -1242,10 +1284,17 @@ class CookieJar {
     return [...this.cookies.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
   }
 
+  switchOrigin(origin: string): void {
+    if (origin === this.activeOrigin) return;
+    this.cookies.clear();
+    this.activeOrigin = origin;
+  }
+
   serialize(): SerializedCookieJar {
     return {
-      version: 1,
+      version: 2,
       transport: this.transport,
+      origin: this.activeOrigin,
       cookies: [...this.cookies.entries()].map(([name, value]) => ({ name, value })),
     };
   }

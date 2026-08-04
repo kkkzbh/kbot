@@ -24,7 +24,12 @@ import type {
   DatabaseLike,
 } from '../src/plugins/hbu-jw/types.js';
 
-const EMPTY_JAR: SerializedCookieJar = { version: 1, transport: 'direct', cookies: [] };
+const EMPTY_JAR: SerializedCookieJar = {
+  version: 2,
+  transport: 'direct',
+  origin: 'https://zhjw.hbu.cn',
+  cookies: [],
+};
 
 describe('hbu-jw course guidance tool boundary', () => {
   it('keeps one message-scoped run and enforces the context-offerings-validation state machine', async () => {

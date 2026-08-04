@@ -27,14 +27,16 @@ import type {
 } from '../src/plugins/hbu-jw/types.js';
 
 const COOKIE_JAR: SerializedCookieJar = {
-  version: 1,
+  version: 2,
   transport: 'direct',
+  origin: 'https://zhjw.hbu.cn',
   cookies: [{ name: 'JSESSIONID', value: 'abc' }],
 };
 
 const EMPTY_COOKIE_JAR: SerializedCookieJar = {
-  version: 1,
+  version: 2,
   transport: 'direct',
+  origin: 'https://zhjw.hbu.cn',
   cookies: [],
 };
 

@@ -107,8 +107,9 @@ export interface HbuJwAcademicItem {
 }
 
 export interface SerializedCookieJar {
-  version: 1;
+  version: 2;
   transport: 'direct' | 'broker';
+  origin: string;
   cookies: Array<{
     name: string;
     value: string;
