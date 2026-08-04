@@ -470,7 +470,15 @@ function createHarness(overrides: {
     },
   };
   if (overrides.registerProgressCallbacks !== false) {
-    chatluna.registerCallbacksProvider = vi.fn((provider: (input: Record<string, unknown>) => unknown) => {
+    chatluna.registerAgentEventProvider = vi.fn((eventProvider: (input: Record<string, any>) => unknown) => {
+      const provider = (input: Record<string, any>) => ({
+        handleCustomEvent: async (_name: string, payload: Record<string, any>) => eventProvider({
+          session: input.session,
+          conversation: input.conversation,
+          requestId: input.requestId,
+          event: payload.event,
+        }),
+      });
       progressCallbacksProviders.push(provider);
       return () => {
         const index = progressCallbacksProviders.indexOf(provider);
@@ -1862,7 +1870,7 @@ describe('qq voice plugin', () => {
     const { ready } = createHarness({ registerProgressCallbacks: false });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
 
-    await expect(ready()).rejects.toThrow('reply progress requires chatluna.registerCallbacksProvider.');
+    await expect(ready()).rejects.toThrow('reply progress requires chatluna.registerAgentEventProvider.');
   });
 
   it('sends progress from the exact active agent callback without polluting the final transport', async () => {

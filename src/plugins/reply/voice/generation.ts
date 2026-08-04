@@ -113,6 +113,7 @@ import {
 } from '../modality/explicit-invariant.js';
 import {
   createAgentProgressCallbacksProvider,
+  type AgentEvent,
   type AgentProgressCallbacksProvider,
   type ChatCallbacksProviderLike,
 } from '../progress/narrator.js';
@@ -420,6 +421,12 @@ type ChatLunaLike = {
     updatedAt?: Date,
   ) => Promise<unknown>;
   registerCallbacksProvider?: (provider: ChatCallbacksProviderLike) => () => void;
+  registerAgentEventProvider?: (provider: (input: {
+    session: Session;
+    conversation: { id?: unknown };
+    requestId: string;
+    event: AgentEvent;
+  }) => Promise<void> | void) => () => void;
   chatChain?: {
     middleware: (name: string, middleware: (session: unknown, context: unknown) => Promise<number>) => {
       after: (name: string) => { before: (name: string) => unknown };
@@ -2984,8 +2991,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (progressCallbacksDispose) return true;
     const chatluna = resolveChatLunaService();
     if (!chatluna) return false;
-    if (typeof chatluna.registerCallbacksProvider !== 'function') {
-      throw new Error('reply progress requires chatluna.registerCallbacksProvider.');
+    if (typeof chatluna.registerAgentEventProvider !== 'function') {
+      throw new Error('reply progress requires chatluna.registerAgentEventProvider.');
     }
     const controller = createAgentProgressCallbacksProvider({
       resolveReplyRunId: (rawSession) => getReplyRunId(rawSession as SessionWithVoiceState),
@@ -3041,10 +3048,35 @@ export function apply(ctx: Context, config: Config = {}): void {
         logger.warn('agent progress message delivery failed: %s', (error as Error).message);
       },
     });
-    const unregister = chatluna.registerCallbacksProvider(controller);
+    const callbacksByRequestId = new Map<
+      string,
+      NonNullable<ReturnType<ChatCallbacksProviderLike>>
+    >();
+    const unregister = chatluna.registerAgentEventProvider(async (input) => {
+      let callbacks = callbacksByRequestId.get(input.requestId);
+      if (!callbacks) {
+        callbacks = controller({
+          session: input.session,
+          conversation: input.conversation,
+          requestId: input.requestId,
+        });
+        if (!callbacks) return;
+        callbacksByRequestId.set(input.requestId, callbacks);
+      }
+      const terminal = input.event.type === 'done' || input.event.type === 'human-update';
+      try {
+        await callbacks.handleCustomEvent?.('chatluna-agent-event', {
+          context: { kind: 'main', requestId: input.requestId },
+          event: input.event,
+        }, input.requestId);
+      } finally {
+        if (terminal) callbacksByRequestId.delete(input.requestId);
+      }
+    });
     progressCallbacksController = controller;
     progressCallbacksDispose = () => {
       unregister();
+      callbacksByRequestId.clear();
       controller.dispose();
       if (progressCallbacksController === controller) progressCallbacksController = null;
     };
