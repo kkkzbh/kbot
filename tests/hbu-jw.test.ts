@@ -3009,6 +3009,7 @@ describe('hbu-jw http client', () => {
           code: 'webvpn_interaction_required',
           challenge: 'sms',
           message: '需要短信双重验证',
+          verificationUrl: 'https://private.invalid/',
         }), {
           status: 503,
           headers: { 'content-type': 'application/json' },
@@ -3020,6 +3021,29 @@ describe('hbu-jw http client', () => {
       code: 'webvpn_interaction_required',
       message: '学校 WebVPN 需要短信验证，验证完成前无法查询。',
       diagnostic: 'broker status=503 code=webvpn_interaction_required challenge=sms message=需要短信双重验证',
+    });
+  });
+
+  it('reports an unexpected academic redirect without presenting it as session expiry', async () => {
+    const client = new HbuJwHttpClient({
+      webVpnBroker: {
+        url: 'http://127.0.0.1:8789',
+        token: Buffer.alloc(32, 7),
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+          ok: false,
+          code: 'unexpected_resource_redirect',
+          message: 'HBU WebVPN returned an unexpected resource redirect',
+        }), {
+          status: 502,
+          headers: { 'content-type': 'application/json' },
+        })),
+      },
+    });
+
+    await expect(client.login('20231202051', 'secret')).rejects.toMatchObject({
+      code: 'unexpected_resource_redirect',
+      message: '教务系统返回了异常跳转，本次查询无法继续，请稍后重试。',
+      diagnostic: 'broker status=502 code=unexpected_resource_redirect message=HBU WebVPN returned an unexpected resource redirect',
     });
   });
 

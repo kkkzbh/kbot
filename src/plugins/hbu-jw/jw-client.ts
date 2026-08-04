@@ -934,6 +934,8 @@ function webVpnBrokerUserMessage(code: string, challenge: string | null): string
       return '学校 WebVPN 的资源会话已失效，自动重新登录后仍未恢复。请稍后重试；如果持续出现，请先完成 WebVPN 验证。';
     case 'webvpn_unavailable':
       return '学校 WebVPN 当前未连接，自动重新登录尚未完成。如果收到了验证通知，请完成验证后重试。';
+    case 'unexpected_resource_redirect':
+      return '教务系统返回了异常跳转，本次查询无法继续，请稍后重试。';
     case 'response_too_large':
       return '教务系统返回的数据超过了当前传输上限，请联系管理员检查该查询。';
     case 'broker_request_failed':
