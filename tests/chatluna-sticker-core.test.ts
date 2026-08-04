@@ -50,6 +50,20 @@ function createCatalog(): LoadedStickerCatalog {
       confidence: 0.95,
       buffer: Buffer.from('cold'),
     },
+    {
+      id: 'piano',
+      file: 'images/personas/sakiko/piano.gif',
+      hash: 'hash-piano',
+      mime: 'image/gif',
+      scopes: ['persona:sakiko'],
+      caption: '双马尾白发少女手持沙锤在舞台演出',
+      keywords: ['乐队演出', '庆祝', '欢呼', '鼓掌', '成功', '好耶'],
+      moods: ['开心', '喜悦', '欢快', '亢奋'],
+      scenes: ['舞台现场', '庆祝成功'],
+      historyLabel: '沙锤演出少女',
+      confidence: 0.93,
+      buffer: Buffer.from('piano'),
+    },
   ];
 
   return {
@@ -71,6 +85,7 @@ describe('chatluna sticker core', () => {
 
     expect(resolveStickerSelection(catalog, '无语地看对方一眼', 'sakiko')?.id).toBe('bored');
     expect(resolveStickerSelection(catalog, '生气地噘嘴表达不满', 'sakiko')?.id).toBe('embarrassed');
+    expect(resolveStickerSelection(catalog, '开心庆祝：举手欢呼，太棒了！', 'sakiko')?.id).toBe('piano');
   });
 
   it('scores natural Chinese intent phrases against keyword fragments', () => {
