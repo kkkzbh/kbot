@@ -7,6 +7,10 @@ const MIN_STICKER_MATCH_SCORE = 18;
 const GENERIC_INTENT_TOKENS = new Set([
   '一个', '一张', '发个', '来个', '图片', '表情', '表情包', '贴图', 'meme', '聊天', '二次元', '少女',
 ]);
+const STICKER_INTENT_SYNONYM_GROUPS = [
+  ['开心', '喜悦', '欢快', '热烈', '庆祝', '欢呼', '鼓掌', '好耶', '成功', '顺利', '太棒', '干杯'],
+  ['演出', '舞台', 'live', '乐队', '谢幕'],
+] as const;
 const STICKER_INTENT_SEGMENTER =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
     ? new Intl.Segmenter('zh', { granularity: 'word' })
@@ -100,10 +104,16 @@ function tokenizeIntent(intent: string): string[] {
   if (normalized && !tokens.includes(normalized)) {
     tokens.unshift(normalized);
   }
-  return [...new Set(tokens)].filter((token) => (
+  const semanticTokens = [...new Set(tokens)].filter((token) => (
     !GENERIC_INTENT_TOKENS.has(token)
     && (!/^\p{Script=Han}$/u.test(token) || token === normalized)
   ));
+  for (const synonymGroup of STICKER_INTENT_SYNONYM_GROUPS) {
+    if (synonymGroup.some((term) => normalized.includes(term))) {
+      semanticTokens.push(...synonymGroup);
+    }
+  }
+  return [...new Set(semanticTokens)];
 }
 
 function extractIntentFragments(intent: string): string[] {
