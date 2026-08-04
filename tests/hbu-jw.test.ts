@@ -2976,6 +2976,54 @@ describe('hbu-jw http client', () => {
       .toBe('教务功能执行失败（TypeError）：成绩图片节点不存在。');
   });
 
+  it('reports the failed WebVPN recovery stage without exposing broker internals', async () => {
+    const client = new HbuJwHttpClient({
+      webVpnBroker: {
+        url: 'http://127.0.0.1:8789',
+        token: Buffer.alloc(32, 7),
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+          ok: false,
+          code: 'webvpn_session_expired',
+          message: 'HBU WebVPN resource session remained expired after forced login',
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })),
+      },
+    });
+
+    await expect(client.login('20231202051', 'secret')).rejects.toMatchObject({
+      code: 'webvpn_session_expired',
+      message: '学校 WebVPN 的资源会话已失效，自动重新登录后仍未恢复。请稍后重试；如果持续出现，请先完成 WebVPN 验证。',
+      diagnostic: 'broker status=503 code=webvpn_session_expired message=HBU WebVPN resource session remained expired after forced login',
+    });
+  });
+
+  it('turns a WebVPN challenge into an actionable user message', async () => {
+    const client = new HbuJwHttpClient({
+      webVpnBroker: {
+        url: 'http://127.0.0.1:8789',
+        token: Buffer.alloc(32, 7),
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+          ok: false,
+          code: 'webvpn_interaction_required',
+          challenge: 'sms',
+          message: '需要短信双重验证',
+          verificationUrl: 'https://km6.tailc5664b.ts.net/',
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })),
+      },
+    });
+
+    await expect(client.login('20231202051', 'secret')).rejects.toMatchObject({
+      code: 'webvpn_interaction_required',
+      message: '学校 WebVPN 需要短信验证。请完成验证后重新查询：https://km6.tailc5664b.ts.net/',
+      diagnostic: 'broker status=503 code=webvpn_interaction_required challenge=sms message=需要短信双重验证',
+    });
+  });
+
   it('switches the single shared JW slot and verifies the exact student identity', async () => {
     const directFetch = vi.fn(async () => {
       throw new Error('direct transport must not be used when the broker is configured');
