@@ -258,6 +258,33 @@ describe('agent progress narrator', () => {
     expect(callbackSettled).toBe(true);
   });
 
+  it('reuses one narrator and message budget for the same active request', async () => {
+    const send = vi.fn(async () => true);
+    const provider = createAgentProgressCallbacksProvider({
+      resolveReplyRunId: () => 'reply-run-shared',
+      resolveInitialState: () => ({ messageCount: 0, lastMessageAt: 0 }),
+      send,
+    });
+    const input = {
+      session: { platform: 'onebot' },
+      conversation: { id: 'conversation-shared' },
+      requestId: 'request-shared',
+    } as never;
+    const first = await provider(input);
+    const second = await provider(input);
+
+    expect(second).toBe(first);
+    const payload = {
+      context: { kind: 'main' as const, requestId: 'request-shared' },
+      event: { type: 'tool-call' as const, actions: [action('web_search')] },
+    };
+    await first!.handleCustomEvent!(CHATLUNA_AGENT_EVENT, payload, 'callback-run');
+    await second!.handleCustomEvent!(CHATLUNA_AGENT_EVENT, payload, 'callback-run');
+
+    expect(send).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
+
   it('cancels pending wait updates when a reply run or provider is disposed', async () => {
     vi.useFakeTimers();
     const send = vi.fn(async () => true);

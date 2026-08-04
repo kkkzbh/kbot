@@ -265,20 +265,27 @@ export function createAgentProgressCallbacksProvider(args: {
   onSendError?: (error: unknown, text: string) => void;
 }): AgentProgressCallbacksProvider {
   const phraseBook = args.phraseBook ?? new ProgressPhraseBook();
-  const activeRuns = new Map<string, Set<AgentProgressRun>>();
+  type ActiveProgressCallbacks = {
+    replyRunId: string;
+    run: AgentProgressRun;
+    callbacks: NonNullable<ReturnType<ChatCallbacksProviderLike>>;
+  };
+  const activeCallbacks = new Map<string, ActiveProgressCallbacks>();
 
-  const releaseRun = (replyRunId: string, run: AgentProgressRun): void => {
-    run.dispose();
-    const runs = activeRuns.get(replyRunId);
-    if (!runs) return;
-    runs.delete(run);
-    if (runs.size === 0) activeRuns.delete(replyRunId);
+  const releaseRun = (activeKey: string): void => {
+    const active = activeCallbacks.get(activeKey);
+    if (!active) return;
+    active.run.dispose();
+    activeCallbacks.delete(activeKey);
   };
 
   const provider = (({ session, conversation, requestId }) => {
     const conversationKey = String(conversation.id ?? '').trim();
     const replyRunId = args.resolveReplyRunId(session, requestId);
     if (!conversationKey || !requestId.trim() || !replyRunId) return undefined;
+    const activeKey = `${replyRunId}\u0000${requestId}`;
+    const existing = activeCallbacks.get(activeKey);
+    if (existing) return existing.callbacks;
 
     const run = new AgentProgressRun({
       conversationKey,
@@ -294,11 +301,8 @@ export function createAgentProgressCallbacksProvider(args: {
         }
       },
     });
-    const runs = activeRuns.get(replyRunId) ?? new Set<AgentProgressRun>();
-    runs.add(run);
-    activeRuns.set(replyRunId, runs);
 
-    return createOrderedCallbackManager({
+    const callbacks = createOrderedCallbackManager({
       handleCustomEvent: async (name, rawPayload) => {
         if (name !== CHATLUNA_AGENT_EVENT) return;
         const payload = rawPayload as AgentCallbackEvent;
@@ -310,23 +314,21 @@ export function createAgentProgressCallbacksProvider(args: {
           await args.onAgentEvent?.({ replyRunId, event: payload.event });
           await run.onAgentEvent(payload.event);
         } finally {
-          if (terminal) releaseRun(replyRunId, run);
+          if (terminal) releaseRun(activeKey);
         }
       },
     });
+    activeCallbacks.set(activeKey, { replyRunId, run, callbacks });
+    return callbacks;
   }) as AgentProgressCallbacksProvider;
 
   provider.disposeRun = (replyRunId) => {
-    const runs = activeRuns.get(replyRunId);
-    if (!runs) return;
-    for (const run of runs) run.dispose();
-    activeRuns.delete(replyRunId);
+    for (const [activeKey, active] of activeCallbacks) {
+      if (active.replyRunId === replyRunId) releaseRun(activeKey);
+    }
   };
   provider.dispose = () => {
-    for (const runs of activeRuns.values()) {
-      for (const run of runs) run.dispose();
-    }
-    activeRuns.clear();
+    for (const activeKey of [...activeCallbacks.keys()]) releaseRun(activeKey);
   };
   return provider;
 }

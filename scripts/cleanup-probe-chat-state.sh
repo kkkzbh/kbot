@@ -396,6 +396,9 @@ fi
 
 chat_cleanup_sql="${ownership_guard_sql}"$'\n'"${binding_cleanup_sql}"
 if [[ -n "$conversation_id" ]] && table_exists chatluna_conversation; then
+  if table_exists reply_delivery_checkpoint; then
+    chat_cleanup_sql+=$'\n'"delete from reply_delivery_checkpoint where conversationId=$(sql_quote "$conversation_id") and exists (select 1 from chatluna_conversation where id=$(sql_quote "$conversation_id") and bindingKey=$(sql_quote "$binding_key") and createdBy=$(sql_quote "$fake_user_id") and additional_kwargs=$(sql_quote "$expected_marker"));"
+  fi
   if table_exists chatluna_message; then
     chat_cleanup_sql+=$'\n'"delete from chatluna_message where conversationId=$(sql_quote "$conversation_id") and exists (select 1 from chatluna_conversation where id=$(sql_quote "$conversation_id") and bindingKey=$(sql_quote "$binding_key") and createdBy=$(sql_quote "$fake_user_id") and additional_kwargs=$(sql_quote "$expected_marker"));"
   fi
@@ -403,6 +406,9 @@ if [[ -n "$conversation_id" ]] && table_exists chatluna_conversation; then
 fi
 if [[ -n "$owned_room_id" ]]; then
   if [[ -n "$owned_room_conversation_id" && "$owned_room_conversation_id" != "$conversation_id" ]] && table_exists chatluna_conversation; then
+    if table_exists reply_delivery_checkpoint; then
+      chat_cleanup_sql+=$'\n'"delete from reply_delivery_checkpoint where conversationId=$(sql_quote "$owned_room_conversation_id") and exists (select 1 from chatluna_conversation where id=$(sql_quote "$owned_room_conversation_id") and createdBy=$(sql_quote "$fake_user_id") and additional_kwargs=$(sql_quote "$expected_marker"));"
+    fi
     if table_exists chatluna_message; then
       chat_cleanup_sql+=$'\n'"delete from chatluna_message where conversationId=$(sql_quote "$owned_room_conversation_id") and exists (select 1 from chatluna_conversation where id=$(sql_quote "$owned_room_conversation_id") and createdBy=$(sql_quote "$fake_user_id") and additional_kwargs=$(sql_quote "$expected_marker"));"
     fi

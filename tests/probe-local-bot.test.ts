@@ -839,6 +839,7 @@ create table chathub_room_member (userId text, roomId integer, roomPermission te
 create table chathub_room_group_member (groupId text, roomId integer, primary key (groupId, roomId));
 create table chathub_user (userId text, defaultRoomId integer, groupId text, primary key (userId, groupId));
 create table chatluna_message (id text primary key, parentId text, role text, conversationId text, content blob);
+create table reply_delivery_checkpoint (requestId text primary key, conversationId text);
 create table memory_v3_principal (id integer primary key, userKey text, platform text, userId text);
 create table memory_v3_context (id integer primary key, contextKey text, platform text, channelType text, groupId text);
 create table memory_v3_event (eventId text, streamId text, subjectKey text, sourceContextKey text, actorKey text);
@@ -860,6 +861,9 @@ insert into chathub_room_group_member values ('${OWNED_GROUP_ID}', 147);
 insert into chathub_user values ('${OWNED_USER_ID}', 147, '${OWNED_GROUP_ID}');
 insert into chatluna_message values ('msg-1', null, 'human', 'probe-conversation', 'hello');
 insert into chatluna_message values ('msg-2', null, 'human', 'legacy-probe-conversation', 'hello');
+insert into reply_delivery_checkpoint values ('reply-probe', 'probe-conversation');
+insert into reply_delivery_checkpoint values ('reply-legacy-probe', 'legacy-probe-conversation');
+insert into reply_delivery_checkpoint values ('reply-real', 'previous-conversation');
 insert into memory_v3_principal values (1, 'onebot:user:${OWNED_USER_ID}', 'onebot', '${OWNED_USER_ID}');
 insert into memory_v3_principal values (2, 'onebot:user:10001', 'onebot', '10001');
 insert into memory_v3_context values (1, '${tempContext}', 'onebot', 'group', '${OWNED_GROUP_ID}');
@@ -920,6 +924,8 @@ insert into memory_v3_audit values ('onebot:user:${OWNED_USER_ID}', '${tempConte
     expect(sqlite(dbPath, `select activeConversationId || '|' || coalesce(lastConversationId, '') from chatluna_binding where bindingKey = '${bindingKey}';`)).toBe('previous-conversation|');
     expect(sqlite(dbPath, "select count(*) from chatluna_conversation where id in ('probe-conversation', 'legacy-probe-conversation');")).toBe('0');
     expect(sqlite(dbPath, "select count(*) from chatluna_message where conversationId in ('probe-conversation', 'legacy-probe-conversation');")).toBe('0');
+    expect(sqlite(dbPath, "select count(*) from reply_delivery_checkpoint where requestId in ('reply-probe', 'reply-legacy-probe');")).toBe('0');
+    expect(sqlite(dbPath, "select count(*) from reply_delivery_checkpoint where requestId = 'reply-real';")).toBe('1');
     expect(sqlite(dbPath, "select count(*) from chathub_room_member where roomId = 147;")).toBe('0');
     expect(sqlite(dbPath, `select count(*) from chathub_user where userId = '${OWNED_USER_ID}' and groupId = '${OWNED_GROUP_ID}';`)).toBe('0');
     expect(sqlite(dbPath, "select count(*) from memory_v3_event where eventId in ('event-probe', 'event-group-probe', 'event-assistant-probe');")).toBe('0');
