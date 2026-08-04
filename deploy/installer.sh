@@ -31,6 +31,8 @@ CLOUDFLARED_GENSHIN_TOKEN_FILE="${QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE:-/etc/clo
 HBU_WEBVPN_BROKER_CREDENTIAL="${QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL:-/etc/credstore.encrypted/hbu-webvpn-broker.cred}"
 SYSTEMD_DIR="/etc/systemd/system"
 QUADLET_DIR="/etc/containers/systemd"
+JOURNALD_DROP_IN_DIR="/etc/systemd/journald.conf.d"
+JOURNALD_RETENTION_FILE="${JOURNALD_DROP_IN_DIR}/qqbot-retention.conf"
 ACTIVATION_STARTED=0
 TRANSACTION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 TRANSACTION_BACKUP_DIR="${BASE_DIR}/backup/deploy-${TRANSACTION_ID}"
@@ -144,6 +146,7 @@ restore_offline_transaction() {
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-target" "${SYSTEMD_DIR}/qqbot.target" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service" || restore_failed=1
       deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf" || restore_failed=1
+      deployment_transaction_restore_snapshot_path "${TRANSACTION_PATHS_DIR}" "journald-retention" "${JOURNALD_RETENTION_FILE}" || restore_failed=1
     fi
 
     if [[ "${TRANSACTION_BACKUP_CREATED}" == "1" ]]; then
@@ -174,6 +177,7 @@ restore_offline_transaction() {
   fi
 
   systemctl daemon-reload || restore_failed=1
+  systemctl restart systemd-journald.service || restore_failed=1
   if [[ "${restore_failed}" == "0" && "${APP_PREVIOUS_EXISTED}" == "0" ]]; then
     deployment_transaction_complete || restore_failed=1
     [[ "${restore_failed}" == "0" ]]
@@ -1012,6 +1016,7 @@ deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-genshin-tu
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "unit-target" "${SYSTEMD_DIR}/qqbot.target"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-pmhq-unit" "${SYSTEMD_DIR}/qqbot-pmhq.service"
 deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "legacy-podman-dropin" "${SYSTEMD_DIR}/podman-restart.service.d/qqbot-no-global-stop.conf"
+deployment_transaction_snapshot_path "${TRANSACTION_PATHS_DIR}" "journald-retention" "${JOURNALD_RETENTION_FILE}"
 TRANSACTION_SNAPSHOT_COMPLETE=1
 deployment_transaction_mark_snapshot_complete
 
@@ -1028,12 +1033,14 @@ deployment_transaction_mark_snapshot_complete
   QQBOT_SHARED_DIR="${SHARED_DIR}" \
   QQBOT_SYSTEMD_DIR="${SYSTEMD_DIR}" \
   QQBOT_QUADLET_DIR="${QUADLET_DIR}" \
+  QQBOT_JOURNALD_DROP_IN_DIR="${JOURNALD_DROP_IN_DIR}" \
   QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE="${CLOUDFLARED_HBU_JW_TOKEN_FILE}" \
   QQBOT_CLOUDFLARED_GENSHIN_TOKEN_FILE="${CLOUDFLARED_GENSHIN_TOKEN_FILE}" \
   QQBOT_HBU_WEBVPN_BROKER_CREDENTIAL="${HBU_WEBVPN_BROKER_CREDENTIAL}" \
     node "${STAGE_QQBOT}/deploy/render-systemd.mjs"
 )
 systemctl daemon-reload
+systemctl restart systemd-journald.service
 systemctl cat qqbot-pmhq.service >/dev/null
 
 if [[ "${CONTEXT_PRESET_CUTOVER_REQUIRED}" == "1" ]]; then

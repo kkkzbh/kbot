@@ -27,6 +27,7 @@ const dataDir = resolve(requireEnv('QQBOT_DATA_DIR'));
 const sharedDir = resolve(requireEnv('QQBOT_SHARED_DIR'));
 const systemdDir = resolve(envValue('QQBOT_SYSTEMD_DIR', '/etc/systemd/system'));
 const quadletDir = resolve(envValue('QQBOT_QUADLET_DIR', '/etc/containers/systemd'));
+const journaldDropInDir = resolve(envValue('QQBOT_JOURNALD_DROP_IN_DIR', '/etc/systemd/journald.conf.d'));
 const envServer = `${sharedDir}/.env.server`;
 const envRuntime = `${sharedDir}/.env.runtime`;
 const cloudflaredHbuJwTokenFile = resolve(envValue('QQBOT_CLOUDFLARED_HBU_JW_TOKEN_FILE', '/etc/cloudflared/qqbot-hbu-jw.token'));
@@ -54,6 +55,16 @@ if (!/^[A-Za-z0-9._/:@-]+$/.test(pmhqImage) || !/^[A-Za-z0-9._-]+$/.test(pmhqTag
 
 mkdirSync(systemdDir, { recursive: true });
 mkdirSync(quadletDir, { recursive: true });
+mkdirSync(journaldDropInDir, { recursive: true });
+
+writeUnit(journaldDropInDir, 'qqbot-retention.conf', `
+[Journal]
+Storage=persistent
+SystemMaxUse=4G
+SystemKeepFree=20G
+SystemMaxFileSize=256M
+MaxFileSec=7day
+`);
 
 const podmanRestartDropInDir = join(systemdDir, 'podman-restart.service.d');
 const legacyPodmanRestartDropIn = join(podmanRestartDropInDir, 'qqbot-no-global-stop.conf');
@@ -131,6 +142,7 @@ PartOf=qqbot.target qqbot-llbot.service
 Type=simple
 User=qqbot
 Group=qqbot
+SupplementaryGroups=systemd-journal
 WorkingDirectory=${app}
 RuntimeDirectory=qqbot
 RuntimeDirectoryMode=0700

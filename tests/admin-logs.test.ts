@@ -31,8 +31,8 @@ describe('admin runtime logs', () => {
 
     expect(service.read(0, 100)).toEqual({
       entries: [
-        { id: 11, timestamp: 2000, level: 'warn', namespace: 'beta', content: 'two' },
-        { id: 12, timestamp: 3000, level: 'error', namespace: 'gamma', content: 'three' },
+        { id: 11, cursor: 'logger-11', timestamp: 2000, level: 'warn', namespace: 'beta', content: 'two' },
+        { id: 12, cursor: 'logger-12', timestamp: 3000, level: 'error', namespace: 'gamma', content: 'three' },
       ],
       nextCursor: 12,
       truncated: false,
@@ -76,6 +76,7 @@ describe('admin runtime logs', () => {
 
     expect(listener).toHaveBeenCalledWith({
       id: 20,
+      cursor: 'logger-20',
       timestamp: 4000,
       level: 'error',
       namespace: 'chatluna',

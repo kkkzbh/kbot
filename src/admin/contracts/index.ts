@@ -67,12 +67,14 @@ export const adminErrorSchema = z.object({
 export const adminLogLevelSchema = z.enum(['success', 'error', 'info', 'warn', 'debug']);
 
 export const adminLogsQuerySchema = z.object({
-  after: z.coerce.number().int().min(0).default(0),
-  limit: z.coerce.number().int().min(1).max(200).default(100),
+  cursor: z.string().trim().min(1).max(2_048).optional(),
+  direction: z.enum(['older', 'newer']).default('newer'),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
 });
 
 export const adminLogEntrySchema = z.object({
   id: z.number().int().positive(),
+  cursor: z.string().min(1),
   timestamp: z.number().int().positive(),
   level: adminLogLevelSchema,
   namespace: z.string(),
@@ -81,8 +83,12 @@ export const adminLogEntrySchema = z.object({
 
 export const adminLogsResponseSchema = z.object({
   entries: z.array(adminLogEntrySchema),
-  nextCursor: z.number().int().min(0),
-  truncated: z.boolean(),
+  oldestCursor: z.string().min(1).nullable(),
+  newestCursor: z.string().min(1).nullable(),
+  hasOlder: z.boolean(),
+  hasNewer: z.boolean(),
+  retainedBytes: z.number().int().min(0),
+  retentionLimitBytes: z.number().int().positive(),
 });
 
 export const serviceActionSchema = z.enum(['start', 'stop', 'restart', 'enable']);

@@ -43,6 +43,7 @@ export class AdminLogService {
   private capture(record: Logger.Record): void {
     const entry: AdminLogEntry = {
       id: record.id,
+      cursor: `logger-${record.id}`,
       timestamp: record.timestamp,
       level: record.type,
       namespace: record.name,
@@ -80,6 +81,10 @@ export class AdminLogService {
       nextCursor: entries.at(-1)?.id ?? Math.max(after, latestId),
       truncated,
     };
+  }
+
+  redact(content: string): string {
+    return redactAdminLogContent(content, this.secretValues);
   }
 
   dispose(): void {

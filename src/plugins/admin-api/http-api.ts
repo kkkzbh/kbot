@@ -909,9 +909,16 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     return domain(() => options.events.runAction(id, input.action));
   }, { mutation: true });
 
-  register('get', '/logs', (koaCtx) => {
+  register('get', '/logs', async (koaCtx) => {
     const input = parseInput(adminLogsQuerySchema, koaCtx.query);
-    return options.logs.read(input.after, input.limit);
+    const response = await options.manager.readRuntimeLogs(input);
+    return {
+      ...response,
+      entries: response.entries.map((entry) => ({
+        ...entry,
+        content: options.logs.redact(entry.content),
+      })),
+    };
   });
 
   register('get', '/settings/:section', async (koaCtx) => {

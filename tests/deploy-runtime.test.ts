@@ -540,6 +540,7 @@ describe('server runtime artifact rendering', () => {
     const root = createTempDir();
     const systemdDir = join(root, 'systemd');
     const quadletDir = join(root, 'quadlet');
+    const journaldDir = join(root, 'journald');
     const appDir = join(root, 'app/qqbot');
     const dataDir = join(root, 'data');
     const sharedDir = join(root, 'shared');
@@ -555,6 +556,7 @@ describe('server runtime artifact rendering', () => {
         QQBOT_SHARED_DIR: sharedDir,
         QQBOT_SYSTEMD_DIR: systemdDir,
         QQBOT_QUADLET_DIR: quadletDir,
+        QQBOT_JOURNALD_DROP_IN_DIR: journaldDir,
         PMHQ_BIND_HOST: '127.0.0.1',
         PMHQ_PORT: '13000',
       },
@@ -564,6 +566,7 @@ describe('server runtime artifact rendering', () => {
     const quadlet = readFileSync(join(quadletDir, 'qqbot-pmhq.container'), 'utf8');
     const llbot = readFileSync(join(systemdDir, 'qqbot-llbot.service'), 'utf8');
     const koishi = readFileSync(join(systemdDir, 'qqbot-koishi.service'), 'utf8');
+    const journald = readFileSync(join(journaldDir, 'qqbot-retention.conf'), 'utf8');
     expect(quadlet).toContain('ContainerName=pmhq');
     expect(quadlet).toContain(`EnvironmentFile=${sharedDir}/.env.pmhq`);
     expect(quadlet).toContain(`Volume=${dataDir}/pmhq/QQ:/root/.config/QQ:Z`);
@@ -592,12 +595,16 @@ describe('server runtime artifact rendering', () => {
     expect(koishi).toContain('RuntimeDirectoryMode=0700');
     expect(koishi).toContain('User=qqbot');
     expect(koishi).toContain('Group=qqbot');
+    expect(koishi).toContain('SupplementaryGroups=systemd-journal');
     expect(koishi).toContain(`Environment=HOME=${dataDir}/qqbot-home`);
     expect(koishi).toContain('Environment=XDG_RUNTIME_DIR=/run/qqbot');
     expect(koishi).toContain('Environment=QQBOT_MEMORY_READY_FILE=/run/qqbot/memory-v3-ready.json');
     expect(koishi).toContain('ExecStartPre=/usr/bin/rm -f /run/qqbot/memory-v3-ready.json');
     expect(koishi).toContain(`ExecStop=${appDir}/scripts/stop-agent-workspace-containers.sh`);
     expect(koishi).toContain('TimeoutStopSec=60');
+    expect(journald).toContain('Storage=persistent');
+    expect(journald).toContain('SystemMaxUse=4G');
+    expect(journald).toContain('SystemKeepFree=20G');
     expect(() => readFileSync(join(systemdDir, 'qqbot-pmhq.service'), 'utf8')).toThrow();
     expect(() => readFileSync(join(systemdDir, 'podman-restart.service.d/qqbot-no-global-stop.conf'), 'utf8')).toThrow();
   });

@@ -3,11 +3,16 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AdminLogEntry, AdminLogsResponse } from '@contracts';
 import { rawApi } from '@/api/client';
 
-const MAX_VISIBLE_ENTRIES = 1_000;
+const MAX_VISIBLE_ENTRIES = 5_000;
 const POLL_INTERVAL_MS = 1_500;
 
 const entries = ref<AdminLogEntry[]>([]);
-const cursor = ref(0);
+const oldestCursor = ref<string | null>(null);
+const newestCursor = ref<string | null>(null);
+const hasOlder = ref(false);
+const retainedBytes = ref(0);
+const retentionLimitBytes = ref(4 * 1024 ** 3);
+const historicalWindow = ref(false);
 const loading = ref(false);
 const paused = ref(false);
 const autoFollow = ref(true);
@@ -45,26 +50,74 @@ async function scrollToLatest(): Promise<void> {
 }
 
 async function loadLogs(): Promise<void> {
-  if (paused.value || loading.value) return;
+  if (paused.value || loading.value || historicalWindow.value) return;
   loading.value = true;
   try {
-    const response = await rawApi<AdminLogsResponse>(`/logs?after=${cursor.value}&limit=100`);
-    if (response.truncated) entries.value = [];
+    const params = new URLSearchParams({ direction: 'newer', limit: '200' });
+    if (newestCursor.value) params.set('cursor', newestCursor.value);
+    const response = await rawApi<AdminLogsResponse>(`/logs?${params}`);
     if (response.entries.length) {
-      const seen = new Set(entries.value.map((entry) => entry.id));
-      entries.value.push(...response.entries.filter((entry) => !seen.has(entry.id)));
+      const seen = new Set(entries.value.map((entry) => entry.cursor));
+      entries.value.push(...response.entries.filter((entry) => !seen.has(entry.cursor)));
       if (entries.value.length > MAX_VISIBLE_ENTRIES) {
         entries.value.splice(0, entries.value.length - MAX_VISIBLE_ENTRIES);
       }
       await scrollToLatest();
     }
-    cursor.value = response.nextCursor;
+    oldestCursor.value = entries.value[0]?.cursor ?? response.oldestCursor;
+    newestCursor.value = entries.value.at(-1)?.cursor ?? response.newestCursor;
+    hasOlder.value = response.hasOlder || entries.value.length >= MAX_VISIBLE_ENTRIES;
+    retainedBytes.value = response.retainedBytes;
+    retentionLimitBytes.value = response.retentionLimitBytes;
     errorMessage.value = '';
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '日志读取失败';
   } finally {
     loading.value = false;
   }
+}
+
+async function loadOlder(): Promise<void> {
+  if (loading.value || !oldestCursor.value || !hasOlder.value) return;
+  loading.value = true;
+  const beforeHeight = viewport.value?.scrollHeight ?? 0;
+  const beforeTop = viewport.value?.scrollTop ?? 0;
+  try {
+    const params = new URLSearchParams({
+      cursor: oldestCursor.value,
+      direction: 'older',
+      limit: '500',
+    });
+    const response = await rawApi<AdminLogsResponse>(`/logs?${params}`);
+    const seen = new Set(entries.value.map((entry) => entry.cursor));
+    const older = response.entries.filter((entry) => !seen.has(entry.cursor));
+    entries.value.unshift(...older);
+    if (entries.value.length > MAX_VISIBLE_ENTRIES) {
+      entries.value.splice(MAX_VISIBLE_ENTRIES);
+      historicalWindow.value = true;
+    }
+    oldestCursor.value = entries.value[0]?.cursor ?? response.oldestCursor;
+    newestCursor.value = entries.value.at(-1)?.cursor ?? response.newestCursor;
+    hasOlder.value = response.hasOlder;
+    retainedBytes.value = response.retainedBytes;
+    retentionLimitBytes.value = response.retentionLimitBytes;
+    await nextTick();
+    if (viewport.value) viewport.value.scrollTop = beforeTop + viewport.value.scrollHeight - beforeHeight;
+    errorMessage.value = '';
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '历史日志读取失败';
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function returnToLatest(): Promise<void> {
+  entries.value = [];
+  oldestCursor.value = null;
+  newestCursor.value = null;
+  hasOlder.value = false;
+  historicalWindow.value = false;
+  await loadLogs();
 }
 
 function togglePaused(): void {
@@ -74,6 +127,15 @@ function togglePaused(): void {
 
 function clearView(): void {
   entries.value = [];
+  oldestCursor.value = null;
+  newestCursor.value = null;
+  hasOlder.value = false;
+  historicalWindow.value = false;
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(0)} MiB`;
+  return `${(value / 1024 ** 3).toFixed(1)} GiB`;
 }
 
 onMounted(() => {
@@ -109,8 +171,13 @@ onBeforeUnmount(() => window.clearInterval(timer));
     </div>
     <div v-if="errorMessage" class="log-error">{{ errorMessage }}</div>
     <div ref="viewport" class="log-viewport">
+      <div v-if="entries.length" class="history-bar">
+        <el-button v-if="hasOlder" text :loading="loading" @click="loadOlder">加载更早日志</el-button>
+        <span v-else>已到最早记录</span>
+        <el-button v-if="historicalWindow" text @click="returnToLatest">回到最新</el-button>
+      </div>
       <div v-if="filteredEntries.length" class="log-list">
-        <div v-for="entry in filteredEntries" :key="entry.id" class="log-row">
+        <div v-for="entry in filteredEntries" :key="entry.cursor" class="log-row">
           <time>{{ formatTime(entry.timestamp) }}</time>
           <span class="log-level-chip" :class="entry.level">{{ entry.level }}</span>
           <span class="log-namespace">{{ entry.namespace }}</span>
@@ -121,6 +188,7 @@ onBeforeUnmount(() => window.clearInterval(timer));
     </div>
     <footer class="log-footer">
       <label><el-checkbox v-model="autoFollow" />自动滚动到最新日志</label>
+      <span>{{ entries.length }} 条 · 磁盘 {{ formatBytes(retainedBytes) }} / {{ formatBytes(retentionLimitBytes) }}</span>
     </footer>
   </article>
 </template>
@@ -164,7 +232,8 @@ onBeforeUnmount(() => window.clearInterval(timer));
 .log-namespace { overflow: hidden; padding: 1px 20px 0 0; color: #2f568a; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .log-row pre { margin: 0; overflow-wrap: anywhere; color: #283548; font: inherit; white-space: pre-wrap; }
 .log-empty { height: 100%; display: grid; place-items: center; color: #8b95a5; font-size: 13px; }
-.log-footer { min-height: 42px; display: flex; align-items: center; padding: 6px 16px; border-top: 1px solid var(--line); color: #737f90; background: #fff; font-size: 12px; }
+.history-bar { position: sticky; top: 0; z-index: 2; min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 14px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.96); font-size: 12px; }
+.log-footer { min-height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 6px 16px; border-top: 1px solid var(--line); color: #737f90; background: #fff; font-size: 12px; }
 .log-footer label { display: flex; align-items: center; gap: 6px; }
 
 @media (max-width: 960px) {

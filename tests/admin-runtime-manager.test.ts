@@ -8,6 +8,7 @@ import {
   AdminRestartJobError,
   AdminRuntimeManager,
   mergeManagedEnvRecords,
+  parseJournalDiskUsageBytes,
   parseSystemdShowOutput,
   resolveBackupDirectory,
   resolveBotEnvFilePath,
@@ -42,6 +43,13 @@ describe('resolveBackupDirectory', () => {
     expect(resolveBackupDirectory(rootDir, join(rootDir, 'config/voice-tts.local.env'))).toBe(join(rootDir, 'config/backup'));
     expect(resolveBackupDirectory(rootDir, join(rootDir, '.runtime/.env.runtime'))).toBe(join(rootDir, '.runtime/backup'));
     expect(resolveBackupDirectory(rootDir, join(rootDir, '.env.local'))).toBe(join(rootDir, 'backup'));
+  });
+});
+
+describe('parseJournalDiskUsageBytes', () => {
+  it('parses the human-readable journal disk usage reported by systemd', () => {
+    expect(parseJournalDiskUsageBytes('Archived and active journals take up 1.4G in the file system.'))
+      .toBe(Math.round(1.4 * 1024 ** 3));
   });
 });
 
@@ -1122,6 +1130,54 @@ describe('admin manager', () => {
     expect(args.some((arg: unknown) => (
       typeof arg === 'string' && arg.startsWith('--output-fields=MESSAGE')
     ))).toBe(true);
+  });
+
+  it('reads the latest persisted runtime logs in chronological order', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.server');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+    const record = (sequence: number, cursor: string, message: string) => JSON.stringify({
+      __SEQNUM: String(sequence),
+      __CURSOR: cursor,
+      __REALTIME_TIMESTAMP: String(1_800_000_000_000_000 + sequence * 1_000),
+      _SYSTEMD_UNIT: 'qqbot-koishi.service',
+      PRIORITY: '6',
+      MESSAGE: message,
+    });
+    const readProcessLines = vi.fn().mockResolvedValue({
+      lines: [
+        record(102, 'cursor-102', '2026-07-27 11:29:51 [E] chatluna failed'),
+        record(101, 'cursor-101', '2026-07-27 11:29:50 [I] koishi ready'),
+        record(100, 'cursor-100', 'continuation'),
+      ],
+      stderr: '',
+    });
+    const execFile = vi.fn().mockResolvedValue({
+      stdout: 'Archived and active journals take up 1.4G in the file system.\n',
+      stderr: '',
+    });
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath, readProcessLines, execFile });
+
+    const result = await manager.readRuntimeLogs({ direction: 'newer', limit: 2 });
+
+    expect(result.entries.map((entry) => ({
+      id: entry.id,
+      cursor: entry.cursor,
+      level: entry.level,
+      namespace: entry.namespace,
+      content: entry.content,
+    }))).toEqual([
+      { id: 101, cursor: 'cursor-101', level: 'info', namespace: 'koishi', content: 'ready' },
+      { id: 102, cursor: 'cursor-102', level: 'error', namespace: 'chatluna', content: 'failed' },
+    ]);
+    expect(result).toMatchObject({
+      oldestCursor: 'cursor-101',
+      newestCursor: 'cursor-102',
+      hasOlder: true,
+      hasNewer: false,
+      retentionLimitBytes: 4 * 1024 ** 3,
+    });
+    expect(readProcessLines.mock.calls[0]?.[1]).toContain('--reverse');
   });
 
 });

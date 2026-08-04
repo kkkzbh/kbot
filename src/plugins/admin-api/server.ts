@@ -30,6 +30,10 @@ import type {
   SynthesizeTtsSampleRequest,
   ServiceAction,
 } from '../../types/admin.js';
+import type {
+  AdminLogEntry,
+  AdminLogsResponse,
+} from '../../admin/contracts/index.js';
 import {
   applyTtsLocalEnvPatchToContent,
   buildTtsLocalGatewayState,
@@ -197,6 +201,58 @@ const LOCAL_ENV_FILE_BASENAME = '.env.local';
 const SERVER_ENV_FILE_BASENAME = '.env.server';
 const RUNTIME_ENV_FILE_BASENAME = '.env.runtime';
 const LOCAL_RUNTIME_ENV_RELATIVE = join('.runtime', RUNTIME_ENV_FILE_BASENAME);
+const RUNTIME_LOG_RETENTION_LIMIT_BYTES = 4 * 1_024 * 1_024 * 1_024;
+const KOISHI_JOURNAL_MESSAGE_PATTERN = /^(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} )?\[([SEWID])\]\s+([^\s]+)\s*(.*)$/u;
+const KOISHI_LEVELS: Record<string, AdminLogEntry['level']> = {
+  S: 'success',
+  E: 'error',
+  W: 'warn',
+  I: 'info',
+  D: 'debug',
+};
+
+function journalPriorityLevel(priority: unknown): AdminLogEntry['level'] {
+  const value = Number(priority);
+  if (Number.isInteger(value) && value <= 3) return 'error';
+  if (value === 4) return 'warn';
+  if (value === 7) return 'debug';
+  return 'info';
+}
+
+function runtimeLogEntryFromJournal(record: Record<string, unknown>): AdminLogEntry | null {
+  const cursor = String(record.__CURSOR ?? '').trim();
+  const id = Number(record.__SEQNUM);
+  const timestampMicros = Number(record.__REALTIME_TIMESTAMP);
+  const message = typeof record.MESSAGE === 'string' ? record.MESSAGE : '';
+  if (!cursor || !Number.isSafeInteger(id) || id < 1 || !Number.isFinite(timestampMicros) || !message) return null;
+
+  const koishi = message.match(KOISHI_JOURNAL_MESSAGE_PATTERN);
+  const unit = String(record._SYSTEMD_UNIT ?? record._SYSTEMD_USER_UNIT ?? '').replace(/\.service$/u, '');
+  return {
+    id,
+    cursor,
+    timestamp: Math.floor(timestampMicros / 1_000),
+    level: koishi ? KOISHI_LEVELS[koishi[1]] ?? journalPriorityLevel(record.PRIORITY) : journalPriorityLevel(record.PRIORITY),
+    namespace: koishi?.[2] ?? (unit || String(record.SYSLOG_IDENTIFIER ?? 'runtime')),
+    content: koishi?.[3] || message,
+  };
+}
+
+export function parseJournalDiskUsageBytes(output: string): number {
+  const matches = [...output.matchAll(/(\d+(?:\.\d+)?)\s*([KMGT]?)(?:i?B)?/giu)];
+  const match = matches.at(-1);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  const multipliers: Record<string, number> = {
+    '': 1,
+    K: 1_024,
+    M: 1_024 ** 2,
+    G: 1_024 ** 3,
+    T: 1_024 ** 4,
+  };
+  const bytes = value * (multipliers[match[2]?.toUpperCase() ?? ''] ?? 1);
+  return Number.isSafeInteger(Math.round(bytes)) ? Math.round(bytes) : 0;
+}
 
 export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'QQBOT_REALTIME_MESSAGE_ENABLED', label: '实时消息', type: 'toggle', section: 'features' },
@@ -1447,6 +1503,59 @@ export class AdminRuntimeManager {
         healthDetail: `PMHQ health endpoint 无法访问：${error instanceof Error ? error.message : String(error)}`,
       };
     }
+  }
+
+  async readRuntimeLogs(input: {
+    cursor?: string;
+    direction: 'older' | 'newer';
+    limit: number;
+  }): Promise<AdminLogsResponse> {
+    const initial = !input.cursor;
+    const reverse = initial || input.direction === 'older';
+    const requestedLines = input.limit + 2;
+    const args = [
+      ...(this.systemdScope === 'user' ? ['--user'] : []),
+      '--no-pager',
+      '--quiet',
+      '--output=json',
+      '--output-fields=MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT',
+      `--lines=${requestedLines}`,
+      ...(reverse ? ['--reverse'] : []),
+      ...(input.cursor
+        ? [input.direction === 'older' ? `--cursor=${input.cursor}` : `--after-cursor=${input.cursor}`]
+        : []),
+      ...this.managedServiceUnits.flatMap((unit) => ['--unit', unit]),
+    ];
+    const [journal, diskUsage] = await Promise.all([
+      this.readProcessLines('journalctl', args, { cwd: this.rootDir, timeout: 15_000 }),
+      this.execFile('journalctl', ['--disk-usage'], { cwd: this.rootDir, timeout: 15_000 }),
+    ]);
+    let entries = journal.lines.flatMap((line) => {
+      if (!line.startsWith('{')) return [];
+      try {
+        const entry = runtimeLogEntryFromJournal(JSON.parse(line) as Record<string, unknown>);
+        return entry ? [entry] : [];
+      } catch {
+        return [];
+      }
+    });
+    if (input.cursor && input.direction === 'older') {
+      entries = entries.filter((entry) => entry.cursor !== input.cursor);
+    }
+
+    const hasOverflow = entries.length > input.limit;
+    entries = entries.slice(0, input.limit);
+    if (reverse) entries.reverse();
+
+    return {
+      entries,
+      oldestCursor: entries[0]?.cursor ?? input.cursor ?? null,
+      newestCursor: entries.at(-1)?.cursor ?? input.cursor ?? null,
+      hasOlder: reverse ? hasOverflow : Boolean(input.cursor),
+      hasNewer: reverse ? Boolean(input.cursor) : hasOverflow,
+      retainedBytes: parseJournalDiskUsageBytes(`${diskUsage.stdout}\n${diskUsage.stderr}`),
+      retentionLimitBytes: RUNTIME_LOG_RETENTION_LIMIT_BYTES,
+    };
   }
 
   async readServiceFailureJournal(afterCursor: string | null): Promise<{

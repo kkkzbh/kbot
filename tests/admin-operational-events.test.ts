@@ -203,6 +203,7 @@ describe('operational event service', () => {
     const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
     service.captureRuntimeLog({
       id: 101,
+      cursor: 'logger-101',
       timestamp: 1_800_000_000_000,
       level: 'error',
       namespace: 'chatluna',
@@ -210,6 +211,7 @@ describe('operational event service', () => {
     });
     service.captureRuntimeLog({
       id: 102,
+      cursor: 'logger-102',
       timestamp: 1_800_000_001_000,
       level: 'error',
       namespace: 'chatluna',
@@ -241,6 +243,7 @@ describe('operational event service', () => {
     const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
     service.captureRuntimeLog({
       id: 111,
+      cursor: 'logger-111',
       timestamp: 1_800_000_000_000,
       level: 'error',
       namespace: 'chatluna',
@@ -248,6 +251,7 @@ describe('operational event service', () => {
     });
     service.captureRuntimeLog({
       id: 112,
+      cursor: 'logger-112',
       timestamp: 1_800_000_002_000,
       level: 'error',
       namespace: 'chatluna',
@@ -374,6 +378,7 @@ describe('operational event service', () => {
     const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
     service.captureRuntimeLog({
       id: 201,
+      cursor: 'logger-201',
       timestamp: 1_800_000_000_000,
       level: 'warn',
       namespace: 'automation',
@@ -385,6 +390,7 @@ describe('operational event service', () => {
 
     service.captureRuntimeLog({
       id: 202,
+      cursor: 'logger-202',
       timestamp: 1_800_000_005_000,
       level: 'warn',
       namespace: 'automation',
@@ -458,6 +464,7 @@ describe('operational event service', () => {
     const service = new OperationalEventService(database as any, manager as any, () => undefined, createLogger());
     service.captureRuntimeLog({
       id: 301,
+      cursor: 'logger-301',
       timestamp: 1_800_000_000_000,
       level: 'error',
       namespace: 'chatluna',
