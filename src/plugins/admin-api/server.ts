@@ -258,6 +258,7 @@ export function parseJournalDiskUsageBytes(output: string): number {
 
 export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
   { key: 'QQBOT_ANTI_RECALL_ENABLED', label: '防撤回', type: 'toggle', section: 'features' },
+  { key: 'QQBOT_ANTI_RECALL_ALLOWED_GROUPS', label: '防撤回生效群', type: 'text', section: 'features' },
   { key: 'QQBOT_REALTIME_MESSAGE_ENABLED', label: '实时消息', type: 'toggle', section: 'features' },
   { key: 'QQ_VOICE_INPUT_ENABLED', label: '语音转文字', type: 'toggle', section: 'features' },
   { key: 'QQ_VOICE_OUTPUT_ENABLED', label: '语音回复', type: 'toggle', section: 'features' },
@@ -466,10 +467,24 @@ function normalizeManagedGroupList(value: string): string {
     .join(',');
 }
 
+function normalizeAntiRecallAllowedGroups(value: string): string {
+  const normalized = normalizeManagedGroupList(value);
+  const invalidGroupId = normalized
+    .split(',')
+    .find((groupId) => groupId && !/^(?:(?:group|guild):)?\d+$/u.test(groupId));
+  if (invalidGroupId) {
+    throw new Error(`防撤回生效群包含无效 QQ 群号：${invalidGroupId}`);
+  }
+  return normalized;
+}
+
 function normalizeManagedEnvValue(key: string, value: string | null | undefined): string | null | undefined {
   if (value == null) return value;
   if (key === 'CHATLUNA_COMMON_FS_SCOPE_PATH') {
     return normalizeManagedScopePath(value);
+  }
+  if (key === 'QQBOT_ANTI_RECALL_ALLOWED_GROUPS') {
+    return normalizeAntiRecallAllowedGroups(value);
   }
   if (
     key === 'CHATLUNA_COMMON_FS_ALLOWED_GROUPS' ||

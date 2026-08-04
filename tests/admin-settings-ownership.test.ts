@@ -47,7 +47,10 @@ describe('admin settings ownership', () => {
   });
 
   it('assigns every retired generic field to a domain workspace', () => {
-    expect(generalFeatureSettingKeys).toEqual(['QQBOT_ANTI_RECALL_ENABLED']);
+    expect(generalFeatureSettingKeys).toEqual([
+      'QQBOT_ANTI_RECALL_ENABLED',
+      'QQBOT_ANTI_RECALL_ALLOWED_GROUPS',
+    ]);
     expect(naturalTriggerAdminResponseSchema).toBeDefined();
     expect(runtimeFeatureSettingKeys).toEqual([
       'QQBOT_REALTIME_MESSAGE_ENABLED',

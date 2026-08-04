@@ -21,13 +21,16 @@ vi.mock('koishi', () => {
     if (body) result.push(element('text', { content: body }));
     return result;
   };
-  const schema = { description: () => schema };
+  const schema = { description: () => schema, role: () => schema };
   return {
     Context: class {},
     Logger: class { info(): void {} },
     Schema: {
       object: () => schema,
       boolean: () => schema,
+      string: () => schema,
+      array: () => schema,
+      union: () => schema,
     },
     h: {
       image: (src: string) => element('img', { src }),
@@ -40,6 +43,7 @@ vi.mock('koishi', () => {
 import {
   apply,
   buildAntiRecallNotice,
+  isAntiRecallAllowedGroup,
   qqAvatarUrl,
 } from '../src/plugins/anti-recall/index.js';
 import { AntiRecallMessageCache } from '../src/plugins/anti-recall/cache.js';
@@ -50,7 +54,7 @@ function message(overrides: Record<string, unknown> = {}) {
   return {
     platform: 'onebot',
     bot: { selfId: 'bot-1' },
-    channelId: 'group-100',
+    channelId: 'group:100',
     messageId: 'message-1',
     userId: '123456',
     content: '不能被撤回的内容',
@@ -58,7 +62,7 @@ function message(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createHarness(enabled = true) {
+function createHarness(enabled = true, allowedGroups: string[] | string = '100') {
   const events = new Map<string, Handler[]>();
   let middleware: Handler | undefined;
   const ctx = {
@@ -69,7 +73,7 @@ function createHarness(enabled = true) {
       events.set(event, [...(events.get(event) ?? []), handler]);
     }),
   };
-  apply(ctx as never, { enabled });
+  apply(ctx as never, { enabled, allowedGroups });
   return {
     middleware,
     async emit(event: string, session?: unknown) {
@@ -101,6 +105,42 @@ describe('anti-recall', () => {
   it('does not register message processing when disabled', () => {
     const harness = createHarness(false);
     expect(harness.middleware).toBeUndefined();
+  });
+
+  it('only captures and publishes recalls from allowed groups', async () => {
+    const harness = createHarness(true, '100,200');
+    const next = vi.fn(async () => undefined);
+    const send = vi.fn(async (_fragment: unknown) => ['sent-message']);
+
+    await harness.middleware?.(message({ channelId: 'group:300' }), next);
+    await harness.emit('message-deleted', message({ channelId: 'group:300', content: undefined, send }));
+    await harness.middleware?.(message({ channelId: 'group:100', isDirect: true }), next);
+    await harness.emit('message-deleted', message({ channelId: 'group:100', isDirect: true, content: undefined, send }));
+
+    expect(next).toHaveBeenCalledTimes(2);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('treats an empty allowlist as disabled for every group', () => {
+    const harness = createHarness(true, '');
+    expect(harness.middleware).toBeUndefined();
+  });
+
+  it('matches normalized OneBot group identifiers', () => {
+    expect(isAntiRecallAllowedGroup(
+      message({ guildId: 'group:100' }) as never,
+      new Set(['100']),
+    )).toBe(true);
+    expect(isAntiRecallAllowedGroup(
+      message({ guildId: 'group:200' }) as never,
+      new Set(['100']),
+    )).toBe(false);
+  });
+
+  it('rejects invalid group identifiers in configuration', () => {
+    expect(() => createHarness(true, '100,not-a-group')).toThrow(
+      '防撤回群白名单包含无效 QQ 群号：not-a-group',
+    );
   });
 
   it('removes quote semantics while preserving the recalled body', () => {

@@ -149,6 +149,7 @@ export const memoryFeatureSettingKeys = [
 
 export const generalFeatureSettingKeys = [
   'QQBOT_ANTI_RECALL_ENABLED',
+  'QQBOT_ANTI_RECALL_ALLOWED_GROUPS',
 ] as const;
 
 export { naturalTriggerConfigPutSchema, naturalTriggerConfigSchema };

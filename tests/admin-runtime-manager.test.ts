@@ -466,6 +466,7 @@ describe('admin manager', () => {
     const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
     await expect(
       manager.saveEnv({
+        QQBOT_ANTI_RECALL_ALLOWED_GROUPS: '100\n200， group:300',
         HBU_JW_ALLOWED_GROUPS: '100\n200， group:300',
         HBU_JW_NATURAL_TRIGGER_GROUPS: '100、200 300',
         CHAOXING_ALLOWED_GROUPS: '200\n300， group:400',
@@ -475,6 +476,7 @@ describe('admin manager', () => {
         CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100\n guild:200',
       }),
     ).resolves.toMatchObject({
+      QQBOT_ANTI_RECALL_ALLOWED_GROUPS: '100,200,group:300',
       HBU_JW_ALLOWED_GROUPS: '100,200,group:300',
       HBU_JW_NATURAL_TRIGGER_GROUPS: '100,200,300',
       CHAOXING_ALLOWED_GROUPS: '200,300,group:400',
@@ -483,9 +485,22 @@ describe('admin manager', () => {
       GENSHIN_NATURAL_TRIGGER_GROUPS: '300,400,500',
       CHATLUNA_COMMON_FS_ALLOWED_GROUPS: 'group:100,guild:200',
     });
+    expect(readFileSync(envFilePath, 'utf8')).toContain('QQBOT_ANTI_RECALL_ALLOWED_GROUPS=100,200,group:300');
     expect(readFileSync(envFilePath, 'utf8')).toContain('HBU_JW_ALLOWED_GROUPS=100,200,group:300');
     expect(readFileSync(envFilePath, 'utf8')).toContain('CHAOXING_ALLOWED_GROUPS=200,300,group:400');
     expect(readFileSync(envFilePath, 'utf8')).toContain('GENSHIN_ALLOWED_GROUPS=300,400,group:500');
+  });
+
+  it('rejects invalid anti-recall group identifiers before writing env', async () => {
+    const dir = createTempDir();
+    const envFilePath = join(dir, '.env.local');
+    writeFileSync(envFilePath, 'UNMANAGED_FLAG=keep\n', 'utf8');
+
+    const manager = new AdminRuntimeManager({ rootDir: dir, envFilePath });
+    await expect(manager.saveEnv({
+      QQBOT_ANTI_RECALL_ALLOWED_GROUPS: '100,not-a-group',
+    })).rejects.toThrow('防撤回生效群包含无效 QQ 群号：not-a-group');
+    expect(readFileSync(envFilePath, 'utf8')).toBe('UNMANAGED_FLAG=keep\n');
   });
 
   it('expands ~/ for file system scope paths when saving env', async () => {
