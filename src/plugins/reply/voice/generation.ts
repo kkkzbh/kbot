@@ -3717,6 +3717,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   };
 
   ctx.on('ready', async () => {
+    ensureReplyRuntimeMiddlewaresRegistered();
+    ensureProgressCallbacksRegistered();
+
     const historyMigration = await migrateStructuredReplyHistoryRows(services.database);
     if (historyMigration.migrated > 0) {
       logger.info(
@@ -3757,8 +3760,6 @@ export function apply(ctx: Context, config: Config = {}): void {
       }, INITIAL_TTS_PROBE_DELAY_MS);
     }
 
-    ensureReplyRuntimeMiddlewaresRegistered();
-    ensureProgressCallbacksRegistered();
   });
 
   ctx.on('chatluna/chat-chain-added', () => {

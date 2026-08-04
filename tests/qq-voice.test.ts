@@ -1824,7 +1824,7 @@ describe('qq voice plugin', () => {
     });
   });
 
-  it('awaits durable delivery recovery before registering live reply traffic', async () => {
+  it('registers live reply traffic before durable delivery recovery completes', async () => {
     const persistence = createPersistentCheckpointDatabaseOverrides();
     let releaseNormalization: (result: { requestBoundaryFound: true }) => void = () => {};
     const normalizationGate = new Promise<{ requestBoundaryFound: true }>((resolve) => {
@@ -1849,7 +1849,7 @@ describe('qq voice plugin', () => {
 
     const readyPromise = harness.ready();
     await flushMicrotasks();
-    expect(harness.getPrepare()).toBeUndefined();
+    expect(harness.getPrepare()).toBeTypeOf('function');
     expect(persistence.rows.size).toBe(1);
 
     releaseNormalization({ requestBoundaryFound: true });
