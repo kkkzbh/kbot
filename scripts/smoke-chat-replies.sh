@@ -17,6 +17,7 @@ Environment:
   PROBE_REPETITIONS     Runs per case, from 1 to 50 (default: 1)
   BOT_TIMEOUT_SECONDS   Per-probe timeout (default: 90)
   QQBOT_RUN_VOICE_SMOKE Set to 1 to enable the required voice case
+  PROBE_ARTIFACT_DIR    Optional directory that receives every raw probe JSON
 EOF
 }
 
@@ -53,6 +54,16 @@ BOT_TIMEOUT_SECONDS="${BOT_TIMEOUT_SECONDS:-90}"
 PROBE_REPETITIONS="${PROBE_REPETITIONS:-1}"
 PROBE_MODE="${PROBE_MODE:-all}"
 FAKE_GROUP_ID="${FAKE_GROUP_ID:-$(node -e "process.stdout.write(require('./scripts/lib/probe-local-bot-shared.cjs').DEFAULT_PROBE_GROUP_ID)")}"
+PROBE_ARTIFACT_DIR="${PROBE_ARTIFACT_DIR:-}"
+
+preserve_probe_artifact() {
+  local kind="$1"
+  local id="$2"
+  local repetition="$3"
+  [[ -n "$PROBE_ARTIFACT_DIR" ]] || return 0
+  mkdir -p "$PROBE_ARTIFACT_DIR"
+  cp "$PROBE_JSON_FILE" "$PROBE_ARTIFACT_DIR/${kind}-${id}-${repetition}.json"
+}
 
 case "$PROBE_MODE" in
   cases | stateful | all) ;;
@@ -146,6 +157,7 @@ run_case() {
     PROBE_PRESET_ID="$preset_id" \
     bash "$PROBE_SCRIPT" "$prompt"
   ) >"$PROBE_JSON_FILE"
+  preserve_probe_artifact case "$case_id" "$repetition"
 
   PROBE_JSON_FILE="$PROBE_JSON_FILE" \
   CASE_ID="$case_id" \
@@ -353,6 +365,7 @@ run_sequence() {
       PROBE_PRESET_ID="$preset_id" \
       bash "$PROBE_SCRIPT" --sequence
   ) >"$PROBE_JSON_FILE"
+  preserve_probe_artifact sequence "$sequence_id" "$repetition"
 
   PROBE_JSON_FILE="$PROBE_JSON_FILE" \
   SEQUENCE_ID="$sequence_id" \

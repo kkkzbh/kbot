@@ -9,6 +9,7 @@ const GENERIC_INTENT_TOKENS = new Set([
 ]);
 const STICKER_INTENT_SYNONYM_GROUPS = [
   ['开心', '喜悦', '欢快', '热烈', '庆祝', '欢呼', '鼓掌', '好耶', '成功', '顺利', '太棒', '干杯'],
+  ['生气', '愤怒', '气恼', '不满', '气鼓鼓', '叉腰', '瞪人', '怒气', '恼火'],
   ['演出', '舞台', 'live', '乐队', '谢幕'],
 ] as const;
 const STICKER_INTENT_SEGMENTER =

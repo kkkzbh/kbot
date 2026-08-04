@@ -85,6 +85,7 @@ describe('chatluna sticker core', () => {
 
     expect(resolveStickerSelection(catalog, '无语地看对方一眼', 'sakiko')?.id).toBe('bored');
     expect(resolveStickerSelection(catalog, '生气地噘嘴表达不满', 'sakiko')?.id).toBe('embarrassed');
+    expect(resolveStickerSelection(catalog, '气鼓鼓地叉腰瞪人', 'sakiko')?.id).toBe('embarrassed');
     expect(resolveStickerSelection(catalog, '开心庆祝：举手欢呼，太棒了！', 'sakiko')?.id).toBe('piano');
     expect(resolveStickerSelection(catalog, '欢呼庆祝、舞台谢幕成功', 'sakiko')?.id).toBe('piano');
   });
