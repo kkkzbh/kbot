@@ -9,6 +9,7 @@ import {
   sanitizeContextValue,
   type ModelContextPayload,
 } from '../src/plugins/admin-api/model-context.js';
+import { QQBOT_SUBMIT_REPLY_TOOL_NAME } from '../src/plugins/shared/internal-tool-names.js';
 
 function contextPayload(options: {
   requestId?: string;
@@ -68,6 +69,10 @@ function contextPayload(options: {
         type: 'object',
         headers: { authorization: 'Bearer tool-secret' },
       },
+    }, {
+      name: QQBOT_SUBMIT_REPLY_TOOL_NAME,
+      description: 'internal terminal reply tool',
+      schema: { type: 'object' },
     }],
     presetId: 'sakiko',
     presetRevision: 'revision-1',
@@ -182,6 +187,7 @@ describe('model context snapshot store', () => {
         args: { query: 'visible' },
       }],
     });
+    expect(result.snapshot?.tools.map((tool) => tool.name)).toEqual(['lookup']);
   });
 
   it('correlates repeated request ids by provider call id and expires unmatched usage', () => {

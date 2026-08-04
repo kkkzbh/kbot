@@ -13,6 +13,7 @@ import type {
   ContextSnapshotResponse,
   ContextTarget,
 } from '../../admin/contracts/index.js';
+import { isQqbotInternalToolName } from '../shared/internal-tool-names.js';
 
 export const MODEL_CONTEXT_MAX_SESSIONS = 32;
 export const MODEL_CONTEXT_MAX_ITEM_BYTES = 2 * 1024 * 1024;
@@ -385,7 +386,7 @@ function buildSnapshot(payload: ResolvedModelContextPayload): ContextSnapshot {
     finalCount: payload.finalCount,
     truncated: payload.truncated,
     messages,
-    tools: payload.tools.map((tool) => ({
+    tools: payload.tools.filter((tool) => !isQqbotInternalToolName(tool.name)).map((tool) => ({
       name: tool.name,
       description: tool.description,
       schema: sanitizeContextSchema(tool.schema),

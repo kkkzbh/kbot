@@ -4,6 +4,7 @@ import {
   normalizeVoiceOutputLanguage,
   type VoiceOutputLanguage,
 } from '../voice/language.js';
+import { QQBOT_SUBMIT_REPLY_TOOL_NAME } from '../internal-tool-names.js';
 
 export type ReplyOutputRequestMode = 'chat_completions' | 'responses';
 export type ReplyOutputProtocol = 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1';
@@ -15,6 +16,7 @@ export interface ReplyOutputContract {
   schema: Record<string, unknown> | null;
   instruction: string | null;
   overrideRequestParams: Record<string, unknown> | null;
+  terminalTool: string | null;
 }
 
 export function buildReplyOutputContractAdditionalKwargs(
@@ -87,59 +89,32 @@ export function buildNativeJsonOutputContractLines(_options: ReplyOutputLanguage
 }
 
 export function buildChatReplyV1OutputContractLines(options: ReplyOutputLanguageOptions = {}): string[] {
-  const payloadTypes = [
-    '`message`',
-    '`structured_block`',
-    ...(options.canMeme === true ? ['`meme`'] : []),
-    ...(options.canVoice === true ? ['`voice`'] : []),
+  return [
+    '最终回复提交规则：',
+    `- 完成需要的查找、回忆或操作后，调用 \`${QQBOT_SUBMIT_REPLY_TOOL_NAME}\` 提交最终回复。`,
+    '- 最终回复只能通过这个工具提交；不要在工具调用外直接输出聊天正文。',
+    '- `result.decision=reply` 时，用 `result.messages` 按发送顺序提交文字、结构块和工具产生的图片。',
+    '- 普通聊天用 `message`；需要保留列表、代码或引用结构时用 `structured_block`。',
+    '- `result.decision=no_reply` 时，`messages`、`voice_message`、`meme_message` 都填写 null。',
+    ...(options.canMeme === true
+      ? ['- 当前允许 `meme_message`，每轮最多一个；填写具体自然的表情意图。']
+      : ['- 当前不允许表情包，`meme_message` 必须填写 null。']),
+    ...(options.canVoice === true
+      ? ['- 当前允许 `voice_message`，每轮最多一个；填写要朗读的简短话语。']
+      : ['- 当前不允许语音，`voice_message` 必须填写 null。']),
   ];
-  const lines = [
-    '输出格式规则：',
-    '- 最终回复必须严格使用 CHAT_REPLY_V1 文本协议，不要包裹 markdown fence，不要输出解释文字。',
-    '- 第一条非空行必须是 `CHAT_REPLY_V1 <nonce>`；最后用 `DONE <nonce>`，首尾 nonce 必须一致。',
-    '- `DECISION no_reply` 后只能输出 `DONE <nonce>`。',
-    '- `DECISION reply` 必须输出一到四个 `BEGIN ... END` block。',
-    `- ${payloadTypes.join('、')} 在 \`BEGIN <type>\` 后直接写以 \`|\` 开头的 payload 行。`,
-    '- `image` 依次写 `ASSET_REF ...`、`ALT` 和 payload。',
-    '- payload 内容行必须以 `|` 开头；空行也写成单独的 `|`，不要输出裸空行。裸 `END` 才结束 block。内容里需要写 END/DONE/BEGIN 时也必须写成 `|END`、`|DONE ...`、`|BEGIN ...`。',
-    'no_reply 示例：',
-    ['CHAT_REPLY_V1 abc12345', 'DECISION no_reply', 'DONE abc12345'].join('\n'),
-    'message 示例：',
-    ['CHAT_REPLY_V1 abc12345', 'DECISION reply', 'BEGIN message', '|收到，我看一下。', 'END', 'DONE abc12345'].join('\n'),
-    'structured_block 示例：',
-    ['BEGIN structured_block', '|1. 第一项', '|2. 第二项', 'END'].join('\n'),
-    'image 示例：',
-    ['BEGIN image', 'ASSET_REF <工具返回的 assetRef>', 'ALT', '|简短图像说明', 'END'].join('\n'),
-  ];
-
-  if (options.canMeme === true) {
-    lines.push('meme block：', ['BEGIN meme', '|<具体自然的表情意图>', 'END'].join('\n'));
-  }
-  if (options.canVoice === true) {
-    lines.push('voice block：', ['BEGIN voice', '|<要朗读的简短话语>', 'END'].join('\n'));
-  }
-  return lines;
 }
 
 export function buildChatReplyV1FinalInstruction(options: ReplyOutputLanguageOptions = {}): string {
-  const payloadTypes = [
-    'message',
-    'structured_block',
-    ...(options.canMeme === true ? ['meme'] : []),
-    ...(options.canVoice === true ? ['voice'] : []),
-  ];
   return [
-    '最终只输出 CHAT_REPLY_V1 协议。直接输出普通聊天文本、Markdown 或解释文字均无效。',
-    '`<nonce>` 使用任意 8 位以上字母数字串，首尾必须相同。',
-    '回复格式：',
-    'CHAT_REPLY_V1 <nonce>',
-    'DECISION reply',
-    `BEGIN <${payloadTypes.join('|')}>`,
-    '|<内容；每一行都以 | 开头>',
-    'END',
-    'DONE <nonce>',
-    '最多四个 BEGIN...END block。image block 依次写 BEGIN image、ASSET_REF <本轮工具返回值>、ALT、|<说明>、END。',
-    '不回复时只写 CHAT_REPLY_V1 <nonce>、DECISION no_reply、DONE <nonce>。不要写 CONTENT。',
+    `完成本轮工作后，必须调用 \`${QQBOT_SUBMIT_REPLY_TOOL_NAME}\` 提交最终回复。`,
+    '不要直接输出普通文本、Markdown、JSON 或内部协议。',
+    ...(options.canMeme === true
+      ? ['当前允许 meme_message。']
+      : ['当前不允许 meme_message，必须填 null。']),
+    ...(options.canVoice === true
+      ? ['当前允许 voice_message。']
+      : ['当前不允许 voice_message，必须填 null。']),
     ...(options.canVoice === true
       ? buildVoiceOutputLanguageContractLines(normalizeVoiceOutputLanguage(options.voiceOutputLanguage))
       : []),
@@ -185,6 +160,15 @@ export function createReplyOutputContract(args: {
       canMeme: args.canMeme,
       stickerIntentHints: args.stickerIntentHints,
     }),
-    overrideRequestParams: args.overrideRequestParams,
+    overrideRequestParams: args.protocol === 'chat_reply_v1'
+      ? {
+          ...(args.overrideRequestParams ?? {}),
+          tool_choice: 'required',
+          parallel_tool_calls: false,
+        }
+      : args.overrideRequestParams,
+    terminalTool: args.protocol === 'chat_reply_v1'
+      ? QQBOT_SUBMIT_REPLY_TOOL_NAME
+      : null,
   };
 }

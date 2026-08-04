@@ -4,6 +4,13 @@ import type { OutboundMessageSegment } from '../../shared/outbound/index.js';
 export type ReplyRunState = 'computing' | 'computed' | 'sending';
 export type ReplyRunMode = 'interrupt' | 'queue';
 
+export class ReplyRunCancellationError extends Error {
+  constructor(readonly runId: string) {
+    super(`reply run ${runId} was cancelled.`);
+    this.name = 'ReplyRunCancellationError';
+  }
+}
+
 export interface ReplyRuntimeRoomLike {
   conversationId?: string;
   model?: string;
@@ -25,6 +32,16 @@ export interface ReplyRuntimePrepareResult {
   inputText?: string;
   inputTextSpeakerTagged?: boolean;
   continuationContext?: ReplyTurnContinuationContext;
+}
+
+export interface ReplyRuntimePrepareArgs {
+  runId: string;
+  queueKey: string;
+  actorKey: string;
+  conversationId?: string;
+  room: ReplyRuntimeRoomLike;
+  input: ReplyTurnInput;
+  mode?: ReplyRunMode;
 }
 
 export interface ReplyRuntimeFirstReplyQuote {
@@ -51,13 +68,11 @@ export interface ReplyRuntimeRun {
   plannedUnitHistoryLines: string[];
   committedHistoryLines: string[];
   transientProgress: ReplyRuntimeProgressState;
-  requestId: string;
   firstReplyQuote: ReplyRuntimeFirstReplyQuote;
   sendAbortController?: AbortController;
 }
 
 export interface ReplyRuntimeOptions {
-  stopConversationRequest: (conversationId: string) => Promise<void>;
   drainOutbound: (queueKey: string) => Promise<void>;
   collectWindowMs?: number;
   maxPendingInputs?: number;
@@ -81,6 +96,25 @@ interface PendingTurnEntry {
   input: ReplyTurnInput;
   firstReplyQuote: ReplyRuntimeFirstReplyQuote;
   resolve: (result: ReplyRuntimePrepareResult) => void;
+}
+
+interface PendingTurnReference {
+  state: ReplyRuntimePendingState;
+  entry: PendingTurnEntry;
+}
+
+interface QueueModeWaiter {
+  runId: string;
+  cancelled: boolean;
+  cancellation: Promise<void>;
+  resolveCancellation: () => void;
+}
+
+interface ActiveRunCancellation {
+  run: ReplyRuntimeRun;
+  work: Promise<void>;
+  finalized: boolean;
+  finishObserved: boolean;
 }
 
 interface ReplyRuntimePendingState {
@@ -152,6 +186,12 @@ export class ReplyRuntime {
   private readonly completionResolvers = new Map<string, () => void>();
   private readonly completionPromises = new Map<string, Promise<void>>();
   private readonly pendingStatesByActorKey = new Map<string, ReplyRuntimePendingState>();
+  private readonly pendingTurnByRunId = new Map<string, PendingTurnReference>();
+  private readonly queueModeWaiterByRunId = new Map<string, QueueModeWaiter>();
+  private readonly activeCancellationByRunId = new Map<string, ActiveRunCancellation>();
+  private readonly requestAbortControllerByRunId = new Map<string, AbortController>();
+  private readonly requestSettlementResolvers = new Map<string, (error?: unknown) => void>();
+  private readonly requestSettlementPromises = new Map<string, Promise<unknown | undefined>>();
   private readonly queueActorOrder = new Map<string, string[]>();
   private readonly collectWindowMs: number;
   private readonly maxPendingInputs: number;
@@ -161,32 +201,13 @@ export class ReplyRuntime {
     this.maxPendingInputs = Math.max(1, Math.floor(options.maxPendingInputs ?? DEFAULT_MAX_PENDING_INPUTS));
   }
 
-  async prepareRun(args: {
-    runId: string;
-    queueKey: string;
-    actorKey: string;
-    conversationId?: string;
-    room: ReplyRuntimeRoomLike;
-    input: ReplyTurnInput;
-    mode?: ReplyRunMode;
-  }): Promise<ReplyRuntimePrepareResult> {
+  async prepareRun(args: ReplyRuntimePrepareArgs): Promise<ReplyRuntimePrepareResult> {
+    this.assertRunIdAvailable(args.runId);
     const { mode = 'interrupt' } = args;
     const firstReplyQuote = this.resolveFirstReplyQuote(args.queueKey, args.actorKey, args.input);
 
     if (mode === 'queue') {
-      while (true) {
-        const blockingRunId = this.getBlockingRunId(args.queueKey);
-        if (!blockingRunId) break;
-        await this.waitForRunCompletion(blockingRunId);
-      }
-
-      const run = this.createRun({ ...args, firstReplyQuote });
-      return {
-        action: 'continue',
-        run,
-        inputText: normalizeInputText(args.input.text),
-        inputTextSpeakerTagged: false,
-      };
+      return this.prepareQueuedRun(args, firstReplyQuote);
     }
 
     const activeRunId = this.activeRunByActorKey.get(args.actorKey);
@@ -198,14 +219,22 @@ export class ReplyRuntime {
         'draining',
       );
       const pendingPromise = this.enqueuePendingTurn(pendingState, { ...args, firstReplyQuote });
+      const cancellation = this.beginActiveRunCancellation(activeRun);
       try {
-        await this.interruptRun(activeRun);
+        await cancellation.work;
+        pendingState.snapshot = this.captureContinuationSnapshot(activeRun);
       } catch (error) {
         this.stopPendingState(pendingState);
-        this.finishRun(activeRun.id);
         throw error;
+      } finally {
+        this.finalizeActiveRunCancellation(cancellation);
       }
-      pendingState.snapshot = this.captureContinuationSnapshot(activeRun);
+      if (
+        this.pendingStatesByActorKey.get(pendingState.actorKey) !== pendingState
+        || pendingState.pending.length === 0
+      ) {
+        return pendingPromise;
+      }
       this.enterCooldown(pendingState);
       this.tryStartNextCompute(args.queueKey);
       return pendingPromise;
@@ -243,9 +272,67 @@ export class ReplyRuntime {
     return pendingPromise;
   }
 
+  async cancelRun(runId: string): Promise<boolean> {
+    if (!runId.trim()) {
+      throw new Error('reply cancellation requires a non-empty runId.');
+    }
+
+    const activeCancellation = this.activeCancellationByRunId.get(runId);
+    if (activeCancellation) {
+      try {
+        await activeCancellation.work;
+      } finally {
+        this.finalizeActiveRunCancellation(activeCancellation);
+      }
+      return true;
+    }
+
+    const run = this.runs.get(runId);
+    if (run) {
+      const cancellation = this.beginActiveRunCancellation(run);
+      try {
+        await cancellation.work;
+      } finally {
+        this.finalizeActiveRunCancellation(cancellation);
+      }
+      return true;
+    }
+
+    const pendingTurn = this.pendingTurnByRunId.get(runId);
+    if (pendingTurn) {
+      this.cancelPendingTurn(pendingTurn);
+      return true;
+    }
+
+    const queueWaiter = this.queueModeWaiterByRunId.get(runId);
+    if (queueWaiter) {
+      if (!queueWaiter.cancelled) {
+        queueWaiter.cancelled = true;
+        queueWaiter.resolveCancellation();
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   getRun(runId: string | undefined): ReplyRuntimeRun | null {
     if (!runId) return null;
     return this.runs.get(runId) ?? null;
+  }
+
+  getRequestSignal(runId: string | undefined): AbortSignal | null {
+    if (!runId || !this.runs.has(runId)) return null;
+    return this.requestAbortControllerByRunId.get(runId)?.signal ?? null;
+  }
+
+  markRequestSettled(runId: string | undefined, error?: unknown): boolean {
+    if (!runId) return false;
+    const resolve = this.requestSettlementResolvers.get(runId);
+    if (!resolve) return false;
+    this.requestSettlementResolvers.delete(runId);
+    resolve(error);
+    return true;
   }
 
   isCurrentRun(runId: string | undefined): boolean {
@@ -344,10 +431,34 @@ export class ReplyRuntime {
     return run.firstReplyQuote.targetMessageId;
   }
 
-  finishRun(runId: string | undefined): ReplyRuntimeRun | null {
-    const run = this.getRun(runId);
+  finishRun(runId: string | undefined, requestSettlementError?: unknown): ReplyRuntimeRun | null {
+    if (!runId) return null;
+    const activeCancellation = this.activeCancellationByRunId.get(runId);
+    const run = this.runs.get(runId) ?? activeCancellation?.run ?? null;
     if (!run) return null;
+    this.markRequestSettled(runId, requestSettlementError);
 
+    if (activeCancellation && !activeCancellation.finalized) {
+      if (activeCancellation.finishObserved) return null;
+      activeCancellation.finishObserved = true;
+      return run;
+    }
+
+    return this.finalizeRun(run);
+  }
+
+  private finalizeRun(run: ReplyRuntimeRun): ReplyRuntimeRun {
+    this.detachRunFromScheduling(run);
+    if (this.runs.get(run.id) === run) this.runs.delete(run.id);
+    this.requestAbortControllerByRunId.delete(run.id);
+    this.requestSettlementResolvers.delete(run.id);
+    this.requestSettlementPromises.delete(run.id);
+    this.resolveRunCompletion(run.id);
+    this.tryStartNextCompute(run.queueKey);
+    return run;
+  }
+
+  private detachRunFromScheduling(run: ReplyRuntimeRun): void {
     if (this.currentComputeByQueueKey.get(run.queueKey) === run.id) {
       this.currentComputeByQueueKey.delete(run.queueKey);
     }
@@ -360,13 +471,6 @@ export class ReplyRuntime {
     if (this.activeRunByActorKey.get(run.actorKey) === run.id) {
       this.activeRunByActorKey.delete(run.actorKey);
     }
-
-    this.runs.delete(run.id);
-    this.completionResolvers.get(run.id)?.();
-    this.completionResolvers.delete(run.id);
-    this.completionPromises.delete(run.id);
-    this.tryStartNextCompute(run.queueKey);
-    return run;
   }
 
   private createRun(args: {
@@ -400,10 +504,16 @@ export class ReplyRuntime {
             visibleLines: [],
             lastSentAt: null,
           },
-      requestId: args.runId,
       firstReplyQuote: { ...args.firstReplyQuote },
     };
     this.ensureCompletionTracking(args.runId);
+    this.requestAbortControllerByRunId.set(args.runId, new AbortController());
+    let resolveRequestSettlement: (error?: unknown) => void = () => {};
+    const requestSettlement = new Promise<unknown | undefined>((resolve) => {
+      resolveRequestSettlement = resolve;
+    });
+    this.requestSettlementResolvers.set(args.runId, resolveRequestSettlement);
+    this.requestSettlementPromises.set(args.runId, requestSettlement);
     this.runs.set(args.runId, created);
     this.currentComputeByQueueKey.set(args.queueKey, args.runId);
     this.activeRunByActorKey.set(args.actorKey, args.runId);
@@ -423,32 +533,101 @@ export class ReplyRuntime {
     };
   }
 
-  private async interruptRun(run: ReplyRuntimeRun): Promise<void> {
+  private beginActiveRunCancellation(run: ReplyRuntimeRun): ActiveRunCancellation {
+    const existing = this.activeCancellationByRunId.get(run.id);
+    if (existing) return existing;
+
     run.cancelled = true;
 
-    if (this.currentComputeByQueueKey.get(run.queueKey) === run.id) {
-      this.currentComputeByQueueKey.delete(run.queueKey);
-    }
-    if (this.currentComputedByQueueKey.get(run.queueKey) === run.id) {
-      this.currentComputedByQueueKey.delete(run.queueKey);
-    }
-    if (this.currentSendByQueueKey.get(run.queueKey) === run.id) {
-      this.currentSendByQueueKey.delete(run.queueKey);
-    }
-    if (this.activeRunByActorKey.get(run.actorKey) === run.id) {
-      this.activeRunByActorKey.delete(run.actorKey);
-    }
+    let resolveWork: () => void = () => {};
+    let rejectWork: (error: unknown) => void = () => {};
+    const work = new Promise<void>((resolve, reject) => {
+      resolveWork = resolve;
+      rejectWork = reject;
+    });
+    const cancellation: ActiveRunCancellation = {
+      run,
+      work,
+      finalized: false,
+      finishObserved: false,
+    };
+    this.activeCancellationByRunId.set(run.id, cancellation);
 
-    if (run.state === 'computing') {
-      const conversationId = run.conversationId?.trim();
-      if (!conversationId) {
-        throw new Error(`reply run ${run.id} cannot interrupt without conversationId.`);
-      }
-      await this.options.stopConversationRequest(conversationId);
-    }
+    void this.performActiveRunCancellation(run).then(resolveWork, rejectWork);
+    return cancellation;
+  }
 
+  private async performActiveRunCancellation(run: ReplyRuntimeRun): Promise<void> {
+    const requestAbortController = this.requestAbortControllerByRunId.get(run.id);
+    if (!requestAbortController) {
+      throw new Error(`reply run ${run.id} has no request cancellation owner.`);
+    }
+    requestAbortController.abort(new ReplyRunCancellationError(run.id));
     run.sendAbortController?.abort();
-    await this.options.drainOutbound(run.queueKey);
+
+    const requestSettlement = this.requestSettlementPromises.get(run.id);
+    if (!requestSettlement) {
+      throw new Error(`reply run ${run.id} has no request settlement owner.`);
+    }
+    const [, settlementError] = await Promise.all([
+      this.options.drainOutbound(run.queueKey),
+      requestSettlement,
+    ]);
+    if (settlementError != null) {
+      throw settlementError;
+    }
+  }
+
+  private finalizeActiveRunCancellation(cancellation: ActiveRunCancellation): void {
+    if (cancellation.finalized) return;
+    cancellation.finalized = true;
+    if (this.activeCancellationByRunId.get(cancellation.run.id) === cancellation) {
+      this.activeCancellationByRunId.delete(cancellation.run.id);
+    }
+    this.finalizeRun(cancellation.run);
+  }
+
+  private async prepareQueuedRun(
+    args: ReplyRuntimePrepareArgs,
+    firstReplyQuote: ReplyRuntimeFirstReplyQuote,
+  ): Promise<ReplyRuntimePrepareResult> {
+    let resolveCancellation: () => void = () => {};
+    const cancellation = new Promise<void>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    const waiter: QueueModeWaiter = {
+      runId: args.runId,
+      cancelled: false,
+      cancellation,
+      resolveCancellation,
+    };
+    this.queueModeWaiterByRunId.set(args.runId, waiter);
+
+    try {
+      while (!waiter.cancelled) {
+        const blockingRunId = this.getBlockingRunId(args.queueKey);
+        if (!blockingRunId) break;
+        await Promise.race([
+          this.waitForRunCompletion(blockingRunId),
+          waiter.cancellation,
+        ]);
+      }
+
+      if (waiter.cancelled) return { action: 'stop' };
+
+      this.queueModeWaiterByRunId.delete(args.runId);
+      const run = this.createRun({ ...args, firstReplyQuote });
+      return {
+        action: 'continue',
+        run,
+        inputText: normalizeInputText(args.input.text),
+        inputTextSpeakerTagged: false,
+      };
+    } finally {
+      if (this.queueModeWaiterByRunId.get(args.runId) === waiter) {
+        this.queueModeWaiterByRunId.delete(args.runId);
+      }
+    }
   }
 
   private getOrCreatePendingState(
@@ -493,7 +672,7 @@ export class ReplyRuntime {
     }
 
     return new Promise<ReplyRuntimePrepareResult>((resolve) => {
-      state.pending.push({
+      const entry: PendingTurnEntry = {
         runId: args.runId,
         queueKey: args.queueKey,
         actorKey: args.actorKey,
@@ -502,8 +681,31 @@ export class ReplyRuntime {
         input: args.input,
         firstReplyQuote: { ...(args.firstReplyQuote ?? this.resolveFirstReplyQuote(args.queueKey, args.actorKey, args.input)) },
         resolve,
-      });
+      };
+      state.pending.push(entry);
+      this.pendingTurnByRunId.set(args.runId, { state, entry });
     });
+  }
+
+  private cancelPendingTurn(reference: PendingTurnReference): void {
+    const { state, entry } = reference;
+    const index = state.pending.indexOf(entry);
+    if (index < 0) return;
+
+    state.pending.splice(index, 1);
+    this.resolvePendingTurn(entry, { action: 'stop' });
+    if (state.pending.length > 0) return;
+
+    this.stopPendingState(state);
+    this.tryStartNextCompute(state.queueKey);
+  }
+
+  private resolvePendingTurn(entry: PendingTurnEntry, result: ReplyRuntimePrepareResult): void {
+    const reference = this.pendingTurnByRunId.get(entry.runId);
+    if (reference?.entry === entry) {
+      this.pendingTurnByRunId.delete(entry.runId);
+    }
+    entry.resolve(result);
   }
 
   private enterCooldown(state: ReplyRuntimePendingState): void {
@@ -530,7 +732,7 @@ export class ReplyRuntime {
     }
     this.removeActorFromQueue(state.queueKey, state.actorKey);
     const pending = state.pending.splice(0);
-    for (const entry of pending) entry.resolve({ action: 'stop' });
+    for (const entry of pending) this.resolvePendingTurn(entry, { action: 'stop' });
   }
 
   private canStartCompute(queueKey: string): boolean {
@@ -569,9 +771,10 @@ export class ReplyRuntime {
       return;
     }
 
-    const carrier = state.pending[state.pending.length - 1];
-    const earlier = state.pending.slice(0, -1);
-    earlier.forEach((entry) => entry.resolve({ action: 'stop' }));
+    const pending = state.pending.splice(0);
+    const carrier = pending[pending.length - 1];
+    const earlier = pending.slice(0, -1);
+    earlier.forEach((entry) => this.resolvePendingTurn(entry, { action: 'stop' }));
 
     const hasContinuationContext = state.snapshot.hasModelOutput
       || state.snapshot.progressVisibleLines.length > 0;
@@ -587,7 +790,7 @@ export class ReplyRuntime {
       : undefined;
     const aggregatedInputs = [
       ...(state.snapshot.baseInput ? [state.snapshot.baseInput] : []),
-      ...state.pending.map((entry) => entry.input),
+      ...pending.map((entry) => entry.input),
     ];
     const aggregatedInput = state.snapshot.hasModelOutput
       ? {
@@ -598,10 +801,10 @@ export class ReplyRuntime {
     const effectiveInput: ReplyTurnInput = state.snapshot.hasModelOutput
       ? {
           ...carrier.input,
-          imageParts: state.pending.flatMap((entry) => entry.input.imageParts),
-          hasVoiceInput: state.pending.some((entry) => entry.input.hasVoiceInput),
-          hasImageInput: state.pending.some((entry) => entry.input.imageParts.length > 0),
-          imageCount: state.pending.reduce((total, entry) => total + entry.input.imageParts.length, 0),
+          imageParts: pending.flatMap((entry) => entry.input.imageParts),
+          hasVoiceInput: pending.some((entry) => entry.input.hasVoiceInput),
+          hasImageInput: pending.some((entry) => entry.input.imageParts.length > 0),
+          imageCount: pending.reduce((total, entry) => total + entry.input.imageParts.length, 0),
         }
       : {
           ...carrier.input,
@@ -625,7 +828,7 @@ export class ReplyRuntime {
       },
     });
 
-    carrier.resolve({
+    this.resolvePendingTurn(carrier, {
       action: 'continue',
       run,
       inputText: aggregatedInput.text,
@@ -642,6 +845,26 @@ export class ReplyRuntime {
     });
     this.completionResolvers.set(runId, resolve);
     this.completionPromises.set(runId, promise);
+  }
+
+  private resolveRunCompletion(runId: string): void {
+    this.completionResolvers.get(runId)?.();
+    this.completionResolvers.delete(runId);
+    this.completionPromises.delete(runId);
+  }
+
+  private assertRunIdAvailable(runId: string): void {
+    if (!runId.trim()) {
+      throw new Error('reply runtime requires a non-empty runId.');
+    }
+    if (
+      this.runs.has(runId)
+      || this.pendingTurnByRunId.has(runId)
+      || this.queueModeWaiterByRunId.has(runId)
+      || this.activeCancellationByRunId.has(runId)
+    ) {
+      throw new Error(`reply runtime runId is already active: ${runId}`);
+    }
   }
 
   private async waitForRunCompletion(runId: string): Promise<void> {

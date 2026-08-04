@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { awaitAllCallbacks } from '@langchain/core/callbacks/promises';
 
 vi.mock('koishi-plugin-chatluna/chains', () => ({
   ChainMiddlewareRunStatus: { STOP: 1, CONTINUE: 0 },
@@ -160,6 +161,12 @@ vi.mock('../src/plugins/shared/prompt-context/index.js', async () => {
 import { sendVoiceByBridge } from '../src/plugins/admin-api/voice-bridge.js';
 import { apply, deliverStandaloneReplyPlan, ensureCanSendRecord, inject } from '../src/plugins/reply/index.js';
 import { ReplyRuntime } from '../src/plugins/reply/runtime/index.js';
+import {
+  REPLY_DELIVERY_CHECKPOINT_TABLE,
+  ReplyDeliveryCheckpointStore,
+  type ReplyDeliveryCheckpointRecord,
+} from '../src/plugins/reply/delivery/checkpoint-store.js';
+import { recoverReplyDeliveryCheckpoints } from '../src/plugins/reply/delivery/recovery.js';
 import type { ModelRuntimeSnapshot } from '../src/plugins/model-config/index.js';
 import {
   nativeStructuredReplyContent,
@@ -174,6 +181,37 @@ import {
 type Middleware = (session: Record<string, any>, next: () => Promise<unknown>) => Promise<unknown>;
 type EventHandler = (...args: any[]) => Promise<unknown> | unknown;
 type ChainMiddleware = (session: Record<string, any>, context: Record<string, any>) => Promise<number>;
+
+function createPersistentCheckpointDatabaseOverrides() {
+  const rows = new Map<string, ReplyDeliveryCheckpointRecord>();
+  return {
+    rows,
+    databaseGetImpl: async (table: string, query: Record<string, unknown>) => {
+      if (table !== REPLY_DELIVERY_CHECKPOINT_TABLE) return [];
+      return [...rows.values()]
+        .filter((row) => Object.entries(query).every(([key, value]) => row[key as keyof typeof row] === value))
+        .map((row) => ({ ...row }));
+    },
+    databaseUpsertImpl: async (table: string, records: Record<string, unknown>[]) => {
+      if (table !== REPLY_DELIVERY_CHECKPOINT_TABLE) return;
+      for (const record of records) {
+        const checkpoint = record as unknown as ReplyDeliveryCheckpointRecord;
+        rows.set(checkpoint.requestId, { ...checkpoint });
+      }
+    },
+    databaseSetImpl: async (table: string, query: Record<string, unknown>, update: Record<string, unknown>) => {
+      if (table !== REPLY_DELIVERY_CHECKPOINT_TABLE) return;
+      const requestId = String(query.requestId ?? '');
+      const record = rows.get(requestId);
+      if (!record) throw new Error(`missing reply checkpoint ${requestId}`);
+      Object.assign(record, update);
+    },
+    databaseRemoveImpl: async (table: string, query: Record<string, unknown>) => {
+      if (table !== REPLY_DELIVERY_CHECKPOINT_TABLE) return;
+      rows.delete(String(query.requestId ?? ''));
+    },
+  };
+}
 
 function createTestWav(durationMs = 100): ArrayBuffer {
   const sampleRate = 8_000;
@@ -323,6 +361,7 @@ function createHarness(overrides: {
   const chainMiddlewares = new Map<string, ChainMiddleware>();
   const chainConstraints: ChainConstraint[] = [];
   const progressCallbacksProviders: Array<(input: Record<string, unknown>) => unknown> = [];
+  const registeredTools = new Map<string, unknown>();
   const inject = vi.fn();
   const defaultConversations: Record<string, unknown>[] = [{ id: 'conv-1', latestMessageId: 'msg-tool-1' }];
   const defaultMessages: Record<string, unknown>[] = createStoredResearchCompatibilityTail('conv-1');
@@ -407,6 +446,14 @@ function createHarness(overrides: {
     receiveMessage: vi.fn(async () => false),
   };
   const chatluna: Record<string, any> = {
+    platform: {
+      registerTool: vi.fn((name: string, tool: unknown) => {
+        registeredTools.set(name, tool);
+        return () => {
+          registeredTools.delete(name);
+        };
+      }),
+    },
     createChatModel: vi.fn(async (model: string) => ({
       value: await (overrides.createChatModelImpl?.(model) ??
         Promise.resolve({
@@ -420,7 +467,6 @@ function createHarness(overrides: {
     })),
     conversationRuntime: {
       clearConversationCache: vi.fn(async () => true),
-      stopConversationRequest: vi.fn(async () => undefined),
     },
   };
   if (overrides.registerProgressCallbacks !== false) {
@@ -442,6 +488,7 @@ function createHarness(overrides: {
         latestId: 'msg-ai-normalized',
         normalizedMessageId: 'msg-ai-normalized',
         normalizedText: finalVisibleText,
+        requestBoundaryFound: true,
       };
     });
   }
@@ -485,6 +532,7 @@ function createHarness(overrides: {
         };
       },
     },
+    toolPolicy: {},
     database,
     model: {
       extend: vi.fn(),
@@ -531,6 +579,7 @@ function createHarness(overrides: {
     getExecutor: () => chainMiddlewares.get('qqbot_reply_plan_executor'),
     getChainConstraints: () => chainConstraints,
     getProgressCallbacksProvider: () => progressCallbacksProviders[0],
+    registeredTools,
     chatChain,
     chatChainAdded: (events.get('chatluna/chat-chain-added') ?? [])[0],
     setChatChainAvailable: () => {
@@ -598,7 +647,10 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
-function createReplyV2Response(input: string | Record<string, unknown>) {
+function createReplyV2Response(
+  input: string | Record<string, unknown>,
+  capabilities: { canVoice?: boolean; canMeme?: boolean } = {},
+) {
   const reply: TestStructuredReply =
     typeof input === 'string'
       ? {
@@ -607,7 +659,7 @@ function createReplyV2Response(input: string | Record<string, unknown>) {
         }
       : input as TestStructuredReply;
   return {
-    content: nativeStructuredReplyContent(reply),
+    content: nativeStructuredReplyContent(reply, capabilities),
     additional_kwargs: {},
   };
 }
@@ -807,6 +859,7 @@ describe('qq voice plugin', () => {
           'featurePolicy',
           'modelConfig',
           'naturalTriggerConfig',
+          'toolPolicy',
         ]),
       }),
     );
@@ -951,9 +1004,153 @@ describe('qq voice plugin', () => {
             },
           ],
         },
+        modalityPolicy: null,
       }),
     ).rejects.toThrow('reply plan delivery requires a onebot session with channelId.');
     expect(bot.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', []],
+  ])('marks standalone delivery outcome unknown when the first transport receipt is %s', async (_label, receipt) => {
+    const { bot } = createHarness();
+    bot.sendMessage.mockImplementationOnce(async () => receipt as never);
+    const session = createSession(bot);
+
+    const delivery = await deliverStandaloneReplyPlan({
+      runtime: {} as never,
+      session: session as never,
+      plan: {
+        segments: [
+          {
+            kind: 'message',
+            parts: [{ kind: 'text', content: '这条消息必须有发送回执。' }],
+          },
+        ],
+      },
+      modalityPolicy: null,
+    });
+
+    expect(delivery).toEqual({
+      status: 'outcome_unknown',
+      historyText: '',
+      receipts: [],
+      deliveredModalities: [],
+    });
+    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks standalone media delivery outcome unknown when its first receipt is malformed', async () => {
+    const { bot } = createHarness();
+    bot.sendMessage.mockResolvedValueOnce(['sticker-message-id', '  ']);
+    const session = createSession(bot, {
+      state: { qqSticker: createStickerState() },
+    });
+
+    const delivery = await deliverStandaloneReplyPlan({
+      runtime: {} as never,
+      session: session as never,
+      plan: {
+        segments: [{ kind: 'sticker', content: '无语地看对方一眼' }],
+      },
+      modalityPolicy: {
+        canVoice: false,
+        canSticker: true,
+        voiceReason: 'not_admitted',
+        stickerReason: 'explicit_request',
+      },
+    });
+
+    expect(delivery).toEqual({
+      status: 'outcome_unknown',
+      historyText: '',
+      receipts: [],
+      deliveredModalities: [],
+    });
+    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a partially receipted standalone plan and commits only receipted units', async () => {
+    vi.useFakeTimers();
+    const { bot } = createHarness();
+    bot.sendMessage
+      .mockResolvedValueOnce(['text-message-id'])
+      .mockResolvedValueOnce([]);
+    const session = createSession(bot, {
+      state: { qqSticker: createStickerState() },
+    });
+
+    const pending = deliverStandaloneReplyPlan({
+      runtime: {} as never,
+      session: session as never,
+      plan: {
+        segments: [
+          {
+            kind: 'message',
+            parts: [{ kind: 'text', content: '先发出一条文字。' }],
+          },
+          { kind: 'sticker', content: '无语地看对方一眼' },
+        ],
+      },
+      modalityPolicy: {
+        canVoice: false,
+        canSticker: true,
+        voiceReason: 'not_admitted',
+        stickerReason: 'explicit_request',
+      },
+    });
+
+    await vi.runAllTimersAsync();
+    const delivery = await pending;
+
+    expect(delivery).toEqual({
+      status: 'outcome_unknown',
+      historyText: '先发出一条文字。',
+      receipts: [['text-message-id']],
+      deliveredModalities: [],
+    });
+    expect(bot.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps content-blocked replacement semantically failed when an explicit sticker was not delivered', async () => {
+    const { bot } = createHarness();
+    bot.sendMessage
+      .mockRejectedValueOnce(Object.assign(
+        new Error('Error with request send_group_msg, retcode: 1200'),
+        { code: 1200 },
+      ))
+      .mockResolvedValueOnce(['replacement-message-id']);
+    const session = createSession(bot, {
+      state: { qqSticker: createStickerState() },
+    });
+
+    const delivery = await deliverStandaloneReplyPlan({
+      runtime: {} as never,
+      session: session as never,
+      plan: {
+        segments: [{ kind: 'sticker', content: '无语地看对方一眼' }],
+      },
+      modalityPolicy: {
+        canVoice: false,
+        canSticker: true,
+        voiceReason: 'not_admitted',
+        stickerReason: 'explicit_request',
+      },
+    });
+
+    expect(delivery).toEqual(expect.objectContaining({
+      status: 'failed_semantic',
+      historyText: '这个话题我不方便在群里展开，换个别的吧。',
+      receipts: [['replacement-message-id']],
+      deliveredModalities: [],
+      semanticFailure: expect.objectContaining({
+        code: 'explicit_modality_delivery_missing',
+        stage: 'delivery',
+        missingModalities: ['sticker'],
+      }),
+    }));
+    expect(bot.sendMessage).toHaveBeenCalledTimes(2);
   });
 
   it('does not preheat canSendRecord during ready', async () => {
@@ -1117,6 +1314,7 @@ describe('qq voice plugin', () => {
     };
 
     await prepare?.(sessionA1, contextA1);
+    const firstRequestSignal = (contextA1.options as Record<string, unknown>).requestSignal as AbortSignal;
 
     let bResolved = false;
     const prepareBPromise = prepare?.(sessionB, contextB).then((result) => {
@@ -1133,6 +1331,12 @@ describe('qq voice plugin', () => {
       a2Resolved = true;
       return result;
     });
+    await flushMicrotasks();
+    expect(firstRequestSignal.aborted).toBe(true);
+    await sessionA1.state.qqReplyTransport.handleRequestModelError(
+      firstRequestSignal.reason,
+      { requestBoundaryPersisted: false },
+    );
 
     await vi.advanceTimersByTimeAsync(450);
     await flushMicrotasks();
@@ -1140,6 +1344,8 @@ describe('qq voice plugin', () => {
     expect(bResolved).toBe(true);
     expect(a2Resolved).toBe(false);
     expect(contextB.options.inputMessage.content).toBe('B1');
+    expect((contextB.options as Record<string, unknown>).requestSignal).toBeInstanceOf(AbortSignal);
+    expect(((contextB.options as Record<string, unknown>).requestSignal as AbortSignal).aborted).toBe(false);
 
     await executor?.(sessionB, {
       options: {
@@ -1200,7 +1406,10 @@ describe('qq voice plugin', () => {
     await flushMicrotasks();
     expect(secondPrepared).toBe(false);
 
-    await sessionA.state.qqReplyTransport.handleRequestModelError(new Error('400 invalid_request_body'));
+    await sessionA.state.qqReplyTransport.handleRequestModelError(
+      new Error('400 invalid_request_body'),
+      { requestBoundaryPersisted: false },
+    );
 
     await expect(prepareBPromise).resolves.toBeTypeOf('number');
     expect(secondPrepared).toBe(true);
@@ -1258,6 +1467,7 @@ describe('qq voice plugin', () => {
     });
     const userMessage = await session.state.qqReplyTransport.handleRequestModelError(
       chatlunaError,
+      { requestBoundaryPersisted: false },
     );
 
     expect(userMessage).toBe(
@@ -1285,6 +1495,91 @@ describe('qq voice plugin', () => {
       'Model openai/auto has exceeded its monthly quota',
       'false',
     );
+  });
+
+  it('cleans terminal-contract tool history without persisting transient progress', async () => {
+    const {
+      ready,
+      getPrepare,
+      getProgressCallbacksProvider,
+      bot,
+      chatluna,
+    } = createHarness({ replyInterruptEnabled: true });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+    await ready();
+
+    const session = createSession(bot, {
+      userId: 'u1',
+      content: '帮我查一下',
+      strippedContent: '帮我查一下',
+    });
+    const room = createPluginConversation('conv-terminal-failure');
+    await getPrepare()?.(session, {
+      options: {
+        conversation: room,
+        inputMessage: { content: '帮我查一下', additional_kwargs: {} },
+      },
+    });
+    const callbacks = await getProgressCallbacksProvider()?.({
+      session,
+      conversation: { id: 'conv-terminal-failure' },
+      requestId: 'request-terminal-failure',
+    }) as { handleCustomEvent?: (...args: unknown[]) => Promise<void> } | undefined;
+    await callbacks?.handleCustomEvent?.('chatluna-agent-event', {
+      context: { kind: 'main', requestId: 'request-terminal-failure' },
+      event: { type: 'tool-call', actions: [{ tool: 'web_search' }] },
+    }, 'callback-terminal-failure');
+    expect(String(session.send.mock.calls[0]?.[0] ?? '')).not.toBe('');
+
+    const terminalError = Object.assign(new Error('terminal tool missing'), {
+      name: 'AgentTerminalContractError',
+      code: 'ITERATION_LIMIT',
+    });
+    const chatlunaError = Object.assign(new Error('ChatLuna error code 103'), {
+      name: 'ChatLunaError',
+      errorCode: 103,
+      originError: terminalError,
+    });
+    const userMessage = await session.state.qqReplyTransport.handleRequestModelError(
+      chatlunaError,
+      { requestBoundaryPersisted: false },
+    );
+
+    expect(userMessage).toBe('刚才那条没整理好。你再发一次，我重新来。');
+    expect(userMessage).not.toMatch(/tool|协议|错误码|103/iu);
+    expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-terminal-failure' }),
+      '',
+    );
+  });
+
+  it('fails request settlement when a persisted history boundary cannot be reconciled', async () => {
+    const { ready, getPrepare, bot } = createHarness({
+      replyInterruptEnabled: true,
+      normalizeResearchReplyHistoryImpl: async () => ({
+        requestBoundaryFound: false,
+      }),
+    });
+    await ready();
+
+    const session = createSession(bot, {
+      userId: 'u1',
+      content: '帮我查一下',
+      strippedContent: '帮我查一下',
+    });
+    await getPrepare()?.(session, {
+      options: {
+        conversation: createPluginConversation('conv-missing-request-boundary'),
+        inputMessage: { content: '帮我查一下', additional_kwargs: {} },
+      },
+    });
+
+    await expect(
+      session.state.qqReplyTransport.handleRequestModelError(
+        new Error('provider failed after request persistence'),
+        { requestBoundaryPersisted: true },
+      ),
+    ).rejects.toThrow('reply runtime history normalization did not find request boundary');
   });
 
   it('preserves image_url content when prepare rewrites aggregated input text', async () => {
@@ -1329,12 +1624,19 @@ describe('qq voice plugin', () => {
     };
 
     await prepare?.(sessionA1, contextA1);
+    const firstRequestSignal = (contextA1.options as Record<string, unknown>).requestSignal as AbortSignal;
 
     let prepareResolved = false;
     const pendingPrepare = prepare?.(sessionA2, contextA2).then((result) => {
       prepareResolved = true;
       return result;
     });
+    await flushMicrotasks();
+    expect(firstRequestSignal.aborted).toBe(true);
+    await sessionA1.state.qqReplyTransport.handleRequestModelError(
+      firstRequestSignal.reason,
+      { requestBoundaryPersisted: false },
+    );
 
     await vi.advanceTimersByTimeAsync(450);
     await flushMicrotasks();
@@ -1365,6 +1667,13 @@ describe('qq voice plugin', () => {
       },
     };
     const thirdPrepare = prepare?.(sessionA3, contextA3);
+    await flushMicrotasks();
+    const secondRequestSignal = (contextA2.options as Record<string, unknown>).requestSignal as AbortSignal;
+    expect(secondRequestSignal.aborted).toBe(true);
+    await sessionA2.state.qqReplyTransport.handleRequestModelError(
+      secondRequestSignal.reason,
+      { requestBoundaryPersisted: false },
+    );
     await vi.advanceTimersByTimeAsync(450);
     await thirdPrepare;
 
@@ -1515,6 +1824,40 @@ describe('qq voice plugin', () => {
     });
   });
 
+  it('awaits durable delivery recovery before registering live reply traffic', async () => {
+    const persistence = createPersistentCheckpointDatabaseOverrides();
+    let releaseNormalization: (result: { requestBoundaryFound: true }) => void = () => {};
+    const normalizationGate = new Promise<{ requestBoundaryFound: true }>((resolve) => {
+      releaseNormalization = resolve;
+    });
+    const harness = createHarness({
+      ...persistence,
+      normalizeResearchReplyHistoryImpl: async () => normalizationGate,
+    });
+    const store = new ReplyDeliveryCheckpointStore(harness.database as never, () => 100);
+    const checkpoint = await store.beginRequest('request-startup-recovery', 'conv-startup-recovery');
+    const units = [{
+      index: 0,
+      kind: 'text-line',
+      payload: { content: '已送达' },
+      historyText: '已送达',
+      persistToHistory: true,
+    }];
+    await store.setPlannedUnits(checkpoint, units);
+    await store.beginUnit(checkpoint, 0);
+    await store.confirmUnit(checkpoint, units[0], ['message-startup']);
+
+    const readyPromise = harness.ready();
+    await flushMicrotasks();
+    expect(harness.getPrepare()).toBeUndefined();
+    expect(persistence.rows.size).toBe(1);
+
+    releaseNormalization({ requestBoundaryFound: true });
+    await readyPromise;
+    expect(harness.getPrepare()).toBeTypeOf('function');
+    expect(persistence.rows.size).toBe(0);
+  });
+
   it('fails fast when ChatLuna cannot provide agent progress callbacks', async () => {
     const { ready } = createHarness({ registerProgressCallbacks: false });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
@@ -1554,6 +1897,45 @@ describe('qq voice plugin', () => {
     expect(session.send).toHaveBeenCalledTimes(1);
     expect(session.send).toHaveBeenCalledWith(expect.stringMatching(/搜|查|翻/u));
     expect(bot.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not retry progress after QQ returns an ambiguous empty delivery receipt', async () => {
+    const { ready, getPrepare, getProgressCallbacksProvider, bot } = createHarness();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+    await ready();
+
+    const session = createSession(bot, {
+      content: '帮我查一下，再翻翻之前的记录',
+      strippedContent: '帮我查一下，再翻翻之前的记录',
+    });
+    vi.mocked(session.send)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(['progress-message-id']);
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-progress-receipt'),
+        inputMessage: { content: '帮我查一下，再翻翻之前的记录', additional_kwargs: {} },
+      },
+    };
+    await getPrepare()?.(session, context);
+
+    const callbacks = await getProgressCallbacksProvider()?.({
+      session,
+      conversation: { id: 'conv-progress-receipt' },
+      requestId: 'chatluna-request-progress-receipt',
+    }) as { handleCustomEvent?: (...args: unknown[]) => Promise<void> } | undefined;
+
+    await callbacks?.handleCustomEvent?.('chatluna-agent-event', {
+      context: { kind: 'main', requestId: 'chatluna-request-progress-receipt' },
+      event: { type: 'tool-call', actions: [{ tool: 'web_search' }] },
+    }, 'callback-run');
+    await callbacks?.handleCustomEvent?.('chatluna-agent-event', {
+      context: { kind: 'main', requestId: 'chatluna-request-progress-receipt' },
+      event: { type: 'tool-call', actions: [{ tool: 'memory_search' }] },
+    }, 'callback-run');
+    await awaitAllCallbacks();
+
+    expect(session.send).toHaveBeenCalledTimes(1);
   });
 
   it('closes visible progress when the final structured output is invalid', async () => {
@@ -1601,6 +1983,126 @@ describe('qq voice plugin', () => {
     );
   });
 
+  it('recovers a confirmed failure closure when history normalization stops before checkpoint cleanup', async () => {
+    const persistence = createPersistentCheckpointDatabaseOverrides();
+    const {
+      ready,
+      getPrepare,
+      getExecutor,
+      getProgressCallbacksProvider,
+      bot,
+      database,
+    } = createHarness({
+      ...persistence,
+      normalizeResearchReplyHistoryImpl: async () => {
+        throw new Error('history commit interrupted');
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+    await ready();
+
+    const session = createSession(bot, {
+      content: '帮我查一下',
+      strippedContent: '帮我查一下',
+      messageId: 'msg-progress-crash',
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-progress-crash'),
+        inputMessage: createExecutorInputMessage('帮我查一下'),
+        responseMessage: createRawReplyResponse('没有遵守结构协议'),
+      },
+    };
+    await getPrepare()?.(session, context);
+    const callbacks = await getProgressCallbacksProvider()?.({
+      session,
+      conversation: { id: 'conv-progress-crash' },
+      requestId: 'chatluna-request-progress-crash',
+    }) as { handleCustomEvent?: (...args: unknown[]) => Promise<void> } | undefined;
+    await callbacks?.handleCustomEvent?.('chatluna-agent-event', {
+      context: { kind: 'main', requestId: 'chatluna-request-progress-crash' },
+      event: { type: 'tool-call', actions: [{ tool: 'web_search' }] },
+    }, 'callback-run');
+
+    await expect(getExecutor()?.(session, context)).rejects.toThrow('history commit interrupted');
+    expect(persistence.rows.size).toBe(1);
+    const [checkpoint] = [...persistence.rows.values()];
+    const confirmed = JSON.parse(checkpoint.confirmedUnitsJson) as Array<Record<string, unknown>>;
+    expect(confirmed).toEqual([
+      expect.objectContaining({ persistToHistory: false }),
+      expect.objectContaining({
+        historyText: '刚才没整理好，麻烦你再问我一次。',
+        persistToHistory: true,
+        receipt: ['msg-id'],
+      }),
+    ]);
+
+    const reconcileHistory = vi.fn(async () => ({ requestBoundaryFound: true }));
+    await recoverReplyDeliveryCheckpoints({
+      store: new ReplyDeliveryCheckpointStore(database as never, () => Date.now()),
+      reconcileHistory,
+    });
+    expect(reconcileHistory).toHaveBeenCalledWith(expect.objectContaining({
+      confirmedVisibleText: '刚才没整理好，麻烦你再问我一次。',
+    }));
+    expect(persistence.rows.size).toBe(0);
+  });
+
+  it('blocks a later conversation turn until the prior unreconciled checkpoint is recovered', async () => {
+    const persistence = createPersistentCheckpointDatabaseOverrides();
+    let normalizationFails = true;
+    const harness = createHarness({
+      ...persistence,
+      normalizeResearchReplyHistoryImpl: async (_room, finalVisibleText) => {
+        if (normalizationFails) throw new Error('history database unavailable');
+        return {
+          requestBoundaryFound: true,
+          normalizedText: finalVisibleText,
+        };
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+    await harness.ready();
+
+    const createTurn = (content: string) => {
+      const session = createSession(harness.bot, { content, strippedContent: content });
+      return {
+        session,
+        context: {
+          options: {
+            conversation: createPluginConversation('conv-reconciliation-gate'),
+            inputMessage: createExecutorInputMessage(content),
+            responseMessage: createReplyV2Response(`回复：${content}`),
+          },
+        },
+      };
+    };
+
+    const first = createTurn('第一条');
+    await harness.getPrepare()?.(first.session, first.context);
+    await expect(harness.getExecutor()?.(first.session, first.context)).rejects.toThrow(
+      'history database unavailable',
+    );
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
+    expect(persistence.rows.size).toBe(1);
+    const failedRequestId = [...persistence.rows.keys()][0];
+
+    const blocked = createTurn('第二条');
+    await expect(harness.getPrepare()?.(blocked.session, blocked.context)).rejects.toThrow(
+      'history database unavailable',
+    );
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
+    expect([...persistence.rows.keys()]).toEqual([failedRequestId]);
+
+    normalizationFails = false;
+    const recovered = createTurn('第三条');
+    await harness.getPrepare()?.(recovered.session, recovered.context);
+    expect([...persistence.rows.keys()]).not.toContain(failedRequestId);
+    await harness.getExecutor()?.(recovered.session, recovered.context);
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(2);
+    expect(persistence.rows.size).toBe(0);
+  });
+
   it('closes visible progress when the model decides there is no final reply', async () => {
     const {
       ready,
@@ -1646,6 +2148,38 @@ describe('qq voice plugin', () => {
       expect.objectContaining({ conversationId: 'conv-progress-no-reply' }),
       '我看完了，暂时没找到合适的答案。',
     );
+  });
+
+  it('reconciles an empty no-reply tail immediately when no progress was sent', async () => {
+    const persistence = createPersistentCheckpointDatabaseOverrides();
+    const { ready, getPrepare, getExecutor, bot, chatluna } = createHarness(persistence);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+    await ready();
+
+    const session = createSession(bot, {
+      content: '先不用回复',
+      strippedContent: '先不用回复',
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-no-progress-no-reply'),
+        inputMessage: createExecutorInputMessage('先不用回复'),
+        responseMessage: createReplyV2Response({
+          decision: 'no_reply',
+          outbound_messages: null,
+        }),
+      },
+    };
+    await getPrepare()?.(session, context);
+    await getExecutor()?.(session, context);
+
+    expect(session.send).not.toHaveBeenCalled();
+    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-no-progress-no-reply' }),
+      '',
+    );
+    expect(persistence.rows.size).toBe(0);
   });
 
   it('authorizes a trusted image tool artifact only for the active reply run', async () => {
@@ -1969,7 +2503,7 @@ describe('qq voice plugin', () => {
     expect(extractSchemaMessageTitles(groupSchema)).toContain('MessageItem');
   });
 
-  it('keeps CHAT_REPLY_V1 rules in the agent system envelope and final response contract', async () => {
+  it('keeps terminal reply submission rules in the agent system envelope and final response contract', async () => {
     vi.stubEnv('QQ_VOICE_OUTPUT_LANGUAGE', 'ja');
     const { ready, getPrepare, getPolicy, getPromptCompiler, bot, inject } = createHarness({
       pluginConfig: { voiceOutputLanguage: 'ja' },
@@ -2016,7 +2550,7 @@ describe('qq voice plugin', () => {
         value: expect.arrayContaining([
           expect.objectContaining({
             role: 'system',
-            content: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
+            content: expect.stringContaining('qqbot_submit_reply'),
           }),
         ]),
       }),
@@ -2028,12 +2562,17 @@ describe('qq voice plugin', () => {
         qqbot_final_response_contract: expect.objectContaining({
           protocol: 'chat_reply_v1',
           schema: null,
-          instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
+          instruction: expect.stringContaining('qqbot_submit_reply'),
+          terminalTool: 'qqbot_submit_reply',
+        }),
+        overrideRequestParams: expect.objectContaining({
+          tool_choice: 'required',
+          parallel_tool_calls: false,
         }),
       }),
     );
     const chatReplyAdditionalKwargs = context.options.inputMessage.additional_kwargs as Record<string, any>;
-    expect(chatReplyAdditionalKwargs.qqbot_final_response_instruction).toContain('CHAT_REPLY_V1 <nonce>');
+    expect(chatReplyAdditionalKwargs.qqbot_final_response_instruction).toContain('qqbot_submit_reply');
     const finalContract = chatReplyAdditionalKwargs.qqbot_final_response_contract;
     expect(finalContract.instruction).toContain('当前语音输出目标语言：日语');
   });
@@ -2555,7 +3094,13 @@ describe('qq voice plugin', () => {
     expect(result).toBe(1);
     expect(bot.sendMessage).toHaveBeenCalledTimes(1);
     expect(context.options.responseMessage).toBeNull();
-    expect(chatluna.normalizeResearchReplyHistory).not.toHaveBeenCalled();
+    expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv-transport-down',
+        requestId: expect.stringMatching(/^qqreply:/u),
+      }),
+      '',
+    );
     expect(
       loggerMocks.warn.mock.calls.some(([message]) =>
         String(message).includes('reply plan delivery skipped because onebot rpc transport is unavailable'),
@@ -2604,7 +3149,7 @@ describe('qq voice plugin', () => {
     );
     expect(
       loggerMocks.warn.mock.calls.some(([message]) =>
-        String(message).includes('reply plan delivery failed'),
+        String(message).includes('reply plan delivery outcome is unknown'),
       ),
     ).toBe(true);
   });
@@ -3134,7 +3679,7 @@ describe('qq voice plugin', () => {
       options: {
         conversation: createPluginConversation('conv-explicit-voice-unavailable'),
         inputMessage: createExecutorInputMessage('请只发一句语音'),
-        responseMessage: createReplyV2Response('我现在发不了语音。'),
+        responseMessage: createReplyV2Response('我现在发不了语音。', { canVoice: true }),
       },
     };
 
@@ -3149,7 +3694,98 @@ describe('qq voice plugin', () => {
     );
   });
 
-  it('preserves independent text in a mixed voice request when voice is unavailable', async () => {
+  it.each([
+    [
+      'text-only',
+      {
+        decision: 'reply' as const,
+        outbound_messages: [{ type: 'message' as const, content: '晚安。' }],
+      },
+    ],
+    [
+      'no_reply',
+      {
+        decision: 'no_reply' as const,
+        outbound_messages: null,
+      },
+    ],
+  ])('rejects native chat %s when voice was explicitly requested', async (label, reply) => {
+    const { ready, getExecutor, bot, chatluna } = createHarness();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+
+    await ready();
+    await flushMicrotasks();
+    const session = createSession(bot, {
+      content: '请只发一句语音',
+      strippedContent: '请只发一句语音',
+      state: {
+        qqReplyTransport: {
+          capabilitySnapshot: {
+            canMultiline: true,
+            canVoice: true,
+            source: 'cached',
+            refreshedAt: Date.now(),
+          },
+        },
+      },
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation(`conv-explicit-voice-${label}`),
+        inputMessage: createExecutorInputMessage('请只发一句语音', 'native_chat_json_schema'),
+        responseMessage: createReplyV2Response(reply, { canVoice: true }),
+      },
+    };
+
+    await getExecutor()?.(session, context);
+
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      '我刚才漏了语音。你再叫我一次，我重新发。',
+    ]);
+    expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: `conv-explicit-voice-${label}` }),
+      '我刚才漏了语音。你再叫我一次，我重新发。',
+    );
+    expect(context.options.responseMessage).toBeNull();
+  });
+
+  it('rejects a CHAT_REPLY_V1 text reply when voice was explicitly requested', async () => {
+    const { ready, getExecutor, bot } = createHarness();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+
+    await ready();
+    await flushMicrotasks();
+    const session = createSession(bot, {
+      content: '请只发一句语音',
+      strippedContent: '请只发一句语音',
+      state: {
+        qqReplyTransport: {
+          capabilitySnapshot: {
+            canMultiline: true,
+            canVoice: true,
+            source: 'cached',
+            refreshedAt: Date.now(),
+          },
+        },
+      },
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-explicit-voice-chat-reply-v1'),
+        inputMessage: createExecutorInputMessage('请只发一句语音', 'chat_reply_v1'),
+        responseMessage: createChatReplyV1Response('晚安。', 'abc12345'),
+      },
+    };
+
+    await getExecutor()?.(session, context);
+
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      '我刚才漏了语音。你再叫我一次，我重新发。',
+    ]);
+    expect(context.options.responseMessage).toBeNull();
+  });
+
+  it('preserves independent text when a valid mixed voice plan reaches an unavailable transport', async () => {
     const { ready, getExecutor, bot, chatluna } = createHarness();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
 
@@ -3178,7 +3814,13 @@ describe('qq voice plugin', () => {
       options: {
         conversation: createPluginConversation('conv-mixed-voice-unavailable'),
         inputMessage: createExecutorInputMessage('用语音总结，链接发文字'),
-        responseMessage: createReplyV2Response('资料链接：https://example.com/result'),
+        responseMessage: createReplyV2Response({
+          decision: 'reply',
+          outbound_messages: [
+            { type: 'voice', content: '这是语音总结。' },
+            { type: 'message', content: '资料链接：https://example.com/result' },
+          ],
+        }, { canVoice: true }),
       },
     };
 
@@ -3262,7 +3904,7 @@ describe('qq voice plugin', () => {
     }
   });
 
-  it('suppresses provider replies that violate the unavailable voice contract', async () => {
+  it('turns an explicit voice intent into a natural capability notice when transport is unavailable', async () => {
     const { ready, getExecutor, bot, chatluna } = createHarness();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
 
@@ -3295,14 +3937,16 @@ describe('qq voice plugin', () => {
       },
     };
 
-    await expect(executor?.(session, context)).resolves.toBe(1);
-    expect(bot.sendMessage).not.toHaveBeenCalled();
+    await expect(executor?.(session, context)).resolves.toBeTypeOf('number');
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      '语音服务还没准备好，过一会儿再叫我试试。',
+    ]);
     expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-voice-fallback' }),
-      '',
+      '语音服务还没准备好，过一会儿再叫我试试。',
     );
     expect(loggerMocks.error.mock.calls.some(([message]) =>
-      String(message).includes('reply plan executor suppressed structured model failure'))).toBe(true);
+      String(message).includes('reply plan executor suppressed structured model failure'))).toBe(false);
   });
 
   it('executes sticker actions and preserves sticker history text', async () => {
@@ -3396,8 +4040,48 @@ describe('qq voice plugin', () => {
     );
   });
 
-  it('continues to a requested sticker after an explicit voice send is rejected', async () => {
+  it('explains an explicit sticker request when the sticker catalog is unavailable', async () => {
     const { ready, getExecutor, bot, chatluna } = createHarness();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+
+    await ready();
+    await flushMicrotasks();
+    const session = createSession(bot, {
+      content: '发个表情包',
+      strippedContent: '发个表情包',
+      state: {
+        qqReplyTransport: {
+          capabilitySnapshot: {
+            canMultiline: true,
+            canVoice: false,
+            source: 'cached',
+            refreshedAt: Date.now(),
+          },
+        },
+      },
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-sticker-unavailable'),
+        inputMessage: createExecutorInputMessage('发个表情包'),
+        responseMessage: createReplyV2Response({
+          decision: 'reply',
+          outbound_messages: [{ type: 'meme', content: '开心庆祝' }],
+        }),
+      },
+    };
+
+    await getExecutor()?.(session, context);
+
+    expect(extractSentMessagePayloads(bot)).toEqual(['这次没找到合适的表情，我先不乱发。']);
+    expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-sticker-unavailable' }),
+      '这次没找到合适的表情，我先不乱发。',
+    );
+  });
+
+  it('continues to a requested sticker after an explicit voice send is rejected', async () => {
+    const { ready, getExecutor, bot, chatluna, database } = createHarness();
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -3460,6 +4144,78 @@ describe('qq voice plugin', () => {
       expect.objectContaining({ conversationId: 'conv-voice-failure-then-sticker' }),
       '语音发出去时被 QQ 拒绝了（onebot.send_record，retcode=1001）。\n（发送表情包：无语少女）',
     );
+    expect(database.set).not.toHaveBeenCalledWith(
+      'reply_delivery_checkpoint',
+      expect.anything(),
+      expect.objectContaining({ state: 'outcome_unknown' }),
+    );
+  });
+
+  it('does not send a fallback when explicit voice delivery times out with an unknown outcome', async () => {
+    const { ready, getExecutor, bot, chatluna, database } = createHarness();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === 'http://127.0.0.1:8082/healthz') return new Response('ok', { status: 200 });
+        if (url === 'http://127.0.0.1:8082/synthesize') return new Response(createTestWav(), { status: 200 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+    const sendMessage = vi.fn(async (_channelId: string, content: unknown) => {
+      if (extractVisibleMessageText(content).includes('<audio')) {
+        throw Object.assign(new Error('send_group_msg timed out after dispatch'), { code: 'ETIMEDOUT' });
+      }
+      return ['unexpected-message-id'];
+    });
+    bot.sendMessage = sendMessage as typeof bot.sendMessage;
+
+    await ready();
+    await flushMicrotasks();
+    const session = createSession(bot, {
+      content: '请发一条语音，再发个表情包',
+      strippedContent: '请发一条语音，再发个表情包',
+      state: {
+        qqReplyTransport: {
+          capabilitySnapshot: {
+            canMultiline: true,
+            canVoice: true,
+            source: 'cached',
+            refreshedAt: Date.now(),
+          },
+        },
+        qqSticker: createStickerState(),
+      },
+    });
+    const context = {
+      options: {
+        conversation: createPluginConversation('conv-voice-timeout'),
+        inputMessage: createExecutorInputMessage('请发一条语音，再发个表情包'),
+        responseMessage: createReplyV2Response({
+          decision: 'reply',
+          outbound_messages: [
+            { type: 'voice', content: '收到。' },
+            { type: 'meme', content: '无语' },
+          ],
+        }),
+      },
+    };
+
+    await getExecutor()?.(session, context);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-voice-timeout' }),
+      '',
+    );
+    expect(database.set).toHaveBeenCalledWith(
+      'reply_delivery_checkpoint',
+      expect.anything(),
+      expect.objectContaining({
+        state: 'outcome_unknown',
+        deliveryOutcomeUnknown: true,
+      }),
+    );
   });
 
   it('quotes the first sticker segment when the runtime exposes a first-reply quote target', async () => {
@@ -3514,7 +4270,7 @@ describe('qq voice plugin', () => {
     }
   });
 
-  it('suppresses provider replies that violate the unavailable sticker contract', async () => {
+  it('preserves text and explains an explicit sticker intent when no sticker transport is available', async () => {
     const { ready, getExecutor, bot, chatluna } = createHarness();
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
 
@@ -3550,14 +4306,17 @@ describe('qq voice plugin', () => {
       },
     };
 
-    await expect(executor?.(session, context)).resolves.toBe(1);
-    expect(bot.sendMessage).not.toHaveBeenCalled();
+    await expect(executor?.(session, context)).resolves.toBeTypeOf('number');
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      '还是先说正事。',
+      '这次没找到合适的表情，我先不乱发。',
+    ]);
     expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-sticker-drop' }),
-      '',
+      '还是先说正事。\n这次没找到合适的表情，我先不乱发。',
     );
     expect(loggerMocks.error.mock.calls.some(([message]) =>
-      String(message).includes('reply plan executor suppressed structured model failure'))).toBe(true);
+      String(message).includes('reply plan executor suppressed structured model failure'))).toBe(false);
   });
 
   it('splits ordinary multi-line messages into separate sends', async () => {
@@ -3657,7 +4416,7 @@ describe('qq voice plugin', () => {
     );
   });
 
-  it('logs history normalization failures after send instead of surfacing a second user-visible error', async () => {
+  it('surfaces history normalization failures after send without sending a second user-visible reply', async () => {
     const { ready, getExecutor, bot } = createHarness({
       normalizeResearchReplyHistoryImpl: async () => {
         throw new Error('research reply history normalization failed: latest message missing (conv-broken)');
@@ -3691,17 +4450,11 @@ describe('qq voice plugin', () => {
       },
     };
 
-    const result = await executor?.(session, context);
-    expect(typeof result).toBe('number');
+    await expect(executor?.(session, context)).rejects.toThrow(
+      'research reply history normalization failed: latest message missing (conv-broken)',
+    );
     expect(extractSentMessagePayloads(bot)).toEqual(['收到']);
     expect(context.options.responseMessage).toBeNull();
-    expect(
-      loggerMocks.warn.mock.calls.some(
-        ([message, detail]) =>
-          String(message).includes('research reply history normalization failed') &&
-          String(detail).includes('latest message missing'),
-      ),
-    ).toBe(true);
   });
 
   it('rejects plugin rooms when the runtime model does not support structured json schema', async () => {

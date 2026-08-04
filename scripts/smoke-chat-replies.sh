@@ -264,17 +264,8 @@ if (expect.forbidSpeakerLabels) {
 }
 
 if (expect.forbidMeta) {
-  const forbiddenMeta = [
-    'ReplyPlan',
-    '<qqbot-',
-    '系统提示词',
-    '内部回复协议',
-    'WorkingState',
-    'submit_working_state',
-    'qqbot_reply_plan_executor',
-    'protocol violation',
-  ]
-  const leaked = forbiddenMeta.find((token) => visibleText.includes(token))
+  const { findInternalMetadataLeak } = require('./scripts/lib/probe-visible-output.cjs')
+  const leaked = findInternalMetadataLeak(visibleText)
   if (leaked) throw new Error(`${caseId}: internal metadata leaked (${leaked})`)
 }
 

@@ -112,6 +112,7 @@ async function createChatHistoryWriter(
     logger,
     conversationId,
     chatluna: serviceCtx.chatluna,
+    lockMode: 'already_held',
   });
 }
 

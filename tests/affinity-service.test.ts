@@ -239,6 +239,11 @@ function createPlan(overrides: Partial<AffinityRandomPlanRecord> = {}): Affinity
     messageText: null,
     skipReason: null,
     sentAt: null,
+    deliveryState: 'not_started',
+    deliveryAttemptId: null,
+    deliveryReceipt: null,
+    deliveryPayloadJson: null,
+    deliveryConfirmedAt: null,
     createdAt: NOW - 1000,
     updatedAt: NOW - 1000,
     ...overrides,
@@ -326,7 +331,7 @@ function createHarness(options: {
   const bot = {
     selfId: 'bot-1',
     platform: 'onebot',
-    sendMessage: vi.fn(async () => undefined),
+    sendMessage: vi.fn(async () => ['msg-id']),
   };
   const chat = options.chat ?? vi.fn(async () => options.chatResponse ?? ({
     content: nativeStructuredReplyContent({
@@ -818,7 +823,7 @@ describe('affinity service random history sync', () => {
     const bot = {
       selfId: 'bot-1',
       platform: 'onebot',
-      sendMessage: vi.fn(async () => undefined),
+      sendMessage: vi.fn(async () => ['msg-id']),
     };
     const chat = vi.fn(async () => ({
       content: nativeStructuredReplyContent({
@@ -896,6 +901,24 @@ describe('affinity service random history sync', () => {
       conversationId: 'conv-manual',
     }));
   });
+
+  it.each(['reconciliation_failed', 'outcome_unknown'] as const)(
+    'does not arm an immediate scheduler timer for a manual %s delivery checkpoint',
+    async (deliveryState) => {
+      const { service } = createHarness({
+        plan: {
+          triggerKind: 'manual',
+          status: 'pending',
+          scheduledAt: NOW - 1000,
+          deliveryState,
+          deliveryAttemptId: 'affinity-random-plan:2',
+          skipReason: `delivery_${deliveryState}`,
+        },
+      });
+
+      await expect(service.getNextPendingRandomPlanAt(NOW)).resolves.toBeNull();
+    },
+  );
 
   it('lets manual plans bypass scope proactive off while scheduled plans stay blocked', async () => {
     const { db, service, bot, chat } = createHarness({
@@ -1080,7 +1103,7 @@ describe('affinity service random history sync', () => {
     expect(db.tables.chatluna_message.some((row) => row.conversationId === tempConversationId)).toBe(false);
   });
 
-  it('keeps the random plan sent when ChatLuna history writing fails', async () => {
+  it('keeps a confirmed delivery reconcilable when ChatLuna history writing fails', async () => {
     const { db, service, bot } = createHarness();
     db.upsert = vi.fn(async (table: string, rows: Record<string, unknown>[], keys?: string[]) => {
       if (table === 'chatluna_message') throw new Error('history down');
@@ -1090,19 +1113,143 @@ describe('affinity service random history sync', () => {
     await service.runDueRandomPlans(NOW);
 
     expect(bot.sendMessage).toHaveBeenCalledTimes(1);
-    expect(db.tables.affinity_random_plan[0].status).toBe('sent');
-    expect(db.tables.affinity_random_plan[0].skipReason).toBeNull();
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'pending',
+      deliveryState: 'reconciliation_failed',
+      deliveryReceipt: JSON.stringify([['msg-id']]),
+      skipReason: expect.stringContaining('delivery_reconciliation_failed'),
+    }));
     const skippedAudit = db.tables.affinity_audit.find((row) => row.eventType === 'random_history_sync_skipped');
     expect(parseAuditDetail(skippedAudit)).toEqual(expect.objectContaining({
       reason: 'write_failed',
       error: 'history down',
       conversationId: 'conv-affinity',
     }));
-    const sentAudit = db.tables.affinity_audit.find((row) => row.eventType === 'random_plan_sent');
-    expect(parseAuditDetail(sentAudit)).toEqual(expect.objectContaining({
-      historySynced: false,
-      historySkipReason: 'write_failed',
+
+    db.upsert = vi.fn((table: string, rows: Record<string, unknown>[], keys?: string[]) => (
+      MemoryDatabase.prototype.upsert.call(db, table, rows, keys)
+    ));
+    await service.runDueRandomPlans(NOW + 1000);
+
+    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'sent',
+      deliveryState: 'reconciled',
+      messageText: RANDOM_MESSAGE,
     }));
+    expect(db.tables.affinity_open_thread).toHaveLength(1);
+    expect(db.tables.affinity_random_memory).toHaveLength(1);
+    expect(db.tables.chatluna_message.filter((row) => row.id === 'affinity-random-plan:2')).toHaveLength(1);
+  });
+
+  it('reconciles a confirmed pre-crash proactive delivery without sending it again', async () => {
+    const deliveryPayloadJson = JSON.stringify({
+      version: 'v1',
+      messageText: RANDOM_MESSAGE,
+      historyText: RANDOM_MESSAGE,
+      materialJson: null,
+      generation: {
+        contextSeedSummary: '崩溃前已生成的上下文摘要。',
+        eventTypeHint: 'greeting_contextual',
+        memorySummary: null,
+        reason: 'chatluna_provider_reply',
+        risk: 'low',
+        outputProtocol: 'native_chat_json_schema',
+      },
+    });
+    const { db, service, bot, chat } = createHarness({
+      plan: {
+        deliveryState: 'confirmed',
+        deliveryAttemptId: 'affinity-random-plan:2',
+        deliveryReceipt: JSON.stringify([['confirmed-before-crash']]),
+        deliveryPayloadJson,
+        deliveryConfirmedAt: NOW - 500,
+      },
+    });
+
+    await service.runDueRandomPlans(NOW);
+    await service.runDueRandomPlans(NOW + 1000);
+
+    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'sent',
+      deliveryState: 'reconciled',
+      messageText: RANDOM_MESSAGE,
+      sentAt: NOW - 500,
+    }));
+    expect(db.tables.affinity_open_thread).toHaveLength(1);
+    expect(db.tables.affinity_random_memory).toHaveLength(1);
+    expect(db.tables.chatluna_message.filter((row) => row.id === 'affinity-random-plan:2')).toHaveLength(1);
+  });
+
+  it('marks a pre-crash proactive dispatch outcome unknown without resending it', async () => {
+    const { db, service, bot, chat } = createHarness({
+      plan: {
+        deliveryState: 'dispatching',
+        deliveryAttemptId: 'affinity-random-plan:2',
+      },
+    });
+
+    await service.runDueRandomPlans(NOW);
+    await service.runDueRandomPlans(NOW + 1000);
+
+    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'failed',
+      deliveryState: 'outcome_unknown',
+      skipReason: 'delivery_outcome_unknown_after_restart',
+      messageText: null,
+    }));
+    expect(db.tables.affinity_open_thread).toHaveLength(0);
+    expect(db.tables.affinity_random_memory).toHaveLength(0);
+    expect(db.tables.chatluna_message).toHaveLength(0);
+  });
+
+  it('reconciles confirmed proactive units from a pre-crash unknown outcome without resending the unresolved unit', async () => {
+    const confirmedMessage = '崩溃前第一条已经确认送达。';
+    const deliveryPayloadJson = JSON.stringify({
+      version: 'v1',
+      messageText: confirmedMessage,
+      historyText: confirmedMessage,
+      materialJson: null,
+      generation: {
+        contextSeedSummary: '恢复测试上下文',
+        eventTypeHint: 'greeting_contextual',
+        memorySummary: null,
+        reason: 'chatluna_provider_reply',
+        risk: 'low',
+        outputProtocol: 'native_chat_json_schema',
+      },
+    });
+    const { db, service, bot, chat } = createHarness({
+      plan: {
+        status: 'failed',
+        deliveryState: 'outcome_unknown',
+        deliveryAttemptId: 'affinity-random-plan:2',
+        deliveryReceipt: JSON.stringify([['confirmed-before-crash']]),
+        deliveryPayloadJson,
+        deliveryConfirmedAt: NOW - 500,
+        skipReason: 'delivery_outcome_unknown',
+      },
+    });
+
+    await service.runDueRandomPlans(NOW);
+    await service.runDueRandomPlans(NOW + 1000);
+
+    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'failed',
+      deliveryState: 'outcome_unknown',
+      skipReason: 'delivery_outcome_unknown',
+      messageText: confirmedMessage,
+      sentAt: NOW - 500,
+    }));
+    expect(db.tables.affinity_open_thread).toHaveLength(1);
+    expect(db.tables.affinity_random_memory).toHaveLength(1);
+    expect(db.tables.chatluna_message.filter((row) => row.id === 'affinity-random-plan:2')).toHaveLength(1);
   });
 
   it('requeues scheduled proactive plans when OneBot transport is temporarily unavailable', async () => {
@@ -1133,6 +1280,84 @@ describe('affinity service random history sync', () => {
       delayMs: 10 * 60 * 1000,
     }));
     await expect(service.getNextPendingRandomPlanAt(NOW)).resolves.toBe(retryAt);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', []],
+    ['malformed', ['message-id', '  ']],
+  ])('marks the first send-invoked proactive receipt %s outcome unknown without retrying', async (_label, receipt) => {
+    const { db, service, bot, chat } = createHarness();
+    bot.sendMessage.mockResolvedValueOnce(receipt as never);
+
+    await service.runDueRandomPlans(NOW);
+    await service.runDueRandomPlans(NOW + 1000);
+
+    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'failed',
+      deliveryState: 'outcome_unknown',
+      deliveryAttemptId: 'affinity-random-plan:2',
+      deliveryReceipt: null,
+      skipReason: 'delivery_outcome_unknown',
+      messageText: null,
+      sentAt: null,
+    }));
+    expect(db.tables.affinity_open_thread).toHaveLength(0);
+    expect(db.tables.affinity_random_memory).toHaveLength(0);
+    expect(db.tables.chatluna_message).toHaveLength(0);
+    expect(db.tables.affinity_audit.some((row) => row.eventType === 'random_plan_sent')).toBe(false);
+    const skippedAudit = db.tables.affinity_audit.find((row) => row.eventType === 'random_message_generation_skipped');
+    expect(parseAuditDetail(skippedAudit)).toEqual(expect.objectContaining({
+      planId: 2,
+      reason: 'delivery_outcome_unknown',
+    }));
+  });
+
+  it('reconciles only receipted proactive units and preserves the unresolved unit as outcome unknown', async () => {
+    const committedMessage = '第一条已经送达。';
+    const unconfirmedMessage = '第二条没有回执。';
+    const { db, service, bot } = createHarness({
+      chatResponse: {
+        content: nativeStructuredReplyContent({
+          decision: 'reply',
+          outbound_messages: [
+            { type: 'message', content: committedMessage },
+            { type: 'message', content: unconfirmedMessage },
+          ],
+        }),
+        additional_kwargs: {},
+      },
+    });
+    bot.sendMessage
+      .mockResolvedValueOnce(['confirmed-message-id'])
+      .mockResolvedValueOnce([]);
+
+    await service.runDueRandomPlans(NOW);
+    await service.runDueRandomPlans(NOW + 1000);
+
+    expect(bot.sendMessage).toHaveBeenCalledTimes(2);
+    expect(db.tables.affinity_random_plan[0]).toEqual(expect.objectContaining({
+      status: 'failed',
+      deliveryState: 'outcome_unknown',
+      deliveryReceipt: JSON.stringify([['confirmed-message-id']]),
+      skipReason: 'delivery_outcome_unknown',
+      messageText: committedMessage,
+      sentAt: NOW,
+    }));
+    expect(db.tables.affinity_open_thread).toEqual([
+      expect.objectContaining({ summary: committedMessage }),
+    ]);
+    expect(db.tables.affinity_random_memory).toEqual([
+      expect.objectContaining({ messageText: committedMessage }),
+    ]);
+    const historyMessage = db.tables.chatluna_message.find((row) => row.id === 'affinity-random-plan:2');
+    await expect(decodeStoredMessageText(historyMessage?.content)).resolves.toBe(committedMessage);
+    expect(db.tables.affinity_open_thread).toHaveLength(1);
+    expect(db.tables.affinity_random_memory).toHaveLength(1);
+    expect(db.tables.chatluna_message.filter((row) => row.id === 'affinity-random-plan:2')).toHaveLength(1);
+    expect(db.tables.affinity_audit.some((row) => row.eventType === 'random_plan_sent')).toBe(false);
   });
 
   it('skips a transport-unavailable scheduled plan only after the daily proactive window is exhausted', async () => {

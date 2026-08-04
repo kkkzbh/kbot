@@ -19,6 +19,7 @@ import {
   TOOL_CATALOG_MAP,
 } from '../shared/tool-policy-catalog.js';
 import { AdminHttpError } from '../shared/internal-access-policy.js';
+import { isQqbotInternalToolName } from '../shared/internal-tool-names.js';
 
 type McpServerConfig = {
   command?: string;
@@ -298,10 +299,16 @@ export class ChatLunaAgentAdminService {
       } = skill;
       return safe;
     });
-    const toolCatalog = Object.values(data.status.tool.catalog).map((tool) => {
+    const toolCatalog = Object.values(data.status.tool.catalog)
+      .filter((tool) => (
+        !isQqbotInternalToolName(tool.name)
+        && tool.group !== 'qqbot-internal'
+        && !tool.tags?.includes('internal')
+      ))
+      .map((tool) => {
       const { subAgents: _subAgents, ...safe } = tool;
       return safe;
-    });
+      });
     const computerStatus = data.status.computer;
     const computerTools = [...new Set(
       Object.values(computerStatus.backends).flatMap((backend) => backend.capabilities),

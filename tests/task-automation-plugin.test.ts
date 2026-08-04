@@ -12,6 +12,45 @@ vi.mock('koishi-plugin-chatluna/utils/string', () => ({
   getMessageContent: (content: unknown) => (typeof content === 'string' ? content : ''),
 }));
 
+vi.mock('../src/plugins/shared/chatluna-history.js', () => ({
+  createChatLunaHistoryWriter: async (args: {
+    database: {
+      get: (table: string, query: Record<string, unknown>) => Promise<Record<string, any>[]>;
+      upsert: (table: string, rows: Record<string, unknown>[]) => Promise<void>;
+    };
+    conversationId: string;
+    chatluna: {
+      conversationRuntime?: {
+        clearConversationCache?: (conversationId: string) => Promise<unknown>;
+      };
+    };
+  }) => ({
+    addMessages: async (messages: any[]): Promise<void> => {
+      const [conversation] = await args.database.get('chatluna_conversation', {
+        id: args.conversationId,
+      });
+      let parentId = conversation?.latestMessageId ?? null;
+      for (const message of messages) {
+        const recordId = message.response_metadata?.chatluna?.recordId ?? message.id;
+        await args.database.upsert('chatluna_message', [{
+          id: recordId,
+          conversationId: args.conversationId,
+          parentId,
+          role: 'ai',
+          content: message.content,
+          additional_kwargs: message.additional_kwargs ?? {},
+        }]);
+        parentId = recordId;
+      }
+      await args.database.upsert('chatluna_conversation', [{
+        id: args.conversationId,
+        latestMessageId: parentId,
+      }]);
+      await args.chatluna.conversationRuntime?.clearConversationCache?.(args.conversationId);
+    },
+  }),
+}));
+
 vi.mock('koishi', () => {
   type MockSchemaNode = {
     default: () => MockSchemaNode;
@@ -76,6 +115,7 @@ vi.mock('koishi', () => {
 });
 
 import { apply, inject as automationInject } from '../src/plugins/automation/index.js';
+import { replyFinalizerRequestRegistry } from '../src/plugins/reply/finalizer/tool.js';
 import { apply as applySticker } from '../src/plugins/sticker/index.js';
 import { TOOL_CATALOG } from '../src/plugins/shared/tool-policy-catalog.js';
 import { nativeStructuredReplyContent } from './structured-reply-fixture.js';
@@ -146,10 +186,29 @@ function createDatabase(seed: Record<string, Record<string, any>[]> = {}) {
 function createHarness(
   seed: Record<string, Record<string, any>[]> = {},
   modelOptions: TestModelRuntimeOptions = {},
+  harnessOptions: { stickerDir?: string } = {},
 ) {
   const listeners: ListenerMap = {};
   const tools: ToolRegistry = {};
-  const database = createDatabase(seed);
+  const callbackProviders = new Set<(input: Record<string, unknown>) => unknown>();
+  const sourceConversationIds = new Set(
+    (seed.automation_job ?? [])
+      .map((job) => String(job.sourceConversationId ?? '').trim())
+      .filter(Boolean),
+  );
+  for (const room of seed.chathub_room ?? []) {
+    const conversationId = String(room.conversationId ?? '').trim();
+    if (conversationId) sourceConversationIds.add(conversationId);
+  }
+  const resolvedSeed = {
+    ...seed,
+    chatluna_conversation: seed.chatluna_conversation ?? [...sourceConversationIds].map((id) => ({
+      id,
+      latestMessageId: null,
+    })),
+    chatluna_message: seed.chatluna_message ?? [],
+  };
+  const database = createDatabase(resolvedSeed);
   const bot = {
     selfId: 'bot-1',
     platform: 'onebot',
@@ -192,6 +251,10 @@ function createHarness(
     middleware: vi.fn(),
     command: vi.fn(),
     chatluna: {
+      conversationRuntime: {
+        clearConversationCache: vi.fn(async () => true),
+        withConversationLock: vi.fn(async (_conversationId: string, task: () => Promise<unknown>) => task()),
+      },
       contextManager: {
         inject: vi.fn(),
       },
@@ -203,7 +266,11 @@ function createHarness(
           };
         }),
       },
-      chat: vi.fn(async (_session: any, _room: any, _message: any, _events: any, _stream: boolean, _vars: any, _post: any, _req: string, _toolMask: any) => ({
+      registerCallbacksProvider: vi.fn((provider: (input: Record<string, unknown>) => unknown) => {
+        callbackProviders.add(provider);
+        return () => callbackProviders.delete(provider);
+      }),
+      chat: vi.fn(async (_session: any, _room: any, _message: any, _options: Record<string, unknown>) => ({
         content: nativeStructuredReplyContent({
           decision: 'reply',
           outbound_messages: [
@@ -230,7 +297,7 @@ function createHarness(
   };
 
   applySticker(ctx as never, {
-    stickerDir: './data/chathub/stickers',
+    stickerDir: harnessOptions.stickerDir ?? './data/chathub/stickers',
   });
   apply(ctx as never, {
     pollIntervalMs: 1000,
@@ -242,6 +309,31 @@ function createHarness(
     bot,
     database,
     tools,
+    getCallbackProviderCount: () => callbackProviders.size,
+    async emitAgentEvent(
+      session: Record<string, unknown>,
+      room: Record<string, unknown>,
+      options: Record<string, any>,
+      event: Record<string, unknown>,
+      payloadRequestId: string = options.requestId,
+    ) {
+      for (const provider of callbackProviders) {
+        const callbacks = await provider({
+          session,
+          conversation: room,
+          message: {},
+          event: options.event,
+          stream: options.stream,
+          variables: options.variables,
+          requestId: options.requestId,
+          toolMask: options.toolMask,
+        }) as { handleCustomEvent?: (...args: unknown[]) => Promise<void> } | undefined;
+        await callbacks?.handleCustomEvent?.('chatluna-agent-event', {
+          context: { kind: 'main', requestId: payloadRequestId },
+          event,
+        }, 'automation-callback-run');
+      }
+    },
     switchMainBinding(
       modelId: string,
       protocol: 'native_chat_json_schema' | 'native_responses_json_schema' | 'chat_reply_v1',
@@ -334,6 +426,26 @@ function createJob(overrides: Record<string, any> = {}) {
     status: 'active',
     createdAt: Date.now() - 2000,
     updatedAt: Date.now() - 2000,
+    ...overrides,
+  };
+}
+
+function createJobRun(overrides: Record<string, any> = {}) {
+  return {
+    id: 1,
+    jobId: 1,
+    triggeredAt: Date.now() - 2000,
+    startedAt: Date.now() - 2000,
+    finishedAt: null,
+    status: 'running',
+    error: null,
+    outputText: null,
+    outputPayload: null,
+    deliveryReceipt: null,
+    deliveryState: 'not_started',
+    deliveryAttemptId: null,
+    deliveryConfirmedAt: null,
+    deliveryError: null,
     ...overrides,
   };
 }
@@ -557,7 +669,12 @@ describe('task automation tools and execution', () => {
         }),
       }),
     );
-    expect(harness.ctx.chatluna.chat.mock.calls[0]?.[8]).toEqual(automationMask);
+    expect(harness.ctx.chatluna.chat.mock.calls[0]?.[3]).toEqual(expect.objectContaining({
+      stream: false,
+      variables: {},
+      requestId: 'automation-job:1:1',
+      toolMask: automationMask,
+    }));
     expect(harness.bot.sendMessage).toHaveBeenCalled();
     expect(await harness.database.get('automation_job', { id: 1 })).toEqual([
       expect.objectContaining({ status: 'done' }),
@@ -579,6 +696,379 @@ describe('task automation tools and execution', () => {
     expect(harness.database.remove).toHaveBeenCalledWith('chatluna_message', { conversationId: tempConversationId });
     expect(harness.database.remove).not.toHaveBeenCalledWith('chathub_message', expect.anything());
     expect(harness.database.remove).not.toHaveBeenCalledWith('chathub_conversation', expect.anything());
+  });
+
+  it('persists confirmed delivery evidence and an unknown outcome when a later automation receipt is empty', async () => {
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: nativeStructuredReplyContent({
+        decision: 'reply',
+        outbound_messages: [
+          { type: 'message', content: '已经确认送达。' },
+          { type: 'structured_block', content: '第二条发送结果未知。' },
+        ],
+      }),
+      additional_kwargs: {},
+    });
+    harness.bot.sendMessage
+      .mockResolvedValueOnce(['confirmed-message-id'])
+      .mockResolvedValueOnce([]);
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('will not be resent'),
+        outputText: '已经确认送达。',
+        outputPayload: expect.objectContaining({ decision: 'reply' }),
+        deliveryReceipt: JSON.stringify(['confirmed-message-id']),
+        deliveryState: 'outcome_unknown',
+      }),
+    ]);
+    const persistedRunPatches = harness.database.set.mock.calls
+      .filter(([table]) => table === 'automation_job_run')
+      .map(([, , patch]) => patch as Record<string, unknown>);
+    expect(persistedRunPatches.some((patch) => patch.status === 'succeeded')).toBe(false);
+    expect(
+      persistedRunPatches.some(
+        (patch) => patch.deliveryReceipt === JSON.stringify(['confirmed-message-id']),
+      ),
+    ).toBe(true);
+    expect(await harness.database.get('chatluna_message', { id: 'automation-job-run:1' })).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        role: 'ai',
+        content: '已经确认送达。',
+      }),
+    ]);
+
+    await harness.runReady();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(2);
+    expect(harness.ctx.chatluna.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', []],
+    ['malformed', ['message-id', '  ']],
+  ])('marks a send-invoked automation receipt %s as outcome unknown and never retries it', async (_label, receipt) => {
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+    });
+    harness.bot.sendMessage.mockResolvedValueOnce(receipt as never);
+
+    await harness.runReady();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.ctx.chatluna.chat).toHaveBeenCalledTimes(1);
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        deliveryState: 'outcome_unknown',
+        deliveryAttemptId: 'automation-job-run:1:1',
+        deliveryReceipt: null,
+        error: expect.stringContaining('will not be resent'),
+      }),
+    ]);
+    expect(await harness.database.get('automation_job', { id: 1 })).toEqual([
+      expect.objectContaining({ status: 'done' }),
+    ]);
+    expect(await harness.database.get('chatluna_message', {})).toHaveLength(0);
+
+    await harness.runReady();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.ctx.chatluna.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconciles a confirmed pre-crash delivery into source history without resending it', async () => {
+    const harness = createHarness({
+      chathub_room: [createRoom()],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+      automation_job_run: [createJobRun({
+        outputText: '已经在崩溃前送达。',
+        outputPayload: {
+          decision: 'reply',
+          outbound_messages: [{ type: 'message', content: '已经在崩溃前送达。' }],
+        },
+        deliveryReceipt: JSON.stringify(['confirmed-before-crash']),
+        deliveryState: 'confirmed',
+        deliveryAttemptId: 'automation-job-run:1:1',
+        deliveryConfirmedAt: Date.now() - 1000,
+      })],
+    });
+
+    await harness.runReady();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(harness.ctx.chatluna.chat).not.toHaveBeenCalled();
+    expect(await harness.database.get('automation_job_run', { id: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'succeeded',
+        deliveryState: 'reconciled',
+        deliveryReceipt: JSON.stringify(['confirmed-before-crash']),
+      }),
+    ]);
+    expect(await harness.database.get('automation_job', { id: 1 })).toEqual([
+      expect.objectContaining({ status: 'done' }),
+    ]);
+    expect(await harness.database.get('chatluna_message', { id: 'automation-job-run:1' })).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        role: 'ai',
+        content: '已经在崩溃前送达。',
+      }),
+    ]);
+  });
+
+  it('marks an interrupted dispatch outcome unknown and never resends it after restart', async () => {
+    const harness = createHarness({
+      chathub_room: [createRoom()],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+      automation_job_run: [createJobRun({
+        outputPayload: {
+          decision: 'reply',
+          outbound_messages: [{ type: 'message', content: '发送时进程退出。' }],
+        },
+        deliveryState: 'dispatching',
+        deliveryAttemptId: 'automation-job-run:1:1',
+      })],
+    });
+
+    await harness.runReady();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(harness.ctx.chatluna.chat).not.toHaveBeenCalled();
+    expect(await harness.database.get('automation_job_run', { id: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        deliveryState: 'outcome_unknown',
+        error: expect.stringContaining('will not be resent'),
+      }),
+    ]);
+    expect(await harness.database.get('automation_job', { id: 1 })).toEqual([
+      expect.objectContaining({ status: 'done' }),
+    ]);
+    expect(await harness.database.get('chatluna_message', {})).toHaveLength(0);
+  });
+
+  it('reconciles confirmed units from an outcome-unknown automation run without resending its unresolved unit', async () => {
+    const harness = createHarness({
+      chathub_room: [createRoom()],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+      automation_job_run: [createJobRun({
+        status: 'failed',
+        error: 'automation delivery outcome is unknown; the attempt will not be resent',
+        outputText: '第一条已经确认送达。',
+        outputPayload: {
+          decision: 'reply',
+          outbound_messages: [
+            { type: 'message', content: '第一条已经确认送达。' },
+            { type: 'message', content: '第二条发送结果未知。' },
+          ],
+        },
+        deliveryReceipt: JSON.stringify(['confirmed-before-crash']),
+        deliveryState: 'outcome_unknown',
+        deliveryAttemptId: 'automation-job-run:1:1',
+        deliveryConfirmedAt: Date.now() - 1000,
+        deliveryError: 'automation structured reply delivery outcome unknown',
+      })],
+    });
+
+    await harness.runReady();
+    await harness.runReady();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(harness.ctx.chatluna.chat).not.toHaveBeenCalled();
+    expect(await harness.database.get('automation_job_run', { id: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        deliveryState: 'outcome_unknown',
+        error: expect.stringContaining('will not be resent'),
+      }),
+    ]);
+    expect(await harness.database.get('automation_job', { id: 1 })).toEqual([
+      expect.objectContaining({ status: 'done' }),
+    ]);
+    expect(await harness.database.get('chatluna_message', { id: 'automation-job-run:1' })).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        role: 'ai',
+        content: '第一条已经确认送达。',
+      }),
+    ]);
+  });
+
+  it('delivers a trusted tool image produced by the same automation request', async () => {
+    const assetRef = 'http://127.0.0.1:5140/chatluna-storage/temp/cf-profile-automation.png';
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+    });
+    harness.ctx.chatluna.chat.mockImplementationOnce(async (
+      session: Record<string, unknown>,
+      room: Record<string, unknown>,
+      _message: Record<string, unknown>,
+      options: Record<string, any>,
+    ) => {
+      await harness.emitAgentEvent(session, room, options, {
+        type: 'tool-result',
+        steps: [{
+          action: { tool: 'cf_user_profile' },
+          observation: JSON.stringify({
+            tool: 'cf_user_profile',
+            image: { assetRef, alt: 'CF 用户卡片' },
+          }),
+        }],
+      });
+      expect(
+        replyFinalizerRequestRegistry.get(options.requestId)?.hasImageAssetRef(assetRef),
+      ).toBe(true);
+      return {
+        content: nativeStructuredReplyContent({
+          decision: 'reply',
+          outbound_messages: [{ type: 'image', assetRef, alt: 'CF 用户卡片' }],
+        }),
+        additional_kwargs: {},
+      };
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
+    const imageSendCall = harness.bot.sendMessage.mock.calls[0] as unknown[] | undefined;
+    expect(imageSendCall?.[1]).toEqual(
+      expect.objectContaining({
+        type: 'image',
+        attrs: expect.objectContaining({ src: assetRef }),
+      }),
+    );
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({ status: 'succeeded' }),
+    ]);
+    expect(harness.getCallbackProviderCount()).toBe(0);
+    expect(replyFinalizerRequestRegistry.get('automation-job:1:1')).toBeUndefined();
+  });
+
+  it('rejects a forged image reference that no tool produced for the automation request', async () => {
+    const assetRef = 'http://127.0.0.1:5140/chatluna-storage/temp/forged-automation.png';
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({ runAt: Date.now() - 1 })],
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: nativeStructuredReplyContent({
+        decision: 'reply',
+        outbound_messages: [{ type: 'image', assetRef, alt: '伪造图片' }],
+      }),
+      additional_kwargs: {},
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: 'structured reply referenced an image that was not produced by this reply run.',
+      }),
+    ]);
+    expect(harness.getCallbackProviderCount()).toBe(0);
+  });
+
+  it('does not authorize an image artifact across automation requests', async () => {
+    const assetRef = 'http://127.0.0.1:5140/chatluna-storage/temp/cross-request-automation.png';
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [
+        createJob({ id: 1, runAt: Date.now() - 2, goal: '先生成图片' }),
+        createJob({ id: 2, runAt: Date.now() - 1, goal: '尝试复用上个请求的图片' }),
+      ],
+    });
+    harness.ctx.chatluna.chat.mockImplementation(async (
+      session: Record<string, unknown>,
+      room: Record<string, unknown>,
+      _message: Record<string, unknown>,
+      options: Record<string, any>,
+    ) => {
+      if (options.requestId === 'automation-job:1:1') {
+        await harness.emitAgentEvent(session, room, options, {
+          type: 'tool-result',
+          steps: [{
+            action: { tool: 'cf_user_profile' },
+            observation: JSON.stringify({
+              tool: 'cf_user_profile',
+              image: { assetRef, alt: '第一轮图片' },
+            }),
+          }],
+        });
+        return {
+          content: nativeStructuredReplyContent({
+            decision: 'no_reply',
+            outbound_messages: null,
+          }),
+          additional_kwargs: {},
+        };
+      }
+
+      await harness.emitAgentEvent(
+        session,
+        room,
+        options,
+        {
+          type: 'tool-result',
+          steps: [{
+            action: { tool: 'cf_user_profile' },
+            observation: JSON.stringify({
+              tool: 'cf_user_profile',
+              image: { assetRef, alt: '第一轮图片' },
+            }),
+          }],
+        },
+        'automation-job:1:1',
+      );
+      expect(
+        replyFinalizerRequestRegistry.get(options.requestId)?.hasImageAssetRef(assetRef),
+      ).toBe(false);
+      return {
+        content: nativeStructuredReplyContent({
+          decision: 'reply',
+          outbound_messages: [{ type: 'image', assetRef, alt: '跨请求图片' }],
+        }),
+        additional_kwargs: {},
+      };
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({ status: 'succeeded' }),
+    ]);
+    expect(await harness.database.get('automation_job_run', { jobId: 2 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: 'structured reply referenced an image that was not produced by this reply run.',
+      }),
+    ]);
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(harness.getCallbackProviderCount()).toBe(0);
+    expect(replyFinalizerRequestRegistry.get('automation-job:2:2')).toBeUndefined();
   });
 
   it('keeps the CHAT_REPLY_V1 contract in automation metadata for tool continuations', async () => {
@@ -613,7 +1103,12 @@ describe('task automation tools and execution', () => {
         qqbot_final_response_contract: expect.objectContaining({
           protocol: 'chat_reply_v1',
           schema: null,
-          instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
+          instruction: expect.stringContaining('qqbot_submit_reply'),
+          terminalTool: 'qqbot_submit_reply',
+        }),
+        overrideRequestParams: expect.objectContaining({
+          tool_choice: 'required',
+          parallel_tool_calls: false,
         }),
       }),
     );
@@ -851,6 +1346,77 @@ describe('task automation tools and execution', () => {
     ]);
   });
 
+  it('fails a native responses text reply that omits an explicitly requested sticker', async () => {
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({
+        runAt: Date.now() - 1,
+        goal: '请发一个表情包庆祝任务完成',
+      })],
+    }, {
+      mainRequestMode: 'responses',
+      mainProtocol: 'native_responses_json_schema',
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: nativeStructuredReplyContent({
+        decision: 'reply',
+        outbound_messages: [{ type: 'message', content: '任务完成了。' }],
+      }, { canMeme: true }),
+      additional_kwargs: {},
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('explicitly requested a sticker'),
+        outputPayload: expect.objectContaining({ decision: 'reply' }),
+        deliveryReceipt: null,
+      }),
+    ]);
+  });
+
+  it('fails a native responses no_reply that omits explicitly requested voice', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/healthz')) return new Response('ok', { status: 200 });
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({
+        runAt: Date.now() - 1,
+        goal: '请用语音发送一句提醒',
+      })],
+    }, {
+      mainRequestMode: 'responses',
+      mainProtocol: 'native_responses_json_schema',
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: nativeStructuredReplyContent({
+        decision: 'no_reply',
+        outbound_messages: null,
+      }, { canVoice: true }),
+      additional_kwargs: {},
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(harness.bot.sendMessage).not.toHaveBeenCalled();
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('no_reply is not permitted'),
+        outputPayload: expect.objectContaining({ decision: 'no_reply' }),
+        deliveryReceipt: null,
+      }),
+    ]);
+  });
+
   it('delivers voice replies through the shared reply transport executor', async () => {
     const originalTtsBaseUrl = process.env.QQ_VOICE_TTS_BASE_URL;
     const originalVoiceOutputEnabled = process.env.QQ_VOICE_OUTPUT_ENABLED;
@@ -915,6 +1481,9 @@ describe('task automation tools and execution', () => {
         runAt: Date.now() - 1,
         goal: '请发一个表情包庆祝任务完成',
       })],
+    }, {
+      mainRequestMode: 'responses',
+      mainProtocol: 'native_responses_json_schema',
     });
     harness.ctx.chatluna.chat.mockResolvedValueOnce({
       content: nativeStructuredReplyContent({
@@ -939,6 +1508,75 @@ describe('task automation tools and execution', () => {
         type: 'image',
       }),
     );
+  });
+
+  it('marks an explicit voice automation failed when TTS is unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/healthz')) return new Response('unavailable', { status: 503 });
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({
+        runAt: Date.now() - 1,
+        goal: '请用语音发送一句提醒',
+      })],
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: nativeStructuredReplyContent({
+        decision: 'reply',
+        outbound_messages: [{ type: 'voice', content: '提醒你该出发了。' }],
+      }),
+      additional_kwargs: {},
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('no voice was delivered'),
+        outputText: expect.stringContaining('语音'),
+        outputPayload: expect.objectContaining({ decision: 'reply' }),
+        deliveryReceipt: JSON.stringify(['msg-id']),
+      }),
+    ]);
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks an explicit sticker automation failed when no sticker catalog exists', async () => {
+    const harness = createHarness({
+      chathub_room: [createRoom({ roomName: '当前群房间' })],
+      automation_job: [createJob({
+        runAt: Date.now() - 1,
+        goal: '请发一个表情包庆祝任务完成',
+      })],
+    }, {}, {
+      stickerDir: './.tmp/test-missing-sticker-catalog',
+    });
+    harness.ctx.chatluna.chat.mockResolvedValueOnce({
+      content: nativeStructuredReplyContent({
+        decision: 'reply',
+        outbound_messages: [{ type: 'meme', content: '庆祝完成' }],
+      }),
+      additional_kwargs: {},
+    });
+    await harness.runReady();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(await harness.database.get('automation_job_run', { jobId: 1 })).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('no sticker was delivered'),
+        outputText: expect.stringContaining('表情'),
+        outputPayload: expect.objectContaining({ decision: 'reply' }),
+        deliveryReceipt: JSON.stringify(['msg-id']),
+      }),
+    ]);
+    expect(harness.bot.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('uses the live main binding for the first scheduled call after a revision change', async () => {

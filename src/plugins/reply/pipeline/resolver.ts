@@ -2,16 +2,18 @@ import { sanitizeStructuredReplyText } from '../../shared/outbound/index.js';
 import type { ResolvedAction, StructuredReply, TurnContext } from './types.js';
 import { GroupMemberMentionResolver } from './mention-resolver.js';
 import type { Session } from 'koishi';
+import { normalizeStructuredReplyForDelivery } from './normalizer.js';
 
 export class ActionResolverService {
   constructor(private readonly mentionResolver = new GroupMemberMentionResolver()) {}
 
   async resolve(reply: StructuredReply, turnContext: TurnContext, session: Session): Promise<ResolvedAction[]> {
-    if (reply.decision === 'no_reply') {
+    const normalizedReply = normalizeStructuredReplyForDelivery(reply);
+    if (normalizedReply.decision === 'no_reply') {
       return [{ kind: 'no_reply' }];
     }
 
-    const messages = reply.outbound_messages ?? [];
+    const messages = normalizedReply.outbound_messages ?? [];
     if (!messages.length) {
       throw new Error('structured reply with decision=reply must include at least one outbound message.');
     }
@@ -19,7 +21,7 @@ export class ActionResolverService {
     const resolved: ResolvedAction[] = [];
     const capabilitySnapshot = turnContext.capabilitySnapshot;
     const canVoice = capabilitySnapshot?.canVoice === true;
-    const canSticker = capabilitySnapshot?.canSticker === true && (capabilitySnapshot?.stickerAvailableCount ?? 0) > 0;
+    const canSticker = capabilitySnapshot?.canSticker === true;
 
     for (const message of messages) {
       if (message.type === 'voice') {

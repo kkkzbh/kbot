@@ -32,7 +32,7 @@ const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
 
 export const name = 'affinity';
 export const inject = {
-  required: ['database', 'puppeteer', 'chatluna', 'modelConfig', 'modelRuntime'],
+  required: ['database', 'puppeteer', 'chatluna', 'modelConfig', 'modelRuntime', 'toolPolicy'],
 } as const;
 
 const logger = new Logger(name);
@@ -267,13 +267,22 @@ function ensureAffinityTables(ctx: Context): void {
       messageText: { type: 'text', nullable: true },
       skipReason: { type: 'text', nullable: true },
       sentAt: { type: 'double', nullable: true },
+      deliveryState: { type: 'string', initial: 'not_started' },
+      deliveryAttemptId: { type: 'string', nullable: true },
+      deliveryReceipt: { type: 'text', nullable: true },
+      deliveryPayloadJson: { type: 'text', nullable: true },
+      deliveryConfirmedAt: { type: 'double', nullable: true },
       createdAt: 'double',
       updatedAt: 'double',
     },
     {
       autoInc: true,
       unique: ['planKey'],
-      indexes: [['characterId', 'scopeKind', 'scopeId', 'dayKey'], ['status', 'scheduledAt']],
+      indexes: [
+        ['characterId', 'scopeKind', 'scopeId', 'dayKey'],
+        ['status', 'scheduledAt'],
+        ['deliveryState'],
+      ],
     },
   );
 
@@ -281,6 +290,7 @@ function ensureAffinityTables(ctx: Context): void {
     'affinity_open_thread',
     {
       id: 'unsigned',
+      sourcePlanId: { type: 'unsigned', nullable: true },
       characterId: 'string',
       scopeKind: 'string',
       scopeId: 'string',
@@ -296,7 +306,7 @@ function ensureAffinityTables(ctx: Context): void {
     },
     {
       autoInc: true,
-      indexes: [['characterId', 'scopeKind', 'scopeId', 'status'], ['expiresAt']],
+      indexes: [['characterId', 'scopeKind', 'scopeId', 'status'], ['sourcePlanId'], ['expiresAt']],
     },
   );
 

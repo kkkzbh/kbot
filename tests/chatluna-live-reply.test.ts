@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { HumanMessage } from '@langchain/core/messages';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatReplyV1Parser } from '../src/plugins/reply/pipeline/chat-reply-v1.js';
 import { resolveChatlunaCoreImportUrl, resolveChatlunaSourceRoot } from './helpers/chatluna-paths.js';
@@ -33,9 +34,17 @@ vi.mock('koishi-plugin-chatluna/utils/string', async () => {
 type TableName = 'chatluna_conversation' | 'chatluna_message';
 type Row = Record<string, any>;
 type SimplifiedHistoryMessage = { role: string; content: string };
+const DEFAULT_REQUEST_ID = 'request-current';
 
 function encodeStoredContent(text: string): ArrayBuffer {
   const buffer = gzipSync(Buffer.from(JSON.stringify(text), 'utf8'));
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+}
+
+function encodeRequestMetadata(requestId: string): ArrayBuffer {
+  const buffer = gzipSync(Buffer.from(JSON.stringify({
+    chatluna: { requestId },
+  }), 'utf8'));
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 }
 
@@ -92,12 +101,25 @@ class MemoryDatabase {
   async create(table: TableName, row: Row): Promise<void> {
     this.tables[table].push(cloneRow(row));
   }
+
+  async withTransaction<T>(task: (database: MemoryDatabase) => Promise<T>): Promise<T> {
+    const snapshot = structuredClone(this.tables);
+    try {
+      return await task(this);
+    } catch (error) {
+      this.tables = snapshot;
+      throw error;
+    }
+  }
 }
 
 function createHistory(args: { conversationId: string; latestId: string | null; messages: Row[] }) {
   const database = new MemoryDatabase({
     conversations: [{ id: args.conversationId, latestMessageId: args.latestId, updatedAt: new Date(0) }],
-    messages: args.messages,
+    messages: args.messages.map((message) => message.role === 'human'
+      && message.response_metadata_binary == null
+      ? { ...message, response_metadata_binary: encodeRequestMetadata(DEFAULT_REQUEST_ID) }
+      : message),
   });
   const ctx = {
     database,
@@ -124,13 +146,27 @@ async function createChatHistory(args: { conversationId: string; latestId: strin
 }
 
 function normalizeHistory(history: {
-  normalizeResearchReplyHistory?: (text: string, updatedAt?: Date) => Promise<any>;
-}, finalVisibleText: string, updatedAt?: Date) {
+  normalizeResearchReplyHistory?: (requestId: string, text: string, updatedAt?: Date) => Promise<any>;
+}, finalVisibleText: string, updatedAt?: Date, requestId = DEFAULT_REQUEST_ID) {
   const normalize = history.normalizeResearchReplyHistory?.bind(history);
   if (!normalize) {
     throw new Error('missing research history normalization method');
   }
-  return normalize(finalVisibleText, updatedAt);
+  return (normalize as unknown as (
+    requestId: string,
+    text: string,
+    disposition: 'retain_request',
+    updatedAt?: Date,
+  ) => Promise<any>)(requestId, finalVisibleText, 'retain_request', updatedAt);
+}
+
+async function addRequestUserMessage(history: {
+  addMessage: (message: HumanMessage) => Promise<void>;
+}, content: string, requestId: string): Promise<void> {
+  await history.addMessage(new HumanMessage({
+    content,
+    response_metadata: { chatluna: { requestId } },
+  }));
 }
 
 function encodeChatReplyV1History(content: string): string {
@@ -153,12 +189,14 @@ describe('research reply history compatibility', () => {
     });
 
     for (let turn = 1; turn <= 5; turn += 1) {
-      await history.addUserMessage(`第 ${turn} 轮用户消息`);
+      const requestId = `request-turn-${turn}`;
+      await addRequestUserMessage(history, `第 ${turn} 轮用户消息`, requestId);
       const assistantHistoryText = encodeChatReplyV1History(`第 ${turn} 轮回复\n继续保持协议历史`);
       const result = await normalizeHistory(
         history,
         assistantHistoryText,
         new Date(`2026-06-12T09:2${turn}:00.000Z`),
+        requestId,
       );
 
       expect(result.normalizedText).toBe(assistantHistoryText);
@@ -216,7 +254,8 @@ describe('research reply history compatibility', () => {
     ];
 
     for (let turn = 1; turn <= rawOutputs.length; turn += 1) {
-      await history.addUserMessage(`第 ${turn} 轮用户消息`);
+      const requestId = `request-payload-turn-${turn}`;
+      await addRequestUserMessage(history, `第 ${turn} 轮用户消息`, requestId);
       const reply = new ChatReplyV1Parser().parse(rawOutputs[turn - 1]!);
       const content = reply.outbound_messages?.map((message) => {
         if (message.type === 'image') return message.alt;
@@ -226,6 +265,7 @@ describe('research reply history compatibility', () => {
         history,
         encodeChatReplyV1History(content),
         new Date(`2026-06-12T09:3${turn}:00.000Z`),
+        requestId,
       );
     }
 
@@ -405,6 +445,7 @@ describe('research reply history compatibility', () => {
       latestId: 'msg-human-1',
       normalizedMessageId: null,
       normalizedText: '',
+      requestBoundaryFound: true,
     });
 
     const [conversation] = await database.get('chatluna_conversation', { id: 'conv-3' });

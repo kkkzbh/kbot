@@ -38,6 +38,54 @@ describe('agent progress narrator', () => {
     expect(['我搜一下。', '等我查一下。', '我去翻翻看。']).toContain(sent[0]);
   });
 
+  it('retries a memory opening when the first delivery has no receipt', async () => {
+    const sent: string[] = [];
+    let attempts = 0;
+    const run = new AgentProgressRun({
+      conversationKey: 'conversation-retry',
+      requestId: 'request-retry',
+      phraseBook: new ProgressPhraseBook(),
+      send: async (text) => {
+        sent.push(text);
+        attempts += 1;
+        return attempts > 1;
+      },
+    });
+
+    await run.onAgentEvent({ type: 'tool-call', actions: [action('web_search')] });
+    await run.onAgentEvent({ type: 'tool-call', actions: [action('memory_search')] });
+    await run.onAgentEvent({ type: 'done' });
+
+    expect(sent).toHaveLength(2);
+    expect(['让我想想。', '我翻一下之前的记录。', '等等，我回忆一下。']).toContain(sent[1]);
+  });
+
+  it('keeps the internal final reply submission silent', async () => {
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    const run = new AgentProgressRun({
+      conversationKey: 'conversation-finalizer',
+      requestId: 'request-finalizer',
+      phraseBook: new ProgressPhraseBook(),
+      send: async (text) => {
+        sent.push(text);
+        return true;
+      },
+    });
+
+    try {
+      await run.onAgentEvent({ type: 'tool-call', actions: [action('qqbot_submit_reply')] });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await run.onAgentEvent({
+        type: 'tool-result',
+        steps: [{ action: action('qqbot_submit_reply'), observation: 'done' }],
+      });
+      expect(sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('avoids recently used phrases for the same conversation', () => {
     const phraseBook = new ProgressPhraseBook();
     const phrases = [
@@ -177,6 +225,39 @@ describe('agent progress narrator', () => {
     }, 'callback-run');
   });
 
+  it('finishes the progress send before returning from the tool-call callback', async () => {
+    let releaseSend: () => void = () => {};
+    let callbackSettled = false;
+    const provider = createAgentProgressCallbacksProvider({
+      resolveReplyRunId: () => 'reply-run-ordered',
+      resolveInitialState: () => ({ messageCount: 0, lastMessageAt: 0 }),
+      send: async () => new Promise<boolean>((resolve) => {
+        releaseSend = () => resolve(true);
+      }),
+    });
+    const callbacks = await provider({
+      session: {
+        platform: 'onebot',
+        state: { qqReplyV2: { route: 'agent' } },
+      },
+      conversation: { id: 'conversation-ordered' },
+      requestId: 'request-ordered',
+    } as never);
+
+    const callback = callbacks!.handleCustomEvent!(CHATLUNA_AGENT_EVENT, {
+      context: { kind: 'main', requestId: 'request-ordered' },
+      event: { type: 'tool-call', actions: [action('web_search')] },
+    }, 'callback-run').then(() => {
+      callbackSettled = true;
+    });
+    await Promise.resolve();
+    expect(callbackSettled).toBe(false);
+
+    releaseSend();
+    await callback;
+    expect(callbackSettled).toBe(true);
+  });
+
   it('cancels pending wait updates when a reply run or provider is disposed', async () => {
     vi.useFakeTimers();
     const send = vi.fn(async () => true);
@@ -215,7 +296,6 @@ describe('agent progress narrator', () => {
     let now = 1_000;
     const sent: string[] = [];
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -274,6 +354,7 @@ describe('agent progress narrator', () => {
         },
         mode: 'interrupt',
       });
+      expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
       await vi.advanceTimersByTimeAsync(50);
       const next = await nextRunPromise;
       expect(next).toMatchObject({

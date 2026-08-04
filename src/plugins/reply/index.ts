@@ -30,6 +30,20 @@ export {
   type ModalityPolicySnapshot,
   type ModalityPreferenceSnapshot,
 } from './modality/director.js';
+export { ReplyArtifactRegistry } from './modality/artifact-registry.js';
+export {
+  assertExplicitModalityInvariant,
+  ExplicitModalityInvariantError,
+} from './modality/explicit-invariant.js';
+export {
+  createReplyFinalizerToolEntry,
+  replyFinalizerRequestRegistry,
+} from './finalizer/tool.js';
+export {
+  CHATLUNA_AGENT_EVENT,
+  type AgentEvent,
+  type ChatCallbacksProviderLike,
+} from './progress/narrator.js';
 export {
   buildReplyPromptCompilerInput,
   buildReplyRuntimeContractFragments,

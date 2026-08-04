@@ -291,6 +291,7 @@ class NativeFeatureChatService implements NativeFeatureChatServiceLike {
         logger,
         conversationId,
         chatluna: this.ctx.chatluna,
+        lockMode: 'acquire',
       });
       await writer.addMessages([humanMessage, assistantMessage]);
     });

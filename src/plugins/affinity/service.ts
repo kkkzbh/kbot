@@ -15,6 +15,7 @@ import {
   type ChatLunaHistoryWriter,
 } from '../shared/chatluna-history.js';
 import type { ReplyTransportPlan } from '../shared/outbound/index.js';
+import type { ToolMask } from '../../types/tool-policy.js';
 import { normalizeMentionLikeText } from '../shared/mention-text.js';
 import { resolveSessionDisplayName } from '../shared/session/index.js';
 import { decodeStoredMessageText } from '../shared/stored-message.js';
@@ -132,7 +133,7 @@ type ChatLunaHistoryLike = ChatLunaHistoryServiceLike & {
       stream?: boolean;
       variables?: Record<string, unknown>;
       requestId?: string;
-      toolMask?: unknown;
+      toolMask: ToolMask;
     },
   ) => Promise<{ content?: unknown; additional_kwargs?: Record<string, unknown> } | null | undefined>;
   contextManager?: {
@@ -201,6 +202,37 @@ type AffinityPromptEventResult = {
 type RandomGenerationWithTransport = AffinityRandomGenerationResult & {
   transportPlan?: ReplyTransportPlan | null;
   deliveryHistoryText?: string | null;
+};
+
+type RandomDeliveryResult =
+  | {
+      sent: true;
+      messageText: string;
+      historyText: string;
+      receipts: string[][];
+      reason: 'failed_after_partial_send' | null;
+    }
+  | {
+      sent: false;
+      messageText: null;
+      historyText: string | null;
+      receipts: string[][];
+      reason: string;
+    };
+
+type AffinityConfirmedDeliveryPayload = {
+  version: 'v1';
+  messageText: string;
+  historyText: string;
+  materialJson: string | null;
+  generation: {
+    contextSeedSummary: string | null;
+    eventTypeHint: AffinityEventType | 'none';
+    memorySummary: string | null;
+    reason: string;
+    risk: 'low' | 'medium' | 'high';
+    outputProtocol: string | null;
+  };
 };
 
 type ProactiveSourceConversationResolution =
@@ -375,6 +407,101 @@ function affinityPromptEventResult(result: AffinitySessionResult): AffinityPromp
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function parseConfirmedDeliveryPayload(raw: string | null): AffinityConfirmedDeliveryPayload {
+  const record = parseRequiredJsonRecord(raw, 'affinity_random_plan.deliveryPayloadJson');
+  if (record.version !== 'v1') {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.version must be "v1".');
+  }
+  const messageText = normalizeText(record.messageText);
+  const historyText = normalizeText(record.historyText);
+  if (!messageText || !historyText) {
+    throw new Error('affinity_random_plan.deliveryPayloadJson must contain delivered message text.');
+  }
+  if (record.materialJson != null && typeof record.materialJson !== 'string') {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.materialJson must be a string or null.');
+  }
+  const generation = record.generation;
+  if (!generation || typeof generation !== 'object' || Array.isArray(generation)) {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation must be an object.');
+  }
+  const value = generation as Record<string, unknown>;
+  if (value.contextSeedSummary != null && typeof value.contextSeedSummary !== 'string') {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation.contextSeedSummary is invalid.');
+  }
+  if (value.memorySummary != null && typeof value.memorySummary !== 'string') {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation.memorySummary is invalid.');
+  }
+  if (typeof value.eventTypeHint !== 'string' || !VALID_EVENT_TYPE_HINTS.has(value.eventTypeHint as AffinityEventType | 'none')) {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation.eventTypeHint is invalid.');
+  }
+  if (typeof value.reason !== 'string' || !value.reason.trim()) {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation.reason is invalid.');
+  }
+  if (value.risk !== 'low' && value.risk !== 'medium' && value.risk !== 'high') {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation.risk is invalid.');
+  }
+  if (value.outputProtocol != null && typeof value.outputProtocol !== 'string') {
+    throw new Error('affinity_random_plan.deliveryPayloadJson.generation.outputProtocol is invalid.');
+  }
+  return {
+    version: 'v1',
+    messageText,
+    historyText,
+    materialJson: record.materialJson == null ? null : record.materialJson,
+    generation: {
+      contextSeedSummary: value.contextSeedSummary == null ? null : value.contextSeedSummary,
+      eventTypeHint: value.eventTypeHint as AffinityEventType | 'none',
+      memorySummary: value.memorySummary == null ? null : value.memorySummary,
+      reason: value.reason.trim(),
+      risk: value.risk,
+      outputProtocol: value.outputProtocol == null ? null : value.outputProtocol,
+    },
+  };
+}
+
+function parseConfirmedDeliveryReceipts(raw: string | null): string[][] {
+  if (!raw?.trim()) {
+    throw new Error('affinity_random_plan.deliveryReceipt must contain JSON.');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new Error('affinity_random_plan.deliveryReceipt must contain valid JSON.', { cause: error });
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error('affinity_random_plan.deliveryReceipt must contain confirmed receipts.');
+  }
+  return parsed.map((receipt) => {
+    if (!Array.isArray(receipt) || receipt.length === 0) {
+      throw new Error('affinity_random_plan.deliveryReceipt contains an empty receipt.');
+    }
+    return receipt.map((messageId) => {
+      if (typeof messageId !== 'string' || !messageId.trim()) {
+        throw new Error('affinity_random_plan.deliveryReceipt contains an invalid message id.');
+      }
+      return messageId.trim();
+    });
+  });
+}
+
+function confirmedDeliveryGeneration(
+  payload: AffinityConfirmedDeliveryPayload,
+): AffinityRandomGenerationResult {
+  return {
+    shouldSend: true,
+    message: payload.messageText,
+    contextSeedSummary: payload.generation.contextSeedSummary,
+    eventTypeHint: payload.generation.eventTypeHint,
+    memorySummary: payload.generation.memorySummary,
+    reason: payload.generation.reason,
+    risk: payload.generation.risk,
+    skipReason: null,
+    outputProtocol: payload.generation.outputProtocol,
+    deliveryHistoryText: payload.historyText,
+  };
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -847,6 +974,7 @@ export class AffinityService implements AffinityServiceLike {
       logger,
       conversationId: normalizedConversationId,
       chatluna,
+      lockMode: 'acquire',
     });
 
     return {
@@ -1196,6 +1324,11 @@ export class AffinityService implements AffinityServiceLike {
       messageText: null,
       skipReason: null,
       sentAt: null,
+      deliveryState: 'not_started',
+      deliveryAttemptId: null,
+      deliveryReceipt: null,
+      deliveryPayloadJson: null,
+      deliveryConfirmedAt: null,
       createdAt: now,
       updatedAt: now,
     }) as unknown as AffinityRandomPlanRecord;
@@ -1369,6 +1502,11 @@ export class AffinityService implements AffinityServiceLike {
           messageText: null,
           skipReason: 'daily_count_zero',
           sentAt: null,
+          deliveryState: 'not_started',
+          deliveryAttemptId: null,
+          deliveryReceipt: null,
+          deliveryPayloadJson: null,
+          deliveryConfirmedAt: null,
           createdAt: now,
           updatedAt: now,
         });
@@ -1408,6 +1546,11 @@ export class AffinityService implements AffinityServiceLike {
           messageText: null,
           skipReason: null,
           sentAt: null,
+          deliveryState: 'not_started',
+          deliveryAttemptId: null,
+          deliveryReceipt: null,
+          deliveryPayloadJson: null,
+          deliveryConfirmedAt: null,
           createdAt: now,
           updatedAt: now,
         });
@@ -1421,6 +1564,7 @@ export class AffinityService implements AffinityServiceLike {
   }
 
   async runDueRandomPlans(now = Date.now()): Promise<void> {
+    await this.reconcileInterruptedRandomDeliveries(now);
     await this.ensureDailyRandomPlans(now);
     await this.pruneRandomMemories(now);
     const settings = await this.getSettings();
@@ -1431,6 +1575,7 @@ export class AffinityService implements AffinityServiceLike {
     }) as AffinityRandomPlanRecord[];
     for (const plan of pending
       .filter((item) => item.scheduledAt <= now)
+      .filter((item) => item.deliveryState === 'not_started')
       .filter((item) => this.isManualRandomPlan(item) || settings.proactiveEnabled)
       .sort((a, b) => a.scheduledAt - b.scheduledAt)) {
       await this.fireRandomPlan(plan, settings, now);
@@ -1445,6 +1590,7 @@ export class AffinityService implements AffinityServiceLike {
       status: 'pending',
     }) as AffinityRandomPlanRecord[];
     const next = pending
+      .filter((item) => item.deliveryState === 'not_started')
       .filter((item) => item.scheduledAt >= now || this.isManualRandomPlan(item))
       .filter((item) => this.isManualRandomPlan(item) || settings.proactiveEnabled)
       .sort((a, b) => a.scheduledAt - b.scheduledAt)[0];
@@ -1881,6 +2027,10 @@ export class AffinityService implements AffinityServiceLike {
     materialJson: string | null;
     now: number;
   }): Promise<void> {
+    const [existing] = await this.database.get('affinity_random_memory', {
+      sourcePlanId: args.plan.id,
+    }) as AffinityRandomMemoryRecord[];
+    if (existing?.id) return;
     await this.database.create('affinity_random_memory', {
       characterId: CHARACTER_ID,
       scopeKind: args.scope.scopeKind,
@@ -1969,11 +2119,11 @@ export class AffinityService implements AffinityServiceLike {
     bot: AffinityBotLike;
     channelId: string;
     generation: RandomGenerationWithTransport;
-  }): Promise<{ sent: boolean; messageText: string | null; historyText: string | null; reason: string | null }> {
+  }): Promise<RandomDeliveryResult> {
     const { plan, scope, bot, channelId, generation } = args;
     const transportPlan = generation.transportPlan ?? null;
     if (!transportPlan) {
-      return { sent: false, messageText: null, historyText: null, reason: 'missing_transport_plan' };
+      return { sent: false, messageText: null, historyText: null, receipts: [], reason: 'missing_transport_plan' };
     }
 
     const conversationId = normalizeText(plan.conversationId) || normalizeText(scope.conversationId);
@@ -1991,22 +2141,361 @@ export class AffinityService implements AffinityServiceLike {
       runtime: this.getProactiveVoiceRuntime(),
       session,
       plan: transportPlan,
+      modalityPolicy: null,
     });
+    const committedHistoryText = normalizeText(delivery.historyText);
+    const hasConfirmedReceipt = delivery.receipts.length > 0;
     if (delivery.status === 'delivered' || delivery.status === 'failed_after_partial_send') {
-      const historyText = normalizeText(delivery.historyText) || generation.message;
+      if (!hasConfirmedReceipt || !committedHistoryText) {
+        return {
+          sent: false,
+          messageText: null,
+          historyText: null,
+          receipts: delivery.receipts,
+          reason: 'delivery_commit_missing',
+        };
+      }
       return {
         sent: true,
-        messageText: historyText,
-        historyText,
+        messageText: committedHistoryText,
+        historyText: committedHistoryText,
+        receipts: delivery.receipts,
         reason: delivery.status === 'delivered' ? null : delivery.status,
       };
     }
     return {
       sent: false,
       messageText: null,
-      historyText: normalizeText(delivery.historyText) || null,
+      historyText: committedHistoryText || null,
+      receipts: delivery.receipts,
       reason: delivery.status,
     };
+  }
+
+  private async beginRandomDelivery(
+    plan: AffinityRandomPlanRecord,
+    generation: RandomGenerationWithTransport,
+    materialJson: string | null,
+    now: number,
+  ): Promise<string> {
+    const attemptId = `affinity-random-plan:${plan.id}`;
+    await this.database.set('affinity_random_plan', { id: plan.id }, {
+      deliveryState: 'dispatching',
+      deliveryAttemptId: attemptId,
+      deliveryReceipt: null,
+      deliveryConfirmedAt: null,
+      deliveryPayloadJson: stringifyJson({
+        version: 'v1',
+        messageText: normalizeText(generation.message),
+        historyText: null,
+        materialJson,
+        generation: {
+          contextSeedSummary: generation.contextSeedSummary,
+          eventTypeHint: generation.eventTypeHint,
+          memorySummary: generation.memorySummary,
+          reason: generation.reason,
+          risk: generation.risk,
+          outputProtocol: generation.outputProtocol ?? null,
+        },
+      }),
+      updatedAt: now,
+    });
+    return attemptId;
+  }
+
+  private async clearRandomDeliveryCheckpoint(plan: AffinityRandomPlanRecord, now: number): Promise<void> {
+    await this.database.set('affinity_random_plan', { id: plan.id }, {
+      deliveryState: 'not_started',
+      deliveryAttemptId: null,
+      deliveryReceipt: null,
+      deliveryPayloadJson: null,
+      deliveryConfirmedAt: null,
+      updatedAt: now,
+    });
+  }
+
+  private async checkpointConfirmedRandomDelivery(args: {
+    plan: AffinityRandomPlanRecord;
+    attemptId: string;
+    delivery: Extract<RandomDeliveryResult, { sent: true }>;
+    generation: RandomGenerationWithTransport;
+    materialJson: string | null;
+    now: number;
+  }): Promise<AffinityConfirmedDeliveryPayload> {
+    const payload: AffinityConfirmedDeliveryPayload = {
+      version: 'v1',
+      messageText: args.delivery.messageText,
+      historyText: args.delivery.historyText,
+      materialJson: args.materialJson,
+      generation: {
+        contextSeedSummary: args.generation.contextSeedSummary,
+        eventTypeHint: args.generation.eventTypeHint,
+        memorySummary: args.generation.memorySummary,
+        reason: args.generation.reason,
+        risk: args.generation.risk,
+        outputProtocol: args.generation.outputProtocol ?? null,
+      },
+    };
+    const receipt = stringifyJson(args.delivery.receipts);
+    await this.database.set('affinity_random_plan', { id: args.plan.id }, {
+      deliveryState: 'confirmed',
+      deliveryAttemptId: args.attemptId,
+      deliveryReceipt: receipt,
+      deliveryPayloadJson: stringifyJson(payload),
+      deliveryConfirmedAt: args.now,
+      updatedAt: args.now,
+    });
+    return payload;
+  }
+
+  private async checkpointOutcomeUnknownRandomDelivery(args: {
+    plan: AffinityRandomPlanRecord;
+    attemptId: string;
+    delivery: Extract<RandomDeliveryResult, { sent: false }>;
+    generation: RandomGenerationWithTransport;
+    materialJson: string | null;
+    now: number;
+  }): Promise<AffinityConfirmedDeliveryPayload | null> {
+    const historyText = normalizeText(args.delivery.historyText);
+    const hasConfirmedUnits = args.delivery.receipts.length > 0 && Boolean(historyText);
+    const payload: AffinityConfirmedDeliveryPayload | null = hasConfirmedUnits
+      ? {
+          version: 'v1',
+          messageText: historyText,
+          historyText,
+          materialJson: args.materialJson,
+          generation: {
+            contextSeedSummary: args.generation.contextSeedSummary,
+            eventTypeHint: args.generation.eventTypeHint,
+            memorySummary: args.generation.memorySummary,
+            reason: args.generation.reason,
+            risk: args.generation.risk,
+            outputProtocol: args.generation.outputProtocol ?? null,
+          },
+        }
+      : null;
+    await this.database.set('affinity_random_plan', { id: args.plan.id }, {
+      status: 'failed',
+      deliveryState: 'outcome_unknown',
+      deliveryAttemptId: args.attemptId,
+      deliveryReceipt: hasConfirmedUnits ? stringifyJson(args.delivery.receipts) : null,
+      ...(payload ? { deliveryPayloadJson: stringifyJson(payload) } : {}),
+      deliveryConfirmedAt: hasConfirmedUnits ? args.now : null,
+      skipReason: 'delivery_outcome_unknown',
+      messageText: null,
+      sentAt: null,
+      updatedAt: args.now,
+    });
+    return payload;
+  }
+
+  private async ensureRandomOpenThread(args: {
+    plan: AffinityRandomPlanRecord;
+    payload: AffinityConfirmedDeliveryPayload;
+    now: number;
+  }): Promise<void> {
+    const [existing] = await this.database.get('affinity_open_thread', {
+      sourcePlanId: args.plan.id,
+    });
+    if (existing?.id) return;
+    await this.database.create('affinity_open_thread', {
+      sourcePlanId: args.plan.id,
+      characterId: CHARACTER_ID,
+      scopeKind: args.plan.scopeKind,
+      scopeId: args.plan.scopeId,
+      userKey: null,
+      threadType: `random:${args.plan.direction}`,
+      title: `random:${args.plan.direction}`,
+      summary: args.payload.messageText,
+      status: 'open',
+      payloadJson: stringifyJson({
+        planId: args.plan.id,
+        direction: args.plan.direction,
+        contextSeedSummary: args.payload.generation.contextSeedSummary,
+        eventTypeHint: args.payload.generation.eventTypeHint,
+        reason: args.payload.generation.reason,
+      }),
+      expiresAt: args.now + RANDOM_OPEN_THREAD_TTL_MS,
+      createdAt: args.now,
+      updatedAt: args.now,
+    });
+  }
+
+  private async materializeRandomDeliveryArtifacts(args: {
+    plan: AffinityRandomPlanRecord;
+    scope: AffinityScopeConfigRecord;
+    payload: AffinityConfirmedDeliveryPayload;
+    now: number;
+  }) {
+    const { plan, scope, payload, now } = args;
+    const generation = confirmedDeliveryGeneration(payload);
+    await this.ensureRandomOpenThread({ plan, payload, now });
+    await this.persistRandomMemory({
+      plan,
+      scope,
+      messageText: payload.messageText,
+      generation,
+      materialJson: payload.materialJson,
+      now,
+    });
+    const historySync = await this.syncRandomMessageToChatHistory({
+      plan,
+      scope,
+      messageText: payload.messageText,
+      generation,
+      materialJson: payload.materialJson,
+    });
+    if (!historySync.synced) {
+      throw new Error(`affinity confirmed delivery history reconciliation failed: ${historySync.reason ?? 'unknown'}`);
+    }
+
+    return { generation, historySync };
+  }
+
+  private async materializeConfirmedRandomDelivery(args: {
+    plan: AffinityRandomPlanRecord;
+    scope: AffinityScopeConfigRecord;
+    payload: AffinityConfirmedDeliveryPayload;
+    now: number;
+  }): Promise<void> {
+    const { plan, payload, now } = args;
+    const { generation, historySync } = await this.materializeRandomDeliveryArtifacts(args);
+
+    await this.database.set('affinity_random_plan', { id: plan.id }, {
+      status: 'sent',
+      deliveryState: 'reconciled',
+      messageText: payload.messageText,
+      skipReason: null,
+      sentAt: plan.deliveryConfirmedAt ?? now,
+      updatedAt: now,
+    });
+    await this.writeAudit('random_message_generated', {
+      scopeKind: plan.scopeKind,
+      scopeId: plan.scopeId,
+      detail: {
+        planId: plan.id,
+        direction: plan.direction,
+        eventTypeHint: generation.eventTypeHint,
+        contextSeedSummary: generation.contextSeedSummary,
+        reason: generation.reason,
+      },
+    });
+    await this.writeAudit('random_plan_sent', {
+      scopeKind: plan.scopeKind,
+      scopeId: plan.scopeId,
+      detail: {
+        planId: plan.id,
+        direction: plan.direction,
+        historySynced: true,
+        historySkipReason: null,
+        conversationId: historySync.conversationId ?? null,
+      },
+    });
+  }
+
+  private async markRandomDeliveryReconciliationFailed(
+    plan: AffinityRandomPlanRecord,
+    error: unknown,
+    now: number,
+  ): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.database.set('affinity_random_plan', { id: plan.id }, {
+      deliveryState: 'reconciliation_failed',
+      skipReason: `delivery_reconciliation_failed: ${message}`,
+      updatedAt: now,
+    });
+    await this.writeAudit('random_history_sync_skipped', {
+      scopeKind: plan.scopeKind,
+      scopeId: plan.scopeId,
+      detail: {
+        planId: plan.id,
+        direction: plan.direction,
+        reason: 'delivery_reconciliation_failed',
+        error: message,
+      },
+    });
+  }
+
+  private async reconcileInterruptedRandomDeliveries(now: number): Promise<void> {
+    const plans = await this.database.get('affinity_random_plan', {
+      characterId: CHARACTER_ID,
+    }) as AffinityRandomPlanRecord[];
+    for (const plan of plans) {
+      if (plan.deliveryState === 'dispatching') {
+        await this.database.set('affinity_random_plan', { id: plan.id }, {
+          status: 'failed',
+          deliveryState: 'outcome_unknown',
+          skipReason: 'delivery_outcome_unknown_after_restart',
+          updatedAt: now,
+        });
+        await this.writeAudit('random_message_generation_skipped', {
+          scopeKind: plan.scopeKind,
+          scopeId: plan.scopeId,
+          detail: {
+            planId: plan.id,
+            direction: plan.direction,
+            reason: 'delivery_outcome_unknown_after_restart',
+          },
+        });
+        continue;
+      }
+      if (plan.deliveryState === 'outcome_unknown') {
+        if (!plan.deliveryReceipt?.trim() || plan.sentAt) continue;
+        const [scope] = await this.database.get('affinity_scope_config', {
+          characterId: CHARACTER_ID,
+          scopeKind: plan.scopeKind,
+          scopeId: plan.scopeId,
+        }) as AffinityScopeConfigRecord[];
+        if (!scope) {
+          await this.database.set('affinity_random_plan', { id: plan.id }, {
+            skipReason: 'delivery_outcome_unknown_reconciliation_failed: affinity scope is unavailable',
+            updatedAt: now,
+          });
+          continue;
+        }
+        try {
+          parseConfirmedDeliveryReceipts(plan.deliveryReceipt);
+          const payload = parseConfirmedDeliveryPayload(plan.deliveryPayloadJson);
+          await this.materializeRandomDeliveryArtifacts({ plan, scope, payload, now });
+          await this.database.set('affinity_random_plan', { id: plan.id }, {
+            status: 'failed',
+            deliveryState: 'outcome_unknown',
+            messageText: payload.messageText,
+            skipReason: 'delivery_outcome_unknown',
+            sentAt: plan.deliveryConfirmedAt ?? now,
+            updatedAt: now,
+          });
+        } catch (error) {
+          await this.database.set('affinity_random_plan', { id: plan.id }, {
+            status: 'failed',
+            deliveryState: 'outcome_unknown',
+            skipReason: `delivery_outcome_unknown_reconciliation_failed: ${error instanceof Error ? error.message : String(error)}`,
+            updatedAt: now,
+          });
+        }
+        continue;
+      }
+      if (plan.deliveryState !== 'confirmed' && plan.deliveryState !== 'reconciliation_failed') continue;
+      const [scope] = await this.database.get('affinity_scope_config', {
+        characterId: CHARACTER_ID,
+        scopeKind: plan.scopeKind,
+        scopeId: plan.scopeId,
+      }) as AffinityScopeConfigRecord[];
+      if (!scope) {
+        await this.markRandomDeliveryReconciliationFailed(plan, new Error('affinity scope is unavailable'), now);
+        continue;
+      }
+      try {
+        if (!plan.deliveryAttemptId?.trim() || !plan.deliveryConfirmedAt) {
+          throw new Error('affinity confirmed delivery checkpoint is incomplete.');
+        }
+        parseConfirmedDeliveryReceipts(plan.deliveryReceipt);
+        const payload = parseConfirmedDeliveryPayload(plan.deliveryPayloadJson);
+        await this.materializeConfirmedRandomDelivery({ plan, scope, payload, now });
+      } catch (error) {
+        await this.markRandomDeliveryReconciliationFailed(plan, error, now);
+      }
+    }
   }
 
   private isManualRandomPlan(plan: AffinityRandomPlanRecord): boolean {
@@ -2087,15 +2576,67 @@ export class AffinityService implements AffinityServiceLike {
       await this.skipPlan(plan, generation.skipReason ?? generation.reason ?? 'random_generation_skipped', now);
       return;
     }
-    const delivery = await this.deliverRandomGeneration({
-      plan,
-      scope,
-      bot,
-      channelId,
-      generation,
-    });
-    if (!delivery.sent || !delivery.messageText) {
-      const deliveryReason = delivery.reason ?? 'delivery_failed';
+    const deliveryAttemptId = await this.beginRandomDelivery(plan, generation, prepared.materialJson, now);
+    let delivery: RandomDeliveryResult;
+    try {
+      delivery = await this.deliverRandomGeneration({
+        plan,
+        scope,
+        bot,
+        channelId,
+        generation,
+      });
+    } catch (error) {
+      await this.database.set('affinity_random_plan', { id: plan.id }, {
+        status: 'failed',
+        deliveryState: 'outcome_unknown',
+        skipReason: `delivery_outcome_unknown: ${error instanceof Error ? error.message : String(error)}`,
+        updatedAt: now,
+      });
+      return;
+    }
+    if (!delivery.sent) {
+      const deliveryReason = delivery.reason;
+      if (deliveryReason === 'outcome_unknown') {
+        const payload = await this.checkpointOutcomeUnknownRandomDelivery({
+          plan,
+          attemptId: deliveryAttemptId,
+          delivery,
+          generation,
+          materialJson: prepared.materialJson,
+          now,
+        });
+        if (payload) {
+          try {
+            await this.materializeRandomDeliveryArtifacts({ plan, scope, payload, now });
+            await this.database.set('affinity_random_plan', { id: plan.id }, {
+              status: 'failed',
+              deliveryState: 'outcome_unknown',
+              messageText: payload.messageText,
+              skipReason: 'delivery_outcome_unknown',
+              sentAt: now,
+              updatedAt: now,
+            });
+          } catch (error) {
+            await this.database.set('affinity_random_plan', { id: plan.id }, {
+              skipReason: `delivery_outcome_unknown_reconciliation_failed: ${error instanceof Error ? error.message : String(error)}`,
+              updatedAt: now,
+            });
+          }
+        }
+        await this.writeAudit('random_message_generation_skipped', {
+          scopeKind: plan.scopeKind,
+          scopeId: plan.scopeId,
+          detail: {
+            planId: plan.id,
+            direction: plan.direction,
+            reason: 'delivery_outcome_unknown',
+            risk: generation.risk,
+          },
+        });
+        return;
+      }
+      await this.clearRandomDeliveryCheckpoint(plan, now);
       if (!manual && deliveryReason === 'transport_unavailable') {
         const requeued = await this.requeuePlanAfterTransportUnavailable({
           plan,
@@ -2118,78 +2659,31 @@ export class AffinityService implements AffinityServiceLike {
       await this.skipPlan(plan, deliveryReason, now);
       return;
     }
-    const messageText = delivery.messageText;
-    generation.deliveryHistoryText = delivery.historyText;
+    const payload = await this.checkpointConfirmedRandomDelivery({
+      plan,
+      attemptId: deliveryAttemptId,
+      delivery,
+      generation,
+      materialJson: prepared.materialJson,
+      now,
+    });
+    const checkpointedPlan: AffinityRandomPlanRecord = {
+      ...plan,
+      deliveryState: 'confirmed',
+      deliveryAttemptId,
+      deliveryReceipt: stringifyJson(delivery.receipts),
+      deliveryPayloadJson: stringifyJson(payload),
+      deliveryConfirmedAt: now,
+    };
     try {
-      await this.database.set('affinity_random_plan', { id: plan.id }, {
-        status: 'sent',
-        messageText,
-        sentAt: now,
-        updatedAt: now,
-      });
-      await this.database.create('affinity_open_thread', {
-        characterId: CHARACTER_ID,
-        scopeKind: plan.scopeKind,
-        scopeId: plan.scopeId,
-        userKey: null,
-        threadType: `random:${plan.direction}`,
-        title: `random:${plan.direction}`,
-        summary: messageText,
-        status: 'open',
-        payloadJson: stringifyJson({
-          planId: plan.id,
-          direction: plan.direction,
-          contextSeedSummary: generation.contextSeedSummary,
-          eventTypeHint: generation.eventTypeHint,
-          reason: generation.reason,
-        }),
-        expiresAt: now + RANDOM_OPEN_THREAD_TTL_MS,
-        createdAt: now,
-        updatedAt: now,
-      });
-      await this.persistRandomMemory({
-        plan,
+      await this.materializeConfirmedRandomDelivery({
+        plan: checkpointedPlan,
         scope,
-        messageText,
-        generation,
-        materialJson: prepared.materialJson,
+        payload,
         now,
       });
-      await this.writeAudit('random_message_generated', {
-        scopeKind: plan.scopeKind,
-        scopeId: plan.scopeId,
-        detail: {
-          planId: plan.id,
-          direction: plan.direction,
-          eventTypeHint: generation.eventTypeHint,
-          contextSeedSummary: generation.contextSeedSummary,
-          reason: generation.reason,
-        },
-      });
-      const historySync = await this.syncRandomMessageToChatHistory({
-        plan,
-        scope,
-        messageText,
-        generation,
-        materialJson: prepared.materialJson,
-      });
-      await this.writeAudit('random_plan_sent', {
-        scopeKind: plan.scopeKind,
-        scopeId: plan.scopeId,
-        detail: {
-          planId: plan.id,
-          direction: plan.direction,
-          historySynced: historySync.synced,
-          historySkipReason: historySync.reason ?? null,
-          conversationId: historySync.conversationId ?? null,
-        },
-      });
     } catch (error) {
-      await this.database.set('affinity_random_plan', { id: plan.id }, {
-        status: 'failed',
-        skipReason: error instanceof Error ? error.message : String(error),
-        updatedAt: now,
-      });
+      await this.markRandomDeliveryReconciliationFailed(checkpointedPlan, error, now);
     }
   }
 
@@ -2210,6 +2704,7 @@ export class AffinityService implements AffinityServiceLike {
     }
 
     try {
+      const recordId = `affinity-random-plan:${plan.id}`;
       const writer = await this.resolveChatHistoryWriter(conversationId);
       if (!writer.ok) {
         await this.writeRandomHistorySyncAudit('random_history_sync_skipped', plan, {
@@ -2227,10 +2722,10 @@ export class AffinityService implements AffinityServiceLike {
       await writer.addMessages([
         new AIMessage({
           content: historyContent,
-          id: `affinity-random-plan:${plan.id}`,
+          id: recordId,
           response_metadata: {
             chatluna: {
-              recordId: `affinity-random-plan:${plan.id}`,
+              recordId,
             },
           },
           additional_kwargs: {

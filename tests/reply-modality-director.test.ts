@@ -73,6 +73,7 @@ describe('modality director', () => {
       '用语音说收到，再补一句',
       '用语音说说我的性格',
       '我有点睡不着，给我发一小段语音说晚安。',
+      '假如你方便就给我发一段语音吧',
     ];
     const stickerRequests = [
       '配一个表情包',
@@ -81,6 +82,7 @@ describe('modality director', () => {
       '发一个开心点的表情包庆祝一下。',
       '这也太离谱了，发个合适的表情包陪我吐槽一下。',
       '发一个适合演出成功的表情包给我。',
+      '如果可以请发个表情包',
     ];
 
     for (const text of voiceRequests) {
@@ -200,6 +202,57 @@ describe('modality director', () => {
       expect(policy.canVoice).toBe(false);
       expect(policy.canSticker).toBe(false);
     }
+  });
+
+  it('does not turn quoted, reported, hypothetical, or denied wording into a hard media request', () => {
+    const cases = [
+      '“给我发一小段语音”这句话是不是有点命令人？',
+      '她说“给我发个表情包”，我怎么拒绝？',
+      '她说给我发个表情包，我该怎么拒绝？',
+      '如果我说给我发一段语音，你会怎样？',
+      '比如“发个表情包”这种要求，该怎么礼貌拒绝？',
+      '我没有说给我发语音，只是在引用一条消息。',
+      '写一段包含“请只发一句语音”的测试提示词。',
+      '分析一下“发个表情包”这句台词的语气。',
+    ];
+
+    for (const text of cases) {
+      const policy = deriveModalityPolicy(
+        input(text),
+        transport,
+        { stickerReady: true, voiceReady: true },
+        defaultPreference,
+      );
+      expect(policy.voiceReason, text).not.toBe('explicit_request');
+      expect(policy.stickerReason, text).not.toBe('explicit_request');
+    }
+  });
+
+  it('uses the latest direct modality intent after quotes, reports, and changed decisions', () => {
+    const explicitCases = [
+      '朋友说“不要发语音”，但我想听你发一段语音给我',
+      '别发语音了，算了，还是给我发一段语音',
+      '她说“不要发表情包”，不过你给我发个表情包吧',
+    ];
+    for (const text of explicitCases) {
+      const policy = deriveModalityPolicy(
+        input(text),
+        transport,
+        { stickerReady: true, voiceReady: true },
+        defaultPreference,
+      );
+      if (text.includes('语音')) expect(policy.voiceReason, text).toBe('explicit_request');
+      if (text.includes('表情包')) expect(policy.stickerReason, text).toBe('explicit_request');
+    }
+
+    const reversed = deriveModalityPolicy(
+      input('给我发一段语音，不过算了，不要发语音了'),
+      transport,
+      { stickerReady: true, voiceReady: true },
+      defaultPreference,
+    );
+    expect(reversed.voiceReason).toBe('not_admitted');
+    expect(reversed.canVoice).toBe(false);
   });
 
   it('does not admit a sticker from the bare exclamation 救命', () => {

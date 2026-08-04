@@ -16,6 +16,10 @@ export type ChatLunaHistoryServiceLike = {
   };
   conversationRuntime?: {
     clearConversationCache: (conversationId: string) => Promise<unknown>;
+    withConversationLock: <T>(
+      conversationId: string,
+      callback: () => Promise<T>,
+    ) => Promise<T>;
   };
 };
 
@@ -44,24 +48,62 @@ export async function createChatLunaHistoryWriter(args: {
   logger: Pick<Logger, 'warn'>;
   conversationId: string;
   chatluna: ChatLunaHistoryServiceLike;
+  lockMode: 'acquire' | 'already_held';
   maxMessagesCount?: number;
 }): Promise<ChatLunaHistoryWriter> {
   const { KoishiChatMessageHistory } = ChatLunaHistory;
-  const clearConversationCache = args.chatluna.conversationRuntime?.clearConversationCache;
+  const conversationRuntime = args.chatluna.conversationRuntime;
+  const clearConversationCache = conversationRuntime?.clearConversationCache;
   if (typeof clearConversationCache !== 'function') {
     throw new Error('ChatLuna history writer requires conversationRuntime.clearConversationCache.');
   }
-  const history = new KoishiChatMessageHistory(
-    { database: args.database, logger: args.logger },
-    args.conversationId,
-    args.maxMessagesCount ?? 10_000,
-    args.chatluna,
-  );
+  const withConversationLock = conversationRuntime?.withConversationLock;
+  if (typeof withConversationLock !== 'function') {
+    throw new Error('ChatLuna history writer requires conversationRuntime.withConversationLock.');
+  }
+
+  const addMessagesInsideLock = async (messages: BaseMessage[]): Promise<void> => {
+    const [conversation] = await args.database.get(
+      'chatluna_conversation',
+      { id: args.conversationId },
+      ['id'],
+    );
+    if (!conversation?.id) {
+      throw new Error(`ChatLuna history conversation is unavailable: ${args.conversationId}`);
+    }
+    const pendingMessages: BaseMessage[] = [];
+    for (const message of messages) {
+      const chatlunaMetadata = message.response_metadata?.chatluna;
+      const recordId = chatlunaMetadata && typeof chatlunaMetadata === 'object'
+        && 'recordId' in chatlunaMetadata
+        ? String((chatlunaMetadata as { recordId?: unknown }).recordId ?? '').trim()
+        : '';
+      if (recordId) {
+        const [existing] = await args.database.get('chatluna_message', { id: recordId }, ['id']);
+        if (existing?.id) continue;
+      }
+      pendingMessages.push(message);
+    }
+    if (!pendingMessages.length) return;
+    const history = new KoishiChatMessageHistory(
+      { database: args.database, logger: args.logger },
+      args.conversationId,
+      args.maxMessagesCount ?? 10_000,
+      args.chatluna,
+    );
+    await history.addMessages(pendingMessages);
+    await clearConversationCache.call(conversationRuntime, args.conversationId);
+  };
 
   return {
     addMessages: async (messages) => {
-      await history.addMessages(messages);
-      await clearConversationCache.call(args.chatluna.conversationRuntime, args.conversationId);
+      if (args.lockMode === 'already_held') {
+        await addMessagesInsideLock(messages);
+        return;
+      }
+      await withConversationLock.call(conversationRuntime, args.conversationId, () => (
+        addMessagesInsideLock(messages)
+      ));
     },
   };
 }

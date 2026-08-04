@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 const require = createRequire(import.meta.url)
 const WebSocket = require('ws')
 const { loadProbeManifest, selectProbeCases } = require('./lib/chat-reply-probe-corpus.cjs')
+const { INTERNAL_METADATA_TOKENS } = require('./lib/probe-visible-output.cjs')
 
 function positiveInteger(name, rawValue, maximum) {
   const value = Number(rawValue)
@@ -201,7 +202,7 @@ try {
     for (let repetition = 1; repetition <= repetitions; repetition += 1) {
       const sampleCall = await send('Runtime.callFunctionOn', {
         objectId: loader,
-        functionDeclaration: String.raw`async function(probeCase, repetition, presetId, reasoningEffort, maxTokens) {
+        functionDeclaration: String.raw`async function(probeCase, repetition, presetId, reasoningEffort, maxTokens, forbiddenMetaTokens) {
           const contentToText = (content) => {
             if (typeof content === 'string') return content
             if (!Array.isArray(content)) return String(content ?? '')
@@ -266,16 +267,10 @@ try {
               ? probeCase.expect.maxVisibleTextChars
               : null
             const assistantChars = Array.from(assistant).length
-            const forbiddenMeta = [
-              'ReplyPlan',
-              '<qqbot-',
-              '系统提示词',
-              '内部回复协议',
-              'WorkingState',
-              'submit_working_state',
-              'qqbot_reply_plan_executor',
-              'protocol violation',
-            ].find((token) => assistant.includes(token))
+            const normalizedAssistant = assistant.toLocaleLowerCase('en-US')
+            const forbiddenMeta = forbiddenMetaTokens.find(
+              (token) => normalizedAssistant.includes(token.toLocaleLowerCase('en-US'))
+            ) || null
             const hardFailures = []
             const warnings = []
             if (probeCase.expect.forbidSpeakerLabels && speakerLabel) warnings.push('speaker_label')
@@ -348,6 +343,7 @@ try {
           { value: manifest.presetId },
           { value: reasoningEffort },
           { value: maxTokens },
+          { value: INTERNAL_METADATA_TOKENS },
         ],
         awaitPromise: true,
         returnByValue: true,

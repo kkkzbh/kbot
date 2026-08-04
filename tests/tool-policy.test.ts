@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('koishi', () => {
+  type MockSchemaNode = {
+    description: () => MockSchemaNode;
+    role: () => MockSchemaNode;
+  };
+  const createSchemaNode = (): MockSchemaNode => ({
+    description: () => createSchemaNode(),
+    role: () => createSchemaNode(),
+  });
   class MockLogger {
     info(): void {}
     warn(): void {}
@@ -10,11 +18,23 @@ vi.mock('koishi', () => {
   return {
     Context: class {},
     Logger: MockLogger,
+    Schema: {
+      boolean: createSchemaNode,
+      natural: createSchemaNode,
+      object: createSchemaNode,
+      string: createSchemaNode,
+    },
+    h: {},
   };
 });
 
 import { apply, inject } from '../src/plugins/tool-policy/index.js';
+import {
+  AFFINITY_PROACTIVE_TOOL_MASK_POLICY,
+  createAffinityProactiveToolMask,
+} from '../src/plugins/affinity/proactive-tool-mask.js';
 import { GLOBAL_DEFAULT_SCOPE_ID, PRIVATE_DEFAULT_SCOPE_ID, TOOL_CATALOG } from '../src/plugins/shared/tool-policy-catalog.js';
+import { QQBOT_SUBMIT_REPLY_TOOL_NAME } from '../src/plugins/shared/internal-tool-names.js';
 import type { ToolCatalogEntry } from '../src/types/tool-policy.js';
 
 type Row = Record<string, any>;
@@ -72,6 +92,21 @@ function createHarness(
   const database = createDatabase(seed);
   const extend = vi.fn();
   const readyHandlers: Array<() => void> = [];
+  const toolRegistry: Record<string, { name: string; description?: string; meta?: Record<string, unknown> }> = {
+    file_read: { name: 'file_read' },
+    file_write: { name: 'file_write' },
+    file_edit: { name: 'file_edit' },
+    file_publish: { name: 'file_publish' },
+    grep: { name: 'grep' },
+    glob: { name: 'glob' },
+    bash: { name: 'bash' },
+    web_run: { name: 'web_run' },
+    question: { name: 'question' },
+    task: { name: 'task' },
+    hbu_jw_course_guidance_context: { name: 'hbu_jw_course_guidance_context' },
+    cf_user_profile: { name: 'cf_user_profile' },
+    unknown_runtime_tool: { name: 'unknown_runtime_tool' },
+  };
   const registerToolMaskResolver = vi.fn(function (this: any, name: string, resolver: unknown) {
     if (!this || this !== chatluna) {
       throw new Error('registerToolMaskResolver lost chatluna binding');
@@ -80,23 +115,15 @@ function createHarness(
   });
   const chatluna = {
     registerToolMaskResolver,
-      platform: {
-        getToolRegistry: () => ({
-          file_read: { name: 'file_read' },
-          file_write: { name: 'file_write' },
-          file_edit: { name: 'file_edit' },
-          file_publish: { name: 'file_publish' },
-          grep: { name: 'grep' },
-          glob: { name: 'glob' },
-          bash: { name: 'bash' },
-          web_run: { name: 'web_run' },
-          question: { name: 'question' },
-          task: { name: 'task' },
-          hbu_jw_course_guidance_context: { name: 'hbu_jw_course_guidance_context' },
-          cf_user_profile: { name: 'cf_user_profile' },
-          unknown_runtime_tool: { name: 'unknown_runtime_tool' },
-        }),
-      },
+    platform: {
+      getToolRegistry: () => toolRegistry,
+      registerTool: vi.fn((name: string, tool: any) => {
+        toolRegistry[name] = tool;
+        return () => {
+          delete toolRegistry[name];
+        };
+      }),
+    },
   };
   let currentChatLuna: typeof chatluna | undefined = options.initialChatLunaAvailable === false ? undefined : chatluna;
 
@@ -163,6 +190,7 @@ function createHarness(
     database,
     extend,
     registerToolMaskResolver,
+    toolRegistry,
     setChatLunaAvailable(available: boolean) {
       currentChatLuna = available ? chatluna : undefined;
       ctx.chatluna = currentChatLuna;
@@ -174,8 +202,35 @@ function createHarness(
 }
 
 describe('tool policy service', () => {
+  it('gives affinity proactive generation only the terminal reply tool', () => {
+    expect(AFFINITY_PROACTIVE_TOOL_MASK_POLICY).toEqual({
+      id: 'affinity_proactive_generation',
+      allowedTools: [QQBOT_SUBMIT_REPLY_TOOL_NAME],
+    });
+    expect(createAffinityProactiveToolMask()).toEqual({
+      mode: 'allow',
+      allow: [QQBOT_SUBMIT_REPLY_TOOL_NAME],
+      deny: [],
+      toolCallMask: {
+        mode: 'allow',
+        allow: [QQBOT_SUBMIT_REPLY_TOOL_NAME],
+        deny: [],
+      },
+    });
+  });
+
   it('declares runtime services as required injections', () => {
     expect(inject).toEqual({ required: ['database', 'chatluna', 'featurePolicy'] });
+  });
+
+  it('registers the internal terminal reply tool outside user policy state', () => {
+    const { toolRegistry } = createHarness();
+    expect(toolRegistry[QQBOT_SUBMIT_REPLY_TOOL_NAME]).toEqual(expect.objectContaining({
+      name: QQBOT_SUBMIT_REPLY_TOOL_NAME,
+      meta: expect.objectContaining({
+        group: 'qqbot-internal',
+      }),
+    }));
   });
 
   it('fails fast without the required database service', () => {
@@ -288,7 +343,7 @@ describe('tool policy service', () => {
       service.resolveAllowedTools({
         session: { isDirect: false, userId: 'u1', guildId: '1', channelId: '1' },
         routeProfile: 'agent',
-        toolNames: ['web_run', 'unknown_runtime_tool'],
+        toolNames: ['web_run', QQBOT_SUBMIT_REPLY_TOOL_NAME, 'unknown_runtime_tool'],
       }),
     ).resolves.toEqual({
       allowed: ['web_run'],
@@ -434,17 +489,10 @@ describe('tool policy service', () => {
     }
   });
 
-  it('fails closed at ready when chatluna runtime registry is unavailable', async () => {
-    const { registerToolMaskResolver, runReady, setChatLunaAvailable } = createHarness({}, {
+  it('fails closed during apply when the required ChatLuna registry is unavailable', () => {
+    expect(() => createHarness({}, {
       initialChatLunaAvailable: false,
-    });
-
-    await expect(runReady()).rejects.toThrow(/runtime tool registry|registerToolMaskResolver/i);
-    expect(registerToolMaskResolver).not.toHaveBeenCalled();
-
-    setChatLunaAvailable(true);
-    await expect(runReady()).resolves.toBeUndefined();
-    expect(registerToolMaskResolver).toHaveBeenCalledTimes(1);
+    })).toThrow(/registerTool.*internal reply finalization/i);
   });
 
   it('drops removed web overrides and migrates current file aliases', async () => {

@@ -122,28 +122,28 @@ export type ResolvedAction =
 
 const STRUCTURED_REPLY_MESSAGE_ITEM_SCHEMA = z.object({
   type: z.literal('message'),
-  content: z.string().min(1),
+  content: z.string().trim().min(1),
 }).strict();
 
 const STRUCTURED_REPLY_STRUCTURED_BLOCK_ITEM_SCHEMA = z.object({
   type: z.literal('structured_block'),
-  content: z.string().min(1),
+  content: z.string().trim().min(1),
 }).strict();
 
 const STRUCTURED_REPLY_VOICE_ITEM_SCHEMA = z.object({
   type: z.literal('voice'),
-  content: z.string().min(1).max(180),
+  content: z.string().trim().min(1).max(180),
 }).strict();
 
 const STRUCTURED_REPLY_IMAGE_ITEM_SCHEMA = z.object({
   type: z.literal('image'),
-  assetRef: z.string().min(1),
-  alt: z.string().min(1),
+  assetRef: z.string().trim().min(1),
+  alt: z.string().trim().min(1),
 }).strict();
 
 const STRUCTURED_REPLY_MEME_ITEM_SCHEMA = z.object({
   type: z.literal('meme'),
-  content: z.string().min(1).max(80),
+  content: z.string().trim().min(1).max(80),
 }).strict();
 
 const STRUCTURED_REPLY_OUTBOUND_ITEM_SCHEMA = z.discriminatedUnion('type', [

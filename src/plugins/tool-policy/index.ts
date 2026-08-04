@@ -24,6 +24,10 @@ import {
 } from '../shared/tool-policy-catalog.js';
 import { normalizeReplyChatMode } from '../shared/reply-chat-mode.js';
 import { normalizeGroupId, parseGroupSet } from '../shared/group-id.js';
+import { isQqbotInternalToolName } from '../shared/internal-tool-names.js';
+import { createReplyFinalizerToolEntry } from '../reply/index.js';
+import type { ChatLunaTool } from 'koishi-plugin-chatluna/llm-core/platform/types';
+import { createAllowToolMask } from '../shared/tool-mask.js';
 
 export const name = 'tool-policy';
 export const inject = { required: ['database', 'chatluna', 'featurePolicy'] } as const;
@@ -54,6 +58,7 @@ type ChatLunaLike = {
   ) => () => void;
   platform?: {
     getToolRegistry?: () => Record<string, { name: string; description?: string; meta?: Record<string, unknown> }>;
+    registerTool?: (name: string, tool: ChatLunaTool) => () => void;
   };
 };
 
@@ -96,19 +101,6 @@ function isToolScopeKind(value: string): value is ToolScopeKind {
     value === 'private_default' ||
     value === 'private_conversation' ||
     value === 'group';
-}
-
-function createAllowMask(allow: string[]): ToolMask {
-  return {
-    mode: 'allow',
-    allow: [...allow],
-    deny: [],
-    toolCallMask: {
-      mode: 'allow',
-      allow: [...allow],
-      deny: [],
-    },
-  };
 }
 
 function normalizeOverrideInput(input: ToolOverrideInput): ToolOverrideInput {
@@ -254,7 +246,7 @@ export class ToolPolicyService implements ToolPolicyServiceLike {
     const catalogMap = this.getRuntimeCatalogMap();
 
     const toolNames = Array.from(new Set(options.toolNames.map((name) => normalizeText(name)).filter(Boolean)));
-    const unknown = toolNames.filter((name) => !catalogMap.has(name));
+    const unknown = toolNames.filter((name) => !catalogMap.has(name) && !isQqbotInternalToolName(name));
     const known = toolNames.filter((name) => catalogMap.has(name));
     const scopeIds = await this.resolveScopeIds(options.session, options.room ?? null);
 
@@ -304,7 +296,7 @@ export class ToolPolicyService implements ToolPolicyServiceLike {
       toolNames: registeredNames,
       room: room ?? null,
     });
-    return createAllowMask(allowed);
+    return createAllowToolMask(allowed);
   }
 
   private async ensureOverrideCache(): Promise<void> {
@@ -502,7 +494,9 @@ export class ToolPolicyService implements ToolPolicyServiceLike {
   private logUnknownRegisteredTools(): void {
     const registered = this.getRuntimeToolNames();
     if (!registered.length) return;
-    const unknown = registered.filter((name) => !TOOL_CATALOG_MAP.has(name)).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+    const unknown = registered
+      .filter((name) => !TOOL_CATALOG_MAP.has(name) && !isQqbotInternalToolName(name))
+      .sort((left, right) => left.localeCompare(right, 'zh-CN'));
     const signature = unknown.join('|');
     if (!unknown.length || signature === this.lastUnknownRegistrySignature) return;
     this.lastUnknownRegistrySignature = signature;
@@ -639,6 +633,14 @@ export function apply(ctx: Context): void {
     serviceCtx.toolPolicy = service;
   }
 
+  const chatluna = resolveChatLunaService(serviceCtx);
+  const registerTool = chatluna?.platform?.registerTool?.bind(chatluna.platform);
+  if (!registerTool) {
+    throw new Error('tool-policy requires chatluna.platform.registerTool for internal reply finalization.');
+  }
+  const finalizerEntry = createReplyFinalizerToolEntry();
+  const disposeFinalizerTool = registerTool(finalizerEntry.name!, finalizerEntry);
+
   let disposeToolMaskResolver: (() => void) | null = null;
   const registerToolMaskResolver = (): void => {
     if (disposeToolMaskResolver) return;
@@ -675,6 +677,7 @@ export function apply(ctx: Context): void {
       disposeToolMaskResolver();
       disposeToolMaskResolver = null;
     }
+    disposeFinalizerTool();
   });
 }
 type ToolMaskArg = {

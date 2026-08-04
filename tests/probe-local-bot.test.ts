@@ -63,6 +63,11 @@ const shared = require('../scripts/lib/probe-local-bot-shared.cjs') as {
   serializePayload: (content: unknown) => unknown;
 };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+const visibleOutput = require('../scripts/lib/probe-visible-output.cjs') as {
+  INTERNAL_METADATA_TOKENS: readonly string[];
+  findInternalMetadataLeak: (value: unknown) => string | null;
+};
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const probeCorpus = require('../scripts/lib/chat-reply-probe-corpus.cjs') as {
   evaluateStatefulStickerRates: (
     rates: { casual: number; explicit: number; serious: number; informational: number },
@@ -504,6 +509,25 @@ describe('chat reply probe corpus', () => {
 });
 
 describe('probe-local-bot shared helpers', () => {
+  it('hard-fails every current terminal reply implementation token', () => {
+    const currentTokens = [
+      'qqbot_submit_reply',
+      'CHAT_REPLY_V1',
+      'AgentTerminalContractError',
+      'terminal contract',
+      'terminalTool',
+      'qqbot_final_response_contract',
+      'lc_direct_tool_output',
+      'qqbot-internal',
+    ];
+    for (const token of currentTokens) {
+      expect(visibleOutput.INTERNAL_METADATA_TOKENS).toContain(token);
+      expect(visibleOutput.findInternalMetadataLeak(`正常开头 ${token} 正常结尾`)).toBe(token);
+      expect(visibleOutput.findInternalMetadataLeak(token.toLowerCase())).toBe(token);
+    }
+    expect(visibleOutput.findInternalMetadataLeak('我搜一下，马上回来。')).toBeNull();
+  });
+
   it('recognizes only the controlled temporary identity namespaces', () => {
     expect(shared.isOwnedTemporaryProbeGroupId(OWNED_GROUP_ID)).toBe(true);
     expect(shared.isOwnedTemporaryProbeUserId(OWNED_USER_ID)).toBe(true);

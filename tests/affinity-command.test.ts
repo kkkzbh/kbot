@@ -104,6 +104,7 @@ describe('affinity panel command', () => {
     expect(affinityInject.required).toEqual(expect.arrayContaining([
       'modelConfig',
       'modelRuntime',
+      'toolPolicy',
     ]));
     expect('optional' in affinityInject ? affinityInject.optional : []).not.toContain('chatluna');
   });

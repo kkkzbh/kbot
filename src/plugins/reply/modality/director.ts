@@ -63,6 +63,7 @@ export interface ModalityDirectorOptions {
 }
 
 const VOICE_REQUEST_PATTERNS = [
+  /(?:如果|假如|要是|倘若).{0,12}(?:请|就)?(?:给我|回我)?(?:用|发|来|录)(?:一|几)?(?:小)?(?:条|段|个|句)?(?:语音|录音)/u,
   /(?:^|[，。！？；\s])(?:请|麻烦)?(?:只|就)?(?:给我|回我|回复我)?(?:用|发|来|录)(?:一|几)?(?:小)?(?:条|段|个|句)?(?:语音|录音)(?:说|讲|回答|回复|念|读|唱)?/u,
   /(?:请|麻烦|能不能|可不可以|要不|还是)(?:给我)?(?:用|发|来|录)(?:一|几)?(?:条|段|个)?(?:语音|录音)/u,
   /可以给我(?:用|发|来|录)(?:一|几)?(?:条|段|个)?(?:语音|录音)/u,
@@ -76,6 +77,7 @@ const VOICE_REQUEST_PATTERNS = [
 ] as const;
 const VOICE_OPTOUT_PATTERN = /(?:(?:别|不要|不用|禁止).{0,8}(?:语音|录音)|(?:语音|录音).{0,8}(?:别|不要|不用))/u;
 const STICKER_REQUEST_PATTERNS = [
+  /(?:如果|假如|要是|倘若).{0,12}(?:请|就)?(?:给我|回我)?(?:发|来|整|配|用)(?:一|几)?(?:张|个|些|点)?[^，。！？；\n]{0,16}?(?:表情包|贴图|meme|梗图)/iu,
   /(?:^|[，。！？；\s])(?:请|麻烦|帮我|能不能|可不可以)?(?:只|就|再)?(?:给我|回我)?(?:发|来|整|配|用)(?:一|几)?(?:张|个|些|点)?[^，。！？；\n]{0,16}?(?:表情包|贴图|meme|梗图)/iu,
   /(?:请|麻烦|能不能|可不可以|要不|再)(?:给我)?(?:发|来|整|用)(?:一|几)?(?:张|个|些|点)?(?:表情包|贴图|meme|梗图)/iu,
   /可以给我(?:发|来|整|用)(?:一|几)?(?:张|个|些|点)?(?:表情包|贴图|meme|梗图)/iu,
@@ -91,6 +93,9 @@ const SOCIAL_VOICE_PATTERN = /(?:晚安|生日快乐|祝你|恭喜|想你|想听
 const CASUAL_REACTION_PATTERN = /(?:哈哈|笑死|绷不住|离谱|无语|好耶|太好了|生日快乐|恭喜|可爱|笨蛋|哼|怎么这样|喜欢|想你|贴贴|厉害|绝了|真的假的|呜呜|嘿嘿|欸|诶)/u;
 const EXCLUSIVE_VOICE_REQUEST_PATTERN = /(?:(?:只|就)(?:给我|回我)?(?:用|发|来|录)?.{0,6}(?:语音|录音)|(?:语音|录音).{0,8}(?:就行|就好|即可)|(?:别|不要|不用)发?(?:文字|文本))/u;
 const VOICE_WITH_TEXT_REQUEST_PATTERN = /(?:(?:链接|网址|地址|代码|清单|步骤).{0,10}(?:发|用|写成)?(?:文字|文本)|(?:另外|同时|再|然后).{0,10}(?:发|用|写)?(?:文字|文本))/u;
+const QUOTED_SPAN_PATTERN = /“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'|`[^`]*`/gu;
+const QUOTE_MARK_PATTERN = /[“”‘’「」『』"'`]/u;
+const NON_DIRECT_REQUEST_CONTEXT_PATTERN = /(?:(?:如果|假如|假设|假定|倘若|要是).{0,16}(?:我|他|她|ta|有人|别人|对方).{0,8}(?:说|问|写|要求|引用)|(?:比如|例如|举例).{0,12}(?:这句|这类|这种|说法|要求|表达|台词)|引用|转述|这句(?:话)?|这段话|这条消息|教程|提示词|台词|文案|怎么拒绝|如何拒绝|该怎么拒绝|(?:他|她|ta|别人|朋友|群友|用户|对方).{0,8}(?:说|问|要求|让我|叫我)|(?:我|你).{0,5}(?:没说|没有说|并未说|没要求|没有要求))/iu;
 
 function requireIdentity(value: string, label: string): string {
   const normalized = value.trim();
@@ -102,9 +107,56 @@ function cooldownReady(lastTurn: number | null, currentTurn: number, cooldownTur
   return lastTurn == null || currentTurn - lastTurn > cooldownTurns;
 }
 
+function directRequestClauses(text: string): string[] {
+  return text
+    .replace(QUOTED_SPAN_PATTERN, ' ')
+    .split(/[，。！？；\n]+|(?:但(?:是)?|不过|可是|然而)/u)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0)
+    .filter((clause) => !QUOTE_MARK_PATTERN.test(clause))
+    .filter((clause) => !NON_DIRECT_REQUEST_CONTEXT_PATTERN.test(clause));
+}
+
+function lastPatternMatchIndex(text: string, patterns: readonly RegExp[]): number {
+  let latest = -1;
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const matcher = new RegExp(pattern.source, flags);
+    for (const match of text.matchAll(matcher)) {
+      latest = Math.max(latest, match.index);
+    }
+  }
+  return latest;
+}
+
+function resolveDirectModalityIntent(
+  text: string,
+  requestPatterns: readonly RegExp[],
+  optOutPattern: RegExp,
+): 'request' | 'opt_out' | 'none' {
+  let intent: 'request' | 'opt_out' | 'none' = 'none';
+  for (const clause of directRequestClauses(text)) {
+    const requestIndex = lastPatternMatchIndex(clause, requestPatterns);
+    const optOutIndex = lastPatternMatchIndex(clause, [optOutPattern]);
+    if (requestIndex < 0 && optOutIndex < 0) continue;
+    intent = requestIndex > optOutIndex ? 'request' : 'opt_out';
+  }
+  return intent;
+}
+
+function hasDirectRequest(text: string, patterns: readonly RegExp[]): boolean {
+  return directRequestClauses(text)
+    .some((clause) => lastPatternMatchIndex(clause, patterns) >= 0);
+}
+
 function resolveVoiceReason(input: TurnInput): VoiceAdmissionReason {
-  if (isExplicitVoiceRequest(input.text)) return 'explicit_request';
-  if (VOICE_OPTOUT_PATTERN.test(input.text)) return 'not_admitted';
+  const directIntent = resolveDirectModalityIntent(
+    input.text,
+    VOICE_REQUEST_PATTERNS,
+    VOICE_OPTOUT_PATTERN,
+  );
+  if (directIntent === 'request') return 'explicit_request';
+  if (directIntent === 'opt_out') return 'not_admitted';
   if (input.hasVoiceInput) return 'voice_reply';
   if (input.isDirect && SOCIAL_VOICE_PATTERN.test(input.text) && !INFORMATION_TASK_PATTERN.test(input.text)) {
     return 'private_social_moment';
@@ -113,19 +165,28 @@ function resolveVoiceReason(input: TurnInput): VoiceAdmissionReason {
 }
 
 export function isExplicitVoiceRequest(text: string): boolean {
-  return !VOICE_OPTOUT_PATTERN.test(text)
-    && VOICE_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
+  return resolveDirectModalityIntent(
+    text,
+    VOICE_REQUEST_PATTERNS,
+    VOICE_OPTOUT_PATTERN,
+  ) === 'request';
 }
 
 export function isExclusiveVoiceRequest(text: string): boolean {
-  return EXCLUSIVE_VOICE_REQUEST_PATTERN.test(text) && !VOICE_WITH_TEXT_REQUEST_PATTERN.test(text);
+  return hasDirectRequest(text, [EXCLUSIVE_VOICE_REQUEST_PATTERN])
+    && !VOICE_WITH_TEXT_REQUEST_PATTERN.test(text);
 }
 
 function resolveStickerReason(input: TurnInput): StickerAdmissionReason {
-  if (STICKER_OPTOUT_PATTERN.test(input.text) || SERIOUS_CONTEXT_PATTERN.test(input.text)) {
+  const directIntent = resolveDirectModalityIntent(
+    input.text,
+    STICKER_REQUEST_PATTERNS,
+    STICKER_OPTOUT_PATTERN,
+  );
+  if (directIntent === 'opt_out' || SERIOUS_CONTEXT_PATTERN.test(input.text)) {
     return 'not_admitted';
   }
-  if (STICKER_REQUEST_PATTERNS.some((pattern) => pattern.test(input.text))) return 'explicit_request';
+  if (directIntent === 'request') return 'explicit_request';
   if (INFORMATION_TASK_PATTERN.test(input.text)) return 'not_admitted';
   if (CASUAL_REACTION_PATTERN.test(input.text)) {
     return 'casual_reaction';

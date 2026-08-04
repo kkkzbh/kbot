@@ -1,6 +1,7 @@
 import type { Session } from 'koishi';
 import type { ReplyOutputProtocol } from '../shared/llm/reply-output-contract.js';
 import type { ResolvedModelTarget } from '../model-config/index.js';
+import type { ToolMask } from '../../types/tool-policy.js';
 import {
   buildOutboundMessagePlanFromReplyPlan,
   renderOutboundMessageSegmentsHistoryText,
@@ -17,6 +18,7 @@ import {
   buildReplyTurnInput,
   compileReplyPromptEnvelope,
   isVoiceOutputConfigured,
+  replyFinalizerRequestRegistry,
   ReplyOrchestratorService,
   type ReplyInputMessageLike,
   type RuntimeConfig as ReplyVoiceRuntimeConfig,
@@ -32,6 +34,7 @@ import {
   resolveProactiveEventTypeHint,
   summarizeProactiveContext,
 } from './proactive-task.js';
+import { createAffinityProactiveToolMask } from './proactive-tool-mask.js';
 
 type ChatLunaMessageLike = ReplyInputMessageLike;
 
@@ -45,7 +48,7 @@ export type AffinityProactiveChatLunaService = {
       stream?: boolean;
       variables?: Record<string, unknown>;
       requestId?: string;
-      toolMask?: unknown;
+      toolMask: ToolMask;
     },
   ) => Promise<ChatLunaMessageLike | null | undefined>;
   contextManager?: {
@@ -168,6 +171,7 @@ export async function generateAffinityProactiveViaChatLuna(args: {
   }
 
   const runtime = args.runtime;
+  const toolMask = createAffinityProactiveToolMask();
   const capabilitySnapshot = buildCapabilitySnapshot({
     runtime,
     session: args.session,
@@ -197,6 +201,13 @@ export async function generateAffinityProactiveViaChatLuna(args: {
     conversationId,
   });
 
+  replyFinalizerRequestRegistry.begin(args.requestId, {
+    canVoice: capabilitySnapshot.canVoice,
+    canMeme: capabilitySnapshot.canSticker,
+    explicitVoiceRequested: false,
+    explicitMemeRequested: false,
+    hasImageAssetRef: () => false,
+  });
   try {
     const response = await chat(
       args.session,
@@ -207,6 +218,7 @@ export async function generateAffinityProactiveViaChatLuna(args: {
         stream: false,
         variables: {},
         requestId: args.requestId,
+        toolMask,
       },
     );
     const orchestration = await proactiveReplyOrchestrator.handle(turnInput, args.session, {
@@ -246,5 +258,7 @@ export async function generateAffinityProactiveViaChatLuna(args: {
         ? 'empty_model_output'
         : 'chatluna_generation_error';
     return skipResult(reason);
+  } finally {
+    replyFinalizerRequestRegistry.finish(args.requestId);
   }
 }

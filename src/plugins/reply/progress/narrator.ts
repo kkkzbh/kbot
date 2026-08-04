@@ -1,5 +1,7 @@
 import { CallbackManager } from '@langchain/core/callbacks/manager';
 import type { Session } from 'koishi';
+import { createOrderedCallbackManager } from '../../shared/chatluna-callbacks.js';
+import { QQBOT_SUBMIT_REPLY_TOOL_NAME } from '../../shared/internal-tool-names.js';
 
 export const CHATLUNA_AGENT_EVENT = 'chatluna-agent-event';
 
@@ -64,9 +66,9 @@ function hashSeed(value: string): number {
 
 function classifyToolName(toolName: string): ProgressActivity {
   const normalized = toolName.trim().toLowerCase();
-  if (/(?:web|search|fetch|weather|browser|url|http)/u.test(normalized)) return 'search';
   if (/(?:memory|history|context|recall)/u.test(normalized)) return 'memory';
   if (/(?:read|grep|glob|document|attachment|file_view)/u.test(normalized)) return 'reading';
+  if (/(?:web|search|fetch|weather|browser|url|http)/u.test(normalized)) return 'search';
   if (/(?:write|edit|publish|bash|command|automation|trigger|create|update|delete|pause|resume)/u.test(normalized)) {
     return 'action';
   }
@@ -82,6 +84,10 @@ function classifyActions(event: Extract<AgentEvent, { type: 'tool-call' }>): Pro
   if (categories.includes('reading')) return 'reading';
   if (categories.includes('action')) return 'action';
   return 'work';
+}
+
+function isProgressVisibleTool(toolName: string): boolean {
+  return !toolName.endsWith('_Exception') && toolName !== QQBOT_SUBMIT_REPLY_TOOL_NAME;
 }
 
 export class ProgressPhraseBook {
@@ -169,8 +175,12 @@ export class AgentProgressRun {
   async onAgentEvent(event: AgentEvent): Promise<void> {
     if (this.disposed) return;
     if (event.type === 'tool-call') {
-      if (event.actions.every((action) => action.tool.endsWith('_Exception'))) return;
-      const activity = classifyActions(event);
+      const visibleActions = event.actions.filter((action) => isProgressVisibleTool(action.tool));
+      if (visibleActions.length === 0) {
+        this.clearWaitUpdate();
+        return;
+      }
+      const activity = classifyActions({ type: 'tool-call', actions: visibleActions });
       this.lastActivity = activity;
       if (this.messageCount === 0) {
         await this.emit(`start:${activity}`);
@@ -181,7 +191,7 @@ export class AgentProgressRun {
 
     if (event.type === 'tool-result') {
       this.clearWaitUpdate();
-      this.hadToolResult = event.steps.length > 0;
+      this.hadToolResult = event.steps.some((step) => isProgressVisibleTool(step.action.tool));
       return;
     }
 
@@ -297,7 +307,7 @@ export function createAgentProgressCallbacksProvider(args: {
     runs.add(run);
     activeRuns.set(replyRunId, runs);
 
-    return CallbackManager.fromHandlers({
+    return createOrderedCallbackManager({
       handleCustomEvent: async (name, rawPayload) => {
         if (name !== CHATLUNA_AGENT_EVENT) return;
         const payload = rawPayload as AgentCallbackEvent;

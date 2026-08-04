@@ -5,7 +5,13 @@ import { REALTIME_MESSAGE_HISTORY_TOOL } from '../src/plugins/realtime-message/t
 
 const mockRealtimeHistoryAddMessages = vi.hoisted(() => vi.fn(async (_messages: unknown[]) => undefined));
 const mockRealtimeHistoryInstances = vi.hoisted(
-  () => [] as Array<{ ctx: unknown; conversationId: string; maxMessagesCount: number; chatluna: unknown }>,
+  () => [] as Array<{
+    ctx: unknown;
+    conversationId: string;
+    lockMode: 'acquire' | 'already_held';
+    maxMessagesCount: number;
+    chatluna: unknown;
+  }>,
 );
 
 vi.mock('koishi', () => {
@@ -88,12 +94,14 @@ vi.mock('../src/plugins/shared/chatluna-history.js', () => ({
     database: unknown;
     logger: unknown;
     conversationId: string;
+    lockMode: 'acquire' | 'already_held';
     chatluna: unknown;
     maxMessagesCount?: number;
   }) => {
     mockRealtimeHistoryInstances.push({
       ctx: { database: args.database, logger: args.logger },
       conversationId: args.conversationId,
+      lockMode: args.lockMode,
       maxMessagesCount: args.maxMessagesCount ?? 10_000,
       chatluna: args.chatluna,
     });
@@ -557,6 +565,7 @@ describe('realtime message plugin', () => {
     expect(mockRealtimeHistoryInstances).toEqual([
       expect.objectContaining({
         conversationId: 'conv-bind-1',
+        lockMode: 'already_held',
         maxMessagesCount: 10_000,
         chatluna,
       }),

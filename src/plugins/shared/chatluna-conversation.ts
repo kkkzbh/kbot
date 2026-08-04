@@ -27,6 +27,7 @@ type ChatLunaConversationResolutionLike = {
 
 export type QqbotChatLunaContextOptionsLike = {
   conversation?: ChatLunaConversationResolutionLike | null;
+  requestSignal?: AbortSignal;
 };
 
 function normalizeString(value: unknown): string | undefined {

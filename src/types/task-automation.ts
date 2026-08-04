@@ -1,4 +1,5 @@
 import 'koishi';
+import type { DurableDeliveryState } from './durable-delivery.js';
 
 export type TaskScope = 'group' | 'private';
 export type TaskKind = 'once' | 'cron';
@@ -38,6 +39,10 @@ export interface AutomationJobRun {
   outputText: string | null;
   outputPayload: unknown | null;
   deliveryReceipt: string | null;
+  deliveryState: DurableDeliveryState;
+  deliveryAttemptId: string | null;
+  deliveryConfirmedAt: number | null;
+  deliveryError: string | null;
 }
 
 declare module 'koishi' {

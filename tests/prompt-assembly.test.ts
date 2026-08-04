@@ -472,7 +472,7 @@ describe('prompt assembly', () => {
     expect(compiledContent).not.toContain('submit_working_state');
   });
 
-  it('injects CHAT_REPLY_V1 output rules when text protocol is selected', () => {
+  it('injects terminal reply tool rules when the internal text protocol is selected', () => {
     const envelope = compileReplyPromptEnvelope(
       buildReplyPromptCompilerInput(
         {
@@ -495,11 +495,10 @@ describe('prompt assembly', () => {
     );
 
     const compiledContent = envelope?.fragments.map((fragment) => fragment.content).join('\n\n') ?? '';
-    expect(compiledContent).toContain('CHAT_REPLY_V1 <nonce>');
-    expect(compiledContent).toContain('一到四个 `BEGIN ... END` block');
-    expect(compiledContent).toContain('在 `BEGIN <type>` 后直接写以 `|` 开头的 payload 行');
-    expect(compiledContent).toContain('payload 内容行必须以 `|` 开头');
-    expect(compiledContent).not.toContain('\nCONTENT\n');
+    expect(compiledContent).toContain('调用 `qqbot_submit_reply` 提交最终回复');
+    expect(compiledContent).toContain('最终回复只能通过这个工具提交');
+    expect(compiledContent).toContain('result.messages');
+    expect(compiledContent).not.toContain('CHAT_REPLY_V1 <nonce>');
     expect(compiledContent).toContain('只有工具为本轮答案返回了图片 `assetRef` 时才使用 `image`');
     expect(compiledContent).not.toContain('Codeforces/CF');
     expect(compiledContent).not.toContain('"outbound_messages"');
@@ -538,7 +537,7 @@ describe('prompt assembly', () => {
     const compiledContent = envelope?.fragments.map((fragment) => fragment.content).join('\n\n') ?? '';
     expect(compiledContent).toContain('当前语音输出目标语言：日语');
     expect(compiledContent).toContain('`voice.content` 必须直接写成自然日语');
-    expect(compiledContent).toContain('|<要朗读的简短话语>');
+    expect(compiledContent).toContain('当前允许 `voice_message`');
   });
 
   it('keeps reply interrupt continuation state in a single prompt fragment', () => {

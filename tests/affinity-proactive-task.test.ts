@@ -37,10 +37,21 @@ import {
 import type { AffinityRandomGenerationInput } from '../src/plugins/affinity/proactive-types.js';
 import { generateAffinityProactiveViaChatLuna } from '../src/plugins/affinity/proactive-chatluna.js';
 import { createVoiceRuntimeConfig } from '../src/plugins/reply/voice/generation.js';
+import { QQBOT_SUBMIT_REPLY_TOOL_NAME } from '../src/plugins/shared/internal-tool-names.js';
 import { createTestModelRuntime } from './model-runtime-fixture.js';
 import { nativeStructuredReplyContent } from './structured-reply-fixture.js';
 
 const NOW = Date.UTC(2026, 5, 17, 6, 0, 0);
+const EXPECTED_PROACTIVE_TOOL_MASK = {
+  mode: 'allow',
+  allow: [QQBOT_SUBMIT_REPLY_TOOL_NAME],
+  deny: [],
+  toolCallMask: {
+    mode: 'allow',
+    allow: [QQBOT_SUBMIT_REPLY_TOOL_NAME],
+    deny: [],
+  },
+};
 
 function input(overrides: Partial<AffinityRandomGenerationInput> = {}): AffinityRandomGenerationInput {
   return {
@@ -170,10 +181,13 @@ function createTestVoiceRuntime() {
 }
 
 function createChatLuna(responseContent: string) {
-  const chat = vi.fn(async (..._args: any[]) => ({
-    content: responseContent,
-    additional_kwargs: {},
-  }));
+  const chat = vi.fn(async (...args: any[]) => {
+    expect(args[3]?.toolMask).toEqual(EXPECTED_PROACTIVE_TOOL_MASK);
+    return {
+      content: responseContent,
+      additional_kwargs: {},
+    };
+  });
   return {
     chat,
     contextManager: {
@@ -415,14 +429,15 @@ describe('affinity proactive task prompt and provider adapter', () => {
     expect(modelMessage.additional_kwargs?.qqbot_final_response_contract).toEqual(expect.objectContaining({
       protocol: 'chat_reply_v1',
       schema: null,
-      instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
+      instruction: expect.stringContaining('qqbot_submit_reply'),
+      terminalTool: 'qqbot_submit_reply',
     }));
-    expect(modelMessage.additional_kwargs?.qqbot_final_response_instruction).toContain('CHAT_REPLY_V1 <nonce>');
+    expect(modelMessage.additional_kwargs?.qqbot_final_response_instruction).toContain('qqbot_submit_reply');
     const injectedText = chatluna.contextManager.inject.mock.calls
       .flatMap((call) => call[0]?.value ?? [])
       .map((message: { content: string }) => message.content)
       .join('\n\n');
-    expect(injectedText).toContain('CHAT_REPLY_V1 <nonce>');
+    expect(injectedText).toContain('qqbot_submit_reply');
   });
 
   it('maps provider no_reply to a skipped proactive generation without fallback text', async () => {

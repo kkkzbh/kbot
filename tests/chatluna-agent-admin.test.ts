@@ -140,13 +140,18 @@ function createRuntime(): ChatLunaAgentRuntimeService {
         computer: computerStatus,
         tool: {
           enabled: true,
-          total: 3,
-          mainEnabled: 3,
+          total: 4,
+          mainEnabled: 4,
           subAgentEnabled: 3,
           catalog: {
             skill: tool('skill'),
             file_read: tool('file_read'),
             bash: tool('bash'),
+            qqbot_submit_reply: {
+              ...tool('qqbot_submit_reply'),
+              group: 'qqbot-internal',
+              tags: ['internal', 'terminal-reply'],
+            },
           },
         },
       },

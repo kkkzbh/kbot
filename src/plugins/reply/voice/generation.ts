@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Context, h, Logger, Schema, type Session, type Universal } from 'koishi';
 import type { FeaturePolicyServiceLike } from '../../../types/feature-policy.js';
+import type { ToolPolicyServiceLike } from '../../../types/tool-policy.js';
 import {
   createStickerHistoryLine,
   resolveStickerSelection,
@@ -34,7 +35,6 @@ import {
   resolveReplyActorKey,
   resolveReplyQueueKey,
   sanitizeStructuredReplyText,
-  sendBotMessageByNormalizedContent,
   type BotMessageContent,
   type OutboundMessagePlan,
   type OutboundMessageSegment,
@@ -85,6 +85,7 @@ import {
 } from '../prompt/compiler.js';
 import {
   ReplyRuntime,
+  ReplyRunCancellationError,
   type ReplyTurnContinuationContext,
   type ReplyRunMode,
   type ReplyRuntimeRoomLike,
@@ -106,10 +107,26 @@ import {
 } from '../modality/preference-store.js';
 import { ReplyArtifactRegistry } from '../modality/artifact-registry.js';
 import {
+  assertExplicitModalityInvariant,
+  ExplicitModalityInvariantError,
+  type ExplicitReplyModality,
+} from '../modality/explicit-invariant.js';
+import {
   createAgentProgressCallbacksProvider,
   type AgentProgressCallbacksProvider,
   type ChatCallbacksProviderLike,
 } from '../progress/narrator.js';
+import {
+  replyFinalizerRequestRegistry,
+} from '../finalizer/tool.js';
+import {
+  ReplyDeliveryCheckpointStore,
+  registerReplyDeliveryCheckpointTable,
+  type ReplyDeliveryCheckpointDatabase,
+  type ReplyDeliveryCheckpointRecord,
+  type ReplyDeliveryPlannedUnit,
+} from '../delivery/checkpoint-store.js';
+import { recoverReplyDeliveryCheckpoints } from '../delivery/recovery.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
   ChainMiddlewareRunStatus: { STOP: number; CONTINUE: number };
@@ -128,7 +145,7 @@ const VOICE_WORD_SEGMENTER =
     : null;
 export const name = 'qq-voice';
 export const inject = {
-  required: ['chatluna', 'database', 'featurePolicy', 'modelConfig', 'naturalTriggerConfig'],
+  required: ['chatluna', 'database', 'featurePolicy', 'modelConfig', 'naturalTriggerConfig', 'toolPolicy'],
 } as const;
 const sharedReplyTransportSendStrand = createKeyedStrandRunner();
 const sharedReplyTransportCanSendRecordCache = new Map<string, boolean>();
@@ -240,7 +257,11 @@ interface ReplyTransportState {
   capabilitySnapshot?: ReplyCapabilitySnapshot;
   runId?: string;
   suppressErrorNotice?: boolean;
-  handleRequestModelError?: (error: unknown) => Promise<string | void> | string | void;
+  handleRequestModelError?: (
+    error: unknown,
+    requestState: { requestBoundaryPersisted: boolean },
+  ) => Promise<string | void> | string | void;
+  handleRequestBoundaryPersisted?: () => Promise<void> | void;
 }
 
 interface ReplyV2State {
@@ -341,10 +362,45 @@ interface PreparedStickerDelivery {
 
 type ReplyPlanDeliveryResult =
   | { status: 'delivered'; historyText: string }
+  | {
+      status: 'failed_semantic';
+      historyText: string;
+      semanticFailure: ExplicitModalityInvariantError;
+    }
   | { status: 'failed_before_send'; historyText: string }
   | { status: 'failed_after_partial_send'; historyText: string }
+  | { status: 'outcome_unknown'; historyText: string }
   | { status: 'transport_unavailable'; historyText: string }
   | { status: 'interrupted'; historyText: string };
+
+type DeliveryReceipt = string[];
+
+class ReplyDeliveryReceiptError extends Error {
+  constructor(readonly code: 'missing' | 'empty' | 'malformed') {
+    super(`reply plan delivery returned an invalid receipt: ${code}`);
+    this.name = 'ReplyDeliveryReceiptError';
+  }
+}
+
+function requireDeliveryReceipt(receipt: unknown): DeliveryReceipt {
+  if (receipt == null) {
+    throw new ReplyDeliveryReceiptError('missing');
+  }
+  if (!Array.isArray(receipt)) {
+    throw new ReplyDeliveryReceiptError('malformed');
+  }
+  if (receipt.length === 0) {
+    throw new ReplyDeliveryReceiptError('empty');
+  }
+
+  const messageIds = receipt.map((messageId) => {
+    if (typeof messageId !== 'string' || !messageId.trim()) {
+      throw new ReplyDeliveryReceiptError('malformed');
+    }
+    return messageId.trim();
+  });
+  return messageIds;
+}
 
 type ChatLunaLike = {
   chat?: unknown;
@@ -364,10 +420,6 @@ type ChatLunaLike = {
     updatedAt?: Date,
   ) => Promise<unknown>;
   registerCallbacksProvider?: (provider: ChatCallbacksProviderLike) => () => void;
-  conversationRuntime?: {
-    clearConversationCache: (conversationId: string) => Promise<unknown>;
-    stopConversationRequest: (conversationId: string) => boolean;
-  };
   chatChain?: {
     middleware: (name: string, middleware: (session: unknown, context: unknown) => Promise<number>) => {
       after: (name: string) => { before: (name: string) => unknown };
@@ -385,6 +437,7 @@ type ReplyVoiceServicesLike = {
   featurePolicy?: FeaturePolicyServiceLike;
   modelConfig?: ModelConfigService;
   naturalTriggerConfig?: NaturalTriggerConfigService;
+  toolPolicy?: ToolPolicyServiceLike;
   database: StructuredReplyHistoryDatabaseLike;
 };
 type RuntimeRole = 'local' | 'server' | 'unknown';
@@ -757,6 +810,23 @@ function isOneBotRpcTransportUnavailableError(error: unknown): boolean {
   return /\b_request is not a function\b/i.test(message);
 }
 
+function readOneBotActionRetcode(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null;
+  const record = error as Record<string, unknown>;
+  const message = error instanceof Error ? error.message : String(error);
+  const messageRetcode = /\bretcode:\s*(-?\d+)\b/i.exec(message)?.[1];
+  const candidate = record.retcode ?? messageRetcode ?? (
+    typeof record.code === 'number' ? record.code : undefined
+  );
+  const retcode = typeof candidate === 'number' ? candidate : Number(candidate);
+  return Number.isSafeInteger(retcode) ? retcode : null;
+}
+
+function isAuthoritativeOneBotActionRejection(error: unknown): boolean {
+  const retcode = readOneBotActionRetcode(error);
+  return retcode != null && retcode !== 0;
+}
+
 function extractOneBotFailureDetails(error: unknown): Pick<VoiceOutputFailure, 'httpStatus' | 'providerCode'> {
   const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
   const message = error instanceof Error ? error.message : String(error);
@@ -783,20 +853,55 @@ function buildContentBlockedFallbackText(session: SessionWithVoiceState): string
   return sanitizeStructuredReplyText(fallback, 'message');
 }
 
-async function sendFailureReply(session: SessionWithVoiceState, message: string): Promise<void> {
+async function sendFailureReply(session: SessionWithVoiceState, message: string): Promise<DeliveryReceipt> {
   if (!session.channelId) {
     const { sendWhole } = createSessionMessageDispatchers(session);
-    await sendWhole(message);
-    return;
+    return requireDeliveryReceipt(await sendWhole(message));
   }
 
-  await sendBotMessageByNormalizedContent(session.bot as OneBotBotLike, session.channelId, message, session);
+  const { sendWhole } = createBotMessageDispatchers(
+    session.bot as OneBotBotLike,
+    session.channelId,
+    session,
+  );
+  return requireDeliveryReceipt(await sendWhole(message));
+}
+
+async function sendCheckpointedVisibleReply(args: {
+  session: SessionWithVoiceState;
+  replyRuntime: ReplyRuntime;
+  runId: string;
+  deliveryCheckpointStore: ReplyDeliveryCheckpointStore;
+  deliveryCheckpoint: ReplyDeliveryCheckpointRecord;
+  message: string;
+}): Promise<void> {
+  const [unit] = await args.deliveryCheckpointStore.appendPlannedUnits(
+    args.deliveryCheckpoint,
+    [{
+      index: 0,
+      kind: 'text-line',
+      payload: { content: args.message },
+      historyText: args.message,
+      persistToHistory: true,
+    }],
+  );
+  await args.deliveryCheckpointStore.beginUnit(args.deliveryCheckpoint, unit.index);
+  try {
+    const receipt = await sendFailureReply(args.session, args.message);
+    await args.deliveryCheckpointStore.confirmUnit(args.deliveryCheckpoint, unit, receipt);
+  } catch (error) {
+    await args.deliveryCheckpointStore.markOutcomeUnknown(args.deliveryCheckpoint, error);
+    throw error;
+  }
+  args.replyRuntime.recordCommittedUnit(args.runId, args.message);
 }
 
 async function closeVisibleProgress(args: {
   session: SessionWithVoiceState;
   replyRuntime: ReplyRuntime;
   runId: string;
+  deliveryCheckpointStore: ReplyDeliveryCheckpointStore;
+  deliveryCheckpoint: ReplyDeliveryCheckpointRecord;
   message: string;
   normalizeHistory: (visibleText: string) => Promise<void>;
 }): Promise<boolean> {
@@ -804,10 +909,63 @@ async function closeVisibleProgress(args: {
   if (!progress?.visibleLines.length) return false;
 
   const message = sanitizeStructuredReplyText(args.message, 'message');
-  await sendFailureReply(args.session, message);
-  args.replyRuntime.recordCommittedUnit(args.runId, message);
+  await sendCheckpointedVisibleReply({ ...args, message });
   await args.normalizeHistory(message);
   return true;
+}
+
+function formatExplicitModalityInvariantNotice(args: {
+  failure: ExplicitModalityInvariantError;
+  capability: ReplyCapabilitySnapshot;
+  stickerState: StickerCapabilityState | null;
+}): string {
+  const { missingModalities } = args.failure;
+  if (missingModalities.length === 1 && missingModalities[0] === 'voice' && !args.capability.canVoice) {
+    return formatVoiceOutputFailure(args.capability.voiceFailure ?? {
+      code: 'tts_health_pending',
+      stage: 'health_probe',
+      operation: 'tts.healthz',
+    });
+  }
+  if (missingModalities.length === 1 && missingModalities[0] === 'sticker' && !args.stickerState?.catalog) {
+    return '这次没找到合适的表情，我先不乱发。';
+  }
+  if (missingModalities.length === 2) {
+    return '我刚才漏了你要的语音和表情包。你再叫我一次，我重新发。';
+  }
+  return missingModalities[0] === 'voice'
+    ? '我刚才漏了语音。你再叫我一次，我重新发。'
+    : '我刚才漏了你要的表情包。你再叫我一次，我重新发。';
+}
+
+async function closeExplicitModalityInvariantFailure(args: {
+  session: SessionWithVoiceState;
+  replyRuntime: ReplyRuntime;
+  runId: string;
+  deliveryCheckpointStore: ReplyDeliveryCheckpointStore;
+  deliveryCheckpoint: ReplyDeliveryCheckpointRecord;
+  failure: ExplicitModalityInvariantError;
+  capability: ReplyCapabilitySnapshot;
+  stickerState: StickerCapabilityState | null;
+  normalizeHistory: (visibleText: string) => Promise<void>;
+}): Promise<void> {
+  const message = sanitizeStructuredReplyText(
+    formatExplicitModalityInvariantNotice(args),
+    'message',
+  );
+  const closedProgress = await closeVisibleProgress({
+    session: args.session,
+    replyRuntime: args.replyRuntime,
+    runId: args.runId,
+    deliveryCheckpointStore: args.deliveryCheckpointStore,
+    deliveryCheckpoint: args.deliveryCheckpoint,
+    message,
+    normalizeHistory: args.normalizeHistory,
+  });
+  if (closedProgress) return;
+
+  await sendCheckpointedVisibleReply({ ...args, message });
+  await args.normalizeHistory(message);
 }
 
 function downgradeVoiceSegmentsToText(plan: ReplyTransportPlan): ReplyTransportPlan {
@@ -1025,6 +1183,43 @@ function buildPlannedUnitHistoryLines(args: {
   });
 }
 
+function buildPlannedDeliveryUnits(args: {
+  outboundPlan: OutboundMessagePlan;
+  historyLines: readonly string[];
+  preparedVoiceByRaw: Map<string, PreparedVoiceDelivery>;
+  preparedStickerByRaw: Map<string, PreparedStickerDelivery>;
+}): ReplyDeliveryPlannedUnit[] {
+  return args.outboundPlan.segments.map((segment, index) => {
+    const historyText = args.historyLines[index]?.trim() ?? '';
+    if (!historyText) {
+      throw new Error(`reply delivery unit ${index} has no visible history text.`);
+    }
+    let payload: Record<string, unknown>;
+    if (segment.kind === 'text-line' || segment.kind === 'structured-block') {
+      payload = { content: segment.content };
+    } else if (segment.kind === 'message-block') {
+      payload = { content: renderModelFacingMessageText(segment) };
+    } else if (segment.kind === 'image-block') {
+      payload = { assetRef: segment.assetRef, alt: segment.alt };
+    } else if (segment.kind === 'sticker-block') {
+      payload = {
+        selection: args.preparedStickerByRaw.get(segment.raw)?.historyLine ?? historyText,
+      };
+    } else {
+      payload = {
+        content: args.preparedVoiceByRaw.get(segment.raw)?.text ?? segment.content,
+      };
+    }
+    return {
+      index,
+      kind: segment.kind,
+      payload,
+      historyText,
+      persistToHistory: true,
+    };
+  });
+}
+
 function buildOptimisticPlannedUnitHistoryLines(plan: ReplyTransportPlan): string[] {
   return buildPlannedUnitHistoryLines({
     outboundPlan: buildOutboundMessagePlanFromReplyPlan(plan),
@@ -1036,17 +1231,31 @@ function buildOptimisticPlannedUnitHistoryLines(plan: ReplyTransportPlan): strin
 async function normalizeResearchReplyHistory(
   ctx: Context,
   room: Record<string, unknown> | undefined,
+  requestId: string,
   visibleHistoryText: string,
+  requestDisposition: 'retain_request' | 'drop_request' = 'retain_request',
+  allowMissingBoundary = false,
 ): Promise<void> {
   const chatluna = (ctx.get?.('chatluna') ?? (ctx as { chatluna?: any }).chatluna) as ChatLunaLike | undefined;
   const conversationId = typeof room?.conversationId === 'string' ? room.conversationId.trim() : '';
   const normalizeHistory = requireReplyHistoryNormalizer(chatluna);
-  const clearConversationCache = requireReplyHistoryCacheInvalidator(chatluna);
   if (!conversationId) {
     throw new Error('reply runtime history normalization requires room.conversationId.');
   }
-  await clearConversationCache(conversationId);
-  await normalizeHistory(room!, visibleHistoryText.trim());
+  const result = await normalizeHistory(
+    { ...room!, requestId, requestDisposition },
+    visibleHistoryText.trim(),
+  );
+  const requestBoundaryFound = (
+    result != null &&
+    typeof result === 'object' &&
+    'requestBoundaryFound' in result
+  ) ? (result as { requestBoundaryFound?: unknown }).requestBoundaryFound : undefined;
+  if (requestBoundaryFound === true) return;
+  if (allowMissingBoundary && requestBoundaryFound === false) return;
+  throw new Error(
+    `reply runtime history normalization did not find request boundary for ${requestId}.`,
+  );
 }
 
 function requireReplyHistoryNormalizer(
@@ -1056,17 +1265,6 @@ function requireReplyHistoryNormalizer(
     throw new Error('reply runtime requires chatluna.normalizeResearchReplyHistory.');
   }
   return chatluna.normalizeResearchReplyHistory.bind(chatluna);
-}
-
-function requireReplyHistoryCacheInvalidator(
-  chatluna: ChatLunaLike | undefined,
-): (conversationId: string) => Promise<unknown> {
-  const conversationRuntime = chatluna?.conversationRuntime;
-  const clearConversationCache = conversationRuntime?.clearConversationCache;
-  if (typeof clearConversationCache !== 'function') {
-    throw new Error('reply runtime requires chatluna.conversationRuntime.clearConversationCache.');
-  }
-  return clearConversationCache.bind(conversationRuntime);
 }
 
 function buildTextOnlyAssistantHistoryText(
@@ -1174,46 +1372,102 @@ function setReplyRequestModelErrorHandler(
   delete transportState.handleRequestModelError;
 }
 
+function setReplyRequestBoundaryPersistedHandler(
+  session: SessionWithVoiceState,
+  handler: ReplyTransportState['handleRequestBoundaryPersisted'],
+): void {
+  const transportState = getReplyTransportState(session);
+  if (handler) {
+    transportState.handleRequestBoundaryPersisted = handler;
+    return;
+  }
+  delete transportState.handleRequestBoundaryPersisted;
+}
+
 function registerReplyRunRequestModelGuard(args: {
   session: SessionWithVoiceState;
   runId: string;
   conversationId?: string;
-  finishRun: () => boolean;
+  finishRun: (requestSettlementError?: unknown) => boolean;
+  normalizeHistory: (
+    visibleText: string,
+    requestDisposition?: 'retain_request' | 'drop_request',
+    allowMissingBoundary?: boolean,
+  ) => Promise<void>;
 }): void {
-  const { session, runId, conversationId, finishRun } = args;
-  setReplyRequestModelErrorHandler(session, async (error) => {
-    if (!finishRun()) {
-      return;
-    }
-    const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
-    logger.error(
-      'reply request_conversation failed before executor cleanup: runId=%s conversationId=%s error=%s',
-      runId,
-      conversationId ?? '<unknown>',
-      message,
-    );
-    const providerFailure = readReplyProviderHttpFailure(error);
-    if (providerFailure) {
+  const {
+    session,
+    runId,
+    conversationId,
+    finishRun,
+    normalizeHistory,
+  } = args;
+  setReplyRequestModelErrorHandler(session, async (error, requestState) => {
+    const expectedCancellation = error instanceof ReplyRunCancellationError && error.runId === runId;
+    const userNotice = expectedCancellation ? null : formatReplyModelFailureNotice(error);
+    if (!expectedCancellation) {
+      const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
       logger.error(
-        'reply model upstream failure: runId=%s conversationId=%s chatlunaCode=%s operation=%s httpStatus=%s providerCode=%s providerMessage=%j retryable=%s',
+        'reply request_conversation failed before executor cleanup: runId=%s conversationId=%s error=%s',
         runId,
         conversationId ?? '<unknown>',
-        String(providerFailure.chatlunaCode),
-        providerFailure.operation,
-        String(providerFailure.httpStatus),
-        providerFailure.providerCode ?? '<none>',
-        providerFailure.providerMessage ?? '<none>',
-        providerFailure.retryable ? 'true' : 'false',
+        message,
       );
+      const providerFailure = readReplyProviderHttpFailure(error);
+      if (providerFailure) {
+        logger.error(
+          'reply model upstream failure: runId=%s conversationId=%s chatlunaCode=%s operation=%s httpStatus=%s providerCode=%s providerMessage=%j retryable=%s',
+          runId,
+          conversationId ?? '<unknown>',
+          String(providerFailure.chatlunaCode),
+          providerFailure.operation,
+          String(providerFailure.httpStatus),
+          providerFailure.providerCode ?? '<none>',
+          providerFailure.providerMessage ?? '<none>',
+          providerFailure.retryable ? 'true' : 'false',
+        );
+      }
+      if (error instanceof Error && error.stack) {
+        logger.debug(error.stack);
+      }
+      const terminalFailure = readAgentTerminalContractFailure(error);
+      if (terminalFailure) {
+        logger.error(
+          'reply terminal contract failed: runId=%s conversationId=%s code=%s',
+          runId,
+          conversationId ?? '<unknown>',
+          terminalFailure.code,
+        );
+      }
     }
-    if (error instanceof Error && error.stack) {
-      logger.debug(error.stack);
+    // Model failures have not crossed the OneBot delivery boundary here.
+    // Keep the request, but never persist an unconfirmed failure notice as an AI reply.
+    const visibleHistoryText = '';
+    try {
+      await normalizeHistory(
+        visibleHistoryText,
+        expectedCancellation ? 'drop_request' : 'retain_request',
+        !requestState.requestBoundaryPersisted,
+      );
+    } catch (cleanupError) {
+      logger.warn(
+        'reply request failure history cleanup failed: runId=%s conversationId=%s error=%s',
+        runId,
+        conversationId ?? '<unknown>',
+        (cleanupError as Error).message,
+      );
+      finishRun(cleanupError);
+      throw cleanupError;
     }
-    return formatReplyModelFailureNotice(error) ?? undefined;
+    finishRun();
+    return userNotice ?? undefined;
   });
 }
 
 function formatReplyModelFailureNotice(error: unknown): string | null {
+  if (readAgentTerminalContractFailure(error)) {
+    return '刚才那条没整理好。你再发一次，我重新来。';
+  }
   const failure = readReplyProviderHttpFailure(error);
   if (!failure) return null;
 
@@ -1222,6 +1476,24 @@ function formatReplyModelFailureNotice(error: unknown): string | null {
   }
 
   return `主聊天服务请求失败：HTTP ${failure.httpStatus}。请稍后重试；持续失败请联系管理员并提供错误发生时间。`;
+}
+
+function readAgentTerminalContractFailure(error: unknown): { code: string } | null {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current && typeof current === 'object'; depth += 1) {
+    if (visited.has(current)) break;
+    visited.add(current);
+    const record = current as Record<string, unknown>;
+    if (record.name === 'AgentTerminalContractError') {
+      const code = typeof record.code === 'string' && record.code.trim()
+        ? record.code.trim()
+        : 'UNKNOWN';
+      return { code };
+    }
+    current = record.originError ?? record.cause;
+  }
+  return null;
 }
 
 type ReplyProviderHttpFailure = {
@@ -1307,12 +1579,14 @@ export function buildTurnCapabilitySnapshot(
   imageAssetRefs: readonly string[],
 ): NonNullable<TurnContext['capabilitySnapshot']> {
   const stickerAvailableCount = stickerState?.availableCount ?? 0;
+  const voiceIntentAllowed = modalityPolicy.canVoice || modalityPolicy.voiceReason === 'explicit_request';
+  const stickerIntentAllowed = modalityPolicy.canSticker || modalityPolicy.stickerReason === 'explicit_request';
   return {
     canMultiline: snapshot.canMultiline,
     canMention: canSessionUseMention(session),
-    canVoice: modalityPolicy.canVoice,
+    canVoice: voiceIntentAllowed,
     voiceOutputLanguage: snapshot.voiceOutputLanguage,
-    canSticker: modalityPolicy.canSticker,
+    canSticker: stickerIntentAllowed,
     stickerAvailableCount,
     stickerIntentHints: resolveStickerIntentHints(stickerState ?? undefined),
     imageAssetRefs: [...imageAssetRefs],
@@ -1992,10 +2266,17 @@ async function deliverReplyPlanCore(args: {
   resolveQuoteTargetMessageId?: (supports: boolean) => string | null;
   onPlannedUnitHistoryLines?: (historyLines: string[]) => void;
   onCommittedUnit?: (historyLine: string) => void;
-  onDeliveryReceipt?: (receipt: unknown) => void;
+  onDeliveryReceipt?: (receipt: DeliveryReceipt) => void;
+  onPlannedDeliveryUnits?: (
+    units: ReplyDeliveryPlannedUnit[],
+  ) => Promise<ReplyDeliveryPlannedUnit[] | void>;
+  onUnitDispatching?: (unit: ReplyDeliveryPlannedUnit) => Promise<void>;
+  onUnitReplanned?: (unit: ReplyDeliveryPlannedUnit) => Promise<void>;
+  onUnitConfirmed?: (unit: ReplyDeliveryPlannedUnit, receipt: DeliveryReceipt) => Promise<void>;
+  onUnitNotSent?: (unit: ReplyDeliveryPlannedUnit, error: unknown) => Promise<void>;
+  onUnitOutcomeUnknown?: (unit: ReplyDeliveryPlannedUnit, error: unknown) => Promise<void>;
   onDeliveredModality?: (modality: 'sticker' | 'voice') => void;
-  explicitVoiceRequested?: boolean;
-  explicitStickerRequested?: boolean;
+  modalityPolicy: ModalityPolicySnapshot | null;
 }): Promise<ReplyPlanDeliveryResult> {
   const {
     runtime,
@@ -2012,10 +2293,17 @@ async function deliverReplyPlanCore(args: {
     onPlannedUnitHistoryLines,
     onCommittedUnit,
     onDeliveryReceipt,
+    onPlannedDeliveryUnits,
+    onUnitDispatching,
+    onUnitReplanned,
+    onUnitConfirmed,
+    onUnitNotSent,
+    onUnitOutcomeUnknown,
     onDeliveredModality,
-    explicitVoiceRequested = false,
-    explicitStickerRequested = false,
+    modalityPolicy,
   } = args;
+  const explicitVoiceRequested = modalityPolicy?.voiceReason === 'explicit_request';
+  const explicitStickerRequested = modalityPolicy?.stickerReason === 'explicit_request';
   const historyText = renderDeliveredReplyPlanHistoryText(plan);
   if (session.platform !== 'onebot' || !session.channelId) {
     throw new Error('reply plan delivery requires a onebot session with channelId.');
@@ -2047,10 +2335,47 @@ async function deliverReplyPlanCore(args: {
     preparedVoiceByRaw: preparedVoice.preparedByRaw,
     preparedStickerByRaw: preparedSticker.preparedByRaw,
   });
+  let plannedDeliveryUnits = buildPlannedDeliveryUnits({
+    outboundPlan,
+    historyLines: plannedUnitHistoryLines,
+    preparedVoiceByRaw: preparedVoice.preparedByRaw,
+    preparedStickerByRaw: preparedSticker.preparedByRaw,
+  });
   onPlannedUnitHistoryLines?.(plannedUnitHistoryLines);
-  let beganSending = false;
+  const durablePlannedUnits = await onPlannedDeliveryUnits?.(plannedDeliveryUnits);
+  if (durablePlannedUnits) {
+    if (durablePlannedUnits.length !== plannedDeliveryUnits.length) {
+      throw new Error('reply delivery checkpoint returned a mismatched unit count.');
+    }
+    plannedDeliveryUnits = durablePlannedUnits;
+  }
+  let hasConfirmedDelivery = false;
   let deliveryHistoryChanged = false;
+  const deliveredModalities = new Set<ExplicitReplyModality>();
+  const resolveCompletedDelivery = (completedHistoryText: string): ReplyPlanDeliveryResult => {
+    try {
+      assertExplicitModalityInvariant(modalityPolicy, {
+        stage: 'delivery',
+        deliveredModalities: [...deliveredModalities],
+      });
+    } catch (error) {
+      if (!(error instanceof ExplicitModalityInvariantError)) throw error;
+      return {
+        status: 'failed_semantic',
+        historyText: completedHistoryText,
+        semanticFailure: error,
+      };
+    }
+    return {
+      status: 'delivered',
+      historyText: completedHistoryText,
+    };
+  };
   let sendAbortSignal: AbortSignal | null = null;
+  let activeDeliveryUnit: ReplyDeliveryPlannedUnit | null = null;
+  let activeUnitSendAttempted = false;
+  let hasUnknownDeliveryOutcome = false;
+  const readActiveDeliveryUnit = (): ReplyDeliveryPlannedUnit | null => activeDeliveryUnit;
   const committedHistoryLines: string[] = [];
   const wasSendAborted = () => (sendAbortSignal as AbortSignal | null)?.aborted === true;
   const sendTask = async () => {
@@ -2061,11 +2386,31 @@ async function deliverReplyPlanCore(args: {
 
     const { sendWhole, sendLine } = createBotMessageDispatchers(bot, session.channelId!, session);
     await dispatchOutboundMessagePlan(outboundPlan, async (segment) => {
-      const historyLine = plannedUnitHistoryLines[outboundPlan.segments.indexOf(segment)] ?? '';
+      const unitIndex = outboundPlan.segments.indexOf(segment);
+      const plannedDeliveryUnit = plannedDeliveryUnits[unitIndex];
+      if (!plannedDeliveryUnit) {
+        throw new Error(`reply delivery unit ${unitIndex} was not prepared.`);
+      }
+      await onUnitDispatching?.(plannedDeliveryUnit);
+      activeDeliveryUnit = plannedDeliveryUnit;
+      activeUnitSendAttempted = false;
+      const confirmDeliveryUnit = async (
+        receipt: DeliveryReceipt,
+        confirmedUnit: ReplyDeliveryPlannedUnit = plannedDeliveryUnit,
+      ) => {
+        await onUnitConfirmed?.(confirmedUnit, receipt);
+        activeDeliveryUnit = null;
+        activeUnitSendAttempted = false;
+      };
+      const historyLine = plannedUnitHistoryLines[unitIndex] ?? '';
       const quoteTargetMessageId = resolveQuoteTargetMessageId?.(segment.kind !== 'voice-block') ?? null;
       if (segment.kind === 'text-line') {
-        const receipt = await sendLine(createQuotedMessageContent(segment.content, quoteTargetMessageId));
-        beganSending = true;
+        activeUnitSendAttempted = true;
+        const receipt = requireDeliveryReceipt(
+          await sendLine(createQuotedMessageContent(segment.content, quoteTargetMessageId)),
+        );
+        await confirmDeliveryUnit(receipt);
+        hasConfirmedDelivery = true;
         onDeliveryReceipt?.(receipt);
         if (historyLine) {
           committedHistoryLines.push(historyLine);
@@ -2075,8 +2420,12 @@ async function deliverReplyPlanCore(args: {
       }
 
       if (segment.kind === 'message-block') {
-        const receipt = await sendWhole(createQuotedMessageContent(createMessageMessageContent(segment), quoteTargetMessageId));
-        beganSending = true;
+        activeUnitSendAttempted = true;
+        const receipt = requireDeliveryReceipt(
+          await sendWhole(createQuotedMessageContent(createMessageMessageContent(segment), quoteTargetMessageId)),
+        );
+        await confirmDeliveryUnit(receipt);
+        hasConfirmedDelivery = true;
         onDeliveryReceipt?.(receipt);
         if (historyLine) {
           committedHistoryLines.push(historyLine);
@@ -2086,8 +2435,12 @@ async function deliverReplyPlanCore(args: {
       }
 
       if (segment.kind === 'structured-block') {
-        const receipt = await sendWhole(createQuotedMessageContent(h.text(segment.content), quoteTargetMessageId));
-        beganSending = true;
+        activeUnitSendAttempted = true;
+        const receipt = requireDeliveryReceipt(
+          await sendWhole(createQuotedMessageContent(h.text(segment.content), quoteTargetMessageId)),
+        );
+        await confirmDeliveryUnit(receipt);
+        hasConfirmedDelivery = true;
         onDeliveryReceipt?.(receipt);
         if (historyLine) {
           committedHistoryLines.push(historyLine);
@@ -2102,10 +2455,15 @@ async function deliverReplyPlanCore(args: {
           throw new Error('missing_prepared_sticker');
         }
 
-        const receipt = await sendWhole(createQuotedMessageContent(h.image(prepared.buffer, prepared.mime), quoteTargetMessageId));
-        beganSending = true;
-        onDeliveredModality?.('sticker');
+        activeUnitSendAttempted = true;
+        const receipt = requireDeliveryReceipt(
+          await sendWhole(createQuotedMessageContent(h.image(prepared.buffer, prepared.mime), quoteTargetMessageId)),
+        );
+        await confirmDeliveryUnit(receipt);
+        hasConfirmedDelivery = true;
         onDeliveryReceipt?.(receipt);
+        deliveredModalities.add('sticker');
+        onDeliveredModality?.('sticker');
         if (historyLine) {
           committedHistoryLines.push(historyLine);
           onCommittedUnit?.(historyLine);
@@ -2114,8 +2472,12 @@ async function deliverReplyPlanCore(args: {
       }
 
       if (segment.kind === 'image-block') {
-        const receipt = await sendWhole(createQuotedMessageContent(h.image(segment.assetRef), quoteTargetMessageId));
-        beganSending = true;
+        activeUnitSendAttempted = true;
+        const receipt = requireDeliveryReceipt(
+          await sendWhole(createQuotedMessageContent(h.image(segment.assetRef), quoteTargetMessageId)),
+        );
+        await confirmDeliveryUnit(receipt);
+        hasConfirmedDelivery = true;
         onDeliveryReceipt?.(receipt);
         if (historyLine) {
           committedHistoryLines.push(historyLine);
@@ -2129,11 +2491,19 @@ async function deliverReplyPlanCore(args: {
         throw new Error('missing_prepared_voice');
       }
 
-      let receipt: unknown;
+      let receipt: DeliveryReceipt;
       try {
-        receipt = await sendWhole(h.audio(createAudioDataUri(prepared.wav)));
+        activeUnitSendAttempted = true;
+        receipt = requireDeliveryReceipt(await sendWhole(h.audio(createAudioDataUri(prepared.wav))));
       } catch (error) {
-        if (!explicitVoiceRequested || isOneBotRpcTransportUnavailableError(error)) throw error;
+        if (
+          error instanceof ReplyDeliveryReceiptError
+          || !explicitVoiceRequested
+          || isOneBotRpcTransportUnavailableError(error)
+          || !isAuthoritativeOneBotActionRejection(error)
+        ) {
+          throw error;
+        }
         const failure: VoiceOutputFailure = {
           code: 'voice_delivery_rpc',
           stage: 'delivery',
@@ -2149,16 +2519,30 @@ async function deliverReplyPlanCore(args: {
           failure.httpStatus == null ? '<none>' : String(failure.httpStatus),
           (error as Error).message,
         );
-        await sendFailureReply(session, failureText);
-        beganSending = true;
+        const fallbackUnit: ReplyDeliveryPlannedUnit = {
+          index: plannedDeliveryUnit.index,
+          kind: 'text-line',
+          payload: { content: failureText },
+          historyText: failureText,
+          persistToHistory: true,
+        };
+        await onUnitReplanned?.(fallbackUnit);
+        activeDeliveryUnit = fallbackUnit;
+        activeUnitSendAttempted = true;
+        const failureReceipt = await sendFailureReply(session, failureText);
+        await confirmDeliveryUnit(failureReceipt, fallbackUnit);
+        hasConfirmedDelivery = true;
         deliveryHistoryChanged = true;
+        onDeliveryReceipt?.(failureReceipt);
         committedHistoryLines.push(failureText);
         onCommittedUnit?.(failureText);
         return;
       }
-      beganSending = true;
-      onDeliveredModality?.('voice');
+      await confirmDeliveryUnit(receipt);
+      hasConfirmedDelivery = true;
       onDeliveryReceipt?.(receipt);
+      deliveredModalities.add('voice');
+      onDeliveredModality?.('voice');
       if (historyLine) {
         committedHistoryLines.push(historyLine);
         onCommittedUnit?.(historyLine);
@@ -2175,29 +2559,69 @@ async function deliverReplyPlanCore(args: {
       await sendTask();
     }
   } catch (error) {
-    const errorMessage = (error as Error).message;
+    let deliveryError = error;
     const committedHistoryText = committedHistoryLines.join('\n').trim();
+    const blockedDeliveryUnit = readActiveDeliveryUnit();
+    if (blockedDeliveryUnit && isOneBotContentBlockedError(deliveryError)) {
+      const blockedFallbackText = buildContentBlockedFallbackText(session);
+      const fallbackUnit: ReplyDeliveryPlannedUnit = {
+        index: blockedDeliveryUnit.index,
+        kind: 'text-line',
+        payload: { content: blockedFallbackText },
+        historyText: blockedFallbackText,
+        persistToHistory: true,
+      };
+      try {
+        await onUnitReplanned?.(fallbackUnit);
+        activeDeliveryUnit = fallbackUnit;
+        activeUnitSendAttempted = true;
+        const fallbackReceipt = await sendFailureReply(session, blockedFallbackText);
+        await onUnitConfirmed?.(fallbackUnit, fallbackReceipt);
+        activeDeliveryUnit = null;
+        onDeliveryReceipt?.(fallbackReceipt);
+        onPlannedUnitHistoryLines?.([blockedFallbackText]);
+        onCommittedUnit?.(blockedFallbackText);
+        return resolveCompletedDelivery(blockedFallbackText);
+      } catch (fallbackError) {
+        deliveryError = fallbackError;
+        logger.warn('content blocked reply replacement failed: %s', (fallbackError as Error).message);
+      }
+    }
+    const unresolvedDeliveryUnit = readActiveDeliveryUnit();
+    if (unresolvedDeliveryUnit) {
+      const knownNotSent = !activeUnitSendAttempted || isOneBotRpcTransportUnavailableError(deliveryError);
+      if (knownNotSent) {
+        await onUnitNotSent?.(unresolvedDeliveryUnit, deliveryError);
+      } else {
+        hasUnknownDeliveryOutcome = true;
+        await onUnitOutcomeUnknown?.(unresolvedDeliveryUnit, deliveryError);
+      }
+      activeDeliveryUnit = null;
+      activeUnitSendAttempted = false;
+    }
+    const errorMessage = (deliveryError as Error).message;
+    if (hasUnknownDeliveryOutcome) {
+      logger.warn('reply plan delivery outcome is unknown: %s', errorMessage);
+      return { status: 'outcome_unknown', historyText: committedHistoryText };
+    }
     if (wasSendAborted() || wasInterrupted?.()) {
       return { status: 'interrupted', historyText: committedHistoryText };
     }
-    if (isOneBotRpcTransportUnavailableError(error)) {
+    if (deliveryError instanceof ReplyDeliveryReceiptError) {
+      logger.warn('reply plan delivery receipt validation failed: %s', errorMessage);
+      return hasConfirmedDelivery
+        ? { status: 'failed_after_partial_send', historyText: committedHistoryText }
+        : { status: 'failed_before_send', historyText: '' };
+    }
+    if (isOneBotRpcTransportUnavailableError(deliveryError)) {
       logger.warn('reply plan delivery skipped because onebot rpc transport is unavailable: %s', errorMessage);
-      return beganSending
+      return hasConfirmedDelivery
         ? { status: 'failed_after_partial_send', historyText: committedHistoryText }
         : { status: 'transport_unavailable', historyText: committedHistoryText };
     }
     logger.warn('reply plan delivery failed: %s', errorMessage);
-    if (beganSending) {
+    if (hasConfirmedDelivery) {
       return { status: 'failed_after_partial_send', historyText: committedHistoryText };
-    }
-    if (isOneBotContentBlockedError(error)) {
-      const blockedFallbackText = buildContentBlockedFallbackText(session);
-      try {
-        await sendFailureReply(session, blockedFallbackText);
-        return { status: 'delivered', historyText: blockedFallbackText };
-      } catch (fallbackError) {
-        logger.warn('content blocked reply replacement failed: %s', (fallbackError as Error).message);
-      }
     }
     return { status: 'failed_before_send', historyText: '' };
   }
@@ -2206,12 +2630,10 @@ async function deliverReplyPlanCore(args: {
     return { status: 'interrupted', historyText: committedHistoryLines.join('\n').trim() };
   }
 
-  return {
-    status: 'delivered',
-    historyText: deliveryHistoryChanged
-      ? committedHistoryLines.join('\n').trim()
-      : effectiveHistoryText,
-  };
+  const finalHistoryText = deliveryHistoryChanged
+    ? committedHistoryLines.join('\n').trim()
+    : effectiveHistoryText;
+  return resolveCompletedDelivery(finalHistoryText);
 }
 
 async function deliverReplyPlan(args: {
@@ -2221,9 +2643,10 @@ async function deliverReplyPlan(args: {
   plan: ReplyTransportPlan;
   replyRuntime: ReplyRuntime;
   runId: string;
+  deliveryCheckpointStore: ReplyDeliveryCheckpointStore;
+  deliveryCheckpoint: ReplyDeliveryCheckpointRecord;
   onDeliveredModality?: (modality: 'sticker' | 'voice') => void;
-  explicitVoiceRequested: boolean;
-  explicitStickerRequested: boolean;
+  modalityPolicy: ModalityPolicySnapshot;
 }): Promise<ReplyPlanDeliveryResult> {
   const {
     runtime,
@@ -2232,9 +2655,10 @@ async function deliverReplyPlan(args: {
     plan,
     replyRuntime,
     runId,
+    deliveryCheckpointStore,
+    deliveryCheckpoint,
     onDeliveredModality,
-    explicitVoiceRequested,
-    explicitStickerRequested,
+    modalityPolicy,
   } = args;
   return deliverReplyPlanCore({
     runtime,
@@ -2253,9 +2677,26 @@ async function deliverReplyPlan(args: {
     resolveQuoteTargetMessageId: (supports) => replyRuntime.consumeFirstReplyQuote(runId, supports),
     onPlannedUnitHistoryLines: (historyLines) => replyRuntime.setPlannedUnitHistory(runId, historyLines),
     onCommittedUnit: (historyLine) => replyRuntime.recordCommittedUnit(runId, historyLine),
+    onPlannedDeliveryUnits: async (units) => {
+      return deliveryCheckpointStore.appendPlannedUnits(deliveryCheckpoint, units);
+    },
+    onUnitDispatching: async (unit) => {
+      await deliveryCheckpointStore.beginUnit(deliveryCheckpoint, unit.index);
+    },
+    onUnitReplanned: async (unit) => {
+      await deliveryCheckpointStore.replaceDispatchingUnit(deliveryCheckpoint, unit);
+    },
+    onUnitConfirmed: async (unit, receipt) => {
+      await deliveryCheckpointStore.confirmUnit(deliveryCheckpoint, unit, receipt);
+    },
+    onUnitNotSent: async (_unit, error) => {
+      await deliveryCheckpointStore.cancelDispatchingUnit(deliveryCheckpoint, error);
+    },
+    onUnitOutcomeUnknown: async (_unit, error) => {
+      await deliveryCheckpointStore.markOutcomeUnknown(deliveryCheckpoint, error);
+    },
     onDeliveredModality,
-    explicitVoiceRequested,
-    explicitStickerRequested,
+    modalityPolicy,
   });
 }
 
@@ -2263,14 +2704,23 @@ export async function deliverStandaloneReplyPlan(args: {
   runtime: RuntimeConfig;
   session: SessionWithVoiceState;
   plan: ReplyTransportPlan;
-}): Promise<ReplyPlanDeliveryResult & { receipts: unknown[] }> {
-  const receipts: unknown[] = [];
+  modalityPolicy: ModalityPolicySnapshot | null;
+}): Promise<ReplyPlanDeliveryResult & {
+  receipts: DeliveryReceipt[];
+  deliveredModalities: Array<'sticker' | 'voice'>;
+}> {
+  const receipts: DeliveryReceipt[] = [];
+  const deliveredModalities: Array<'sticker' | 'voice'> = [];
   const result = await deliverReplyPlanCore({
     runtime: args.runtime,
     session: args.session,
     stickerState: args.session.state?.qqSticker ?? null,
     plan: args.plan,
     queueKey: resolveReplyQueueKey(args.session),
+    modalityPolicy: args.modalityPolicy,
+    onDeliveredModality: (modality) => {
+      deliveredModalities.push(modality);
+    },
     onDeliveryReceipt: (receipt) => {
       receipts.push(receipt);
     },
@@ -2278,6 +2728,7 @@ export async function deliverStandaloneReplyPlan(args: {
   return {
     ...result,
     receipts,
+    deliveredModalities,
   };
 }
 
@@ -2301,7 +2752,11 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (!naturalTriggerConfig) {
     throw new Error('qq-voice requires naturalTriggerConfig service.');
   }
+  if (!services.toolPolicy) {
+    throw new Error('qq-voice requires toolPolicy service.');
+  }
   registerModalityPreferenceTable(ctx.model);
+  registerReplyDeliveryCheckpointTable(ctx.model);
   const resolveMainModelTarget = (): ResolvedModelTarget => {
     const resolved = new CanonicalModelBindingResolver(
       modelConfig.getRuntimeSnapshot(),
@@ -2346,15 +2801,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   };
 
   const replyRuntime = new ReplyRuntime({
-    stopConversationRequest: async (conversationId) => {
-      const chatluna = resolveChatLunaService();
-      const conversationRuntime = chatluna?.conversationRuntime;
-      const stopConversationRequest = conversationRuntime?.stopConversationRequest;
-      if (typeof stopConversationRequest !== 'function') {
-        throw new Error('reply interruption requires chatluna.conversationRuntime.stopConversationRequest.');
-      }
-      await stopConversationRequest.call(conversationRuntime, conversationId);
-    },
     drainOutbound: async (queueKey) => {
       await sharedReplyTransportSendStrand.run(queueKey, async () => undefined);
     },
@@ -2369,17 +2815,127 @@ export function apply(ctx: Context, config: Config = {}): void {
   const modalityPreferenceStore = new ModalityPreferenceStore(
     services.database as StructuredReplyHistoryDatabaseLike & ModalityPreferenceDatabase,
   );
+  const replyDeliveryCheckpointStore = new ReplyDeliveryCheckpointStore(
+    services.database as StructuredReplyHistoryDatabaseLike & ReplyDeliveryCheckpointDatabase,
+  );
+  const replyDeliveryCheckpointByRunId = new Map<string, ReplyDeliveryCheckpointRecord>();
+  const replyDeliveryCheckpointStrand = createKeyedStrandRunner();
+  const activeReplyDeliveryByConversation = new Map<string, {
+    runId: string;
+    settled: Promise<void>;
+    release: () => void;
+  }>();
   const artifactRegistry = new ReplyArtifactRegistry();
   let progressCallbacksController: AgentProgressCallbacksProvider | null = null;
 
-  const finishReplyRun = (session: SessionWithVoiceState, runId: string): boolean => {
+  const recoverPersistedReplyDeliveries = async (
+    conversationId?: string,
+  ) => {
+    const normalizeHistory = requireReplyHistoryNormalizer(resolveChatLunaService());
+    return recoverReplyDeliveryCheckpoints({
+      store: replyDeliveryCheckpointStore,
+      conversationId,
+      reconcileHistory: async (input) => {
+        const result = await normalizeHistory({
+          conversationId: input.conversationId,
+          requestId: input.requestId,
+          requestDisposition: input.requestDisposition,
+        }, input.confirmedVisibleText);
+        const requestBoundaryFound = (
+          result != null
+          && typeof result === 'object'
+          && 'requestBoundaryFound' in result
+        ) ? (result as { requestBoundaryFound?: unknown }).requestBoundaryFound : undefined;
+        if (typeof requestBoundaryFound !== 'boolean') {
+          throw new Error('reply delivery recovery requires an explicit requestBoundaryFound result.');
+        }
+        return { requestBoundaryFound };
+      },
+    });
+  };
+
+  const beginReplyDeliveryCheckpoint = async (
+    session: SessionWithVoiceState,
+    runId: string,
+    conversationId: string,
+  ): Promise<ReplyDeliveryCheckpointRecord> => {
+    return replyDeliveryCheckpointStrand.run(conversationId, async () => {
+      const active = activeReplyDeliveryByConversation.get(conversationId);
+      if (active) await active.settled;
+
+      await recoverPersistedReplyDeliveries(conversationId);
+      const checkpoint = await replyDeliveryCheckpointStore.beginRequest(runId, conversationId);
+      let release: () => void = () => {};
+      const settled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      activeReplyDeliveryByConversation.set(conversationId, { runId, settled, release });
+      replyDeliveryCheckpointByRunId.set(runId, checkpoint);
+      setReplyRequestBoundaryPersistedHandler(session, async () => {
+        await replyDeliveryCheckpointStore.markRequestBoundaryPersisted(checkpoint);
+      });
+      return checkpoint;
+    });
+  };
+
+  const requireReplyDeliveryCheckpoint = (runId: string): ReplyDeliveryCheckpointRecord => {
+    const checkpoint = replyDeliveryCheckpointByRunId.get(runId);
+    if (!checkpoint) {
+      throw new Error(`reply delivery checkpoint is missing for ${runId}.`);
+    }
+    return checkpoint;
+  };
+
+  const reconcileReplyDeliveryHistory = async (
+    room: Record<string, unknown> | undefined,
+    runId: string,
+    visibleHistoryText: string,
+    requestDisposition: 'retain_request' | 'drop_request' = 'retain_request',
+    allowMissingBoundary = false,
+  ): Promise<void> => {
+    const checkpoint = requireReplyDeliveryCheckpoint(runId);
+    await replyDeliveryCheckpointStore.beginReconciliation(
+      checkpoint,
+      requestDisposition,
+      visibleHistoryText,
+    );
+    await normalizeResearchReplyHistory(
+      ctx,
+      room,
+      runId,
+      visibleHistoryText,
+      requestDisposition,
+      allowMissingBoundary,
+    );
+    await replyDeliveryCheckpointStore.markReconciled(checkpoint);
+    await replyDeliveryCheckpointStore.pruneReconciledDiagnostics({
+      maxAgeMs: 30 * 24 * 60 * 60 * 1_000,
+      maxRecords: 256,
+    });
+  };
+
+  const finishReplyRun = (
+    session: SessionWithVoiceState,
+    runId: string,
+    requestSettlementError?: unknown,
+  ): boolean => {
     progressCallbacksController?.disposeRun(runId);
     modalityDirector.finishTurn(runId);
     modalityTurnContexts.delete(runId);
+    replyFinalizerRequestRegistry.finish(runId);
     artifactRegistry.finishRun(runId);
     setReplyRequestModelErrorHandler(session, undefined);
+    setReplyRequestBoundaryPersistedHandler(session, undefined);
+    const deliveryCheckpoint = replyDeliveryCheckpointByRunId.get(runId);
+    replyDeliveryCheckpointByRunId.delete(runId);
+    const deliveryConversationId = deliveryCheckpoint?.conversationId ?? '';
+    const deliveryGate = activeReplyDeliveryByConversation.get(deliveryConversationId);
+    if (deliveryConversationId && deliveryGate?.runId === runId) {
+      activeReplyDeliveryByConversation.delete(deliveryConversationId);
+      deliveryGate.release();
+    }
     if (getReplyRunId(session) === runId) clearReplyRunId(session);
-    return replyRuntime.finishRun(runId) != null;
+    return replyRuntime.finishRun(runId, requestSettlementError) != null;
   };
 
   const beginModalityTurn = async (args: {
@@ -2413,6 +2969,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     });
     const context = { policy, stickerState };
     modalityTurnContexts.set(args.runId, context);
+    replyFinalizerRequestRegistry.begin(args.runId, {
+      canVoice: policy.canVoice || policy.voiceReason === 'explicit_request',
+      canMeme: policy.canSticker || policy.stickerReason === 'explicit_request',
+      explicitVoiceRequested: policy.voiceReason === 'explicit_request',
+      explicitMemeRequested: policy.stickerReason === 'explicit_request',
+      hasImageAssetRef: (assetRef) => artifactRegistry.list(args.runId).includes(assetRef),
+    });
     return context;
   };
 
@@ -2445,7 +3008,23 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!current || current.state !== 'computing' || !replyRuntime.isCurrentRun(replyRunId)) {
             return false;
           }
-          await session.send(text);
+          const checkpoint = requireReplyDeliveryCheckpoint(replyRunId);
+          const [unit] = await replyDeliveryCheckpointStore.appendPlannedUnits(checkpoint, [{
+            index: 0,
+            kind: 'progress',
+            payload: { content: text },
+            historyText: text,
+            persistToHistory: false,
+          }]);
+          await replyDeliveryCheckpointStore.beginUnit(checkpoint, unit.index);
+          let receipt: DeliveryReceipt;
+          try {
+            receipt = requireDeliveryReceipt(await session.send(text));
+          } catch (error) {
+            await replyDeliveryCheckpointStore.markOutcomeUnknown(checkpoint, error);
+            throw error;
+          }
+          await replyDeliveryCheckpointStore.confirmUnit(checkpoint, unit, receipt);
           if (!replyRuntime.recordProgressVisibleLine(replyRunId, text)) {
             throw new Error(`reply progress run ${replyRunId} ended before delivery was recorded.`);
           }
@@ -2601,6 +3180,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!prepared.run) {
             throw new Error('reply runtime prepare returned continue without a run.');
           }
+          await beginReplyDeliveryCheckpoint(session, runId, conversationId);
           applyPreparedTurnInput(session, context, prepared.run.input, prepared.inputTextSpeakerTagged);
           applyReplyTurnInputMetadata(context.options?.inputMessage, prepared.run.input);
           beginPromptAssemblyTurn(conversationId, { turnId: runId });
@@ -2610,10 +3190,22 @@ export function apply(ctx: Context, config: Config = {}): void {
             session,
             runId,
             conversationId,
-            finishRun: () => finishReplyRun(session, runId),
+            finishRun: (error) => finishReplyRun(session, runId, error),
+            normalizeHistory: (visibleText, disposition, allowMissingBoundary) => reconcileReplyDeliveryHistory(
+              room,
+              runId,
+              visibleText,
+              disposition,
+              allowMissingBoundary,
+            ),
           });
           if (context.options) {
+            const requestSignal = replyRuntime.getRequestSignal(runId);
+            if (!requestSignal) {
+              throw new Error(`reply runtime has no request signal for run ${runId}.`);
+            }
             context.options.messageId = runId;
+            context.options.requestSignal = requestSignal;
           }
         } catch (error) {
           finishReplyRun(session, runId);
@@ -2794,7 +3386,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         const responseMessage = context.options?.responseMessage;
         if (!responseMessage) {
           const unfinishedRunId = getReplyRunId(session);
-          if (unfinishedRunId) finishReplyRun(session, unfinishedRunId);
+          if (unfinishedRunId) {
+            const unfinishedRoom = resolveChatLunaRoomLike(context.options) as ReplyRuntimeRoomLike | undefined;
+            try {
+              await reconcileReplyDeliveryHistory(unfinishedRoom, unfinishedRunId, '');
+              finishReplyRun(session, unfinishedRunId);
+            } catch (error) {
+              finishReplyRun(session, unfinishedRunId, error);
+              throw error;
+            }
+          }
           return ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
         }
         let runId = getReplyRunId(session);
@@ -2835,6 +3436,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (!prepared.run) {
               throw new Error('reply runtime executor prepare returned continue without a run.');
             }
+            await beginReplyDeliveryCheckpoint(session, runId, conversationId);
             applyPreparedTurnInput(session, context, prepared.run.input, prepared.inputTextSpeakerTagged);
             applyReplyTurnInputMetadata(context.options?.inputMessage, prepared.run.input);
             setReplyRunId(session, runId);
@@ -2843,7 +3445,14 @@ export function apply(ctx: Context, config: Config = {}): void {
               session,
               runId: guardedRunId,
               conversationId,
-              finishRun: () => finishReplyRun(session, guardedRunId),
+              finishRun: (error) => finishReplyRun(session, guardedRunId, error),
+              normalizeHistory: (visibleText, disposition, allowMissingBoundary) => reconcileReplyDeliveryHistory(
+                room,
+                guardedRunId,
+                visibleText,
+                disposition,
+                allowMissingBoundary,
+              ),
             });
           }
         } catch (error) {
@@ -2854,10 +3463,17 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (context.options) {
             context.options.responseMessage = null;
           }
-          finishReplyRun(session, runId);
+          try {
+            await reconcileReplyDeliveryHistory(room, runId, '', 'drop_request');
+            finishReplyRun(session, runId);
+          } catch (error) {
+            finishReplyRun(session, runId, error);
+            throw error;
+          }
           return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
         }
 
+        let executorError: unknown;
         try {
           const turnInput = buildReplyTurnInput(session, room, context.options?.inputMessage);
           applyReplyTurnInputMetadata(context.options?.inputMessage, turnInput);
@@ -2931,15 +3547,13 @@ export function apply(ctx: Context, config: Config = {}): void {
               session,
               replyRuntime,
               runId,
+              deliveryCheckpointStore: replyDeliveryCheckpointStore,
+              deliveryCheckpoint: requireReplyDeliveryCheckpoint(runId),
               message: '刚才没整理好，麻烦你再问我一次。',
-              normalizeHistory: (visibleText) => normalizeResearchReplyHistory(ctx, room, visibleText),
+              normalizeHistory: (visibleText) => reconcileReplyDeliveryHistory(room, runId, visibleText),
             });
             if (!progressClosed) {
-              try {
-                await normalizeResearchReplyHistory(ctx, room, '');
-              } catch (cleanupError) {
-                logger.warn('structured model failure history cleanup failed: %s', (cleanupError as Error).message);
-              }
+              await reconcileReplyDeliveryHistory(room, runId, '');
             }
             if (context.options) {
               context.options.responseMessage = null;
@@ -2947,14 +3561,43 @@ export function apply(ctx: Context, config: Config = {}): void {
             return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
           }
 
-          if (orchestration.status === 'no_reply') {
-            await closeVisibleProgress({
+          try {
+            if (orchestration.status === 'no_reply' || orchestration.status === 'ready') {
+              assertExplicitModalityInvariant(modalityPolicy, {
+                stage: 'orchestration',
+                reply: orchestration.status === 'ready' ? orchestration.reply : null,
+              });
+            }
+          } catch (error) {
+            if (!(error instanceof ExplicitModalityInvariantError)) throw error;
+            await closeExplicitModalityInvariantFailure({
               session,
               replyRuntime,
               runId,
-              message: '我看完了，暂时没找到合适的答案。',
-              normalizeHistory: (visibleText) => normalizeResearchReplyHistory(ctx, room, visibleText),
+              deliveryCheckpointStore: replyDeliveryCheckpointStore,
+              deliveryCheckpoint: requireReplyDeliveryCheckpoint(runId),
+              failure: error,
+              capability: snapshot,
+              stickerState,
+              normalizeHistory: (visibleText) => reconcileReplyDeliveryHistory(room, runId, visibleText),
             });
+            if (context.options) context.options.responseMessage = null;
+            return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
+          }
+
+          if (orchestration.status === 'no_reply') {
+            const progressClosed = await closeVisibleProgress({
+              session,
+              replyRuntime,
+              runId,
+              deliveryCheckpointStore: replyDeliveryCheckpointStore,
+              deliveryCheckpoint: requireReplyDeliveryCheckpoint(runId),
+              message: '我看完了，暂时没找到合适的答案。',
+              normalizeHistory: (visibleText) => reconcileReplyDeliveryHistory(room, runId, visibleText),
+            });
+            if (!progressClosed) {
+              await reconcileReplyDeliveryHistory(room, runId, '');
+            }
             if (context.options) {
               context.options.responseMessage = null;
             }
@@ -2964,13 +3607,18 @@ export function apply(ctx: Context, config: Config = {}): void {
             throw new Error(`reply v2 orchestrator expected ready status, got ${orchestration.status}.`);
           }
           if (orchestration.actions.length === 1 && orchestration.actions[0]?.kind === 'no_reply') {
-            await closeVisibleProgress({
+            const progressClosed = await closeVisibleProgress({
               session,
               replyRuntime,
               runId,
+              deliveryCheckpointStore: replyDeliveryCheckpointStore,
+              deliveryCheckpoint: requireReplyDeliveryCheckpoint(runId),
               message: '我看完了，暂时没找到合适的答案。',
-              normalizeHistory: (visibleText) => normalizeResearchReplyHistory(ctx, room, visibleText),
+              normalizeHistory: (visibleText) => reconcileReplyDeliveryHistory(room, runId, visibleText),
             });
+            if (!progressClosed) {
+              await reconcileReplyDeliveryHistory(room, runId, '');
+            }
             if (context.options) {
               context.options.responseMessage = null;
             }
@@ -3004,10 +3652,27 @@ export function apply(ctx: Context, config: Config = {}): void {
             plan: executablePlan,
             replyRuntime,
             runId,
+            deliveryCheckpointStore: replyDeliveryCheckpointStore,
+            deliveryCheckpoint: requireReplyDeliveryCheckpoint(runId),
             onDeliveredModality: (modality) => modalityDirector.recordDelivered(runId, modality),
-            explicitVoiceRequested: modalityPolicy.voiceReason === 'explicit_request',
-            explicitStickerRequested: modalityPolicy.stickerReason === 'explicit_request',
+            modalityPolicy,
           });
+
+          if (result.status === 'failed_semantic' && !result.historyText) {
+            await closeExplicitModalityInvariantFailure({
+              session,
+              replyRuntime,
+              runId,
+              deliveryCheckpointStore: replyDeliveryCheckpointStore,
+              deliveryCheckpoint: requireReplyDeliveryCheckpoint(runId),
+              failure: result.semanticFailure,
+              capability: snapshot,
+              stickerState,
+              normalizeHistory: (visibleText) => reconcileReplyDeliveryHistory(room, runId, visibleText),
+            });
+            if (context.options) context.options.responseMessage = null;
+            return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
+          }
 
           if (result.status === 'failed_before_send' || result.status === 'transport_unavailable') {
             if (context.options) {
@@ -3017,14 +3682,10 @@ export function apply(ctx: Context, config: Config = {}): void {
             context.options.responseMessage = null;
           }
 
-          if (result.status !== 'transport_unavailable') {
-            try {
-              const visibleHistoryText = buildTextOnlyAssistantHistoryText(result.historyText, outputProtocol);
-              await normalizeResearchReplyHistory(ctx, room, visibleHistoryText);
-            } catch (error) {
-              logger.warn('research reply history normalization failed: %s', (error as Error).message);
-            }
-          }
+          const visibleHistoryText = result.status === 'transport_unavailable'
+            ? ''
+            : buildTextOnlyAssistantHistoryText(result.historyText, outputProtocol);
+          await reconcileReplyDeliveryHistory(room, runId, visibleHistoryText);
 
           if (result.status === 'failed_before_send') {
             return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
@@ -3032,12 +3693,21 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (result.status === 'transport_unavailable') {
             return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
           }
+          if (result.status === 'outcome_unknown') {
+            return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
+          }
+          if (result.status === 'failed_semantic') {
+            return ChatLunaChains.ChainMiddlewareRunStatus.STOP;
+          }
 
           return result.status === 'failed_after_partial_send'
             ? ChatLunaChains.ChainMiddlewareRunStatus.STOP
             : ChatLunaChains.ChainMiddlewareRunStatus.CONTINUE;
+        } catch (error) {
+          executorError = error;
+          throw error;
         } finally {
-          finishReplyRun(session, runId);
+          finishReplyRun(session, runId, executorError);
         }
       }) as ChatLunaChainBuilderLike;
     executorBuilder.after('request_conversation');
@@ -3064,6 +3734,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         historyMigration.invisibleMessageNamesCleared,
         historyMigration.nonAiToolCallsCleared,
         historyMigration.emptyAssistantRowsRemoved,
+      );
+    }
+
+    const recovery = await recoverPersistedReplyDeliveries();
+    if (recovery.scanned > 0) {
+      logger.warn(
+        'recovered %d interactive reply delivery checkpoint(s): reconciled=%d outcomeUnknown=%d.',
+        recovery.scanned,
+        recovery.reconciled,
+        recovery.outcomeUnknown,
       );
     }
 

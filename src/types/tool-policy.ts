@@ -103,6 +103,13 @@ export interface ToolMask {
   toolCallMask?: ToolMask;
 }
 
+export type DedicatedToolMaskPolicyId = 'affinity_proactive_generation';
+
+export interface DedicatedToolMaskPolicy {
+  id: DedicatedToolMaskPolicyId;
+  allowedTools: readonly string[];
+}
+
 export interface AdminToolPolicyState {
   routeProfiles: ToolRouteProfile[];
   catalog: ToolCatalogEntry[];

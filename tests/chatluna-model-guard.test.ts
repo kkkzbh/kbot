@@ -56,11 +56,9 @@ describe('canonical main chat reply contract', () => {
     );
     expect(buildNativeJsonOutputContractLines().join('\n')).toContain('请求所附 StructuredReplyEnvelope JSON Schema');
     expect(JSON.stringify(buildStructuredReplyJsonSchema())).toContain('"enum":["image"]');
-    expect(textProtocolContract).toContain(
-      'image 示例：',
-    );
-    expect(textProtocolContract).toContain('在 `BEGIN <type>` 后直接写以 `|` 开头的 payload 行');
-    expect(textProtocolContract).not.toContain('\nCONTENT\n');
+    expect(textProtocolContract).toContain('调用 `qqbot_submit_reply` 提交最终回复');
+    expect(textProtocolContract).toContain('工具产生的图片');
+    expect(textProtocolContract).not.toContain('CHAT_REPLY_V1 <nonce>');
     expect(buildReplySemanticContractLines().join('\n')).not.toContain('cf_user_profile');
   });
 
@@ -78,18 +76,15 @@ describe('canonical main chat reply contract', () => {
       canMeme: false,
       canVoice: false,
     }).join('\n');
-    expect(textOnly).not.toContain('`meme`');
-    expect(textOnly).not.toContain('`voice`');
-    expect(textOnly).not.toContain('meme block：');
-    expect(textOnly).not.toContain('voice block：');
+    expect(textOnly).toContain('当前不允许表情包，`meme_message` 必须填写 null');
+    expect(textOnly).toContain('当前不允许语音，`voice_message` 必须填写 null');
     const finalInstruction = buildChatReplyV1FinalInstruction({
       canMeme: false,
       canVoice: false,
     });
-    expect(finalInstruction).toContain('直接输出普通聊天文本、Markdown 或解释文字均无效');
-    expect(finalInstruction).toContain('BEGIN <message|structured_block>');
-    expect(finalInstruction).not.toContain('|meme');
-    expect(finalInstruction).not.toContain('|voice');
+    expect(finalInstruction).toContain('必须调用 `qqbot_submit_reply`');
+    expect(finalInstruction).toContain('当前不允许 meme_message，必须填 null');
+    expect(finalInstruction).toContain('当前不允许 voice_message，必须填 null');
   });
 
   it('models voice and meme as singleton fields outside ordered provider messages', () => {
@@ -207,9 +202,12 @@ describe('canonical main chat reply contract', () => {
       requestMode: 'chat_completions',
       protocol: 'chat_reply_v1',
       schema: null,
-      instruction: expect.stringContaining('CHAT_REPLY_V1 <nonce>'),
+      instruction: expect.stringContaining('qqbot_submit_reply'),
+      terminalTool: 'qqbot_submit_reply',
       overrideRequestParams: expect.objectContaining({
         qqbot_canonical_model: 'qqbot-primary/main-chat',
+        tool_choice: 'required',
+        parallel_tool_calls: false,
       }),
     });
     expect(contract.instruction).toContain('当前语音输出目标语言：日语');

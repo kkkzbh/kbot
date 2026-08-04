@@ -1,4 +1,5 @@
 import 'koishi';
+import type { DurableDeliveryState } from './durable-delivery.js';
 
 export type AffinityCharacterId = 'sakiko';
 export type AffinityScopeKind = 'group' | 'private';
@@ -147,12 +148,18 @@ export interface AffinityRandomPlanRecord {
   messageText: string | null;
   skipReason: string | null;
   sentAt: number | null;
+  deliveryState: DurableDeliveryState;
+  deliveryAttemptId: string | null;
+  deliveryReceipt: string | null;
+  deliveryPayloadJson: string | null;
+  deliveryConfirmedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface AffinityOpenThreadRecord {
   id: number;
+  sourcePlanId: number | null;
   characterId: AffinityCharacterId;
   scopeKind: AffinityScopeKind;
   scopeId: string;

@@ -39,7 +39,6 @@ describe('ReplyRuntime', () => {
 
   it('queues the next run until the previous run finishes in queue mode', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
     });
 
@@ -48,6 +47,7 @@ describe('ReplyRuntime', () => {
       mode: 'queue',
     });
     expect(first.action).toBe('continue');
+    const firstRequestSignal = runtime.getRequestSignal('run-1');
 
     let resolved = false;
     const nextRunPromise = runtime.prepareRun({
@@ -67,15 +67,14 @@ describe('ReplyRuntime', () => {
     runtime.finishRun('run-1');
     const nextRun = await nextRunPromise;
 
+    expect(firstRequestSignal?.aborted).toBe(false);
     expect(nextRun.action).toBe('continue');
     expect(nextRun.run?.id).toBe('run-2');
     expect(runtime.isCurrentRun('run-2')).toBe(true);
   });
 
   it('queues a different group speaker instead of interrupting the current run', async () => {
-    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopConversationRequest,
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -87,6 +86,7 @@ describe('ReplyRuntime', () => {
       mode: 'interrupt',
     });
     expect(first.action).toBe('continue');
+    const firstRequestSignal = runtime.getRequestSignal('run-1');
 
     let secondResolved = false;
     const secondPromise = runtime.prepareRun({
@@ -104,7 +104,7 @@ describe('ReplyRuntime', () => {
     await vi.advanceTimersByTimeAsync(60);
     await Promise.resolve();
 
-    expect(stopConversationRequest).not.toHaveBeenCalled();
+    expect(firstRequestSignal?.aborted).toBe(false);
     expect(secondResolved).toBe(false);
 
     runtime.finishRun('run-1');
@@ -117,7 +117,6 @@ describe('ReplyRuntime', () => {
 
   it('does not enable first-reply quote for single-speaker group runs', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
     });
 
@@ -145,7 +144,6 @@ describe('ReplyRuntime', () => {
 
   it('snapshots first-reply quote for queued multi-speaker group runs', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -197,7 +195,6 @@ describe('ReplyRuntime', () => {
 
   it('consumes first-reply quote on the first dispatched segment even when unsupported', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -244,7 +241,6 @@ describe('ReplyRuntime', () => {
 
   it('starts computing the next queued speaker while the previous speaker is sending', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -279,9 +275,7 @@ describe('ReplyRuntime', () => {
   });
 
   it('drops stale compute results and refreshes the cooldown window for repeated self-interruptions', async () => {
-    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopConversationRequest,
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -308,6 +302,7 @@ describe('ReplyRuntime', () => {
       run: expect.objectContaining({ id: 'run-2' }),
       inputText: 'B1',
     });
+    const speakerBRequestSignal = runtime.getRequestSignal('run-2');
 
     let latestResolved = false;
     const earlierPromise = runtime.prepareRun({
@@ -319,8 +314,9 @@ describe('ReplyRuntime', () => {
       mode: 'interrupt',
     });
 
-    expect(stopConversationRequest).toHaveBeenCalledTimes(1);
+    expect(speakerBRequestSignal?.aborted).toBe(true);
     expect(runtime.completeCompute('run-2')).toBe(false);
+    expect(runtime.finishRun('run-2')).toMatchObject({ id: 'run-2' });
 
     await vi.advanceTimersByTimeAsync(40);
     await Promise.resolve();
@@ -351,9 +347,7 @@ describe('ReplyRuntime', () => {
   });
 
   it('requeues self-interruption to the group tail behind other queued speakers', async () => {
-    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopConversationRequest,
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -364,6 +358,7 @@ describe('ReplyRuntime', () => {
       }),
       mode: 'interrupt',
     });
+    const firstRequestSignal = runtime.getRequestSignal('run-1');
 
     const speakerBPromise = runtime.prepareRun({
       ...createArgs({
@@ -387,6 +382,8 @@ describe('ReplyRuntime', () => {
       selfRerunResolved = true;
       return result;
     });
+    expect(firstRequestSignal?.aborted).toBe(true);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
 
     const speakerB = await speakerBPromise;
     expect(speakerB).toMatchObject({
@@ -394,7 +391,6 @@ describe('ReplyRuntime', () => {
       run: expect.objectContaining({ id: 'run-2' }),
       inputText: 'B1',
     });
-    expect(stopConversationRequest).toHaveBeenCalledTimes(1);
     expect(runtime.isCurrentRun('run-1')).toBe(false);
     expect(selfRerunResolved).toBe(false);
 
@@ -410,7 +406,6 @@ describe('ReplyRuntime', () => {
 
   it('merges same-actor queued messages and only lets the latest carrier continue', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -448,6 +443,7 @@ describe('ReplyRuntime', () => {
       }),
       mode: 'interrupt',
     });
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
 
     await speakerBPromise;
     await vi.advanceTimersByTimeAsync(60);
@@ -462,9 +458,7 @@ describe('ReplyRuntime', () => {
   });
 
   it('builds actor-only continuation context when a sent reply is interrupted and requeued', async () => {
-    const stopConversationRequest = vi.fn(async () => undefined);
     const runtime = new ReplyRuntime({
-      stopConversationRequest,
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -478,6 +472,7 @@ describe('ReplyRuntime', () => {
     runtime.setPlannedUnitHistory('run-1', ['第一句', '第二句', '第三句']);
     expect(runtime.completeCompute('run-1')).toBe(true);
     const sendSignal = runtime.beginSending('run-1');
+    const requestSignal = runtime.getRequestSignal('run-1');
     runtime.recordCommittedUnit('run-1', '第一句');
 
     const speakerBPromise = runtime.prepareRun({
@@ -508,7 +503,8 @@ describe('ReplyRuntime', () => {
     await vi.advanceTimersByTimeAsync(60);
 
     expect(sendSignal?.aborted).toBe(true);
-    expect(stopConversationRequest).not.toHaveBeenCalled();
+    expect(requestSignal?.aborted).toBe(true);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
     await expect(speakerBPromise).resolves.toMatchObject({
       action: 'continue',
       inputText: 'B1',
@@ -531,7 +527,6 @@ describe('ReplyRuntime', () => {
 
   it('allows forced cleanup to release a blocked queue and stays safe on repeated finishRun calls', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -562,19 +557,18 @@ describe('ReplyRuntime', () => {
     });
   });
 
-  it('stops the active ChatLuna conversation and snapshots progress after outbound drain', async () => {
-    const stopConversationRequest = vi.fn(async () => undefined);
+  it('aborts the active request signal and snapshots progress after outbound drain', async () => {
     let releaseDrain: () => void = () => {};
     const drainOutbound = vi.fn(() => new Promise<void>((resolve) => {
       releaseDrain = resolve;
     }));
     const runtime = new ReplyRuntime({
-      stopConversationRequest,
       drainOutbound,
       collectWindowMs: 50,
     });
 
     await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const firstRequestSignal = runtime.getRequestSignal('run-1');
     const nextPromise = runtime.prepareRun({
       ...createArgs({
         runId: 'run-2',
@@ -592,9 +586,10 @@ describe('ReplyRuntime', () => {
     });
 
     await Promise.resolve();
-    expect(stopConversationRequest).toHaveBeenCalledWith('conv-1');
+    expect(firstRequestSignal?.aborted).toBe(true);
     expect(drainOutbound).toHaveBeenCalledWith('queue:group-1');
     expect(runtime.recordProgressVisibleLine('run-1', '我搜一下。', 123)).toBe(true);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
     releaseDrain();
     await vi.advanceTimersByTimeAsync(60);
 
@@ -615,7 +610,6 @@ describe('ReplyRuntime', () => {
   it('does not start the collection window until interrupted outbound work has drained', async () => {
     let releaseDrain: () => void = () => {};
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(() => new Promise<void>((resolve) => {
         releaseDrain = resolve;
       })),
@@ -664,6 +658,7 @@ describe('ReplyRuntime', () => {
     expect(thirdResolved).toBe(false);
     expect(runtime.recordProgressVisibleLine('run-1', '我还在查。', 123)).toBe(true);
 
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
     releaseDrain();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(49);
@@ -682,7 +677,6 @@ describe('ReplyRuntime', () => {
 
   it('preserves voice-input metadata when a text follow-up interrupts before model output', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -717,6 +711,7 @@ describe('ReplyRuntime', () => {
       mode: 'interrupt',
     });
 
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
     await vi.advanceTimersByTimeAsync(60);
     await expect(nextPromise).resolves.toMatchObject({
       action: 'continue',
@@ -732,7 +727,6 @@ describe('ReplyRuntime', () => {
 
   it('preserves image content owned by an interrupted input when the carrier is text-only', async () => {
     const runtime = new ReplyRuntime({
-      stopConversationRequest: vi.fn(async () => undefined),
       drainOutbound: vi.fn(async () => undefined),
       collectWindowMs: 50,
     });
@@ -773,6 +767,7 @@ describe('ReplyRuntime', () => {
       mode: 'interrupt',
     });
 
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
     await vi.advanceTimersByTimeAsync(60);
     await expect(nextPromise).resolves.toMatchObject({
       action: 'continue',
@@ -785,5 +780,139 @@ describe('ReplyRuntime', () => {
         },
       },
     });
+  });
+
+  it('cancels an active computing run through its request-scoped signal', async () => {
+    const drainOutbound = vi.fn(async () => undefined);
+    const runtime = new ReplyRuntime({ drainOutbound });
+
+    await runtime.prepareRun({
+      ...createArgs({ conversationId: 'conversation-that-must-not-be-used' }),
+      mode: 'interrupt',
+    });
+    const requestSignal = runtime.getRequestSignal('run-1');
+
+    const cancellation = runtime.cancelRun('run-1');
+    expect(requestSignal?.aborted).toBe(true);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
+    await expect(cancellation).resolves.toBe(true);
+    expect(drainOutbound).toHaveBeenCalledWith('queue:group-1');
+    expect(runtime.getRun('run-1')).toBeNull();
+    expect(runtime.isCurrentRun('run-1')).toBe(false);
+  });
+
+  it('cancels a computed run through the same request-scoped signal', async () => {
+    const drainOutbound = vi.fn(async () => undefined);
+    const runtime = new ReplyRuntime({ drainOutbound });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const requestSignal = runtime.getRequestSignal('run-1');
+    expect(runtime.completeCompute('run-1')).toBe(true);
+
+    const cancellation = runtime.cancelRun('run-1');
+    expect(requestSignal?.aborted).toBe(true);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
+    await expect(cancellation).resolves.toBe(true);
+    expect(drainOutbound).toHaveBeenCalledTimes(1);
+    expect(runtime.getRun('run-1')).toBeNull();
+  });
+
+  it('aborts sending and keeps the queue blocked until outbound work drains', async () => {
+    let releaseDrain: () => void = () => {};
+    const drainOutbound = vi.fn(() => new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    }));
+    const runtime = new ReplyRuntime({ drainOutbound });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const requestSignal = runtime.getRequestSignal('run-1');
+    expect(runtime.completeCompute('run-1')).toBe(true);
+    const sendSignal = runtime.beginSending('run-1');
+    expect(sendSignal).not.toBeNull();
+
+    const cancellation = runtime.cancelRun('run-1');
+    let queuedResolved = false;
+    const queuedPromise = runtime.prepareRun({
+      ...createArgs({ runId: 'run-2', input: { text: '第二条' } }),
+      mode: 'queue',
+    }).then((result) => {
+      queuedResolved = true;
+      return result;
+    });
+
+    expect(sendSignal?.aborted).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
+    await Promise.resolve();
+    expect(queuedResolved).toBe(false);
+
+    releaseDrain();
+    await expect(cancellation).resolves.toBe(true);
+    await expect(queuedPromise).resolves.toMatchObject({
+      action: 'continue',
+      run: expect.objectContaining({ id: 'run-2' }),
+    });
+  });
+
+  it('cancels a pending interrupt turn before it can become a run', async () => {
+    const runtime = new ReplyRuntime({
+      drainOutbound: vi.fn(async () => undefined),
+      collectWindowMs: 50,
+    });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const pending = runtime.prepareRun({
+      ...createArgs({
+        runId: 'run-2',
+        actorKey: 'queue:group-1:user:u2',
+        input: { text: '排队消息', displayName: '乙', userId: 'u2', isDirect: false },
+      }),
+      mode: 'interrupt',
+    });
+
+    await expect(runtime.cancelRun('run-2')).resolves.toBe(true);
+    await expect(pending).resolves.toEqual({ action: 'stop' });
+    runtime.finishRun('run-1');
+    await vi.runAllTimersAsync();
+    expect(runtime.getRun('run-2')).toBeNull();
+    await expect(runtime.cancelRun('run-2')).resolves.toBe(false);
+  });
+
+  it('cancels a queue-mode waiter immediately and never starts it later', async () => {
+    const runtime = new ReplyRuntime({
+      drainOutbound: vi.fn(async () => undefined),
+    });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'queue' });
+    const pending = runtime.prepareRun({
+      ...createArgs({ runId: 'run-2', input: { text: '第二条' } }),
+      mode: 'queue',
+    });
+
+    await expect(runtime.cancelRun('run-2')).resolves.toBe(true);
+    await expect(pending).resolves.toEqual({ action: 'stop' });
+    runtime.finishRun('run-1');
+    await Promise.resolve();
+    expect(runtime.getRun('run-2')).toBeNull();
+  });
+
+  it('coalesces concurrent cancellation calls into one abort and drain operation', async () => {
+    let releaseDrain: () => void = () => {};
+    const drainOutbound = vi.fn(() => new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    }));
+    const runtime = new ReplyRuntime({ drainOutbound });
+
+    await runtime.prepareRun({ ...createArgs(), mode: 'interrupt' });
+    const requestSignal = runtime.getRequestSignal('run-1');
+    const firstCancellation = runtime.cancelRun('run-1');
+    const secondCancellation = runtime.cancelRun('run-1');
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(drainOutbound).toHaveBeenCalledTimes(1);
+    expect(runtime.finishRun('run-1')).toMatchObject({ id: 'run-1' });
+    releaseDrain();
+    await expect(Promise.all([firstCancellation, secondCancellation])).resolves.toEqual([true, true]);
+    await expect(runtime.cancelRun('run-1')).resolves.toBe(false);
   });
 });

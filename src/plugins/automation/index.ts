@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { parseExpression } from 'cron-parser';
+import { AIMessage } from '@langchain/core/messages';
 import { StructuredTool } from '@langchain/core/tools';
 import { Context, h, Logger, Schema, type Session, type Universal } from 'koishi';
 import type { ChatLunaTool, ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types';
@@ -17,11 +18,24 @@ import {
   ensureSupportedStructuredReplyModel,
   DEFAULT_MODALITY_PREFERENCE,
   deriveModalityPolicy,
+  assertExplicitModalityInvariant,
+  ExplicitModalityInvariantError,
+  replyFinalizerRequestRegistry,
+  ReplyArtifactRegistry,
+  CHATLUNA_AGENT_EVENT,
   ReplyOrchestratorService,
   resolveReplyCapabilitySnapshot,
+  type AgentEvent,
+  type ChatCallbacksProviderLike,
+  type ModalityPolicySnapshot,
   type TurnContext,
   type ReplySessionLike,
 } from '../reply/index.js';
+import { createOrderedCallbackManager } from '../shared/chatluna-callbacks.js';
+import {
+  createChatLunaHistoryWriter,
+  type ChatLunaHistoryServiceLike,
+} from '../shared/chatluna-history.js';
 import {
   createBypassLineSplitOptions,
   dispatchNormalizedOutboundMessage,
@@ -120,18 +134,20 @@ type ChatLunaBot = BotMessageSender & {
   session?: (event?: Record<string, unknown>) => Session;
 };
 
-type ChatLunaServiceLike = {
+type ChatLunaServiceLike = ChatLunaHistoryServiceLike & {
   chat: (
     session: ReplySessionLike,
     room: AutomationRoomRow,
     message: ChatLunaMessage,
-    event: Record<string, ((...args: any[]) => Promise<void>) | undefined>,
-    stream?: boolean,
-    variables?: Record<string, unknown>,
-    postHandler?: unknown,
-    requestId?: string,
-    toolMask?: ToolMask,
+    options: {
+      event: Record<string, ((...args: any[]) => Promise<void>) | undefined>;
+      stream: boolean;
+      variables: Record<string, unknown>;
+      requestId: string;
+      toolMask: ToolMask;
+    },
   ) => Promise<ChatLunaMessage>;
+  registerCallbacksProvider: (provider: ChatCallbacksProviderLike) => () => void;
   platform: {
     registerTool: (name: string, tool: ChatLunaTool) => () => void;
   };
@@ -194,6 +210,10 @@ type ReplyAutomationRoom = Omit<AutomationRoomRow, 'conversationId'> & {
 };
 
 type AutomationCapabilitySnapshot = NonNullable<TurnContext['capabilitySnapshot']>;
+type AutomationExecutionContext = {
+  capabilitySnapshot: AutomationCapabilitySnapshot;
+  modalityPolicy: ModalityPolicySnapshot;
+};
 
 type AutomationToolDeps = {
   ctx: ContextWithAutomation;
@@ -296,10 +316,14 @@ function ensureTaskTables(ctx: Context): void {
       outputText: { type: 'text', nullable: true },
       outputPayload: { type: 'json', nullable: true } as any,
       deliveryReceipt: { type: 'text', nullable: true },
+      deliveryState: { type: 'string', initial: 'not_started' },
+      deliveryAttemptId: { type: 'string', nullable: true },
+      deliveryConfirmedAt: { type: 'double', nullable: true },
+      deliveryError: { type: 'text', nullable: true },
     },
     {
       autoInc: true,
-      indexes: [['jobId'], ['status', 'triggeredAt']],
+      indexes: [['jobId'], ['status', 'triggeredAt'], ['deliveryState']],
     },
   );
 }
@@ -371,6 +395,33 @@ function createNoopChatEvents() {
   };
 }
 
+function registerAutomationArtifactCallbacks(
+  chatluna: ChatLunaServiceLike,
+  requestId: string,
+  artifactRegistry: ReplyArtifactRegistry,
+): () => void {
+  const provider: ChatCallbacksProviderLike = ({ requestId: callbackRequestId }) => {
+    if (callbackRequestId !== requestId) return undefined;
+
+    return createOrderedCallbackManager({
+      handleCustomEvent: async (name, rawPayload) => {
+        if (name !== CHATLUNA_AGENT_EVENT) return;
+        const payload = rawPayload as {
+          context?: { kind?: 'main' | 'subagent'; requestId?: string };
+          event?: AgentEvent;
+        };
+        if (payload.context?.kind !== 'main' || payload.context.requestId !== requestId) return;
+        if (payload.event?.type !== 'tool-result') return;
+        for (const step of payload.event.steps) {
+          artifactRegistry.registerObservation(requestId, step.action.tool, step.observation);
+        }
+      },
+    });
+  };
+
+  return chatluna.registerCallbacksProvider(provider);
+}
+
 function createAutomationPrompt(job: AutomationJob, triggeredAt: number): string {
   const lines = [
     '你正在执行一个到点触发的自动化任务。',
@@ -403,6 +454,10 @@ async function createJobRun(ctx: ContextWithAutomation, jobId: number, triggered
     outputText: null,
     outputPayload: null,
     deliveryReceipt: null,
+    deliveryState: 'not_started',
+    deliveryAttemptId: null,
+    deliveryConfirmedAt: null,
+    deliveryError: null,
   });
   return created;
 }
@@ -410,7 +465,8 @@ async function createJobRun(ctx: ContextWithAutomation, jobId: number, triggered
 async function finishJobRun(
   ctx: ContextWithAutomation,
   runId: number,
-  patch: Pick<AutomationJobRun, 'status' | 'error' | 'outputText' | 'outputPayload' | 'deliveryReceipt'>,
+  patch: Pick<AutomationJobRun, 'status' | 'error' | 'outputText' | 'outputPayload' | 'deliveryReceipt'>
+    & Partial<Pick<AutomationJobRun, 'deliveryState' | 'deliveryAttemptId' | 'deliveryConfirmedAt'>>,
 ): Promise<void> {
   await automationDatabase(ctx).set(
     'automation_job_run',
@@ -422,16 +478,212 @@ async function finishJobRun(
   );
 }
 
-async function markInterruptedRunsFailed(ctx: ContextWithAutomation): Promise<void> {
-  await automationDatabase(ctx).set(
-    'automation_job_run',
-    { status: 'running' },
-    {
+function automationDeliveryAttemptId(run: AutomationJobRun): string {
+  return `automation-job-run:${run.jobId}:${run.id}`;
+}
+
+async function syncAutomationDeliveryToSourceHistory(args: {
+  ctx: ContextWithAutomation;
+  job: AutomationJob;
+  runId: number;
+  outputText: string;
+  outputPayload: unknown;
+  deliveryReceipt: string;
+}): Promise<void> {
+  const conversationId = args.job.sourceConversationId?.trim();
+  if (!conversationId) return;
+
+  const database = automationDatabase(args.ctx);
+  const [conversation] = await database.get<{ id?: string }>('chatluna_conversation', { id: conversationId });
+  if (!conversation?.id) {
+    throw new Error(`automation source conversation ${conversationId} is unavailable during delivery reconciliation`);
+  }
+  const recordId = `automation-job-run:${args.runId}`;
+
+  if (!database.upsert) {
+    throw new Error('automation delivery reconciliation requires database.upsert.');
+  }
+  const writer = await createChatLunaHistoryWriter({
+    database: database as Parameters<typeof createChatLunaHistoryWriter>[0]['database'],
+    logger,
+    conversationId,
+    chatluna: automationChatLuna(args.ctx),
+    lockMode: 'acquire',
+  });
+  await writer.addMessages([
+    new AIMessage({
+      id: recordId,
+      content: args.outputText,
+      response_metadata: {
+        chatluna: { recordId },
+      },
+      additional_kwargs: {
+        qqbot_automation_delivery: {
+          version: 'v1',
+          jobId: args.job.id,
+          runId: args.runId,
+          deliveryReceipt: parseDeliveryReceipt(args.deliveryReceipt),
+          outputPayload: args.outputPayload,
+        },
+      },
+    }),
+  ]);
+}
+
+async function reconcileConfirmedAutomationRun(
+  ctx: ContextWithAutomation,
+  job: AutomationJob,
+  run: AutomationJobRun,
+): Promise<void> {
+  const outputText = run.outputText?.trim();
+  const deliveryReceipt = run.deliveryReceipt?.trim();
+  if (
+    !outputText
+    || !deliveryReceipt
+    || !run.deliveryAttemptId?.trim()
+    || !run.deliveryConfirmedAt
+    || run.outputPayload == null
+  ) {
+    await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
       status: 'failed',
-      error: 'automation run interrupted by process restart',
+      deliveryState: 'reconciliation_failed',
+      error: 'automation confirmed delivery checkpoint is incomplete',
       finishedAt: Date.now(),
-    },
-  );
+    });
+    if (job.kind === 'once') {
+      await automationDatabase(ctx).set('automation_job', { id: job.id }, { status: 'done', updatedAt: Date.now() });
+    }
+    return;
+  }
+
+  try {
+    await syncAutomationDeliveryToSourceHistory({
+      ctx,
+      job,
+      runId: run.id,
+      outputText,
+      outputPayload: run.outputPayload,
+      deliveryReceipt,
+    });
+  } catch (error) {
+    await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+      deliveryState: 'reconciliation_failed',
+      error: `automation delivery reconciliation failed: ${(error as Error).message}`,
+      finishedAt: Date.now(),
+    });
+    if (job.kind === 'once') {
+      await automationDatabase(ctx).set('automation_job', { id: job.id }, { status: 'done', updatedAt: Date.now() });
+    }
+    return;
+  }
+
+  await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+    status: run.deliveryError ? 'failed' : 'succeeded',
+    deliveryState: 'reconciled',
+    error: run.deliveryError,
+    finishedAt: Date.now(),
+  });
+  if (job.kind === 'once') {
+    await automationDatabase(ctx).set('automation_job', { id: job.id }, { status: 'done', updatedAt: Date.now() });
+  }
+}
+
+async function reconcileOutcomeUnknownAutomationRun(
+  ctx: ContextWithAutomation,
+  job: AutomationJob,
+  run: AutomationJobRun,
+): Promise<void> {
+  const baseError = run.error?.trim()
+    || 'automation delivery outcome is unknown; the attempt will not be resent';
+  let reconciliationError: string | null = null;
+  const outputText = run.outputText?.trim();
+  const deliveryReceipt = run.deliveryReceipt?.trim();
+
+  if (deliveryReceipt) {
+    if (!outputText || run.outputPayload == null) {
+      reconciliationError = 'confirmed automation delivery units have an incomplete reconciliation checkpoint';
+    } else {
+      try {
+        await syncAutomationDeliveryToSourceHistory({
+          ctx,
+          job,
+          runId: run.id,
+          outputText,
+          outputPayload: run.outputPayload,
+          deliveryReceipt,
+        });
+      } catch (error) {
+        reconciliationError = `confirmed automation delivery unit reconciliation failed: ${(error as Error).message}`;
+      }
+    }
+  }
+
+  await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+    status: 'failed',
+    deliveryState: 'outcome_unknown',
+    error: reconciliationError ? `${baseError}; ${reconciliationError}` : baseError,
+    finishedAt: Date.now(),
+  });
+  if (job.kind === 'once') {
+    await automationDatabase(ctx).set('automation_job', { id: job.id }, { status: 'done', updatedAt: Date.now() });
+  }
+}
+
+async function reconcileInterruptedAutomationRuns(ctx: ContextWithAutomation): Promise<void> {
+  const runs = await automationDatabase(ctx).get<AutomationJobRun>('automation_job_run', {});
+  for (const run of runs) {
+    if (run.deliveryState === 'confirmed' || run.deliveryState === 'reconciliation_failed') {
+      const job = await getJobById(ctx, run.jobId);
+      if (!job) {
+        await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+          status: 'failed',
+          deliveryState: 'reconciliation_failed',
+          error: `automation job #${run.jobId} is unavailable during delivery reconciliation`,
+          finishedAt: Date.now(),
+        });
+        continue;
+      }
+      await reconcileConfirmedAutomationRun(ctx, job, run);
+      continue;
+    }
+    if (run.deliveryState === 'outcome_unknown') {
+      const job = await getJobById(ctx, run.jobId);
+      if (!job) {
+        await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+          status: 'failed',
+          error: `automation job #${run.jobId} is unavailable while reconciling confirmed units from an unknown delivery outcome`,
+          finishedAt: Date.now(),
+        });
+        continue;
+      }
+      await reconcileOutcomeUnknownAutomationRun(ctx, job, run);
+      continue;
+    }
+    if (run.deliveryState !== 'dispatching') continue;
+    await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+      status: 'failed',
+      deliveryState: 'outcome_unknown',
+      error: 'automation delivery outcome is unknown after process restart; the attempt will not be resent',
+      finishedAt: Date.now(),
+    });
+    const job = await getJobById(ctx, run.jobId);
+    if (job?.kind === 'once') {
+      await automationDatabase(ctx).set('automation_job', { id: job.id }, { status: 'done', updatedAt: Date.now() });
+    }
+  }
+
+  const interrupted = runs.filter((run) => run.status === 'running' && run.deliveryState === 'not_started');
+  for (const run of interrupted) {
+    await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+      status: 'failed',
+      error: 'automation run interrupted by process restart before delivery started',
+      finishedAt: Date.now(),
+    });
+    const job = await getJobById(ctx, run.jobId);
+    if (job?.kind === 'once') {
+      await automationDatabase(ctx).set('automation_job', { id: job.id }, { status: 'done', updatedAt: Date.now() });
+    }
+  }
 }
 
 async function resolveCurrentRoom(ctx: ContextWithAutomation, conversationId: string): Promise<AutomationRoomRow | null> {
@@ -719,6 +971,24 @@ function stringifyReceipt(receipts: unknown[]): string | null {
   return JSON.stringify(normalized);
 }
 
+function parseDeliveryReceipt(raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new Error('automation delivery receipt must contain valid JSON.', { cause: error });
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error('automation delivery receipt must contain at least one message id.');
+  }
+  return parsed.map((value) => {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error('automation delivery receipt contains an invalid message id.');
+    }
+    return value.trim();
+  });
+}
+
 async function getNextRoomId(ctx: ContextWithAutomation): Promise<number> {
   const rooms = await automationDatabase(ctx).get<AutomationRoomRow>('chathub_room', {} as Record<string, never>);
   const maxRoomId = rooms.reduce((current, room) => Math.max(current, Number(room.roomId ?? 0)), 0);
@@ -886,12 +1156,16 @@ async function resolveAutomationToolMask(
   ctx: ContextWithAutomation,
   session: Session,
   sourceRoom: AutomationRoomRow,
-): Promise<ToolMask | undefined> {
-  return automationToolPolicy(ctx).resolveToolMask(session, 'automation', {
+): Promise<ToolMask> {
+  const mask = await automationToolPolicy(ctx).resolveToolMask(session, 'automation', {
     roomId: sourceRoom.roomId,
     conversationId: sourceRoom.conversationId?.trim() || null,
     groupId: session.guildId ?? null,
   });
+  if (!mask) {
+    throw new Error('automation requires an explicit tool mask for every Agent run.');
+  }
+  return mask;
 }
 
 async function loadRecentConversationTurns(
@@ -1010,7 +1284,7 @@ async function prepareAutomationExecutionContext(
   tempRoom: AutomationRoomRow,
   session: ReplySessionLike,
   job: AutomationJob,
-): Promise<AutomationCapabilitySnapshot> {
+): Promise<AutomationExecutionContext> {
   const stickerArtifacts = resolveStickerCapabilityArtifacts(sourceRoom.preset?.trim() || null);
   const currentState = ((session as Session & { state?: Record<string, unknown> }).state ?? {}) as Record<string, unknown>;
   currentState.qqSticker = stickerArtifacts.state as unknown as Record<string, unknown>;
@@ -1053,7 +1327,10 @@ async function prepareAutomationExecutionContext(
   const recentContextFragment = buildAutomationRecentContextFragment(recentContextTurns);
   const fragments = recentContextFragment ? [recentContextFragment] : [];
   injectAutomationPromptFragments(ctx, tempRoom.conversationId, fragments);
-  return capabilitySnapshot;
+  return {
+    capabilitySnapshot,
+    modalityPolicy: requestedPolicy,
+  };
 }
 
 function toReplyAutomationRoom(room: AutomationRoomRow): ReplyAutomationRoom {
@@ -1065,6 +1342,16 @@ function toReplyAutomationRoom(room: AutomationRoomRow): ReplyAutomationRoom {
 
 async function executeAutomationJobRun(ctx: ContextWithAutomation, job: AutomationJob, run: AutomationJobRun): Promise<void> {
   let tempRoom: AutomationRoomRow | null = null;
+  const finalizerRequestId = `automation-job:${job.id}:${run.id}`;
+  const artifactRegistry = new ReplyArtifactRegistry({ maxRuns: 1 });
+  let artifactCallbacksDispose: (() => void) | null = null;
+  const failureEvidence: Pick<AutomationJobRun, 'outputText' | 'outputPayload' | 'deliveryReceipt'> = {
+    outputText: null,
+    outputPayload: null,
+    deliveryReceipt: null,
+  };
+  let durableDeliveryState: AutomationJobRun['deliveryState'] = run.deliveryState;
+  let deliveryHistoryMaterialized = false;
 
   try {
     const source = await resolveSourceRoomContext(ctx, job);
@@ -1078,13 +1365,14 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
     );
     const replyRoom = toReplyAutomationRoom(tempRoom);
     ensureSupportedStructuredReplyModel(modelTarget);
-    const capabilitySnapshot = await prepareAutomationExecutionContext(
+    const executionContext = await prepareAutomationExecutionContext(
       ctx,
       source.room,
       tempRoom,
       source.session,
       job,
     );
+    const { capabilitySnapshot, modalityPolicy } = executionContext;
     const toolMask = await resolveAutomationToolMask(ctx, source.session, source.room);
     const message: ChatLunaMessage = {
       content: createAutomationPrompt(job, run.triggeredAt),
@@ -1095,24 +1383,50 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
       capabilitySnapshot,
     });
 
+    artifactCallbacksDispose = registerAutomationArtifactCallbacks(
+      automationChatLuna(ctx),
+      finalizerRequestId,
+      artifactRegistry,
+    );
+    replyFinalizerRequestRegistry.begin(finalizerRequestId, {
+      canVoice: capabilitySnapshot.canVoice,
+      canMeme: capabilitySnapshot.canSticker,
+      explicitVoiceRequested: modalityPolicy.voiceReason === 'explicit_request',
+      explicitMemeRequested: modalityPolicy.stickerReason === 'explicit_request',
+      hasImageAssetRef: (assetRef) => artifactRegistry.has(finalizerRequestId, assetRef),
+    });
     const response = await automationChatLuna(ctx).chat(
       source.session,
       tempRoom,
       message,
-      createNoopChatEvents(),
-      false,
-      {},
-      undefined,
-      `automation-job:${job.id}:${run.id}`,
-      toolMask,
+      {
+        event: createNoopChatEvents(),
+        stream: false,
+        variables: {},
+        requestId: finalizerRequestId,
+        toolMask,
+      },
     );
     const turnInput = buildReplyTurnInput(source.session, replyRoom, message);
+    const deliveryCapabilitySnapshot = {
+      ...capabilitySnapshot,
+      imageAssetRefs: artifactRegistry.list(finalizerRequestId),
+    };
     const orchestration = await automationReplyOrchestrator.handle(turnInput, source.session, {
       responseMessage: response,
       outputProtocol: replyOutputContract?.protocol,
-      capabilitySnapshot,
+      capabilitySnapshot: deliveryCapabilitySnapshot,
       routeHint: 'automation',
     });
+    if (orchestration.status === 'no_reply' || orchestration.status === 'ready') {
+      failureEvidence.outputPayload = orchestration.status === 'ready'
+        ? orchestration.reply
+        : { decision: 'no_reply', outbound_messages: null };
+      assertExplicitModalityInvariant(modalityPolicy, {
+        stage: 'orchestration',
+        reply: orchestration.status === 'ready' ? orchestration.reply : null,
+      });
+    }
     if (orchestration.status === 'no_reply') {
       await finishJobRun(ctx, run.id, {
         status: 'succeeded',
@@ -1120,12 +1434,14 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
         outputText: null,
         outputPayload: { decision: 'no_reply' },
         deliveryReceipt: null,
+        deliveryState: 'reconciled',
       });
       return;
     }
     if (orchestration.status !== 'ready') {
       throw new Error(`automation structured reply expected ready status, got ${orchestration.status}.`);
     }
+    failureEvidence.outputPayload = orchestration.reply;
     if (orchestration.actions.length === 1 && orchestration.actions[0]?.kind === 'no_reply') {
       await finishJobRun(ctx, run.id, {
         status: 'succeeded',
@@ -1133,6 +1449,7 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
         outputText: null,
         outputPayload: orchestration.reply,
         deliveryReceipt: null,
+        deliveryState: 'reconciled',
       });
       return;
     }
@@ -1150,16 +1467,83 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
         outputText: null,
         outputPayload: orchestration.reply,
         deliveryReceipt: null,
+        deliveryState: 'reconciled',
       });
       return;
     }
+
+    const deliveryAttemptId = automationDeliveryAttemptId(run);
+    await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+      deliveryState: 'dispatching',
+      deliveryAttemptId,
+      outputPayload: orchestration.reply,
+      deliveryReceipt: null,
+      deliveryConfirmedAt: null,
+      deliveryError: null,
+    });
+    durableDeliveryState = 'dispatching';
 
     const voiceRuntime = createVoiceRuntimeConfigFromEnv();
     const delivery = await deliverStandaloneReplyPlan({
       runtime: voiceRuntime,
       session: source.session,
       plan,
+      modalityPolicy,
     });
+    failureEvidence.outputText = delivery.historyText.trim() || null;
+    failureEvidence.deliveryReceipt = stringifyReceipt(delivery.receipts);
+    const deliveryOutcomeUnknown = delivery.status === 'outcome_unknown';
+    if (failureEvidence.deliveryReceipt) {
+      const deliveryError = delivery.status === 'delivered'
+        ? null
+        : delivery.status === 'failed_semantic'
+          ? delivery.semanticFailure.message
+          : `automation structured reply delivery ${delivery.status.replaceAll('_', ' ')}`;
+      const confirmedAt = Date.now();
+      await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+        deliveryState: deliveryOutcomeUnknown ? 'outcome_unknown' : 'confirmed',
+        deliveryAttemptId,
+        deliveryConfirmedAt: confirmedAt,
+        deliveryReceipt: failureEvidence.deliveryReceipt,
+        outputText: failureEvidence.outputText,
+        outputPayload: orchestration.reply,
+        error: deliveryError,
+        deliveryError,
+      });
+      durableDeliveryState = deliveryOutcomeUnknown ? 'outcome_unknown' : 'confirmed';
+
+      if (!failureEvidence.outputText) {
+        throw new Error('automation confirmed delivery checkpoint has no committed history text');
+      }
+      await syncAutomationDeliveryToSourceHistory({
+        ctx,
+        job,
+        runId: run.id,
+        outputText: failureEvidence.outputText,
+        outputPayload: orchestration.reply,
+        deliveryReceipt: failureEvidence.deliveryReceipt,
+      });
+      deliveryHistoryMaterialized = true;
+    } else if (deliveryOutcomeUnknown) {
+      const deliveryError = 'automation delivery outcome is unknown; the attempt will not be resent';
+      await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+        deliveryState: 'outcome_unknown',
+        deliveryAttemptId,
+        deliveryConfirmedAt: null,
+        outputText: failureEvidence.outputText,
+        outputPayload: orchestration.reply,
+        error: deliveryError,
+        deliveryError,
+      });
+      durableDeliveryState = 'outcome_unknown';
+    } else {
+      await automationDatabase(ctx).set('automation_job_run', { id: run.id }, {
+        deliveryState: 'not_started',
+        deliveryAttemptId: null,
+        deliveryConfirmedAt: null,
+      });
+      durableDeliveryState = 'not_started';
+    }
     if (delivery.status === 'interrupted') {
       throw new Error('automation structured reply delivery interrupted');
     }
@@ -1169,9 +1553,12 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
     if (delivery.status === 'failed_after_partial_send') {
       throw new Error('automation structured reply delivery failed after partial send');
     }
-
-    let outputText = delivery.historyText.trim() || null;
-    let deliveryReceipt = stringifyReceipt(delivery.receipts);
+    if (delivery.status === 'outcome_unknown') {
+      throw new Error('automation delivery outcome is unknown; the attempt will not be resent');
+    }
+    if (delivery.status === 'failed_semantic') {
+      throw delivery.semanticFailure;
+    }
 
     if (delivery.status === 'failed_before_send') {
       throw new Error('automation structured reply delivery failed before send');
@@ -1180,20 +1567,43 @@ async function executeAutomationJobRun(ctx: ContextWithAutomation, job: Automati
     await finishJobRun(ctx, run.id, {
       status: 'succeeded',
       error: null,
-      outputText,
+      outputText: failureEvidence.outputText,
       outputPayload: orchestration.reply,
-      deliveryReceipt,
+      deliveryReceipt: failureEvidence.deliveryReceipt,
+      deliveryState: 'reconciled',
+      deliveryAttemptId,
+      deliveryConfirmedAt: Date.now(),
     });
+    durableDeliveryState = 'reconciled';
   } catch (error) {
+    if (error instanceof ExplicitModalityInvariantError) {
+      logger.warn(
+        'automation explicit modality invariant failed: jobId=%s runId=%s stage=%s code=%s missing=%s',
+        String(job.id),
+        String(run.id),
+        error.stage,
+        error.code,
+        error.missingModalities.join(','),
+      );
+    }
+    const outcomeUnknown = durableDeliveryState === 'dispatching' || durableDeliveryState === 'outcome_unknown';
     await finishJobRun(ctx, run.id, {
       status: 'failed',
-      error: (error as Error).message,
-      outputText: null,
-      outputPayload: null,
-      deliveryReceipt: null,
+      error: outcomeUnknown
+        ? `automation delivery outcome is unknown; the attempt will not be resent: ${(error as Error).message}`
+        : (error as Error).message,
+      ...failureEvidence,
+      deliveryState: outcomeUnknown
+        ? 'outcome_unknown'
+        : failureEvidence.deliveryReceipt
+          ? (deliveryHistoryMaterialized ? 'reconciled' : 'confirmed')
+          : durableDeliveryState,
     });
     throw error;
   } finally {
+    artifactCallbacksDispose?.();
+    replyFinalizerRequestRegistry.finish(finalizerRequestId);
+    artifactRegistry.finishRun(finalizerRequestId);
     if (tempRoom) {
       await deleteConversationRoomRecord(ctx, tempRoom).catch((error: unknown) => {
         logger.warn('failed to delete temporary automation room #%s: %s', String(tempRoom!.roomId), (error as Error).message);
@@ -1530,7 +1940,7 @@ export function apply(ctx: Context, config: Config): void {
   };
 
   ctx.on('ready', async () => {
-    await markInterruptedRunsFailed(serviceCtx);
+    await reconcileInterruptedAutomationRuns(serviceCtx);
     toolDisposers = registerAutomationTools(serviceCtx, runtime, {
       registerCronJob,
       disposeCronJob,
