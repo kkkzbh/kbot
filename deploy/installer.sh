@@ -337,6 +337,8 @@ adopt_runtime_data_ownership() {
 prepare_model_auth_runtime_ownership() {
   local state_name
   local state_path
+  local secret_name
+  local secret_path
   for state_name in \
     codex-chatgpt.oauth.json \
     codex-release-metadata.json \
@@ -364,6 +366,25 @@ prepare_model_auth_runtime_ownership() {
     -name 'github-copilot.oauth.json.tmp.*' -o \
     -name 'github-copilot.session.json.tmp.*' \
   \) -delete
+
+  for secret_name in \
+    codex-oauth.bridge-secret \
+    github-copilot.bridge-secret; do
+    secret_path="${SHARED_DIR}/${secret_name}"
+    if [[ -L "${secret_path}" ]]; then
+      echo "[installer] model auth bridge secret must not be a symbolic link: ${secret_path}" >&2
+      return 1
+    fi
+    if [[ ! -e "${secret_path}" ]]; then
+      continue
+    fi
+    if [[ ! -f "${secret_path}" ]]; then
+      echo "[installer] model auth bridge secret must be a regular file: ${secret_path}" >&2
+      return 1
+    fi
+    chown root:qqbot "${secret_path}"
+    chmod 640 "${secret_path}"
+  done
 }
 
 if [[ ! -s "${CLOUDFLARED_HBU_JW_TOKEN_FILE}" ]]; then
