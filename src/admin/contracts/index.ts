@@ -147,6 +147,10 @@ export const memoryFeatureSettingKeys = [
   'MEMORY_JOB_LOCK_TIMEOUT_MS',
 ] as const;
 
+export const generalFeatureSettingKeys = [
+  'QQBOT_ANTI_RECALL_ENABLED',
+] as const;
+
 export { naturalTriggerConfigPutSchema, naturalTriggerConfigSchema };
 
 export const naturalTriggerDecisionBindingSchema = z.object({

@@ -7,6 +7,7 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'overview', component: () => import('@/pages/OverviewPage.vue'), meta: { title: '运行总览' } },
     { path: '/runtime/logs', name: 'logs', component: () => import('@/pages/LogsPage.vue'), meta: { title: '运行日志' } },
+    { path: '/intelligence/general', name: 'general', component: () => import('@/pages/GeneralPage.vue'), meta: { title: '通用' } },
     { path: '/intelligence/models', name: 'models', component: () => import('@/pages/ModelsPage.vue'), meta: { title: '模型配置' } },
     { path: '/intelligence/context-presets', name: 'context-presets', component: () => import('@/pages/PresetsPage.vue'), meta: { title: '上下文' } },
     { path: '/intelligence/memory', name: 'memory', component: () => import('@/pages/MemoryPage.vue'), meta: { title: '长期记忆' } },

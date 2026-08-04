@@ -255,6 +255,7 @@ export function parseJournalDiskUsageBytes(output: string): number {
 }
 
 export const ADMIN_ENV_FIELDS: ManagedEnvField[] = [
+  { key: 'QQBOT_ANTI_RECALL_ENABLED', label: '防撤回', type: 'toggle', section: 'features' },
   { key: 'QQBOT_REALTIME_MESSAGE_ENABLED', label: '实时消息', type: 'toggle', section: 'features' },
   { key: 'QQ_VOICE_INPUT_ENABLED', label: '语音转文字', type: 'toggle', section: 'features' },
   { key: 'QQ_VOICE_OUTPUT_ENABLED', label: '语音回复', type: 'toggle', section: 'features' },

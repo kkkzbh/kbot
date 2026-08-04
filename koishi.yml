@@ -78,6 +78,8 @@ plugins:
       replyInterruptMaxPendingInputs: ${{ +env.QQBOT_REPLY_MAX_PENDING_INPUTS || 8 }}
     ./dist/plugins/realtime-message:realtime-message:
       maxInjectCount: ${{ +env.QQBOT_REALTIME_MESSAGE_MAX_INJECT_COUNT || 12 }}
+    ./dist/plugins/anti-recall:anti-recall:
+      enabled: ${{ env.QQBOT_ANTI_RECALL_ENABLED === 'true' }}
     ./dist/plugins/native-feature-chat:native-feature-chat: {}
     ./dist/plugins/feature-menu:feature-menu: {}
     ./dist/plugins/campus-auth-core:campus-auth-core:

@@ -17,6 +17,7 @@ import {
   KeyRound,
   LayoutDashboard,
   MessageCircleMore,
+  MessagesSquare,
   MonitorPlay,
   RotateCw,
   School,
@@ -55,6 +56,7 @@ const groups: NavGroup[] = [
     { key: 'logs', label: '运行日志', path: '/runtime/logs', icon: ScrollText },
   ] },
   { label: '对话智能', items: [
+    { key: 'general', label: '通用', path: '/intelligence/general', icon: MessagesSquare },
     { key: 'models', label: '模型配置', path: '/intelligence/models', icon: Cpu },
     { key: 'context-presets', label: '上下文', path: '/intelligence/context-presets', icon: UserRoundCog },
     { key: 'memory', label: '长期记忆', path: '/intelligence/memory', icon: Database },

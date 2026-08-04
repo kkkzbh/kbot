@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  generalFeatureSettingKeys,
   naturalTriggerAdminResponseSchema,
   runtimeFeatureSettingKeys,
 } from '../src/admin/contracts/index.js';
@@ -13,9 +14,11 @@ describe('admin settings ownership', () => {
 
     expect(app).toContain("label: '自然触发', path: '/intelligence/natural-trigger'");
     expect(app).toContain("label: 'Agent', path: '/intelligence/agent'");
+    expect(app).toContain("label: '通用', path: '/intelligence/general'");
     expect(app).not.toContain("label: '系统设置'");
     expect(router).toContain("path: '/intelligence/natural-trigger'");
     expect(router).toContain("path: '/intelligence/agent'");
+    expect(router).toContain("path: '/intelligence/general'");
     expect(router).not.toContain("path: '/policies'");
     expect(router).not.toContain("path: '/system/basic'");
     expect(router).not.toContain("path: '/system/features'");
@@ -44,6 +47,7 @@ describe('admin settings ownership', () => {
   });
 
   it('assigns every retired generic field to a domain workspace', () => {
+    expect(generalFeatureSettingKeys).toEqual(['QQBOT_ANTI_RECALL_ENABLED']);
     expect(naturalTriggerAdminResponseSchema).toBeDefined();
     expect(runtimeFeatureSettingKeys).toEqual([
       'QQBOT_REALTIME_MESSAGE_ENABLED',
