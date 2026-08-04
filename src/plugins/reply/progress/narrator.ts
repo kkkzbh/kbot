@@ -252,17 +252,9 @@ export class AgentProgressRun {
   }
 }
 
-function isAgentReplySession(session: { platform?: string; state?: unknown }): boolean {
-  if (session.platform !== 'onebot') return false;
-  const state = session.state;
-  if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
-  const reply = (state as { qqReplyV2?: unknown }).qqReplyV2;
-  return Boolean(reply && typeof reply === 'object' && (reply as { route?: unknown }).route === 'agent');
-}
-
 export function createAgentProgressCallbacksProvider(args: {
   phraseBook?: ProgressPhraseBook;
-  resolveReplyRunId: (session: Session) => string | undefined;
+  resolveReplyRunId: (session: Session, requestId: string) => string | undefined;
   resolveInitialState: (replyRunId: string) => AgentProgressInitialState;
   send: (input: {
     session: Session;
@@ -284,9 +276,8 @@ export function createAgentProgressCallbacksProvider(args: {
   };
 
   const provider = (({ session, conversation, requestId }) => {
-    if (!isAgentReplySession(session)) return undefined;
     const conversationKey = String(conversation.id ?? '').trim();
-    const replyRunId = args.resolveReplyRunId(session);
+    const replyRunId = args.resolveReplyRunId(session, requestId);
     if (!conversationKey || !requestId.trim() || !replyRunId) return undefined;
 
     const run = new AgentProgressRun({

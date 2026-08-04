@@ -2995,7 +2995,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       throw new Error('reply progress requires chatluna.registerAgentEventProvider.');
     }
     const controller = createAgentProgressCallbacksProvider({
-      resolveReplyRunId: (rawSession) => getReplyRunId(rawSession as SessionWithVoiceState),
+      resolveReplyRunId: (rawSession, requestId) => {
+        const sessionRunId = getReplyRunId(rawSession as SessionWithVoiceState);
+        if (sessionRunId) return sessionRunId;
+        return replyRuntime.getRun(requestId) ? requestId : undefined;
+      },
       resolveInitialState: (replyRunId) => {
         const state = replyRuntime.getProgressState(replyRunId);
         if (!state) {
