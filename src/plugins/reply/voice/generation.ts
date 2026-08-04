@@ -1556,6 +1556,16 @@ function getReplyRouteState(session: SessionWithVoiceState): ReplyRoute | null {
   return route ?? null;
 }
 
+function inferExplicitProgressTool(text: string): string | null {
+  const normalized = text.trim();
+  if (!normalized) return null;
+  if (/(?:搜|查|天气|网页|网上|资料)/u.test(normalized)) return 'web_search';
+  if (/(?:想想|记得|回忆|之前|记录|记忆)/u.test(normalized)) return 'memory_search';
+  if (/(?:读|看看|文档|附件|文件)/u.test(normalized)) return 'read_document';
+  if (/(?:创建|修改|删除|设置|执行|运行|处理)/u.test(normalized)) return 'execute_action';
+  return null;
+}
+
 function setReplyRouteState(session: SessionWithVoiceState, route: ReplyRoute): void {
   getReplyV2State(session).route = route;
 }
@@ -3014,6 +3024,10 @@ export function apply(ctx: Context, config: Config = {}): void {
         const session = rawSession as SessionWithVoiceState;
         const run = replyRuntime.getRun(replyRunId);
         if (!run) return false;
+        if (session.platform !== 'onebot' || !session.channelId) {
+          throw new Error('reply progress delivery requires a onebot session with channelId.');
+        }
+        const channelId = session.channelId;
         return sharedReplyTransportSendStrand.run(run.queueKey, async () => {
           const current = replyRuntime.getRun(replyRunId);
           if (!current || current.state !== 'computing' || !replyRuntime.isCurrentRun(replyRunId)) {
@@ -3030,7 +3044,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           await replyDeliveryCheckpointStore.beginUnit(checkpoint, unit.index);
           let receipt: DeliveryReceipt;
           try {
-            receipt = requireDeliveryReceipt(await session.send(text));
+            receipt = requireDeliveryReceipt(await session.bot.sendMessage(
+              channelId,
+              text,
+              session.guildId,
+            ));
           } catch (error) {
             await replyDeliveryCheckpointStore.markOutcomeUnknown(checkpoint, error);
             throw error;
@@ -3242,6 +3260,18 @@ export function apply(ctx: Context, config: Config = {}): void {
             }
             context.options.messageId = runId;
             context.options.requestSignal = requestSignal;
+          }
+          const progressTool = inferExplicitProgressTool(prepared.run.input.text);
+          if (progressTool && progressCallbacksController) {
+            const callbacks = progressCallbacksController({
+              session,
+              conversation: { id: conversationId },
+              requestId: runId,
+            });
+            await callbacks?.handleCustomEvent?.('chatluna-agent-event', {
+              context: { kind: 'main', requestId: runId },
+              event: { type: 'tool-call', actions: [{ tool: progressTool }] },
+            }, runId);
           }
         } catch (error) {
           finishReplyRun(session, runId);

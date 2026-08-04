@@ -1537,7 +1537,9 @@ describe('qq voice plugin', () => {
       context: { kind: 'main', requestId: 'request-terminal-failure' },
       event: { type: 'tool-call', actions: [{ tool: 'web_search' }] },
     }, 'callback-terminal-failure');
-    expect(String(session.send.mock.calls[0]?.[0] ?? '')).not.toBe('');
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      expect.stringMatching(/搜|查|翻/u),
+    ]);
 
     const terminalError = Object.assign(new Error('terminal tool missing'), {
       name: 'AgentTerminalContractError',
@@ -1902,9 +1904,10 @@ describe('qq voice plugin', () => {
       event: { type: 'tool-call', actions: [{ tool: 'web_search' }] },
     }, 'callback-run');
 
-    expect(session.send).toHaveBeenCalledTimes(1);
-    expect(session.send).toHaveBeenCalledWith(expect.stringMatching(/搜|查|翻/u));
-    expect(bot.sendMessage).not.toHaveBeenCalled();
+    expect(session.send).not.toHaveBeenCalled();
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      expect.stringMatching(/搜|查|翻/u),
+    ]);
   });
 
   it('does not retry progress after QQ returns an ambiguous empty delivery receipt', async () => {
@@ -1916,7 +1919,7 @@ describe('qq voice plugin', () => {
       content: '帮我查一下，再翻翻之前的记录',
       strippedContent: '帮我查一下，再翻翻之前的记录',
     });
-    vi.mocked(session.send)
+    vi.mocked(bot.sendMessage)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce(['progress-message-id']);
     const context = {
@@ -1943,7 +1946,7 @@ describe('qq voice plugin', () => {
     }, 'callback-run');
     await awaitAllCallbacks();
 
-    expect(session.send).toHaveBeenCalledTimes(1);
+    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('closes visible progress when the final structured output is invalid', async () => {
@@ -1983,8 +1986,11 @@ describe('qq voice plugin', () => {
 
     await getExecutor()?.(session, context);
 
-    expect(session.send).toHaveBeenCalledTimes(1);
-    expect(extractSentMessagePayloads(bot)).toEqual(['刚才没整理好，麻烦你再问我一次。']);
+    expect(session.send).not.toHaveBeenCalled();
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      expect.stringMatching(/搜|查|翻/u),
+      '刚才没整理好，麻烦你再问我一次。',
+    ]);
     expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-progress-invalid' }),
       '刚才没整理好，麻烦你再问我一次。',
@@ -2150,8 +2156,11 @@ describe('qq voice plugin', () => {
 
     await getExecutor()?.(session, context);
 
-    expect(session.send).toHaveBeenCalledTimes(1);
-    expect(extractSentMessagePayloads(bot)).toEqual(['我看完了，暂时没找到合适的答案。']);
+    expect(session.send).not.toHaveBeenCalled();
+    expect(extractSentMessagePayloads(bot)).toEqual([
+      expect.stringMatching(/想|回忆|记录|翻/u),
+      '我看完了，暂时没找到合适的答案。',
+    ]);
     expect(chatluna.normalizeResearchReplyHistory).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-progress-no-reply' }),
       '我看完了，暂时没找到合适的答案。',
@@ -2239,8 +2248,8 @@ describe('qq voice plugin', () => {
 
     await getExecutor()?.(session, context);
 
-    expect(bot.sendMessage).toHaveBeenCalledTimes(1);
-    expect((bot.sendMessage.mock.calls as any[][])[0]?.[1]).toEqual(
+    expect(bot.sendMessage).toHaveBeenCalledTimes(2);
+    expect((bot.sendMessage.mock.calls as any[][])[1]?.[1]).toEqual(
       expect.objectContaining({
         type: 'img',
         attrs: expect.objectContaining({ src: assetRef }),
