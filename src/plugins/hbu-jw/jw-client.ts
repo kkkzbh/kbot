@@ -912,8 +912,7 @@ export class HbuJwHttpClient {
       const code = typeof payload.code === 'string' ? payload.code : 'webvpn_broker_failed';
       const brokerMessage = typeof payload.message === 'string' ? payload.message : null;
       const challenge = typeof payload.challenge === 'string' ? payload.challenge : null;
-      const verificationUrl = normalizeBrokerVerificationUrl(payload.verificationUrl);
-      throw new HbuJwLoginError(webVpnBrokerUserMessage(code, challenge, verificationUrl), {
+      throw new HbuJwLoginError(webVpnBrokerUserMessage(code, challenge), {
         code,
         diagnostic: `broker status=${brokerResponse.status} code=${code}${challenge ? ` challenge=${challenge}` : ''}${brokerMessage ? ` message=${brokerMessage}` : ''}`,
         category: 'upstream',
@@ -927,10 +926,10 @@ export class HbuJwHttpClient {
   }
 }
 
-function webVpnBrokerUserMessage(code: string, challenge: string | null, verificationUrl: string | null): string {
+function webVpnBrokerUserMessage(code: string, challenge: string | null): string {
   switch (code) {
     case 'webvpn_interaction_required':
-      return `学校 WebVPN 需要${webVpnChallengeLabel(challenge)}。请完成验证后重新查询${verificationUrl ? `：${verificationUrl}` : '。'}`;
+      return `学校 WebVPN 需要${webVpnChallengeLabel(challenge)}，验证完成前无法查询。`;
     case 'webvpn_session_expired':
       return '学校 WebVPN 的资源会话已失效，自动重新登录后仍未恢复。请稍后重试；如果持续出现，请先完成 WebVPN 验证。';
     case 'webvpn_unavailable':
@@ -941,16 +940,6 @@ function webVpnBrokerUserMessage(code: string, challenge: string | null, verific
       return '学校 WebVPN 请求失败，教务系统暂时无法访问，请稍后重试。';
     default:
       return '学校 WebVPN 访问失败，请稍后重试；如果持续出现，请联系管理员并提供错误码。';
-  }
-}
-
-function normalizeBrokerVerificationUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  try {
-    const target = new URL(value);
-    return target.protocol === 'https:' && !target.username && !target.password ? target.href : null;
-  } catch {
-    return null;
   }
 }
 

@@ -3009,7 +3009,6 @@ describe('hbu-jw http client', () => {
           code: 'webvpn_interaction_required',
           challenge: 'sms',
           message: '需要短信双重验证',
-          verificationUrl: 'https://km6.tailc5664b.ts.net/',
         }), {
           status: 503,
           headers: { 'content-type': 'application/json' },
@@ -3019,7 +3018,7 @@ describe('hbu-jw http client', () => {
 
     await expect(client.login('20231202051', 'secret')).rejects.toMatchObject({
       code: 'webvpn_interaction_required',
-      message: '学校 WebVPN 需要短信验证。请完成验证后重新查询：https://km6.tailc5664b.ts.net/',
+      message: '学校 WebVPN 需要短信验证，验证完成前无法查询。',
       diagnostic: 'broker status=503 code=webvpn_interaction_required challenge=sms message=需要短信双重验证',
     });
   });
