@@ -11,6 +11,7 @@ export const router = createRouter({
     { path: '/intelligence/models', name: 'models', component: () => import('@/pages/ModelsPage.vue'), meta: { title: '模型配置' } },
     { path: '/intelligence/context-presets', name: 'context-presets', component: () => import('@/pages/PresetsPage.vue'), meta: { title: '上下文' } },
     { path: '/intelligence/memory', name: 'memory', component: () => import('@/pages/MemoryPage.vue'), meta: { title: '长期记忆' } },
+    { path: '/intelligence/group-summaries', name: 'group-summaries', component: () => import('@/pages/GroupSummariesPage.vue'), meta: { title: '群聊总结' } },
     { path: '/intelligence/natural-trigger', name: 'natural-trigger', component: () => import('@/pages/NaturalTriggerPage.vue'), meta: { title: '自然触发' } },
     { path: '/intelligence/agent', name: 'agent', component: () => import('@/pages/AgentPage.vue'), meta: { title: 'Agent' } },
     { path: '/extensions/affinity', name: 'affinity', component: () => import('@/pages/AffinityPage.vue'), meta: { title: '关系事件' } },

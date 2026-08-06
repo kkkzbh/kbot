@@ -26,6 +26,20 @@ import {
   memoryReviewResponseSchema,
   memoryReviewsQuerySchema,
   memoryReviewsResponseSchema,
+  groupSummaryAdminStateSchema,
+  groupSummaryClearRequestSchema,
+  groupSummaryClearResponseSchema,
+  groupSummaryDetailSchema,
+  groupSummaryGroupIdSchema,
+  groupSummaryGroupSchema,
+  groupSummaryGroupRequestSchema,
+  groupSummaryMessagesQuerySchema,
+  groupSummaryMessagesResponseSchema,
+  groupSummaryPreviewSchema,
+  groupSummaryRangeRequestSchema,
+  groupSummarySettingsRequestSchema,
+  groupSummaryTaskSchema,
+  groupSummaryTaskRequestSchema,
   emptyRequestSchema,
   modelAdminAggregateSchema,
   modelCatalogResponseSchema,
@@ -70,6 +84,7 @@ import type { FeaturePolicyServiceLike } from '../../types/feature-policy.js';
 import type { MemoryStatusServiceLike } from '../../types/memory.js';
 import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
 import type { StickerMaintenanceService } from '../../types/model-config.js';
+import { GroupSummaryError, type GroupSummaryServiceLike } from '../../types/group-summary.js';
 import type {
   AdminApplyReason,
   AdminApplyRestartTarget,
@@ -133,6 +148,7 @@ export type AdminRuntimeServices = {
   toolPolicy?: ToolPolicyServiceLike;
   affinity?: AffinityServiceLike;
   stickerMaintenance?: StickerMaintenanceService;
+  groupSummary?: GroupSummaryServiceLike;
   database: DatabaseLike;
 };
 
@@ -512,6 +528,26 @@ async function modelConfigDomain<T>(operation: () => Promise<T> | T): Promise<T>
     return await operation();
   } catch (error) {
     if (error instanceof ModelConfigError) throw modelConfigHttpError(error);
+    throw error;
+  }
+}
+
+async function groupSummaryDomain<T>(operation: () => Promise<T> | T): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof GroupSummaryError) {
+      const status = error.code === 'not_found' ? 404
+        : error.code === 'conflict' ? 409
+          : error.code === 'model' ? 502
+            : error.code === 'storage' ? 503 : 400;
+      throw new AdminHttpError(status, status === 404 ? 'not_found' : status === 409 ? 'conflict' : status === 502 ? 'upstream_error' : status === 503 ? 'service_unavailable' : 'bad_request', error.message, {
+        groupSummaryErrorCode: error.code,
+        operation: error.operation,
+        stage: error.stage,
+        ...error.details,
+      });
+    }
     throw error;
   }
 }
@@ -1175,6 +1211,68 @@ export function registerAdminApi(options: RegisterAdminApiOptions): void {
     const service = requireService(options.services.toolPolicy, 'tool policy');
     return { overrides: await domain(() => service.saveToolOverrides(input.overrides)) };
   }, { mutation: true });
+
+  register('get', '/group-summaries', async () => groupSummaryDomain(async () => {
+    const service = requireService(options.services.groupSummary, 'group summary');
+    const scopes = await options.services.featurePolicy?.listAdminGroupScopes() ?? [];
+    return groupSummaryAdminStateSchema.parse(await service.getAdminState(
+      scopes.map((scope) => ({ groupId: scope.groupId, roomName: scope.roomName })),
+    ));
+  }));
+  register('patch', '/group-summaries/settings', async (koaCtx) => groupSummaryDomain(async () => {
+    const input = parseInput(groupSummarySettingsRequestSchema, koaCtx.request.body);
+    return groupSummarySettingsRequestSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').updateGlobalPrompt(input.defaultPrompt),
+    );
+  }), { mutation: true });
+  register('put', '/group-summaries/groups/:groupId', async (koaCtx) => groupSummaryDomain(async () => {
+    const groupId = parseInput(groupSummaryGroupIdSchema, koaCtx.params.groupId);
+    const input = parseInput(groupSummaryGroupRequestSchema, koaCtx.request.body);
+    return groupSummaryGroupSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').updateGroup(groupId, input),
+    );
+  }), { mutation: true });
+  register('get', '/group-summaries/groups/:groupId', async (koaCtx) => groupSummaryDomain(async () => {
+    const groupId = parseInput(groupSummaryGroupIdSchema, koaCtx.params.groupId);
+    return groupSummaryDetailSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').getGroupDetail(groupId),
+    );
+  }));
+  register('get', '/group-summaries/groups/:groupId/messages', async (koaCtx) => groupSummaryDomain(async () => {
+    const groupId = parseInput(groupSummaryGroupIdSchema, koaCtx.params.groupId);
+    const query = parseInput(groupSummaryMessagesQuerySchema, koaCtx.query);
+    return groupSummaryMessagesResponseSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').listMessages(groupId, query.page, query.pageSize),
+    );
+  }));
+  register('post', '/group-summaries/groups/:groupId/preview', async (koaCtx) => groupSummaryDomain(async () => {
+    const groupId = parseInput(groupSummaryGroupIdSchema, koaCtx.params.groupId);
+    const input = parseInput(groupSummaryRangeRequestSchema, koaCtx.request.body);
+    return groupSummaryPreviewSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').preview(groupId, input),
+    );
+  }), { mutation: true });
+  register('post', '/group-summaries/groups/:groupId/tasks', async (koaCtx) => groupSummaryDomain(async () => {
+    const groupId = parseInput(groupSummaryGroupIdSchema, koaCtx.params.groupId);
+    const input = parseInput(groupSummaryTaskRequestSchema, koaCtx.request.body);
+    return groupSummaryTaskSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').createTask(groupId, input),
+    );
+  }), { mutation: true });
+  register('get', '/group-summaries/tasks/:taskId', async (koaCtx) => groupSummaryDomain(async () => {
+    const taskId = parseInput(z.coerce.number().int().positive(), koaCtx.params.taskId);
+    return groupSummaryTaskSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').getTask(taskId),
+    );
+  }));
+  register('delete', '/group-summaries/groups/:groupId/data', async (koaCtx) => groupSummaryDomain(async () => {
+    const groupId = parseInput(groupSummaryGroupIdSchema, koaCtx.params.groupId);
+    const input = parseInput(groupSummaryClearRequestSchema, koaCtx.request.body);
+    if (input.confirmGroupId !== groupId) throw new AdminHttpError(400, 'bad_request', '确认群号与清除目标不一致。');
+    return groupSummaryClearResponseSchema.parse(
+      await requireService(options.services.groupSummary, 'group summary').clearGroup(groupId),
+    );
+  }), { mutation: true });
 
   register('get', '/affinity', async () => redactAffinityState(await requireService(options.services.affinity, 'affinity').getAdminState()));
   register('patch', '/affinity/settings', async (koaCtx) => {

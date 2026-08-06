@@ -106,6 +106,7 @@ function createModelDraft() {
       { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
       { workload: 'sticker.index', mode: 'disabled' as const },
+      { workload: 'groupSummary.generate', mode: 'inheritMain' as const },
     ],
   };
 }
@@ -165,7 +166,7 @@ function createModelConfigService() {
   let draft = createModelDraft();
   let savedRevision = 2;
   const aggregate = () => ({
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     savedRevision,
     appliedRevision: 1,
     pending: true,
@@ -1410,7 +1411,7 @@ describe('independent admin API plugin', () => {
 
     expect(request.status).toBe(200);
     expect(request.body).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       savedRevision: 2,
       appliedRevision: 1,
       pending: true,

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { modelConfigDocumentSchema } from '../../src/plugins/model-config/types.js';
 import {
   applyModelConfigV3,
+  modelConfigV3DocumentSchema,
   preflightModelConfigV3,
 } from '../../src/tools/model-config-v3-cutover.js';
 
@@ -104,7 +105,7 @@ describe('Model Config V3 cutover', () => {
     });
 
     const migrated = await applyModelConfigV3(configPath, report);
-    expect(modelConfigDocumentSchema.parse(migrated)).toBeTruthy();
+    expect(modelConfigV3DocumentSchema.parse(migrated)).toBeTruthy();
     expect(migrated.schemaVersion).toBe(3);
     expect(migrated.savedRevision).toBe(6);
     expect(migrated.appliedRevision).toBe(5);

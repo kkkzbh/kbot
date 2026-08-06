@@ -34,6 +34,10 @@ const TOOLS = [
     entry: resolve(ROOT_DIR, 'src/tools/model-auth-connection-cutover.ts'),
     outputName: 'model-auth-connection-cutover.mjs',
   },
+  {
+    entry: resolve(ROOT_DIR, 'src/tools/model-config-v4-cutover.ts'),
+    outputName: 'model-config-v4-cutover.mjs',
+  },
 ];
 const OWNER_MARKER = '.model-config-cutover-tool-output.json';
 const OWNER_MARKER_CONTENT = `${JSON.stringify({

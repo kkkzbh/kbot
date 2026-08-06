@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const MODEL_CONFIG_SCHEMA_VERSION = 3 as const;
+export const MODEL_CONFIG_SCHEMA_VERSION = 4 as const;
 
 export const adapterTypeSchema = z.enum([
   'openaiCompatible',
@@ -222,6 +222,7 @@ export const FIXED_MODEL_WORKLOADS = [
   'naturalTrigger.decision',
   'agent.subagent.default',
   'sticker.index',
+  'groupSummary.generate',
 ] as const;
 
 export const fixedModelWorkloadSchema = z.enum(FIXED_MODEL_WORKLOADS);
@@ -280,6 +281,7 @@ export const WORKLOAD_ALLOWED_MODES = {
   'naturalTrigger.decision': ['dedicated', 'disabled'],
   'agent.subagent.default': ['inheritInvocation', 'dedicated'],
   'sticker.index': ['dedicated', 'disabled'],
+  'groupSummary.generate': ['inheritMain', 'dedicated'],
 } as const satisfies Record<FixedModelWorkload, readonly ModelBinding['mode'][]>;
 
 export const AGENT_OVERRIDE_ALLOWED_MODES = [
@@ -298,6 +300,7 @@ const REQUIRED_CAPABILITIES: Record<
   'agent.subagent.default': ['tools'],
   'agent.subagent.override': ['tools'],
   'sticker.index': ['vision', 'structuredOutput'],
+  'groupSummary.generate': ['structuredOutput'],
 };
 
 export function requiredCapabilitiesForWorkload(
@@ -313,6 +316,7 @@ const NATIVE_SCHEMA_WORKLOADS = new Set<ModelWorkload>([
   'affinity.analysis',
   'naturalTrigger.decision',
   'sticker.index',
+  'groupSummary.generate',
 ]);
 
 export function workloadRequiresNativeStructuredOutput(

@@ -23,6 +23,7 @@ import {
 
 export * from './memory.js';
 export * from './agent.js';
+export * from './group-summary.js';
 
 export type AdminJsonValue =
   | null

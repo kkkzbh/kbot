@@ -97,6 +97,9 @@ const WORKLOAD_DETAILS: Record<string, {
   'sticker.index': {
     label: '表情索引',
   },
+  'groupSummary.generate': {
+    label: '群聊总结',
+  },
 };
 
 const route = useRoute();

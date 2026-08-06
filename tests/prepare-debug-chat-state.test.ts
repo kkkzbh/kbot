@@ -122,7 +122,7 @@ function writeCanonicalModelConfig(
   writeFileSync(
     path,
     `${JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       savedRevision: 1,
       appliedRevision: 1,
       updatedAt: '2026-07-26T00:00:00.000Z',
@@ -162,6 +162,7 @@ function writeCanonicalModelConfig(
         { workload: 'naturalTrigger.decision', mode: 'disabled' },
         { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
         { workload: 'sticker.index', mode: 'disabled' },
+        { workload: 'groupSummary.generate', mode: 'inheritMain' },
       ],
       secrets: [],
     }, null, 2)}\n`,

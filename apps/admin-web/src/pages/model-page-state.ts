@@ -37,6 +37,7 @@ export const MODEL_SETTING_WORKLOAD_ORDER = [
   'affinity.analysis',
   'agent.subagent.default',
   'sticker.index',
+  'groupSummary.generate',
 ] as const satisfies readonly FixedModelWorkload[];
 
 export function orderModelSettingBindings<T extends ModelBinding>(

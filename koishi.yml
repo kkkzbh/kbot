@@ -51,6 +51,7 @@ plugins:
       naturalTriggerEnabled: ${{ env.GENSHIN_NATURAL_TRIGGER_ENABLED === 'true' }}
       naturalTriggerGroups: ${{ env.GENSHIN_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/feature-policy:feature-policy: {}
+    ./dist/plugins/group-summary:group-summary: {}
     ./dist/plugins/tool-policy:tool-policy: {}
     ./dist/plugins/admin-api:admin-api:
       apiPath: /api/admin/v1
@@ -123,9 +124,9 @@ plugins:
       keepAliveRecentUseWindowMs: ${{ +env.HBU_JW_KEEP_ALIVE_RECENT_USE_WINDOW_MS || 86400000 }}
       webVpnBrokerUrl: ${{ env.HBU_JW_WEBVPN_BROKER_URL || '' }}
       webVpnBrokerTokenFile: ${{ env.HBU_JW_WEBVPN_BROKER_TOKEN_FILE || '' }}
-      allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
       sharedCasOwnerKey: ${{ env.HBU_JW_SHARED_CAS_OWNER_KEY || '' }}
       sharedCasStudentId: ${{ env.HBU_JW_SHARED_CAS_STUDENT_ID || '' }}
+      allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
       naturalTriggerEnabled: ${{ env.HBU_JW_NATURAL_TRIGGER_ENABLED === 'true' }}
       naturalTriggerGroups: ${{ env.HBU_JW_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/chaoxing:chaoxing:

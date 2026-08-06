@@ -153,6 +153,7 @@ function createPutInput(): ModelConfigPutInput {
         { workload: 'naturalTrigger.decision', mode: 'disabled' },
         { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
         { workload: 'sticker.index', mode: 'disabled' },
+        { workload: 'groupSummary.generate', mode: 'inheritMain' },
       ],
     },
     secretOperations: [{ connectionId: 'provider', operation: 'retain' }],

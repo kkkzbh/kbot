@@ -12,10 +12,6 @@ import { constants } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
-import {
-  modelConfigDocumentSchema,
-  type ModelConfigDocument,
-} from '../plugins/model-config/types.js';
 
 const v2CapabilitiesSchema = z.object({
   chat: z.boolean(),
@@ -61,6 +57,29 @@ const v2DocumentSchema = z.object({
     mode: z.enum(['dedicated', 'disabled', 'inheritMain', 'inheritInvocation']),
     connectionId: z.string().min(1).optional(),
     modelId: z.string().min(1).optional(),
+  }).strict()),
+  secrets: z.array(z.unknown()),
+}).strict();
+
+export const modelConfigV3DocumentSchema = z.object({
+  schemaVersion: z.literal(3),
+  savedRevision: z.number().int().positive(),
+  appliedRevision: z.number().int().nonnegative(),
+  updatedAt: z.string().datetime(),
+  migration: z.object({
+    completedAt: z.string().datetime(), sourceVersion: z.string(), reportHash: z.string(),
+  }).strict().nullable(),
+  connections: z.array(z.unknown()),
+  models: z.array(z.object({
+    id: z.string(), connectionId: z.string(), displayName: z.string(), transportModel: z.string(),
+    contextSize: z.number().int().positive(), requestMode: z.enum(['chat_completions', 'responses']),
+    structuredOutputProtocol: z.enum(['native_chat_json_schema', 'native_responses_json_schema', 'chat_reply_v1', 'json_mode']).nullable(),
+    capabilities: z.object({ vision: z.boolean(), tools: z.boolean(), structuredOutput: z.boolean() }).strict(),
+    timeoutMs: z.number().int().positive(), requestDefaults: z.record(z.string(), z.unknown()),
+  }).strict()),
+  bindings: z.array(z.object({
+    workload: z.string(), mode: z.enum(['dedicated', 'disabled', 'inheritMain', 'inheritInvocation']),
+    connectionId: z.string().optional(), modelId: z.string().optional(),
   }).strict()),
   secrets: z.array(z.unknown()),
 }).strict();
@@ -145,7 +164,7 @@ async function readV2(path: string): Promise<{
 export function buildModelConfigV3(
   input: z.infer<typeof v2DocumentSchema>,
   report: ModelConfigV3CutoverReport,
-): ModelConfigDocument {
+): z.infer<typeof modelConfigV3DocumentSchema> {
   const target = {
     schemaVersion: 3 as const,
     savedRevision: report.targetRevision,
@@ -186,7 +205,7 @@ export function buildModelConfigV3(
     bindings: input.bindings.filter((binding) => binding.workload !== 'memory.embedding'),
     secrets: input.secrets,
   };
-  return modelConfigDocumentSchema.parse(target);
+  return modelConfigV3DocumentSchema.parse(target);
 }
 
 export async function preflightModelConfigV3(
@@ -234,7 +253,7 @@ export async function preflightModelConfigV3(
 export async function applyModelConfigV3(
   configPath: string,
   expected: ModelConfigV3CutoverReport,
-): Promise<ModelConfigDocument> {
+): Promise<z.infer<typeof modelConfigV3DocumentSchema>> {
   assertTargetStopped();
   const report = await preflightModelConfigV3(configPath);
   if (

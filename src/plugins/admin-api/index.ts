@@ -14,6 +14,7 @@ import type { MemoryStatusServiceLike } from '../../types/memory.js';
 import type { MemoryAdminService } from '../memory/index.js';
 import type { ToolPolicyServiceLike } from '../../types/tool-policy.js';
 import type { StickerMaintenanceService } from '../../types/model-config.js';
+import type { GroupSummaryServiceLike } from '../../types/group-summary.js';
 import { AdminRuntimeManager } from './server.js';
 import { AdminAccessPolicy } from '../shared/internal-access-policy.js';
 import { AdminLogService } from './logs.js';
@@ -50,6 +51,7 @@ export const inject = {
     'toolPolicy',
     'affinity',
     'stickerMaintenance',
+    'groupSummary',
   ],
 } as const;
 
@@ -80,6 +82,7 @@ type RuntimeContext = Context & {
   toolPolicy?: ToolPolicyServiceLike;
   affinity?: AffinityServiceLike;
   stickerMaintenance?: StickerMaintenanceService;
+  groupSummary?: GroupSummaryServiceLike;
 };
 
 export function apply(ctx: Context, config: Config): void {
@@ -111,6 +114,7 @@ export function apply(ctx: Context, config: Config): void {
     get toolPolicy() { return runtimeCtx.toolPolicy; },
     get affinity() { return runtimeCtx.affinity; },
     get stickerMaintenance() { return runtimeCtx.stickerMaintenance; },
+    get groupSummary() { return runtimeCtx.groupSummary; },
   };
   const events = new OperationalEventService(
     services.database,

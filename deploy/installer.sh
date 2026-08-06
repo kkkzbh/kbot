@@ -683,6 +683,7 @@ require_bundle_entry "qqbot/dist"
 require_bundle_entry "qqbot/dist/tools/context-preset-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/context-preset-sqlite.py"
 require_bundle_entry "qqbot/dist/tools/model-config-v3-cutover.mjs"
+require_bundle_entry "qqbot/dist/tools/model-config-v4-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/model-auth-connection-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/natural-trigger-cutover.mjs"
 require_bundle_entry "qqbot/dist/tools/memory-v3-cutover.mjs"
@@ -944,6 +945,8 @@ fi
 
 MODEL_CONFIG_V3_CUTOVER_REQUIRED=0
 MODEL_CONFIG_V3_REPORT="${TRANSACTION_BACKUP_DIR}/model-config-v3-preflight.json"
+MODEL_CONFIG_V4_CUTOVER_REQUIRED=0
+MODEL_CONFIG_V4_REPORT="${TRANSACTION_BACKUP_DIR}/model-config-v4-preflight.json"
 if [[ -f "${DATA_DIR}/model-config.json" && -f "${SHARED_DIR}/model-config.kek" ]]; then
   MODEL_CONFIG_SCHEMA_VERSION="$(
     node -e '
@@ -959,6 +962,11 @@ if [[ -f "${DATA_DIR}/model-config.json" && -f "${SHARED_DIR}/model-config.kek" 
       --config "${DATA_DIR}/model-config.json" \
       --report "${MODEL_CONFIG_V3_REPORT}"
   elif [[ "${MODEL_CONFIG_SCHEMA_VERSION}" == "3" ]]; then
+    MODEL_CONFIG_V4_CUTOVER_REQUIRED=1
+    node "${STAGE_QQBOT}/dist/tools/model-config-v4-cutover.mjs" preflight \
+      --config "${DATA_DIR}/model-config.json" \
+      --report "${MODEL_CONFIG_V4_REPORT}"
+  elif [[ "${MODEL_CONFIG_SCHEMA_VERSION}" == "4" ]]; then
     node -e '
       const { pathToFileURL } = require("node:url");
       const fs = require("node:fs");
@@ -978,7 +986,7 @@ elif [[ -e "${DATA_DIR}/model-config.json" || -e "${SHARED_DIR}/model-config.kek
   echo "[installer] canonical model config and KEK must either both exist or both be absent" >&2
   exit 2
 else
-  echo "[installer] Model Config V2 or V3 and its KEK are required" >&2
+  echo "[installer] Model Config V2, V3, or V4 and its KEK are required" >&2
   exit 2
 fi
 
@@ -1113,6 +1121,16 @@ if [[ "${MODEL_CONFIG_V3_CUTOVER_REQUIRED}" == "1" ]]; then
   node "${STAGE_QQBOT}/dist/tools/model-config-v3-cutover.mjs" apply \
     --config "${DATA_DIR}/model-config.json" \
     --report "${MODEL_CONFIG_V3_REPORT}"
+  MODEL_CONFIG_V4_CUTOVER_REQUIRED=1
+  node "${STAGE_QQBOT}/dist/tools/model-config-v4-cutover.mjs" preflight \
+    --config "${DATA_DIR}/model-config.json" \
+    --report "${MODEL_CONFIG_V4_REPORT}"
+fi
+if [[ "${MODEL_CONFIG_V4_CUTOVER_REQUIRED}" == "1" ]]; then
+  node "${STAGE_QQBOT}/dist/tools/model-config-v4-cutover.mjs" apply \
+    --config "${DATA_DIR}/model-config.json" \
+    --report "${MODEL_CONFIG_V4_REPORT}" \
+    --confirm-service-stopped
 fi
 node "${STAGE_QQBOT}/dist/tools/natural-trigger-cutover.mjs" apply \
   --env "${ENV_SERVER}" \

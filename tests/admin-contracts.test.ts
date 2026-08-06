@@ -77,6 +77,7 @@ const modelDraft = {
     { workload: 'naturalTrigger.decision', mode: 'disabled' as const },
     { workload: 'agent.subagent.default', mode: 'inheritInvocation' as const },
     { workload: 'sticker.index', mode: 'disabled' as const },
+    { workload: 'groupSummary.generate', mode: 'inheritMain' as const },
   ],
 };
 
@@ -170,7 +171,7 @@ describe('admin shared contracts', () => {
 
   it('shares strict aggregate, CAS mutation, and OAuth poll contracts', () => {
     const aggregate = modelAdminAggregateSchema.parse({
-      schemaVersion: 3,
+      schemaVersion: 4,
       savedRevision: 2,
       appliedRevision: 1,
       pending: true,

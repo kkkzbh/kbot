@@ -26,7 +26,7 @@ import {
 
 function aggregate(): ModelConfigAdminAggregate {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     savedRevision: 7,
     appliedRevision: 6,
     pending: true,
@@ -66,6 +66,7 @@ function aggregate(): ModelConfigAdminAggregate {
       { workload: 'naturalTrigger.decision', mode: 'disabled' },
       { workload: 'agent.subagent.default', mode: 'inheritInvocation' },
       { workload: 'sticker.index', mode: 'dedicated', connectionId: 'provider', modelId: 'chat' },
+      { workload: 'groupSummary.generate', mode: 'inheritMain' },
     ],
     liveBindings: [{
       workload: 'main.chat',

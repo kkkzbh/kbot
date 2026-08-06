@@ -144,6 +144,10 @@ function createDraft(): ModelConfigDraft {
         connectionId: 'sticker-indexer',
         modelId: 'doubao-vision',
       },
+      {
+        workload: 'groupSummary.generate',
+        mode: 'inheritMain',
+      },
     ],
   };
 }

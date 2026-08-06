@@ -75,6 +75,10 @@ export function createValidModelConfigDraft(): ModelConfigDraft {
         connectionId: 'primary',
         modelId: 'primary-chat',
       },
+      {
+        workload: 'groupSummary.generate',
+        mode: 'inheritMain',
+      },
     ],
   };
 }
