@@ -1,7 +1,9 @@
 export const HBU_JW_SERVICE_ID = 'hbu-jw';
 
-export type BindChallengeStatus = 'created' | 'login_pending' | 'login_succeeded' | 'confirmed' | 'expired' | 'cancelled';
+export type BindChallengeStatus = 'created' | 'login_pending' | 'awaiting_sms' | 'login_succeeded' | 'confirmed' | 'expired' | 'cancelled';
+export type BindChallengePurpose = 'binding' | 'reauth';
 export type HbuJwSessionStatus = 'active' | 'expired' | 'invalid';
+export type HbuJwSmsDevicePlatform = 'ios' | 'android';
 
 export interface HbuJwBindChallenge {
   id: number;
@@ -10,14 +12,21 @@ export interface HbuJwBindChallenge {
   platform: string;
   qqUserId: string;
   channelId: string;
+  purpose: BindChallengePurpose;
   status: BindChallengeStatus;
+  pageTokenCipher?: string | null;
   loginAttemptId?: string | null;
   confirmCodeHash?: string | null;
   pendingConfirmCodeCipher?: string | null;
   pendingConfirmCodeMeta?: string | null;
   pendingCookieJarCipher?: string | null;
+  pendingCasSessionCipher?: string | null;
+  pendingCasChallengeCipher?: string | null;
+  pendingCasChallengeMeta?: string | null;
   pendingCredentialCipher?: string | null;
   pendingCredentialMeta?: string | null;
+  maskedPhone?: string | null;
+  resendAvailableAt?: number | null;
   errorMessage?: string | null;
   expiresAt: number;
   createdAt: number;
@@ -30,10 +39,21 @@ export interface HbuJwSession {
   platform: string;
   qqUserId: string;
   cookieJarCipher: string;
+  casSessionCipher?: string | null;
   status: HbuJwSessionStatus;
   validatedAt: number;
   lastRefreshAt?: number | null;
   lastFailureReason?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HbuJwSmsDevice {
+  id: number;
+  ownerKey: string;
+  platform: HbuJwSmsDevicePlatform;
+  tokenHash: string;
+  tokenCipher: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -108,7 +128,7 @@ export interface HbuJwAcademicItem {
 
 export interface SerializedCookieJar {
   version: 2;
-  transport: 'direct' | 'broker';
+  transport: 'direct' | 'broker' | 'broker-cas';
   origin: string;
   cookies: Array<{
     name: string;

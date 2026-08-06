@@ -113,6 +113,9 @@ import {
   HbuJwQueryError,
   buildSubitemScoreLookParamsFromScoreRow,
   buildSubitemScoreLookParamsFromThisTermRow,
+  type HbuJwCasChallenge,
+  type HbuJwLoginResult,
+  type HbuJwLoginStartResult,
 } from '../src/plugins/hbu-jw/jw-client.js';
 import {
   HbuJwMenuService,
@@ -147,6 +150,7 @@ import type {
   OwnerIdentity,
   SerializedCookieJar,
 } from '../src/plugins/hbu-jw/types.js';
+import { renderAutomationPage } from '../src/plugins/hbu-jw/web/automation-page.js';
 import { renderBindPage } from '../src/plugins/hbu-jw/web/bind-page.js';
 
 const tempDirs: string[] = [];
@@ -252,28 +256,44 @@ function createService(options: {
   database?: ReturnType<typeof createDatabase>;
   now?: () => number;
   validate?: (cookieJar: SerializedCookieJar) => Promise<boolean>;
-  login?: (username: string, password: string) => Promise<{ cookieJar: SerializedCookieJar }>;
+  login?: (username: string, password: string) => Promise<{ kind: 'authenticated'; cookieJar: SerializedCookieJar }>;
+  beginLogin?: (username: string, password: string) => Promise<HbuJwLoginStartResult>;
+  completeSmsLogin?: (challenge: HbuJwCasChallenge, password: string, code: string) => Promise<HbuJwLoginResult>;
+  resendSmsCode?: (challenge: HbuJwCasChallenge) => Promise<number>;
+  loginSharedCas?: (username: string) => Promise<{ kind: 'authenticated'; cookieJar: SerializedCookieJar }>;
   sharedBroker?: boolean;
+  sharedCasIdentity?: { ownerKey: string; studentId: string };
 } = {}) {
   const dir = createTempDir();
   const database = options.database ?? createDatabase();
-  const login = vi.fn(options.login ?? (async () => ({ cookieJar: cookieJar() })));
+  const login = vi.fn(options.login ?? (async () => ({ kind: 'authenticated' as const, cookieJar: cookieJar() })));
+  const beginLogin = vi.fn(options.beginLogin ?? login);
+  const completeSmsLogin = vi.fn(options.completeSmsLogin ?? (async () => ({
+    kind: 'authenticated' as const,
+    cookieJar: cookieJar(),
+  })));
+  const resendSmsCode = vi.fn(options.resendSmsCode ?? (async () => 121_000));
+  const loginSharedCas = vi.fn(options.loginSharedCas ?? (async () => ({
+    kind: 'authenticated' as const,
+    cookieJar: { ...cookieJar(null), transport: 'broker-cas' as const },
+  })));
   const validate = vi.fn(options.validate ?? (async () => true));
   const prepareSession = vi.fn((cookieJar: SerializedCookieJar) => cookieJar);
   const usesSharedBroker = vi.fn(() => options.sharedBroker === true);
   const service = new HbuJwService(
     new HbuJwStore(database as unknown as DatabaseLike),
-    { login, validate, prepareSession, usesSharedBroker } as never,
+    { login, beginLogin, completeSmsLogin, resendSmsCode, loginSharedCas, validate, prepareSession, usesSharedBroker } as never,
     loadOrCreateKek(join(dir, 'kek.key')),
     {
       bindPagePath: '/jw/bind',
       publicBaseUrl: 'https://bot.example',
       bindTokenTtlMs: 600_000,
       autoReloginEnabled: true,
+      sharedCasIdentity: options.sharedCasIdentity,
     },
     options.now ?? (() => 1_000),
   );
-  return { service, database, login, validate, prepareSession, usesSharedBroker };
+  return { service, database, login: beginLogin, loginSharedCas, completeSmsLogin, resendSmsCode, validate, prepareSession, usesSharedBroker };
 }
 
 function scoreRow(overrides: Partial<HbuJwScoreRow> = {}): HbuJwScoreRow {
@@ -759,13 +779,192 @@ describe('hbu-jw binding service', () => {
     expect(JSON.stringify(row)).not.toContain(result.confirmCode);
   });
 
+  it('persists an owner-scoped CAS SMS challenge and completes binding without a phone input', async () => {
+    const casChallenge: HbuJwCasChallenge = {
+      version: 1,
+      username: '20231202052',
+      casSession: { version: 1, cookies: [{ name: 'CASSESSION', value: 'cas-secret' }] },
+      verification: {
+        uid: 'two-verify-uid',
+        phone: '13900139000',
+        twoVerifyType: 'REMOTE_LOGIN',
+        isCommonIP: false,
+      },
+    };
+    const { service, database, completeSmsLogin } = createService({
+      beginLogin: async () => ({
+        kind: 'awaiting_sms',
+        challenge: casChallenge,
+        maskedPhone: '139****9000',
+        resendAvailableAt: 121_000,
+      }),
+      completeSmsLogin: async () => ({
+        kind: 'authenticated',
+        cookieJar: cookieJar('cas-academic'),
+        casSession: { version: 1, cookies: [{ name: 'CASTGC', value: 'tgt-secret' }] },
+      }),
+    });
+    const started = await service.startBinding(identity());
+    const token = extractToken(started.link);
+
+    const submitted = await service.submitCredentials({
+      token,
+      username: '20231202052',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    expect(submitted).toMatchObject({ state: 'sms', confirmCode: '' });
+    await expect(service.resolveBindPageChallenge(token)).resolves.toMatchObject({
+      state: 'sms',
+      maskedPhone: '139****9000',
+      resendAvailableAt: 121_000,
+    });
+    const waitingRow = database.tables.get('hbu_jw_bind_challenge')?.[0];
+    expect(waitingRow).toMatchObject({ status: 'awaiting_sms', maskedPhone: '139****9000' });
+    expect(JSON.stringify(waitingRow)).not.toContain('13900139000');
+    expect(JSON.stringify(waitingRow)).not.toContain('secret-password');
+
+    const verified = await service.submitSmsCode(token, '123456');
+    expect(completeSmsLogin).toHaveBeenCalledWith(expect.objectContaining({ username: '20231202052' }), 'secret-password', '123456');
+    expect(verified.state).toBe('success');
+    await service.confirmBinding(identity(), verified.confirmCode);
+    const session = database.tables.get('hbu_jw_session')?.[0];
+    expect(session).toMatchObject({ status: 'active', casSessionCipher: expect.any(String) });
+    expect(JSON.stringify(session)).not.toContain('tgt-secret');
+  });
+
+  it('uses a device-scoped webhook token to complete the current SMS challenge', async () => {
+    const casChallenge: HbuJwCasChallenge = {
+      version: 1,
+      username: '20231202052',
+      casSession: { version: 1, cookies: [{ name: 'CASSESSION', value: 'cas-secret' }] },
+      verification: {
+        uid: 'two-verify-uid',
+        phone: '13900139000',
+        twoVerifyType: 'REMOTE_LOGIN',
+        isCommonIP: false,
+      },
+    };
+    const { service, database, completeSmsLogin } = createService({
+      beginLogin: async () => ({
+        kind: 'awaiting_sms',
+        challenge: casChallenge,
+        maskedPhone: '139****9000',
+        resendAvailableAt: 121_000,
+      }),
+      completeSmsLogin: async () => ({
+        kind: 'authenticated',
+        cookieJar: cookieJar('automatic-session'),
+      }),
+    });
+    const tokens = await service.getSmsAutomationTokens(identity().ownerKey);
+    await expect(service.getSmsAutomationTokens(identity().ownerKey)).resolves.toEqual(tokens);
+    expect(tokens.ios).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(tokens.android).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(database.tables.get('hbu_jw_sms_device')).toHaveLength(2);
+    expect(JSON.stringify(database.tables.get('hbu_jw_sms_device'))).not.toContain(tokens.ios);
+
+    const started = await service.startBinding(identity());
+    const token = extractToken(started.link);
+    await service.submitCredentials({
+      token,
+      username: '20231202052',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    await service.ingestSmsMessage(tokens.ios, '【河北大学】验证码 654321，五分钟内有效');
+
+    expect(completeSmsLogin).toHaveBeenCalledWith(expect.objectContaining({ username: '20231202052' }), 'secret-password', '654321');
+    await expect(service.resolveBindPageChallenge(token)).resolves.toMatchObject({ state: 'success' });
+    await expect(service.ingestSmsMessage(tokens.android, '【河北大学】验证码 123456'))
+      .rejects.toThrow('当前没有唯一的教务验证码事务');
+  });
+
+  it('creates a one-time SMS link when an account-scoped CAS session expires', async () => {
+    const casChallenge: HbuJwCasChallenge = {
+      version: 1,
+      username: '20231202052',
+      casSession: { version: 1, cookies: [{ name: 'CASSESSION', value: 'cas-secret' }] },
+      verification: {
+        uid: 'two-verify-uid',
+        phone: '13900139000',
+        twoVerifyType: 'REMOTE_LOGIN',
+        isCommonIP: false,
+      },
+    };
+    let loginAttempt = 0;
+    let sessionIsValid = false;
+    const { service, database, completeSmsLogin } = createService({
+      validate: async () => sessionIsValid,
+      beginLogin: async () => {
+        loginAttempt += 1;
+        if (loginAttempt === 1) {
+          return {
+            kind: 'authenticated',
+            cookieJar: cookieJar('initial-session'),
+            casSession: { version: 1, cookies: [{ name: 'CASTGC', value: 'initial-tgt' }] },
+          };
+        }
+        return {
+          kind: 'awaiting_sms',
+          challenge: casChallenge,
+          maskedPhone: '139****9000',
+          resendAvailableAt: 121_000,
+        };
+      },
+      completeSmsLogin: async () => {
+        sessionIsValid = true;
+        return {
+          kind: 'authenticated',
+          cookieJar: cookieJar('renewed-session'),
+          casSession: { version: 1, cookies: [{ name: 'CASTGC', value: 'renewed-tgt' }] },
+        };
+      },
+    });
+    const owner = identity();
+    const started = await service.startBinding(owner);
+    const submitted = await service.submitCredentials({
+      token: extractToken(started.link),
+      username: '20231202052',
+      password: 'secret-password',
+      persistCredentialConsent: true,
+    });
+    await service.confirmBinding(owner, submitted.confirmCode);
+
+    const expired = await service.ensureAuthenticated(owner);
+    expect(expired).toMatchObject({ kind: 'unavailable' });
+    if (expired.kind !== 'unavailable') throw new Error('expected CAS reauthentication');
+    expect(expired.reason).toContain('139****9000');
+    const reauthLink = expired.reason.match(/https:\/\/bot\.example\S+/)?.[0] ?? '';
+    const reauthToken = extractToken(reauthLink);
+    await expect(service.resolveBindPageChallenge(reauthToken)).resolves.toMatchObject({
+      purpose: 'reauth',
+      state: 'sms',
+      maskedPhone: '139****9000',
+    });
+
+    await expect(service.submitSmsCode(reauthToken, '654321')).resolves.toMatchObject({
+      state: 'success',
+      confirmCode: '',
+    });
+    expect(completeSmsLogin).toHaveBeenCalledWith(expect.objectContaining({ username: '20231202052' }), 'secret-password', '654321');
+    await expect(service.ensureAuthenticated(owner)).resolves.toMatchObject({
+      kind: 'authenticated',
+      cookieJar: { cookies: [{ name: 'JSESSIONID', value: 'renewed-session' }] },
+    });
+    expect(database.tables.get('hbu_jw_bind_challenge')?.at(-1)).toMatchObject({
+      purpose: 'reauth',
+      status: 'login_succeeded',
+    });
+  });
+
   it('resolves an in-flight submission as a pending GET page', async () => {
     let markLoginStarted!: () => void;
     const loginStarted = new Promise<void>((resolve) => {
       markLoginStarted = resolve;
     });
-    let resolveLogin!: (value: { cookieJar: SerializedCookieJar }) => void;
-    const loginResult = new Promise<{ cookieJar: SerializedCookieJar }>((resolve) => {
+    let resolveLogin!: (value: { kind: 'authenticated'; cookieJar: SerializedCookieJar }) => void;
+    const loginResult = new Promise<{ kind: 'authenticated'; cookieJar: SerializedCookieJar }>((resolve) => {
       resolveLogin = resolve;
     });
     const { service } = createService({
@@ -790,7 +989,7 @@ describe('hbu-jw binding service', () => {
       state: 'pending',
     });
 
-    resolveLogin({ cookieJar: cookieJar() });
+    resolveLogin({ kind: 'authenticated', cookieJar: cookieJar() });
     await submit;
   });
 
@@ -883,7 +1082,7 @@ describe('hbu-jw binding service', () => {
         validateCalls += 1;
         return validateCalls > 1;
       },
-      login: async () => ({ cookieJar: cookieJar('fresh') }),
+      login: async () => ({ kind: 'authenticated', cookieJar: cookieJar('fresh') }),
     });
     const started = await service.startBinding(identity());
     const submitted = await service.submitCredentials({
@@ -910,7 +1109,7 @@ describe('hbu-jw binding service', () => {
       validate: async () => false,
       login: async () => {
         loginCalls += 1;
-        if (loginCalls === 1) return { cookieJar: cookieJar('initial') };
+        if (loginCalls === 1) return { kind: 'authenticated', cookieJar: cookieJar('initial') };
         throw new HbuJwLoginError('教务登录入口返回 HTTP 503，自动登录暂时无法完成。', {
           code: 'login_page_failed',
           diagnostic: 'login_page status=503',
@@ -948,7 +1147,7 @@ describe('hbu-jw binding service', () => {
       validate: async () => false,
       login: async () => {
         loginCalls += 1;
-        if (loginCalls === 1) return { cookieJar: cookieJar('initial') };
+        if (loginCalls === 1) return { kind: 'authenticated', cookieJar: cookieJar('initial') };
         throw new HbuJwLoginError('河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。', {
           code: 'webvpn_invalid_account',
           diagnostic: 'webvpn error=INVALID_ACCOUNT',
@@ -1212,6 +1411,7 @@ describe('hbu-jw menu module', () => {
     } as never);
 
     expect(reference).toContain('总入口：“教务”或“教务系统”');
+    expect(reference).toContain('“教务自动化”');
     expect(reference).toContain('群聊中需要 @机器人');
     expect(reference).toContain('课程查询 <课程名关键词或课程号> [课序偏移]');
     expect(reference).toContain('命令名后必须有空格');
@@ -1249,6 +1449,7 @@ describe('hbu-jw menu module', () => {
   });
 
   it('parses the trailing course query argument as a sequence offset', () => {
+    expect(parseHbuJwCommand('教务自动化')).toEqual({ kind: 'automation' });
     expect(parseCourseQueryCommand('课程查询 软件工程')).toEqual({
       kind: 'course_query',
       courseQuery: '软件工程',
@@ -2925,10 +3126,10 @@ describe('hbu-jw shared session coordinator', () => {
     expect(events).toEqual(['first:start', 'first:reentrant', 'first:end', 'second:start', 'second:end']);
   });
 
-  it('switches the broker account once per exclusive service transaction', async () => {
+  it('reuses independent owner sessions without switching a shared academic slot', async () => {
     const { service, login, database } = createService({
       sharedBroker: true,
-      login: async (username) => ({ cookieJar: cookieJar(username) }),
+      login: async (username) => ({ kind: 'authenticated', cookieJar: cookieJar(username) }),
     });
     const firstIdentity = identity();
     const secondIdentity = identity({ ownerKey: 'onebot:2', qqUserId: '2' });
@@ -2947,20 +3148,52 @@ describe('hbu-jw shared session coordinator', () => {
     }
     login.mockClear();
 
-    await expect(service.ensureAuthenticated(firstIdentity)).rejects.toThrow('exclusive transaction');
-    const firstTransaction = await service.runExclusive(async () => {
-      const first = await service.ensureAuthenticated(firstIdentity);
-      const repeated = await service.ensureAuthenticated(firstIdentity);
-      return { first, repeated };
-    });
-    const secondTransaction = await service.runExclusive(() => service.ensureAuthenticated(secondIdentity));
+    const first = await service.ensureAuthenticated(firstIdentity);
+    const repeated = await service.ensureAuthenticated(firstIdentity);
+    const second = await service.ensureAuthenticated(secondIdentity);
 
-    expect(firstTransaction.first).toEqual(firstTransaction.repeated);
-    expect(secondTransaction).toMatchObject({ kind: 'authenticated', credentialVersion: 1 });
-    expect(login).toHaveBeenCalledTimes(2);
-    expect(login).toHaveBeenNthCalledWith(1, 'student-1', 'password-1');
-    expect(login).toHaveBeenNthCalledWith(2, 'student-2', 'password-2');
-    expect(database.tables.get('hbu_jw_auth_audit')?.filter((row) => row.eventType === 'shared_session_switched')).toHaveLength(2);
+    expect(first).toEqual(repeated);
+    expect(second).toMatchObject({ kind: 'authenticated', credentialVersion: 1 });
+    expect(login).not.toHaveBeenCalled();
+    expect(database.tables.get('hbu_jw_session')).toHaveLength(2);
+  });
+
+  it('uses the shared CAS session only for the configured owner and student identity', async () => {
+    const sharedIdentity = identity();
+    const otherIdentity = identity({ ownerKey: 'onebot:2', qqUserId: '2' });
+    const { service, login, loginSharedCas, database } = createService({
+      sharedBroker: true,
+      sharedCasIdentity: { ownerKey: sharedIdentity.ownerKey, studentId: '20231202051' },
+      loginSharedCas: async () => ({
+        kind: 'authenticated',
+        cookieJar: { ...cookieJar(null), transport: 'broker-cas' },
+      }),
+    });
+
+    for (const owner of [sharedIdentity, otherIdentity]) {
+      const started = await service.startBinding(owner);
+      const submitted = await service.runExclusive(() => service.submitCredentials({
+        token: extractToken(started.link),
+        username: '20231202051',
+        password: 'stored-password',
+        persistCredentialConsent: true,
+      }));
+      await service.confirmBinding(owner, submitted.confirmCode);
+    }
+    login.mockClear();
+    loginSharedCas.mockClear();
+
+    const shared = await service.runExclusive(() => service.ensureAuthenticated(sharedIdentity));
+    const separate = await service.runExclusive(() => service.ensureAuthenticated(otherIdentity));
+
+    expect(shared).toMatchObject({
+      kind: 'authenticated',
+      cookieJar: { transport: 'broker-cas', cookies: [] },
+    });
+    expect(separate).toMatchObject({ kind: 'authenticated', cookieJar: { transport: 'direct' } });
+    expect(loginSharedCas).not.toHaveBeenCalled();
+    expect(login).not.toHaveBeenCalled();
+    expect(database.tables.get('hbu_jw_session')).toHaveLength(2);
   });
 });
 
@@ -2977,60 +3210,13 @@ describe('hbu-jw http client', () => {
       .toBe('教务功能执行失败（TypeError）：成绩图片节点不存在。');
   });
 
-  it('restarts the complete login transaction once after a transient upstream gateway failure', async () => {
-    let indexCalls = 0;
-    const fetchImpl = vi.fn(async (url: string) => {
-      const target = new URL(url);
-      if (target.pathname === '/login') {
-        return new Response('<form action="/sigin"><input name="password"></form>', { status: 200 });
-      }
-      if (target.pathname === '/sigin') {
-        return new Response('', { status: 302, headers: { location: '/index' } });
-      }
-      if (target.pathname === '/index') {
-        indexCalls += 1;
-        return indexCalls === 1
-          ? new Response('temporary gateway failure', { status: 502 })
-          : new Response('<html><body>URP综合教务系统首页</body></html>', { status: 200 });
-      }
-      return new Response('', { status: 404 });
-    });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+  it('requires broker transport for account-scoped CAS login', async () => {
+    const client = new HbuJwHttpClient();
 
-    await expect(client.login('20231202051', 'secret')).resolves.toMatchObject({
-      cookieJar: { version: 2, transport: 'direct', origin: 'https://zhjw.hbu.cn' },
+    await expect(client.beginLogin('20231202051', 'secret')).rejects.toMatchObject({
+      code: 'cas_broker_missing',
+      category: 'protocol',
     });
-    expect(fetchImpl.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
-      '/login',
-      '/sigin',
-      '/index',
-      '/login',
-      '/sigin',
-      '/index',
-    ]);
-  });
-
-  it('reports the login stage and upstream status after the bounded retry is exhausted', async () => {
-    const fetchImpl = vi.fn(async (url: string) => {
-      const target = new URL(url);
-      if (target.pathname === '/login') {
-        return new Response('<form action="/sigin"><input name="password"></form>', { status: 200 });
-      }
-      if (target.pathname === '/sigin') {
-        return new Response('', { status: 302, headers: { location: '/index' } });
-      }
-      return new Response('temporary gateway failure', { status: 502 });
-    });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
-
-    await expect(client.login('20231202051', 'secret')).rejects.toMatchObject({
-      code: 'login_submit_upstream_failed',
-      message: '教务登录提交暂时失败（HTTP 502），自动重试后仍未恢复，请稍后再试。',
-      diagnostic: 'stage=login_submit status=502 path=/index',
-      category: 'upstream',
-      retryable: true,
-    });
-    expect(fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/sigin')).toHaveLength(2);
   });
 
   it('reports the failed WebVPN recovery stage without exposing broker internals', async () => {
@@ -3104,166 +3290,27 @@ describe('hbu-jw http client', () => {
     });
   });
 
-  it('switches the single shared JW slot and verifies the exact student identity', async () => {
-    const directFetch = vi.fn(async () => {
-      throw new Error('direct transport must not be used when the broker is configured');
-    });
-    const accounts = ['20231202051', '20231202052'];
-    const token = Buffer.alloc(32, 7);
-    let currentAccount = '';
-    const submittedAccounts: string[] = [];
-    let logoutCalls = 0;
-    let signinCalls = 0;
-    const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const authorization = new Headers(init?.headers).get('authorization');
-      expect(authorization).toBe(`Bearer ${token.toString('base64url')}`);
-
+  it('acquires a cookie-free shared CAS transport without calling legacy sign-in', async () => {
+    const token = Buffer.alloc(32, 9);
+    const paths: string[] = [];
+    const brokerFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8789/v1/cas/fetch');
       const request = JSON.parse(String(init?.body)) as {
         targetUrl: string;
-        method: string;
-        headers: Record<string, string>;
-        cookies: Array<{ name: string; value: string }>;
+        cookies?: unknown;
         bodyBase64?: string;
       };
-      expect(request).not.toHaveProperty('account');
-      const target = new URL(request.targetUrl);
-      const response = (status: number, body: string, headers: Record<string, string> = {}, setCookies: string[] = []) => new Response(JSON.stringify({
-        ok: true,
-        status,
-        headers,
-        setCookies,
-        bodyBase64: Buffer.from(body).toString('base64'),
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-
-      if (target.pathname === '/logout') {
-        currentAccount = '';
-        logoutCalls += 1;
-        return response(302, '', {
-          location: logoutCalls === 1 ? '/enterOut' : 'https://zhjw.hbu.edu.cn/enterOut',
-        });
-      }
-      if (target.pathname === '/enterOut') {
-        return response(200, '<html><body>logged out</body></html>');
-      }
-      if (target.pathname === '/login') {
-        return response(200, '<form action="/sigin"><input name="password"></form>');
-      }
-      if (target.pathname === '/sigin') {
-        const form = new URLSearchParams(Buffer.from(request.bodyBase64 ?? '', 'base64').toString());
-        const username = form.get('username');
-        expect(accounts).toContain(username);
-        expect(form.get('password')).toBe(accounts.indexOf(username ?? '') === 0 ? 'password-a' : 'password-b');
-        expect(request.cookies).toEqual([]);
-        currentAccount = username ?? '';
-        submittedAccounts.push(currentAccount);
-        signinCalls += 1;
-        return response(302, '', {
-          location: signinCalls === 1 ? '/index' : 'https://zhjw.hbu.edu.cn/index',
-        });
-      }
-      if (target.pathname === '/index') {
-        if (target.origin === 'https://zhjw.hbu.edu.cn') {
-          if (request.headers.origin) {
-            expect(request.headers.origin).toBe('https://zhjw.hbu.edu.cn');
-            expect(request.headers.referer).toBe('https://zhjw.hbu.edu.cn/login');
-          }
-          if (request.cookies.length > 0) {
-            expect(request.cookies).toEqual([{ name: 'JSESSIONID', value: 'alias-session' }]);
-          }
-          return response(
-            200,
-            '<html><body>URP综合教务系统首页</body></html>',
-            {},
-            ['JSESSIONID=alias-session; Path=/; HttpOnly'],
-          );
-        }
-        expect(request.cookies).toEqual([]);
-        return response(200, '<html><body>URP综合教务系统首页</body></html>');
-      }
-      if (target.pathname === '/student/rollManagement/rollInfo/index') {
-        if (target.origin === 'https://zhjw.hbu.edu.cn') {
-          expect(request.cookies).toEqual([{ name: 'JSESSIONID', value: 'alias-session' }]);
-        }
-        return response(200, `<div class="profile-info-name">学号</div><div class="profile-info-value">${currentAccount}</div>`);
-      }
-      return response(404, 'missing');
-    });
-    const client = new HbuJwHttpClient({
-      fetchImpl: directFetch as never,
-      webVpnBroker: {
-        url: 'http://127.0.0.1:8789',
-        token,
-        fetchImpl: brokerFetch as never,
-      },
-    });
-
-    expect(client.prepareSession({
-      cookies: [
-        { name: 'webvpn_session', value: 'obsolete' },
-        { name: 'JSESSIONID', value: 'obsolete' },
-      ],
-    })).toEqual({
-      version: 2,
-      transport: 'broker',
-      origin: 'https://zhjw.hbu.cn',
-      cookies: [],
-    });
-
-    const firstLogin = await client.login(accounts[0]!, 'password-a');
-    const secondLogin = await client.login(accounts[1]!, 'password-b');
-
-    expect(firstLogin.cookieJar).toEqual({
-      version: 2,
-      transport: 'broker',
-      origin: 'https://zhjw.hbu.cn',
-      cookies: [],
-    });
-    expect(secondLogin.cookieJar).toEqual({
-      version: 2,
-      transport: 'broker',
-      origin: 'https://zhjw.hbu.edu.cn',
-      cookies: [{ name: 'JSESSIONID', value: 'alias-session' }],
-    });
-    await expect(client.validate(secondLogin.cookieJar)).resolves.toBe(true);
-    expect(directFetch).not.toHaveBeenCalled();
-    expect(submittedAccounts).toEqual(accounts);
-    expect(brokerFetch).toHaveBeenCalledTimes(13);
-  });
-
-  it('rejects the canonical academic alias outside broker transport', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', {
-      status: 302,
-      headers: { location: 'https://zhjw.hbu.edu.cn/login' },
-    }));
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
-
-    await expect(client.login('student', 'password')).rejects.toMatchObject({
-      code: 'cross_origin_redirect',
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects a shared JW slot whose returned student identity differs from the submitted account', async () => {
-    const token = Buffer.alloc(32, 7);
-    const brokerFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const request = JSON.parse(String(init?.body)) as { targetUrl: string };
+      expect(request).not.toHaveProperty('cookies');
+      expect(request).not.toHaveProperty('bodyBase64');
       const path = new URL(request.targetUrl).pathname;
-      const body = path === '/login'
-        ? '<form action="/sigin"><input name="password"></form>'
-        : path === '/index'
-          ? '<html><body>URP综合教务系统首页</body></html>'
-          : path.endsWith('/rollInfo/index')
-            ? '<div class="profile-info-name">学号</div><div class="profile-info-value">20231202099</div>'
-            : '';
-      const status = path === '/logout' || path === '/enterOut' || path === '/login' || path.endsWith('/rollInfo/index') ? 200 : 302;
-      const headers = path === '/sigin' ? { location: 'https://zhjw.hbu.cn/index' } : {};
+      paths.push(path);
+      const body = path.endsWith('/rollInfo/index')
+        ? '<div class="profile-info-name">学号</div><div class="profile-info-value">20231202051</div>'
+        : '<html><body>URP综合教务系统首页</body></html>';
       return new Response(JSON.stringify({
         ok: true,
-        status,
-        headers,
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=UTF-8' },
         setCookies: [],
         bodyBase64: Buffer.from(body).toString('base64'),
       }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -3272,160 +3319,111 @@ describe('hbu-jw http client', () => {
       webVpnBroker: { url: 'http://127.0.0.1:8789', token, fetchImpl: brokerFetch as never },
     });
 
-    await expect(client.login('20231202051', 'password')).rejects.toMatchObject({
-      code: 'jw_identity_mismatch',
-      category: 'protocol',
+    const login = await client.loginSharedCas('20231202051');
+    expect(login.cookieJar).toEqual({
+      version: 2,
+      transport: 'broker-cas',
+      origin: 'https://zhjw.hbu.cn',
+      cookies: [],
     });
+    await expect(client.validate(login.cookieJar)).resolves.toBe(true);
+    expect(paths).toEqual([
+      '/student/rollManagement/rollInfo/index',
+      '/index',
+    ]);
   });
 
-  it('rejects cross-origin redirects before sending cookies to the redirected target', async () => {
-    const fetchImpl = vi.fn(async (url: string) => {
-      if (url === 'https://zhjw.hbu.cn/login') {
-        return new Response('<form action="/sigin"><input name="password"></form>', {
-          status: 200,
-          headers: { 'set-cookie': 'JSESSIONID=abc; Path=/' },
-        });
+  it('uses the CAS account response to send and validate SMS without collecting a phone number', async () => {
+    const token = Buffer.alloc(32, 11);
+    const requests: Array<{ path: string; body: string; cookies: Array<{ name: string; value: string }> }> = [];
+    let ticketRequests = 0;
+    const brokerFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith('/v1/captcha/solve')) {
+        const payload = JSON.parse(String(init?.body));
+        expect(payload.content).toBe('data:image/png;base64,AA==');
+        return Response.json({ ok: true, result: { answer: 14 } });
       }
-      if (url === 'https://zhjw.hbu.cn/sigin') {
-        return new Response('', {
-          status: 302,
-          headers: { location: 'https://example.com/steal' },
-        });
-      }
-      return new Response('', { status: 500 });
-    });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
+      const request = JSON.parse(String(init?.body)) as {
+        targetUrl: string;
+        bodyBase64?: string;
+        cookies: Array<{ name: string; value: string }>;
+      };
+      const target = new URL(request.targetUrl);
+      const body = Buffer.from(request.bodyBase64 ?? '', 'base64').toString();
+      requests.push({ path: target.pathname, body, cookies: request.cookies });
+      const respond = (status: number, value: string, setCookies: string[] = []) => Response.json({
+        ok: true,
+        status,
+        headers: { 'content-type': 'application/json; charset=UTF-8' },
+        setCookies,
+        bodyBase64: Buffer.from(value).toString('base64'),
+      });
 
-    await expect(client.login('student', 'password')).rejects.toThrow('非预期跨域');
-    expect(fetchImpl.mock.calls.map((call) => call[0])).not.toContain('https://example.com/steal');
-  });
-
-  it('logs into WebVPN before submitting the original jw login form', async () => {
-    const resourcePrefix = '/http/77726476706e69737468656265737421eaff4b8b69386a45300b87';
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === 'https://zhjw.hbu.cn/login') {
-        return new Response('', {
-          status: 302,
-          headers: { location: `https://v.hbu.cn${resourcePrefix}/login` },
-        });
+      if (target.pathname === '/lyuapServer/kaptcha') {
+        return respond(200, JSON.stringify({ uid: 'captcha-uid', content: 'data:image/png;base64,AA==' }), ['CASSESSION=cas-one; Path=/']);
       }
-      if (url === `https://v.hbu.edu.cn${resourcePrefix}/login`) {
-        if (String((init?.headers as Record<string, string> | undefined)?.cookie ?? '').includes('webvpn_session=active')) {
-          return new Response('<form action="/sigin"><input name="password"></form>', {
-            status: 200,
-            headers: { 'set-cookie': 'JSESSIONID=jw-session; Path=/' },
-          });
+      if (target.pathname === '/lyuapServer/v1/tickets') {
+        ticketRequests += 1;
+        const form = new URLSearchParams(body);
+        expect(form.get('username')).toBe('20231202052');
+        expect(form.get('password')).toBe('secret-password');
+        if (ticketRequests === 1) {
+          expect(form.get('uid')).toBe('captcha-uid');
+          expect(form.get('code')).toBe('14');
+          return respond(200, JSON.stringify({
+            meta: { success: true },
+            data: {
+              code: 'TWOVERIFY',
+              uid: 'two-verify-uid',
+              content: { phone: '13900139000', twoVerifyType: 'REMOTE_LOGIN', isCommonIP: false },
+            },
+          }));
         }
-        return new Response('', {
-          status: 302,
-          headers: {
-            location: 'https://v.hbu.cn/login',
-            'set-cookie': 'wengine_vpn_ticketv_hbu_cn=ticket; Path=/',
-          },
-        });
+        expect(form.has('uid')).toBe(false);
+        return respond(201, JSON.stringify({ ticket: 'ST-academic-ticket', tgt: 'TGT-persisted' }));
       }
-      if (url === 'https://v.hbu.edu.cn/login') {
-        return new Response([
-          '<html><body>WEBVPN资源访问系统',
-          '<form id="form">',
-          '<input name="_csrf" value="csrf-token">',
-          '<input name="auth_type" value="local">',
-          '<input name="needCaptcha" value="false">',
-          '<input name="captcha_id" value="captcha-id">',
-          '</form>',
-          '<script>$.post("/do-login")</script>',
-          '</body></html>',
-        ].join(''), { status: 200 });
-      }
-      if (url === 'https://v.hbu.edu.cn/do-login') {
-        const body = init?.body as URLSearchParams;
-        expect(body.get('_csrf')).toBe('csrf-token');
-        expect(body.get('username')).toBe('student');
-        expect(body.get('password')).toBe('77726476706e6973617765736f6d6521f669c8738c549c2e');
-        expect(init?.headers).toMatchObject({
-          host: 'v.hbu.cn',
-          origin: 'https://v.hbu.cn',
+      if (target.pathname === '/lyuapServer/login/mobile/generateCode') {
+        expect(JSON.parse(body)).toEqual({
+          mobile: '13900139000',
+          username: '20231202052',
+          module: '0',
         });
-        return new Response(JSON.stringify({ success: true, url: `${resourcePrefix}/login` }), {
-          status: 200,
-          headers: { 'set-cookie': 'webvpn_session=active; Path=/' },
-        });
+        return respond(200, JSON.stringify({ meta: { success: true }, data: true }));
       }
-      if (url === `https://v.hbu.edu.cn${resourcePrefix}/sigin`) {
-        expect(init?.headers).toMatchObject({
-          host: 'v.hbu.cn',
-          origin: 'https://v.hbu.cn',
-          referer: `https://v.hbu.cn${resourcePrefix}/login`,
+      if (target.pathname === '/lyuapServer/login/twoVertify') {
+        expect(JSON.parse(body)).toMatchObject({
+          userName: '20231202052',
+          credential: '123456',
+          principal: '13900139000',
+          type: '0',
+          twoVerifyType: 'REMOTE_LOGIN',
         });
-        return new Response('', {
-          status: 302,
-          headers: { location: 'https://zhjw.hbu.cn/index' },
-        });
+        return respond(200, JSON.stringify({ meta: { success: true }, data: { flag: true } }));
       }
-      if (url === `https://v.hbu.edu.cn${resourcePrefix}/index`) {
-        return new Response('<html><body>URP综合教务系统首页</body></html>', { status: 200 });
+      if (target.pathname === '/login' && target.searchParams.get('ticket') === 'ST-academic-ticket') {
+        return respond(200, '<html><body>URP综合教务系统首页</body></html>', ['JSESSIONID=academic-session; Path=/']);
       }
-      return new Response('', { status: 500 });
+      if (target.pathname === '/student/rollManagement/rollInfo/index') {
+        return respond(200, '<div class="profile-info-name">学号</div><div class="profile-info-value">20231202052</div>');
+      }
+      return respond(404, 'missing');
     });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
-
-    await expect(client.login('student', 'password')).resolves.toEqual({
-      cookieJar: {
-        version: 2,
-        transport: 'direct',
-        origin: 'https://zhjw.hbu.cn',
-        cookies: [
-          { name: 'wengine_vpn_ticketv_hbu_cn', value: 'ticket' },
-          { name: 'webvpn_session', value: 'active' },
-          { name: 'JSESSIONID', value: 'jw-session' },
-        ],
-      },
+    const client = new HbuJwHttpClient({
+      webVpnBroker: { url: 'http://127.0.0.1:8789', token, fetchImpl: brokerFetch as never },
     });
-    expect(fetchImpl.mock.calls.map((call) => call[0])).not.toContain('https://zhjw.hbu.cn/sigin');
-  });
 
-  it('reports WebVPN credential rejection precisely', async () => {
-    const resourcePrefix = '/http/77726476706e69737468656265737421eaff4b8b69386a45300b87';
-    const fetchImpl = vi.fn(async (url: string) => {
-      if (url === 'https://zhjw.hbu.cn/login') {
-        return new Response('', { status: 302, headers: { location: `https://v.hbu.cn${resourcePrefix}/login` } });
-      }
-      if (url === `https://v.hbu.edu.cn${resourcePrefix}/login`) {
-        return new Response('', { status: 302, headers: { location: 'https://v.hbu.cn/login' } });
-      }
-      if (url === 'https://v.hbu.edu.cn/login') {
-        return new Response('<form id="form"><input name="_csrf" value="csrf"><input name="auth_type" value="local"></form><script>$.post("/do-login")</script>', { status: 200 });
-      }
-      if (url === 'https://v.hbu.edu.cn/do-login') {
-        return new Response(JSON.stringify({ success: false, error: 'INVALID_ACCOUNT', message: '账号或密码错误' }), { status: 200 });
-      }
-      return new Response('', { status: 500 });
+    const started = await client.beginLogin('20231202052', 'secret-password');
+    expect(started).toMatchObject({ kind: 'awaiting_sms', maskedPhone: '139****9000' });
+    if (started.kind !== 'awaiting_sms') throw new Error('expected CAS SMS challenge');
+    const completed = await client.completeSmsLogin(started.challenge, 'secret-password', '123456');
+
+    expect(completed).toMatchObject({
+      kind: 'authenticated',
+      cookieJar: { transport: 'broker', cookies: [{ name: 'JSESSIONID', value: 'academic-session' }] },
+      casSession: { cookies: expect.arrayContaining([{ name: 'CASTGC', value: 'TGT-persisted' }]) },
     });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
-
-    await expect(client.login('student', 'password')).rejects.toMatchObject({
-      code: 'webvpn_invalid_account',
-      category: 'credential',
-      message: '河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。',
-    });
-  });
-
-  it('extracts clear login failure messages from the jw login page', async () => {
-    const fetchImpl = vi.fn(async (url: string) => {
-      if (url === 'https://zhjw.hbu.cn/login') {
-        return new Response('<form action="/sigin"><input name="password"></form>', {
-          status: 200,
-          headers: { 'set-cookie': 'JSESSIONID=abc; Path=/' },
-        });
-      }
-      if (url === 'https://zhjw.hbu.cn/sigin') {
-        return new Response('<html><body><div>账号不存在</div><form action="/sigin"><input name="password"></form></body></html>', { status: 200 });
-      }
-      return new Response('', { status: 500 });
-    });
-    const client = new HbuJwHttpClient({ fetchImpl: fetchImpl as never });
-
-    await expect(client.login('student', 'password')).rejects.toThrow('账号不存在');
+    expect(requests.find((request) => request.path.endsWith('/generateCode'))?.cookies)
+      .toContainEqual({ name: 'CASSESSION', value: 'cas-one' });
   });
 
   it('loads all passing scores from the dynamic callback endpoint', async () => {
@@ -3689,6 +3687,36 @@ describe('hbu-jw http client', () => {
   });
 });
 
+describe('hbu-jw automation page rendering', () => {
+  it('builds the callback from a fragment token without asking for a phone number', () => {
+    const html = renderAutomationPage({
+      platform: 'ios',
+      publicBaseUrl: 'https://jw.example',
+      ingestPath: '/jw/automation/ingest',
+    });
+
+    expect(html).toContain("location.hash.slice(1)");
+    expect(html).toContain('https://jw.example/jw/automation/ingest/');
+    expect(html).toContain('新增字段 message');
+    expect(html).toContain('打开快捷指令');
+    expect(html).not.toContain('name="phone"');
+    expect(html).not.toContain('name="mobile"');
+    expect(html).not.toContain('19033190031');
+  });
+
+  it('renders the Android webhook instructions', () => {
+    const html = renderAutomationPage({
+      platform: 'android',
+      publicBaseUrl: 'https://jw.example',
+      ingestPath: '/jw/automation/ingest',
+    });
+
+    expect(html).toContain('SMS → Webhook');
+    expect(html).toContain('后台运行权限');
+    expect(html).toContain('完整短信正文变量');
+  });
+});
+
 describe('hbu-jw bind page rendering', () => {
   it('renders a clear success page with close-page guidance and the confirm command', () => {
     const html = renderBindPage({
@@ -3726,7 +3754,7 @@ describe('hbu-jw bind page rendering', () => {
     expect(html).toContain('value="student-1"');
     expect(html).toContain('value="1405359129" readonly');
     expect(html).toContain('name="persistCredentialConsent" value="yes" required checked');
-    expect(html).toContain('仅用于河北大学 WebVPN 与教务登录态失效后的自动重新登录');
+    expect(html).toContain('仅用于教务登录态失效后的自动重新登录');
     expect(html).toContain('id="password"');
     expect(html).toContain('data-password-toggle');
     expect(html).toContain('aria-label="显示密码"');
@@ -3742,14 +3770,63 @@ describe('hbu-jw bind page rendering', () => {
       state: 'pending',
     });
 
-    expect(html).toContain('正在验证教务账号密码');
+    expect(html).toContain('正在验证统一认证账号');
     expect(html).toContain('window.location.reload');
     expect(html).not.toContain('<form class="form"');
     expect(html).not.toContain('请输入教务系统密码');
   });
+
+  it('renders the CAS SMS challenge without asking for a phone number', () => {
+    const html = renderBindPage({
+      backgroundImagePath: '/jw/bind/assets/campus-bg.jpg',
+      qq: '1405359129',
+      token: 'bind-token',
+      codePath: '/jw/bind/code',
+      resendPath: '/jw/bind/resend',
+      purpose: 'reauth',
+      state: 'sms',
+      maskedPhone: '139****9000',
+      resendAvailableAt: 121_000,
+    });
+
+    expect(html).toContain('完成统一认证');
+    expect(html).toContain('139****9000');
+    expect(html).toContain('name="code"');
+    expect(html).toContain('data-sms-submit');
+    expect(html).toContain('验证码已提交');
+    expect(html).toContain('data-ready-at="121000"');
+    expect(html).not.toContain('name="mobile"');
+    expect(html).not.toContain('name="phone"');
+  });
 });
 
 describe('hbu-jw plugin integration', () => {
+  it('registers platform setup pages and the device webhook endpoint', async () => {
+    const dir = createTempDir();
+    const server = { get: vi.fn(), post: vi.fn() };
+    const ctx = {
+      baseDir: dir,
+      database: createDatabase(),
+      model: { extend: vi.fn() },
+      server,
+      middleware: vi.fn(),
+      on: vi.fn(),
+    };
+    apply(ctx as never, {
+      publicBaseUrl: 'https://jw.example',
+      credentialKekPath: join(dir, 'kek.key'),
+      allowedGroups: '100',
+    });
+
+    const iosHandler = server.get.mock.calls.find(([path]) => path === '/jw/automation/ios')?.[1];
+    const iosCtx: any = { set: vi.fn() };
+    iosHandler(iosCtx);
+    expect(iosCtx.status).toBe(200);
+    expect(String(iosCtx.body)).toContain('iPhone 验证码自动转发');
+    expect(server.get.mock.calls.some(([path]) => path === '/jw/automation/android')).toBe(true);
+    expect(server.post.mock.calls.some(([path]) => path === '/jw/automation/ingest/:token')).toBe(true);
+  });
+
   it('keeps guidance authorization on the triggering message and attaches the mandatory tool workflow', async () => {
     vi.spyOn(HbuJwCourseGuidanceService.prototype, 'assertBound').mockResolvedValue(undefined);
     const dir = createTempDir();
@@ -3987,7 +4064,8 @@ describe('hbu-jw plugin integration', () => {
   });
 
   it('redirects successful credential submissions to the GET bind success page', async () => {
-    vi.spyOn(HbuJwHttpClient.prototype, 'login').mockResolvedValue({
+    vi.spyOn(HbuJwHttpClient.prototype, 'beginLogin').mockResolvedValue({
+      kind: 'authenticated',
       cookieJar: cookieJar(),
     });
     const dir = createTempDir();
@@ -4087,11 +4165,11 @@ describe('hbu-jw plugin integration', () => {
     const loginStarted = new Promise<void>((resolve) => {
       markLoginStarted = resolve;
     });
-    let resolveLogin!: (value: { cookieJar: SerializedCookieJar }) => void;
-    const loginResult = new Promise<{ cookieJar: SerializedCookieJar }>((resolve) => {
+    let resolveLogin!: (value: { kind: 'authenticated'; cookieJar: SerializedCookieJar }) => void;
+    const loginResult = new Promise<{ kind: 'authenticated'; cookieJar: SerializedCookieJar }>((resolve) => {
       resolveLogin = resolve;
     });
-    vi.spyOn(HbuJwHttpClient.prototype, 'login').mockImplementation(async () => {
+    vi.spyOn(HbuJwHttpClient.prototype, 'beginLogin').mockImplementation(async () => {
       markLoginStarted();
       return loginResult;
     });
@@ -4169,10 +4247,10 @@ describe('hbu-jw plugin integration', () => {
     await getHandler(pendingGetCtx);
     expect(pendingGetCtx.status).toBe(200);
     expect(pendingGetHeaders.get('cache-control')).toBe('no-store');
-    expect(String(pendingGetCtx.body)).toContain('正在验证教务账号密码');
+    expect(String(pendingGetCtx.body)).toContain('正在验证统一认证账号');
     expect(String(pendingGetCtx.body)).not.toContain('<form class="form"');
 
-    resolveLogin({ cookieJar: cookieJar() });
+    resolveLogin({ kind: 'authenticated', cookieJar: cookieJar() });
     await firstPost;
     expect(firstPostCtx.status).toBe(303);
     expect(firstPostHeaders.get('cache-control')).toBe('no-store');

@@ -22,3 +22,11 @@ export function credentialAad(ownerKey: string, serviceId: string, credentialId:
 export function cookieAad(ownerKey: string): string {
   return `hbu-jw:cookie:v${CURRENT_SCHEMA_VERSION}:${ownerKey}`;
 }
+
+export function casSessionAad(ownerKey: string): string {
+  return `hbu-jw:cas-session:v${CURRENT_SCHEMA_VERSION}:${ownerKey}`;
+}
+
+export function smsDeviceTokenAad(ownerKey: string, platform: string): string {
+  return `hbu-jw:sms-device:v${CURRENT_SCHEMA_VERSION}:${ownerKey}:${platform}`;
+}

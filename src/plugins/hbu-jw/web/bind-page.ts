@@ -3,11 +3,16 @@ export interface BindPageOptions {
   qq: string;
   token?: string;
   submitPath?: string;
+  codePath?: string;
+  resendPath?: string;
   username?: string;
   persistCredentialConsent?: boolean;
-  state?: 'form' | 'error' | 'invalid' | 'pending' | 'success';
+  purpose?: 'binding' | 'reauth';
+  state?: 'form' | 'error' | 'invalid' | 'pending' | 'sms' | 'success';
   message?: string;
   confirmCode?: string;
+  maskedPhone?: string;
+  resendAvailableAt?: number;
 }
 
 function escapeHtml(value: string): string {
@@ -24,9 +29,14 @@ export function renderBindPage(options: BindPageOptions): string {
   const qq = escapeHtml(options.qq);
   const token = escapeHtml(options.token ?? '');
   const submitPath = escapeHtml(options.submitPath ?? '');
+  const codePath = escapeHtml(options.codePath ?? '');
+  const resendPath = escapeHtml(options.resendPath ?? '');
   const username = escapeHtml(options.username ?? '');
   const state = options.state ?? 'form';
   const message = escapeHtml(options.message ?? '');
+  const maskedPhone = escapeHtml(options.maskedPhone ?? '账号绑定手机');
+  const resendAvailableAt = Number.isFinite(options.resendAvailableAt) ? Math.floor(options.resendAvailableAt!) : 0;
+  const purpose = options.purpose ?? 'binding';
   const confirmCommand = escapeHtml(options.confirmCode ? `教务确认 ${options.confirmCode}` : '');
 
   return `<!doctype html>
@@ -400,6 +410,39 @@ export function renderBindPage(options: BindPageOptions): string {
         cursor: pointer;
       }
 
+      .submit:disabled {
+        cursor: wait;
+        opacity: 0.62;
+      }
+
+      .sms-copy {
+        margin: 0 0 22px;
+        color: #2c3c52;
+        font-size: 17px;
+        line-height: 1.7;
+      }
+
+      .sms-actions {
+        display: grid;
+        gap: 12px;
+      }
+
+      .resend {
+        width: 100%;
+        min-height: 50px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        color: var(--accent-deep);
+        background: #ffffff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .resend:disabled {
+        color: var(--muted);
+        cursor: wait;
+      }
+
       .security {
         display: flex;
         align-items: flex-start;
@@ -502,11 +545,11 @@ export function renderBindPage(options: BindPageOptions): string {
                 <path d="m23 32 6 6 13-15" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </span>
-            <h1>教务系统账号绑定</h1>
+            <h1>${purpose === 'reauth' ? '完成统一认证' : '教务系统账号绑定'}</h1>
           </header>
 
-          ${renderStateBlock(state, message, qq, confirmCommand)}
-          ${state === 'success' || state === 'invalid' || state === 'pending' ? '' : renderForm({ qq, token, submitPath, username, persistCredentialConsent: options.persistCredentialConsent ?? false })}
+          ${renderStateBlock({ state, message, qq, confirmCommand, purpose, token, codePath, resendPath, maskedPhone, resendAvailableAt })}
+          ${state === 'success' || state === 'invalid' || state === 'pending' || state === 'sms' ? '' : renderForm({ qq, token, submitPath, username, persistCredentialConsent: options.persistCredentialConsent ?? false })}
 
           <section class="security" aria-label="安全说明">
             <span class="security-icon" aria-hidden="true">
@@ -527,12 +570,40 @@ export function renderBindPage(options: BindPageOptions): string {
 </html>`;
 }
 
-function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'pending' | 'success', message: string, qq: string, confirmCommand: string): string {
+function renderStateBlock(options: {
+  state: 'form' | 'error' | 'invalid' | 'pending' | 'sms' | 'success';
+  message: string;
+  qq: string;
+  confirmCommand: string;
+  purpose: 'binding' | 'reauth';
+  token: string;
+  codePath: string;
+  resendPath: string;
+  maskedPhone: string;
+  resendAvailableAt: number;
+}): string {
+  const { state, message, qq, confirmCommand, purpose } = options;
   if (state === 'pending') {
-    return `<p class="notice">正在验证教务账号密码，请稍候。</p>
+    return `<p class="notice">正在验证统一认证账号，请稍候。</p>
             ${renderPendingRefreshScript()}`;
   }
+  if (state === 'sms') return renderSmsForm(options);
   if (state === 'success') {
+    if (purpose === 'reauth') {
+      return `<section class="success-card" aria-live="polite">
+                <div class="success-heading">
+                  <span class="success-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="26" height="26" fill="none">
+                      <path d="m5 12 4 4 10-10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                  <div>
+                    <p class="success-title">统一认证已恢复</p>
+                    <p class="success-text">教务查询可以继续使用，请返回 QQ 重试刚才的指令。</p>
+                  </div>
+                </div>
+              </section>`;
+    }
     return `<section class="success-card" aria-live="polite">
               <div class="success-heading">
                 <span class="success-icon" aria-hidden="true">
@@ -560,6 +631,77 @@ function renderStateBlock(state: 'form' | 'error' | 'invalid' | 'pending' | 'suc
     return `<p class="notice is-error">${message}</p>`;
   }
   return '';
+}
+
+function renderSmsForm(options: {
+  message: string;
+  token: string;
+  codePath: string;
+  resendPath: string;
+  maskedPhone: string;
+  resendAvailableAt: number;
+}): string {
+  return `${options.message ? `<p class="notice is-error">${options.message}</p>` : ''}
+          <p class="sms-copy">学校已向 <strong>${options.maskedPhone}</strong> 发送六位验证码。这里不需要填写手机号。</p>
+          <div class="sms-actions">
+            <form class="form" method="post" action="${options.codePath}" data-sms-form>
+              <input type="hidden" name="token" value="${options.token}">
+              <div class="field">
+                <label for="sms-code">短信验证码</label>
+                <div class="control">
+                  <span class="control-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+                      <rect x="4" y="5" width="16" height="14" rx="3" stroke="currentColor" stroke-width="1.9"/>
+                      <path d="m8 10 4 3 4-3" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                  <input id="sms-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="请输入六位验证码" required autofocus>
+                </div>
+              </div>
+              <button class="submit" type="submit" data-sms-submit>验证并继续</button>
+            </form>
+            <form method="post" action="${options.resendPath}" data-resend-form>
+              <input type="hidden" name="token" value="${options.token}">
+              <button class="resend" type="submit" data-resend data-ready-at="${options.resendAvailableAt}">重新发送验证码</button>
+            </form>
+            <p class="copy-status" data-sms-status aria-live="polite"></p>
+          </div>
+          ${renderSmsScript()}`;
+}
+
+function renderSmsScript(): string {
+  return `<script>
+            (() => {
+              const form = document.querySelector('[data-sms-form]');
+              const submit = document.querySelector('[data-sms-submit]');
+              const resendForm = document.querySelector('[data-resend-form]');
+              const resend = document.querySelector('[data-resend]');
+              const status = document.querySelector('[data-sms-status]');
+              form?.addEventListener('submit', () => {
+                if (submit) {
+                  submit.disabled = true;
+                  submit.textContent = '正在验证…';
+                }
+                if (status) status.textContent = '验证码已提交，正在建立教务登录态。';
+              });
+              resendForm?.addEventListener('submit', () => {
+                if (resend) {
+                  resend.disabled = true;
+                  resend.textContent = '正在重新发送…';
+                }
+                if (status) status.textContent = '重新发送请求已提交。';
+              });
+              const refreshCountdown = () => {
+                if (!resend) return;
+                const readyAt = Number(resend.getAttribute('data-ready-at') || '0');
+                const seconds = Math.max(0, Math.ceil((readyAt - Date.now()) / 1000));
+                resend.disabled = seconds > 0;
+                resend.textContent = seconds > 0 ? seconds + ' 秒后可重新发送' : '重新发送验证码';
+              };
+              refreshCountdown();
+              window.setInterval(refreshCountdown, 1000);
+            })();
+          </script>`;
 }
 
 function renderPendingRefreshScript(): string {
@@ -595,7 +737,7 @@ function renderForm(options: { qq: string; token: string; submitPath: string; us
   return `<form class="form" method="post" action="${options.submitPath}" autocomplete="on">
             <input type="hidden" name="token" value="${options.token}">
             <div class="field">
-              <label for="username">教务账号</label>
+              <label for="username">统一认证账号</label>
               <div class="control">
                 <span class="control-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
@@ -603,12 +745,12 @@ function renderForm(options: { qq: string; token: string; submitPath: string; us
                     <circle cx="12" cy="7" r="4" stroke="currentColor" stroke-width="1.9"/>
                   </svg>
                 </span>
-                <input id="username" name="username" type="text" inputmode="numeric" autocomplete="username" value="${options.username}" placeholder="请输入教务系统账号" required>
+                <input id="username" name="username" type="text" inputmode="numeric" autocomplete="username" value="${options.username}" placeholder="请输入学号" required>
               </div>
             </div>
 
             <div class="field">
-              <label for="password">教务密码</label>
+              <label for="password">统一认证密码</label>
               <div class="control">
                 <span class="control-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
@@ -640,7 +782,7 @@ function renderForm(options: { qq: string; token: string; submitPath: string; us
 
             <label class="consent">
               <input type="checkbox" name="persistCredentialConsent" value="yes" required${options.persistCredentialConsent ? ' checked' : ''}>
-              <span>我授权机器人加密保存账号密码，仅用于河北大学 WebVPN 与教务登录态失效后的自动重新登录。</span>
+              <span>我授权机器人加密保存统一认证账号密码，仅用于教务登录态失效后的自动重新登录。</span>
             </label>
 
             <button class="submit" type="submit">绑定教务</button>

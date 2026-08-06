@@ -10,13 +10,31 @@ import type {
   HbuJwCredential,
   HbuJwSession,
   HbuJwSessionStatus,
+  HbuJwSmsDevice,
+  HbuJwSmsDevicePlatform,
   HbuJwTrainingPlanCacheRow,
   HbuJwTrainingPlanSnapshot,
   OwnerIdentity,
 } from './types.js';
 import { HBU_JW_SERVICE_ID } from './types.js';
 
-const ACTIVE_CHALLENGE_STATUSES: BindChallengeStatus[] = ['created', 'login_pending', 'login_succeeded'];
+const ACTIVE_CHALLENGE_STATUSES: BindChallengeStatus[] = ['created', 'login_pending', 'awaiting_sms', 'login_succeeded'];
+const CLEARED_CHALLENGE_SECRETS = {
+  loginAttemptId: null,
+  pageTokenCipher: null,
+  confirmCodeHash: null,
+  pendingConfirmCodeCipher: null,
+  pendingConfirmCodeMeta: null,
+  pendingCookieJarCipher: null,
+  pendingCasSessionCipher: null,
+  pendingCasChallengeCipher: null,
+  pendingCasChallengeMeta: null,
+  pendingCredentialCipher: null,
+  pendingCredentialMeta: null,
+  maskedPhone: null,
+  resendAvailableAt: null,
+  errorMessage: null,
+} as const;
 
 export interface HbuJwAcademicItemInput {
   recordKey: string;
@@ -35,14 +53,21 @@ export function ensureHbuJwTables(ctx: Context): void {
       platform: 'string',
       qqUserId: 'string',
       channelId: 'string',
+      purpose: { type: 'string', initial: 'binding' },
       status: 'string',
+      pageTokenCipher: { type: 'text', nullable: true },
       loginAttemptId: { type: 'string', nullable: true },
       confirmCodeHash: { type: 'string', nullable: true },
       pendingConfirmCodeCipher: { type: 'text', nullable: true },
       pendingConfirmCodeMeta: { type: 'text', nullable: true },
       pendingCookieJarCipher: { type: 'text', nullable: true },
+      pendingCasSessionCipher: { type: 'text', nullable: true },
+      pendingCasChallengeCipher: { type: 'text', nullable: true },
+      pendingCasChallengeMeta: { type: 'text', nullable: true },
       pendingCredentialCipher: { type: 'text', nullable: true },
       pendingCredentialMeta: { type: 'text', nullable: true },
+      maskedPhone: { type: 'string', nullable: true },
+      resendAvailableAt: { type: 'double', nullable: true },
       errorMessage: { type: 'text', nullable: true },
       expiresAt: 'double',
       createdAt: 'double',
@@ -63,6 +88,7 @@ export function ensureHbuJwTables(ctx: Context): void {
       platform: 'string',
       qqUserId: 'string',
       cookieJarCipher: 'text',
+      casSessionCipher: { type: 'text', nullable: true },
       status: 'string',
       validatedAt: 'double',
       lastRefreshAt: { type: 'double', nullable: true },
@@ -73,6 +99,24 @@ export function ensureHbuJwTables(ctx: Context): void {
     {
       autoInc: true,
       unique: ['ownerKey'],
+    },
+  );
+
+  ctx.model.extend(
+    'hbu_jw_sms_device',
+    {
+      id: 'unsigned',
+      ownerKey: 'string',
+      platform: 'string',
+      tokenHash: 'string',
+      tokenCipher: 'text',
+      createdAt: 'double',
+      updatedAt: 'double',
+    },
+    {
+      autoInc: true,
+      unique: [['ownerKey', 'platform'], 'tokenHash'],
+      indexes: [['ownerKey']],
     },
   );
 
@@ -197,14 +241,7 @@ export class HbuJwStore {
       expiresAt: { $lte: now },
     }, {
       status: 'expired',
-      loginAttemptId: null,
-      confirmCodeHash: null,
-      pendingConfirmCodeCipher: null,
-      pendingConfirmCodeMeta: null,
-      pendingCookieJarCipher: null,
-      pendingCredentialCipher: null,
-      pendingCredentialMeta: null,
-      errorMessage: null,
+      ...CLEARED_CHALLENGE_SECRETS,
       updatedAt: now,
     });
   }
@@ -215,34 +252,27 @@ export class HbuJwStore {
       status: { $in: ACTIVE_CHALLENGE_STATUSES },
     }, {
       status: 'cancelled',
-      loginAttemptId: null,
-      confirmCodeHash: null,
-      pendingConfirmCodeCipher: null,
-      pendingConfirmCodeMeta: null,
-      pendingCookieJarCipher: null,
-      pendingCredentialCipher: null,
-      pendingCredentialMeta: null,
-      errorMessage: null,
+      ...CLEARED_CHALLENGE_SECRETS,
       updatedAt: now,
     });
   }
 
-  async createChallenge(identity: OwnerIdentity, tokenHash: string, expiresAt: number, now: number): Promise<HbuJwBindChallenge> {
+  async createChallenge(
+    identity: OwnerIdentity,
+    tokenHash: string,
+    expiresAt: number,
+    now: number,
+    purpose: HbuJwBindChallenge['purpose'] = 'binding',
+  ): Promise<HbuJwBindChallenge> {
     return this.database.create<HbuJwBindChallenge>('hbu_jw_bind_challenge', {
       tokenHash,
       ownerKey: identity.ownerKey,
       platform: identity.platform,
       qqUserId: identity.qqUserId,
       channelId: identity.channelId,
+      purpose,
       status: 'created',
-      loginAttemptId: null,
-      confirmCodeHash: null,
-      pendingConfirmCodeCipher: null,
-      pendingConfirmCodeMeta: null,
-      pendingCookieJarCipher: null,
-      pendingCredentialCipher: null,
-      pendingCredentialMeta: null,
-      errorMessage: null,
+      ...CLEARED_CHALLENGE_SECRETS,
       expiresAt,
       createdAt: now,
       updatedAt: now,
@@ -262,6 +292,7 @@ export class HbuJwStore {
   async findLoginSucceededChallenge(ownerKey: string): Promise<HbuJwBindChallenge | null> {
     const rows = await this.database.get<HbuJwBindChallenge>('hbu_jw_bind_challenge', {
       ownerKey,
+      purpose: 'binding',
       status: 'login_succeeded',
     });
     return rows.sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null;
@@ -299,6 +330,29 @@ export class HbuJwStore {
     return row?.status === 'login_succeeded' && row.loginAttemptId === loginAttemptId ? row : null;
   }
 
+  async setChallengeAwaitingSms(
+    id: number,
+    loginAttemptId: string,
+    patch: Partial<HbuJwBindChallenge>,
+  ): Promise<HbuJwBindChallenge | null> {
+    await this.database.set('hbu_jw_bind_challenge', { id, status: 'login_pending', loginAttemptId }, {
+      ...patch,
+      status: 'awaiting_sms',
+    } as Record<string, unknown>);
+    const row = await this.findChallengeById(id);
+    return row?.status === 'awaiting_sms' && row.loginAttemptId === loginAttemptId ? row : null;
+  }
+
+  async completeSmsChallenge(
+    id: number,
+    loginAttemptId: string,
+    patch: Partial<HbuJwBindChallenge>,
+  ): Promise<HbuJwBindChallenge | null> {
+    await this.database.set('hbu_jw_bind_challenge', { id, status: 'awaiting_sms', loginAttemptId }, patch as Record<string, unknown>);
+    const row = await this.findChallengeById(id);
+    return row?.status === 'login_succeeded' && row.loginAttemptId === loginAttemptId ? row : null;
+  }
+
   async releaseChallengeLogin(id: number, loginAttemptId: string, reason: string, now: number): Promise<void> {
     await this.database.set('hbu_jw_bind_challenge', { id, status: 'login_pending', loginAttemptId }, {
       status: 'created',
@@ -311,39 +365,32 @@ export class HbuJwStore {
   async clearChallengeSecrets(id: number, status: BindChallengeStatus, now: number): Promise<void> {
     await this.database.set('hbu_jw_bind_challenge', { id }, {
       status,
-      loginAttemptId: null,
-      confirmCodeHash: null,
-      pendingConfirmCodeCipher: null,
-      pendingConfirmCodeMeta: null,
-      pendingCookieJarCipher: null,
-      pendingCredentialCipher: null,
-      pendingCredentialMeta: null,
-      errorMessage: null,
+      ...CLEARED_CHALLENGE_SECRETS,
       updatedAt: now,
     });
   }
 
   async clearOwnerChallengeSecrets(ownerKey: string, now: number): Promise<void> {
     await this.database.set('hbu_jw_bind_challenge', { ownerKey }, {
-      loginAttemptId: null,
-      confirmCodeHash: null,
-      pendingConfirmCodeCipher: null,
-      pendingConfirmCodeMeta: null,
-      pendingCookieJarCipher: null,
-      pendingCredentialCipher: null,
-      pendingCredentialMeta: null,
-      errorMessage: null,
+      ...CLEARED_CHALLENGE_SECRETS,
       updatedAt: now,
     });
   }
 
-  async replaceSession(identity: OwnerIdentity, cookieJarCipher: string, status: HbuJwSessionStatus, now: number): Promise<void> {
+  async replaceSession(
+    identity: OwnerIdentity,
+    cookieJarCipher: string,
+    status: HbuJwSessionStatus,
+    now: number,
+    casSessionCipher: string | null = null,
+  ): Promise<void> {
     const [existing] = await this.database.get<HbuJwSession>('hbu_jw_session', { ownerKey: identity.ownerKey });
     const row = {
       ownerKey: identity.ownerKey,
       platform: identity.platform,
       qqUserId: identity.qqUserId,
       cookieJarCipher,
+      casSessionCipher,
       status,
       validatedAt: now,
       lastRefreshAt: now,
@@ -360,6 +407,37 @@ export class HbuJwStore {
   async getSession(ownerKey: string): Promise<HbuJwSession | null> {
     const [row] = await this.database.get<HbuJwSession>('hbu_jw_session', { ownerKey });
     return row ?? null;
+  }
+
+  async getSmsDevice(ownerKey: string, platform: HbuJwSmsDevicePlatform): Promise<HbuJwSmsDevice | null> {
+    const [row] = await this.database.get<HbuJwSmsDevice>('hbu_jw_sms_device', { ownerKey, platform });
+    return row ?? null;
+  }
+
+  async findSmsDeviceByTokenHash(tokenHash: string): Promise<HbuJwSmsDevice | null> {
+    const [row] = await this.database.get<HbuJwSmsDevice>('hbu_jw_sms_device', { tokenHash });
+    return row ?? null;
+  }
+
+  async createSmsDevice(
+    ownerKey: string,
+    platform: HbuJwSmsDevicePlatform,
+    tokenHash: string,
+    tokenCipher: string,
+    now: number,
+  ): Promise<HbuJwSmsDevice> {
+    return this.database.create<HbuJwSmsDevice>('hbu_jw_sms_device', {
+      ownerKey,
+      platform,
+      tokenHash,
+      tokenCipher,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async removeSmsDevices(ownerKey: string): Promise<void> {
+    await this.database.remove('hbu_jw_sms_device', { ownerKey });
   }
 
   async setSessionStatus(ownerKey: string, status: HbuJwSessionStatus, reason: string | null, now: number): Promise<void> {

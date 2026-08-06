@@ -30,6 +30,7 @@ import { HbuJwBindSubmissionPendingError, HbuJwService } from './service.js';
 import { ensureHbuJwTables, HbuJwStore } from './store.js';
 import { HbuJwTermScoresService, type HbuJwTermScoresMode } from './term-scores.js';
 import { HbuJwUserError, type DatabaseLike, type OwnerIdentity } from './types.js';
+import { renderAutomationPage } from './web/automation-page.js';
 import { renderBindPage } from './web/bind-page.js';
 
 const ChatLunaChains = require('koishi-plugin-chatluna/chains') as {
@@ -42,6 +43,7 @@ export const inject = { required: ['server', 'database', 'puppeteer', 'nativeFea
 const logger = new Logger(name);
 const CAMPUS_BACKGROUND_FILE = join(__dirname, 'assets/campus-bg.jpg');
 const DEFAULT_BIND_PAGE_PATH = '/jw/bind';
+const DEFAULT_AUTOMATION_PAGE_PATH = '/jw/automation';
 const DEFAULT_BIND_TOKEN_TTL_MS = 600_000;
 const DEFAULT_KEEP_ALIVE_INTERVAL_MS = 180_000;
 const DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS = 86_400_000;
@@ -57,6 +59,8 @@ export interface Config {
   keepAliveRecentUseWindowMs?: number;
   webVpnBrokerUrl?: string;
   webVpnBrokerTokenFile?: string;
+  sharedCasOwnerKey?: string;
+  sharedCasStudentId?: string;
   allowedGroups?: string[] | string;
   naturalTriggerEnabled?: boolean;
   naturalTriggerGroups?: string[] | string;
@@ -73,6 +77,8 @@ export const Config: Schema<Config> = Schema.object({
   keepAliveRecentUseWindowMs: Schema.natural().role('time').default(DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS).description('只保活最近使用过的登录态。'),
   webVpnBrokerUrl: Schema.string().description('所有教务账号共享的本机 HBU WebVPN broker URL。'),
   webVpnBrokerTokenFile: Schema.string().description('HBU WebVPN broker 的 systemd credential 文件。'),
+  sharedCasOwnerKey: Schema.string().description('允许复用 Agent CAS session 的唯一 QQ owner key。'),
+  sharedCasStudentId: Schema.string().description('Agent CAS session 必须匹配的教务学号。'),
   allowedGroups: Schema.union([
     Schema.array(Schema.string()).role('table').description('允许使用教务系统功能的群号列表。只限制群聊，私聊仍允许使用。'),
     Schema.string().description('允许使用教务系统功能的群号，多个群号用英文逗号分隔。只限制群聊，私聊仍允许使用。'),
@@ -131,10 +137,19 @@ interface RuntimeConfig {
   keepAliveIntervalMs: number;
   keepAliveRecentUseWindowMs: number;
   webVpnBroker?: HbuWebVpnBrokerOptions;
+  sharedCasIdentity?: {
+    ownerKey: string;
+    studentId: string;
+  };
   allowedGroups: Set<string>;
   naturalTriggerEnabled: boolean;
   naturalTriggerGroups: Set<string>;
   bindSubmitPath: string;
+  bindCodePath: string;
+  bindResendPath: string;
+  automationIosPath: string;
+  automationAndroidPath: string;
+  automationIngestPath: string;
   campusBackgroundPath: string;
 }
 
@@ -157,6 +172,7 @@ export function apply(ctx: Context, config: Config): void {
     publicBaseUrl: runtime.publicBaseUrl,
     bindTokenTtlMs: runtime.bindTokenTtlMs,
     autoReloginEnabled: runtime.autoReloginEnabled,
+    sharedCasIdentity: runtime.sharedCasIdentity,
   });
   const gpaService = new HbuJwGpaService(service, jwClient, hbuCtx.puppeteer, academicCache);
   const scheduleService = new HbuJwScheduleService(service, jwClient, hbuCtx.puppeteer, undefined, academicCache);
@@ -285,6 +301,7 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
   const bindPagePath = requireAbsolutePath(config.bindPagePath ?? DEFAULT_BIND_PAGE_PATH, 'hbu-jw.bindPagePath');
   const publicBaseUrl = normalizeBaseUrl(config.publicBaseUrl ?? `http://127.0.0.1:${process.env.KOISHI_PORT || '5140'}`, 'hbu-jw.publicBaseUrl');
   const credentialKekPath = resolveKekPath(String((ctx as { baseDir?: string }).baseDir ?? process.cwd()), config.credentialKekPath ?? './.runtime/hbu-jw/credential-kek.key');
+  const webVpnBroker = resolveWebVpnBroker(config);
   return {
     bindPagePath,
     publicBaseUrl,
@@ -294,13 +311,31 @@ function resolveRuntimeConfig(ctx: Context, config: Config): RuntimeConfig {
     keepAliveEnabled: config.keepAliveEnabled ?? false,
     keepAliveIntervalMs: requirePositiveInteger(config.keepAliveIntervalMs ?? DEFAULT_KEEP_ALIVE_INTERVAL_MS, 'hbu-jw.keepAliveIntervalMs'),
     keepAliveRecentUseWindowMs: requirePositiveInteger(config.keepAliveRecentUseWindowMs ?? DEFAULT_KEEP_ALIVE_RECENT_USE_WINDOW_MS, 'hbu-jw.keepAliveRecentUseWindowMs'),
-    webVpnBroker: resolveWebVpnBroker(config),
+    webVpnBroker,
+    sharedCasIdentity: resolveSharedCasIdentity(config, webVpnBroker !== undefined),
     allowedGroups: requireAllowedGroups(config.allowedGroups, 'hbu-jw.allowedGroups'),
     naturalTriggerEnabled: config.naturalTriggerEnabled === true,
     naturalTriggerGroups: parseGroupSet(config.naturalTriggerGroups ?? ''),
     bindSubmitPath: `${bindPagePath}/submit`,
+    bindCodePath: `${bindPagePath}/code`,
+    bindResendPath: `${bindPagePath}/resend`,
+    automationIosPath: `${DEFAULT_AUTOMATION_PAGE_PATH}/ios`,
+    automationAndroidPath: `${DEFAULT_AUTOMATION_PAGE_PATH}/android`,
+    automationIngestPath: `${DEFAULT_AUTOMATION_PAGE_PATH}/ingest`,
     campusBackgroundPath: `${bindPagePath}/assets/campus-bg.jpg`,
   };
+}
+
+function resolveSharedCasIdentity(config: Config, brokerConfigured: boolean): RuntimeConfig['sharedCasIdentity'] {
+  const ownerKey = config.sharedCasOwnerKey?.trim() ?? '';
+  const studentId = config.sharedCasStudentId?.trim() ?? '';
+  const configured = [ownerKey, studentId].filter(Boolean).length;
+  if (configured === 0) return undefined;
+  if (configured !== 2) throw new Error('hbu-jw shared CAS identity requires owner key and student ID together.');
+  if (!brokerConfigured) throw new Error('hbu-jw shared CAS identity requires the WebVPN broker.');
+  if (!/^[a-z0-9_-]+:[^\s:]+$/i.test(ownerKey)) throw new Error('hbu-jw shared CAS owner key is invalid.');
+  if (!/^\d{8,20}$/.test(studentId)) throw new Error('hbu-jw shared CAS student ID is invalid.');
+  return { ownerKey, studentId };
 }
 
 function resolveWebVpnBroker(config: Config): HbuWebVpnBrokerOptions | undefined {
@@ -315,6 +350,35 @@ function resolveWebVpnBroker(config: Config): HbuWebVpnBrokerOptions | undefined
 }
 
 function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtime: RuntimeConfig): void {
+  ctx.server.get(runtime.automationIosPath, (koaCtx: any) => {
+    writeHtml(koaCtx, 200, renderAutomationPage({
+      platform: 'ios',
+      publicBaseUrl: runtime.publicBaseUrl,
+      ingestPath: runtime.automationIngestPath,
+    }));
+  });
+
+  ctx.server.get(runtime.automationAndroidPath, (koaCtx: any) => {
+    writeHtml(koaCtx, 200, renderAutomationPage({
+      platform: 'android',
+      publicBaseUrl: runtime.publicBaseUrl,
+      ingestPath: runtime.automationIngestPath,
+    }));
+  });
+
+  ctx.server.post(`${runtime.automationIngestPath}/:token`, async (koaCtx: any) => {
+    try {
+      const body = await readRequestBody(koaCtx);
+      await service.runExclusive(() => service.ingestSmsMessage(
+        String(koaCtx.params?.token ?? ''),
+        String(body.message ?? ''),
+      ));
+      writeJson(koaCtx, 200, { ok: true });
+    } catch (error) {
+      writeJson(koaCtx, 400, { ok: false, message: toUserMessage(error) });
+    }
+  });
+
   ctx.server.get(runtime.bindPagePath, async (koaCtx: any) => {
     const token = String(koaCtx.query?.token ?? koaCtx.request?.query?.token ?? '').trim();
     try {
@@ -324,8 +388,13 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
         qq: challenge.qqUserId,
         token: challenge.token,
         submitPath: runtime.bindSubmitPath,
+        codePath: runtime.bindCodePath,
+        resendPath: runtime.bindResendPath,
         state: challenge.state,
+        purpose: challenge.purpose,
         confirmCode: challenge.confirmCode,
+        maskedPhone: challenge.maskedPhone,
+        resendAvailableAt: challenge.resendAvailableAt,
       }));
     } catch (error) {
       writeHtml(koaCtx, 400, renderBindPage({
@@ -367,9 +436,57 @@ function registerWebRoutes(ctx: HbuJwServicesLike, service: HbuJwService, runtim
         qq,
         token,
         submitPath: runtime.bindSubmitPath,
+        codePath: runtime.bindCodePath,
+        resendPath: runtime.bindResendPath,
         username,
         persistCredentialConsent,
         state: qq ? 'error' : 'invalid',
+        message: toUserMessage(error),
+      }));
+    }
+  });
+
+  ctx.server.post(runtime.bindCodePath, async (koaCtx: any) => {
+    const body = await readRequestBody(koaCtx);
+    const token = String(body.token ?? '').trim();
+    try {
+      await service.runExclusive(() => service.submitSmsCode(token, String(body.code ?? '')));
+      writeRedirect(koaCtx, bindPageLocation(runtime, token));
+    } catch (error) {
+      const challenge = await service.resolveBindPageChallenge(token).catch(() => null);
+      writeHtml(koaCtx, 400, renderBindPage({
+        backgroundImagePath: runtime.campusBackgroundPath,
+        qq: challenge?.qqUserId ?? '',
+        token,
+        codePath: runtime.bindCodePath,
+        resendPath: runtime.bindResendPath,
+        state: challenge ? 'sms' : 'invalid',
+        purpose: challenge?.purpose,
+        maskedPhone: challenge?.maskedPhone,
+        resendAvailableAt: challenge?.resendAvailableAt,
+        message: toUserMessage(error),
+      }));
+    }
+  });
+
+  ctx.server.post(runtime.bindResendPath, async (koaCtx: any) => {
+    const body = await readRequestBody(koaCtx);
+    const token = String(body.token ?? '').trim();
+    try {
+      await service.runExclusive(() => service.resendSmsCode(token));
+      writeRedirect(koaCtx, bindPageLocation(runtime, token));
+    } catch (error) {
+      const challenge = await service.resolveBindPageChallenge(token).catch(() => null);
+      writeHtml(koaCtx, 400, renderBindPage({
+        backgroundImagePath: runtime.campusBackgroundPath,
+        qq: challenge?.qqUserId ?? '',
+        token,
+        codePath: runtime.bindCodePath,
+        resendPath: runtime.bindResendPath,
+        state: challenge ? 'sms' : 'invalid',
+        purpose: challenge?.purpose,
+        maskedPhone: challenge?.maskedPhone,
+        resendAvailableAt: challenge?.resendAvailableAt,
         message: toUserMessage(error),
       }));
     }
@@ -446,6 +563,36 @@ function registerKeywordMiddleware(
           const result = await service.startBinding(identity);
           await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(identity.qqUserId, `请打开链接完成教务绑定：\n${result.link}\n链接 10 分钟内有效。\n\n网页登录成功后，页面会显示 6 位确认码。请回到这里发送：\n教务确认 <确认码>\n完成绑定。`), {
             summary: '机器人提供了教务绑定流程；一次性绑定链接未写入历史。',
+            includeReplyPayload: false,
+          });
+        } catch (error) {
+          await sendHbuJwError(nativeFeatureChat, session, command, text, error);
+        }
+        return;
+      }
+
+      if (command.kind === 'automation') {
+        try {
+          const identity = resolveOwnerIdentity(session);
+          if (runtime.sharedCasIdentity?.ownerKey === identity.ownerKey) {
+            await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(
+              identity.qqUserId,
+              '当前教务账号继续使用服务器上已配置的 iPhone 验证码自动转发，无需重新配置。',
+              'space',
+            ), {
+              summary: '机器人确认该账号继续使用服务器已有的验证码自动转发。',
+              includeReplyPayload: false,
+            });
+            return;
+          }
+          const tokens = await service.getSmsAutomationTokens(identity.ownerKey);
+          const iosLink = `${runtime.publicBaseUrl}${runtime.automationIosPath}#token=${encodeURIComponent(tokens.ios)}`;
+          const androidLink = `${runtime.publicBaseUrl}${runtime.automationAndroidPath}#token=${encodeURIComponent(tokens.android)}`;
+          await sendHbuJwReply(nativeFeatureChat, session, command, text, createMentionedReply(
+            identity.qqUserId,
+            `请选择手机平台并按网页步骤配置：\niOS：${iosLink}\nAndroid：${androidLink}\n\n链接包含专属设备 Token，请勿转发。`,
+          ), {
+            summary: '机器人提供了 iOS 和 Android 教务验证码自动转发配置链接；设备 Token 未写入历史。',
             includeReplyPayload: false,
           });
         } catch (error) {
@@ -671,6 +818,7 @@ function normalizeCommandText(session: Session): string {
 type HbuJwCommand =
   | { kind: 'menu' }
   | { kind: 'bind' }
+  | { kind: 'automation' }
   | { kind: 'confirm_help' }
   | { kind: 'confirm'; confirmCode: string }
   | { kind: 'status' }
@@ -754,7 +902,7 @@ export function buildHbuJwCapabilityReference(
   return [
     `教务功能（当前会话${enabled ? '可用' : '未启用'}）：${invocation}`,
     '- 总入口：“教务”或“教务系统”，返回完整教务菜单。',
-    '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务状态”、“教务解绑”。',
+    '- 账号：“教务绑定”、“教务确认 <6位数字确认码>”、“教务自动化”、“教务状态”、“教务解绑”。',
     '- 查询：“GPA”、“成绩 [index]”、“成绩 <课程名或课程号>”、“匿名成绩”、“选课结果”、“课表”、“完整课表”、“考试安排”。',
     ...(guidanceRequested ? [
       '- AI 选课指导关键词：“选课指导”。该功能只给出指导，不执行实际选课。',
@@ -790,6 +938,7 @@ export function parseHbuJwCommand(text: string): HbuJwCommand | null {
   if (text === '选课指导') return { kind: 'course_guidance' };
   if (text === '教务' || text === '教务系统') return { kind: 'menu' };
   if (text === '教务绑定') return { kind: 'bind' };
+  if (text === '教务自动化') return { kind: 'automation' };
   if (/^教务(?:确认|确定)\s*$/.test(text)) return { kind: 'confirm_help' };
   const confirm = text.match(/^教务(?:确认|确定)\s+(\d{6})$/);
   if (confirm?.[1]) return { kind: 'confirm', confirmCode: confirm[1] };
@@ -885,6 +1034,13 @@ function writeRedirect(koaCtx: any, location: string): void {
   koaCtx.set('location', location);
   setNoStore(koaCtx);
   koaCtx.body = '';
+}
+
+function writeJson(koaCtx: any, status: number, body: Record<string, unknown>): void {
+  koaCtx.status = status;
+  koaCtx.set('content-type', 'application/json; charset=utf-8');
+  setNoStore(koaCtx);
+  koaCtx.body = body;
 }
 
 function bindPageLocation(runtime: RuntimeConfig, token: string): string {

@@ -1,4 +1,4 @@
-import { createCipheriv } from 'node:crypto';
+import crypto, { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { rootCertificates } from 'node:tls';
@@ -26,8 +26,35 @@ import type {
 } from './types.js';
 
 export interface HbuJwLoginResult {
+  kind: 'authenticated';
   cookieJar: SerializedCookieJar;
+  casSession?: HbuJwCasSession;
 }
+
+export interface HbuJwCasSession {
+  version: 1;
+  cookies: Array<{ name: string; value: string }>;
+}
+
+export interface HbuJwCasChallenge {
+  version: 1;
+  username: string;
+  casSession: HbuJwCasSession;
+  verification: {
+    uid: string;
+    phone: string;
+    twoVerifyType: string;
+    isCommonIP: boolean;
+    ext?: unknown;
+  };
+}
+
+export type HbuJwLoginStartResult = HbuJwLoginResult | {
+  kind: 'awaiting_sms';
+  challenge: HbuJwCasChallenge;
+  maskedPhone: string;
+  resendAvailableAt: number;
+};
 
 export interface HbuJwClientOptions {
   fetchImpl?: typeof fetch;
@@ -57,6 +84,18 @@ type RequestOptions = Omit<RequestInit, 'headers'> & {
 
 const PRIMARY_ACADEMIC_ORIGIN = 'https://zhjw.hbu.cn';
 const ACADEMIC_ORIGIN_ALIASES = ['https://zhjw.hbu.cn', 'https://zhjw.hbu.edu.cn'] as const;
+const CAS_ORIGIN = 'https://cas.hbu.edu.cn';
+const CAS_SERVICE = 'https://zhjw.hbu.cn/login';
+const CAS_RESEND_DELAY_MS = 120_000;
+const RSA_MODULUS_HEX = '00b5eeb166e069920e80bebd1fea4829d3d1f3216f2aabe79b6c47a3c18dcee5fd22c2e7ac519cab59198ece036dcf289ea8201e2a0b9ded307f8fb704136eaeb670286f5ad44e691005ba9ea5af04ada5367cd724b5a26fdb5120cc95b6431604bd219c6b7d83a6f8f24b43918ea988a76f93c333aa5a20991493d4eb1117e7b1';
+const CAS_PUBLIC_KEY = crypto.createPublicKey({
+  key: {
+    kty: 'RSA',
+    n: bigintBytes(RSA_MODULUS_HEX).toString('base64url'),
+    e: bigintBytes('010001').toString('base64url'),
+  },
+  format: 'jwk',
+});
 
 export class HbuJwLoginError extends Error {
   readonly code: string;
@@ -127,7 +166,10 @@ export class HbuJwHttpClient {
 
   prepareSession(cookieJar: unknown): SerializedCookieJar {
     const transport = this.webVpnBroker ? 'broker' : 'direct';
-    if (isCurrentCookieJar(cookieJar) && cookieJar.transport === transport) return cookieJar;
+    if (isCurrentCookieJar(cookieJar)
+      && (cookieJar.transport === transport || (transport === 'broker' && cookieJar.transport === 'broker-cas'))) {
+      return cookieJar;
+    }
     return {
       version: 2,
       transport,
@@ -137,9 +179,25 @@ export class HbuJwHttpClient {
   }
 
   async login(username: string, password: string): Promise<HbuJwLoginResult> {
+    const result = await this.beginLogin(username, password);
+    if (result.kind === 'awaiting_sms') {
+      throw new HbuJwLoginError('统一认证需要短信验证码。', {
+        code: 'cas_sms_required',
+        diagnostic: 'CAS account login requires SMS verification',
+        category: 'interaction_required',
+      });
+    }
+    return result;
+  }
+
+  async beginLogin(
+    username: string,
+    password: string,
+    existingCasSession?: HbuJwCasSession,
+  ): Promise<HbuJwLoginStartResult> {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        return await this.loginOnce(username, password);
+        return await this.beginLoginOnce(username, password, existingCasSession);
       } catch (error) {
         const failure = normalizeJwLoginFailure(error);
         if (attempt === 1 && failure.retryable) continue;
@@ -149,107 +207,294 @@ export class HbuJwHttpClient {
     throw new Error('unreachable login attempt loop');
   }
 
-  private async loginOnce(username: string, password: string): Promise<HbuJwLoginResult> {
-    const jar = new CookieJar(this.webVpnBroker ? 'broker' : 'direct', this.baseOrigin);
-    if (jar.transport === 'broker') {
-      const logout = await this.request('/logout', { jar });
-      if (isTransientUpstreamStatus(logout.response.status)) {
-        throw transientLoginHttpError('logout', logout.response.status, logout.url);
-      }
-      if (isWebVpnLoginPageHtml(logout.text)) {
-        throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
-          code: 'webvpn_broker_session_missing',
-          diagnostic: 'broker-backed JW logout resolved to the WebVPN login page',
-          category: 'upstream',
-        });
-      }
-    }
-    let loginPage = await this.request('/login', { jar });
-    if (isWebVpnLoginPageHtml(loginPage.text)) {
-      if (jar.transport === 'broker') {
-        throw new HbuJwLoginError('HBU WebVPN broker 返回了登录页，当前共享会话不可用。', {
-          code: 'webvpn_broker_session_missing',
-          diagnostic: 'broker-backed JW login resolved to the WebVPN login page',
-          category: 'upstream',
-        });
-      }
-      await this.loginWebVpn(username, password, jar, loginPage.text);
-      loginPage = await this.request('/login', { jar });
-      if (isWebVpnLoginPageHtml(loginPage.text)) {
-        throw new HbuJwLoginError('河北大学 WebVPN 登录成功后仍未建立教务访问会话，请稍后重试。', {
-          code: 'webvpn_session_missing',
-          diagnostic: `webvpn resource login resolved to ${loginPage.url}`,
-          category: 'upstream',
-        });
-      }
-    }
-    if (isAuthenticatedHtml(loginPage.text) && jar.transport === 'broker') {
-      throw new HbuJwLoginError('共享教务会话退出后仍保留了旧账号，已拒绝继续查询。', {
-        code: 'jw_shared_session_not_cleared',
-        diagnostic: `login page remained authenticated url=${loginPage.url}`,
+  async loginSharedCas(expectedUsername: string): Promise<HbuJwLoginResult> {
+    if (!this.webVpnBroker) {
+      throw new HbuJwLoginError('共享 CAS 教务会话要求配置本机 WebVPN broker。', {
+        code: 'shared_cas_broker_missing',
+        diagnostic: 'shared CAS login requested without broker transport',
         category: 'protocol',
       });
     }
-    if (isAuthenticatedHtml(loginPage.text)) {
-      return { cookieJar: jar.serialize() };
-    }
-    if (loginPage.response.status !== 200) {
-      if (isTransientUpstreamStatus(loginPage.response.status)) {
-        throw transientLoginHttpError('login_page', loginPage.response.status, loginPage.url);
-      }
-      throw new HbuJwLoginError(`教务登录入口返回 HTTP ${loginPage.response.status}，自动登录暂时无法完成。`, {
-        code: 'login_page_failed',
-        diagnostic: `login_page status=${loginPage.response.status}`,
-        category: 'upstream',
-      });
-    }
-    if (!isLoginPageHtml(loginPage.text)) {
-      throw new HbuJwLoginError('教务登录页结构发生变化，自动登录暂时无法完成。', {
-        code: 'login_page_changed',
-        diagnostic: `login_page url=${loginPage.url}`,
-        category: 'protocol',
-      });
-    }
+    const jar = new CookieJar('broker-cas', this.baseOrigin);
+    await this.assertAuthenticatedStudent(jar, expectedUsername);
+    return { kind: 'authenticated', cookieJar: jar.serialize() };
+  }
 
-    const loginBody = new URLSearchParams({ username, password }).toString();
-    const login = await this.request('/sigin', {
-      jar,
+  async completeSmsLogin(
+    challenge: HbuJwCasChallenge,
+    password: string,
+    code: string,
+  ): Promise<HbuJwLoginResult> {
+    validateCasChallenge(challenge);
+    if (!/^\d{6}$/.test(code)) {
+      throw new HbuJwLoginError('请输入六位短信验证码。', {
+        code: 'cas_sms_code_invalid',
+        diagnostic: 'CAS SMS code is not six digits',
+        category: 'interaction_required',
+      });
+    }
+    const casJar = CasCookieJar.from(challenge.casSession);
+    const verification = challenge.verification;
+    const requestBody: Record<string, unknown> = {
+      userName: challenge.username,
+      credential: code,
+      principal: verification.phone,
+      type: '0',
+      service: CAS_SERVICE,
+      twoVerifyType: verification.twoVerifyType,
+      loginType: '',
+      isCommonIP: verification.isCommonIP ? '0' : '',
+    };
+    if (verification.ext !== undefined) requestBody.ext = verification.ext;
+    const response = await this.requestCas('/lyuapServer/login/twoVertify', casJar, {
       method: 'POST',
       headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        origin: this.baseUrl,
-        referer: `${this.baseUrl}/login`,
+        'content-type': 'application/json',
+        origin: CAS_ORIGIN,
+        referer: casLoginUrl(),
+        token: encryptCasToken(),
+        vcodes: verification.uid,
       },
-      body: loginBody,
+      body: JSON.stringify(requestBody),
     });
-    if (isAuthenticatedHtml(login.text)) {
-      if (jar.transport === 'broker') await this.assertAuthenticatedStudent(jar, username);
-      return { cookieJar: jar.serialize() };
+    const verified = parseCasJson(response, 'CAS 短信验证');
+    if (verified?.meta?.success !== true || verified?.data?.flag !== true) {
+      throw casPayloadError(verified, 'cas_sms_rejected', 'CAS 拒绝了短信验证码。');
     }
+    const ticketPayload = await this.requestAccountTicket(challenge.username, password, casJar);
+    if (ticketPayload?.data?.code) {
+      throw new HbuJwLoginError('短信验证后 CAS 仍要求额外认证。', {
+        code: `cas_${String(ticketPayload.data.code).toLowerCase()}`,
+        diagnostic: `CAS returned code=${String(ticketPayload.data.code)} after SMS verification`,
+        category: 'interaction_required',
+      });
+    }
+    return this.consumeCasTicket(challenge.username, ticketPayload, casJar);
+  }
 
-    if (isTransientUpstreamStatus(login.response.status)) {
-      throw transientLoginHttpError('login_submit', login.response.status, login.url);
+  async resendSmsCode(challenge: HbuJwCasChallenge): Promise<number> {
+    validateCasChallenge(challenge);
+    const casJar = CasCookieJar.from(challenge.casSession);
+    await this.sendCasSms(challenge.username, challenge.verification.phone, casJar);
+    challenge.casSession = casJar.serialize();
+    return Date.now() + CAS_RESEND_DELAY_MS;
+  }
+
+  private async beginLoginOnce(
+    username: string,
+    password: string,
+    existingCasSession?: HbuJwCasSession,
+  ): Promise<HbuJwLoginStartResult> {
+    if (!this.webVpnBroker) {
+      throw new HbuJwLoginError('统一认证登录要求配置本机 WebVPN broker。', {
+        code: 'cas_broker_missing',
+        diagnostic: 'CAS account login requested without broker transport',
+        category: 'protocol',
+      });
     }
-    if (isWebVpnLoginPageHtml(login.text)) {
-      throw new HbuJwLoginError('河北大学 WebVPN 会话在教务登录过程中失效，请稍后重试。', {
-        code: 'webvpn_session_expired',
-        diagnostic: `jw login resolved to webvpn login url=${login.url}`,
+    const casJar = CasCookieJar.from(existingCasSession);
+    const reused = await this.tryReuseCasTicket(username, casJar);
+    if (reused) return this.consumeCasTicket(username, reused, casJar);
+
+    const captcha = await this.createSolvedCasCaptcha(casJar);
+    const payload = await this.requestAccountTicket(username, password, casJar, captcha);
+    if (!payload?.data?.code) return this.consumeCasTicket(username, payload, casJar);
+    if (payload.data.code !== 'TWOVERIFY') throw casAccountStateError(payload.data);
+    const verification = parseTwoVerify(payload.data);
+    await this.sendCasSms(username, verification.phone, casJar);
+    return {
+      kind: 'awaiting_sms',
+      challenge: {
+        version: 1,
+        username,
+        casSession: casJar.serialize(),
+        verification,
+      },
+      maskedPhone: maskCasPhone(verification.phone),
+      resendAvailableAt: Date.now() + CAS_RESEND_DELAY_MS,
+    };
+  }
+
+  private async requestAccountTicket(
+    username: string,
+    password: string,
+    casJar: CasCookieJar,
+    captcha?: { uid: string; answer: string },
+  ): Promise<any> {
+    const form = new URLSearchParams({
+      username,
+      password,
+      service: CAS_SERVICE,
+      loginType: '',
+    });
+    if (captcha) {
+      form.set('uid', captcha.uid);
+      form.set('code', captcha.answer);
+    }
+    const response = await this.requestCas('/lyuapServer/v1/tickets', casJar, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        origin: CAS_ORIGIN,
+        referer: casLoginUrl(),
+      },
+      body: form,
+    });
+    if (response.response.status !== 200 && response.response.status !== 201) {
+      throw new HbuJwLoginError(`统一认证登录接口返回 HTTP ${response.response.status}。`, {
+        code: 'cas_ticket_http_error',
+        diagnostic: `CAS ticket status=${response.response.status}`,
+        category: 'upstream',
+        retryable: isTransientUpstreamStatus(response.response.status),
+      });
+    }
+    const payload = parseCasJson(response, 'CAS 登录');
+    if (payload?.meta && payload.meta.success === false && !payload?.data?.code) {
+      throw casPayloadError(payload, 'cas_login_rejected', '统一认证账号或密码错误。', 'credential');
+    }
+    return payload;
+  }
+
+  private async tryReuseCasTicket(username: string, casJar: CasCookieJar): Promise<any | null> {
+    const tgt = casJar.get('CASTGC');
+    if (!tgt) return null;
+    const response = await this.requestCas(`/lyuapServer/v1/tickets/${encodeURIComponent(tgt)}`, casJar, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        origin: CAS_ORIGIN,
+        referer: casLoginUrl(),
+      },
+      body: new URLSearchParams({ service: CAS_SERVICE, loginToken: 'loginToken' }),
+    });
+    if (response.response.status !== 200) return null;
+    const ticket = parseCasTicket(response.text, response.response.headers.get('content-type') ?? '');
+    return ticket ? { ticket, username } : null;
+  }
+
+  private async consumeCasTicket(username: string, payload: any, casJar: CasCookieJar): Promise<HbuJwLoginResult> {
+    const ticket = typeof payload?.ticket === 'string' ? payload.ticket : '';
+    if (!ticket) throw casPayloadError(payload, 'cas_ticket_missing', '统一认证没有返回教务 service ticket。');
+    if (typeof payload.tgt === 'string' && payload.tgt.length > 0) casJar.set('CASTGC', payload.tgt);
+
+    const academicJar = new CookieJar('broker', this.baseOrigin);
+    const target = new URL(CAS_SERVICE);
+    target.searchParams.set('ticket', ticket);
+    const page = await this.request(target.href, {
+      jar: academicJar,
+      headers: { accept: 'text/html,application/xhtml+xml' },
+    });
+    if (page.response.status !== 200 || !isAuthenticatedHtml(page.text)) {
+      throw new HbuJwLoginError('统一认证通过后没有建立可用的教务登录态。', {
+        code: 'cas_academic_session_missing',
+        diagnostic: `CAS consume status=${page.response.status} path=${new URL(page.url).pathname}`,
+        category: 'protocol',
+      });
+    }
+    await this.assertAuthenticatedStudent(academicJar, username);
+    return {
+      kind: 'authenticated',
+      cookieJar: academicJar.serialize(),
+      casSession: casJar.serialize(),
+    };
+  }
+
+  private async createSolvedCasCaptcha(casJar: CasCookieJar): Promise<{ uid: string; answer: string }> {
+    const requestedUid = randomUUID();
+    const response = await this.requestCas(`/lyuapServer/kaptcha?uid=${encodeURIComponent(requestedUid)}`, casJar);
+    if (response.response.status !== 200) {
+      throw new HbuJwLoginError(`统一认证图片验证码返回 HTTP ${response.response.status}。`, {
+        code: 'cas_captcha_http_error',
+        diagnostic: `CAS captcha status=${response.response.status}`,
+        category: 'upstream',
+        retryable: isTransientUpstreamStatus(response.response.status),
+      });
+    }
+    const payload = parseCasJson(response, 'CAS 图片验证码');
+    const uid = typeof payload?.uid === 'string' ? payload.uid : '';
+    const content = typeof payload?.content === 'string' ? payload.content : '';
+    if (!uid || !content) {
+      throw new HbuJwLoginError('统一认证图片验证码响应结构发生变化。', {
+        code: 'cas_captcha_changed',
+        diagnostic: 'CAS captcha response is missing uid or content',
+        category: 'protocol',
+      });
+    }
+    const result = await this.solveCasCaptcha(content);
+    return { uid, answer: String(result.answer) };
+  }
+
+  private async sendCasSms(username: string, phone: string, casJar: CasCookieJar): Promise<void> {
+    const response = await this.requestCas('/lyuapServer/login/mobile/generateCode', casJar, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: CAS_ORIGIN,
+        referer: casLoginUrl(),
+        token: encryptCasToken(),
+      },
+      body: JSON.stringify({ mobile: phone, username, module: '0' }),
+    });
+    const payload = parseCasJson(response, 'CAS 短信发送');
+    if (response.response.status !== 200 || payload?.meta?.success !== true) {
+      throw casPayloadError(payload, 'cas_sms_send_failed', '统一认证验证码发送失败。');
+    }
+  }
+
+  private async requestCas(
+    path: string,
+    jar: CasCookieJar,
+    options: Omit<RequestOptions, 'headers'> & { headers?: Record<string, string> } = {},
+  ): Promise<{ response: Response; text: string }> {
+    if (!this.webVpnBroker) throw new Error('CAS request requires WebVPN broker');
+    const target = new URL(path, CAS_ORIGIN);
+    if (target.origin !== CAS_ORIGIN) throw new Error('CAS request origin is invalid');
+    const { headers = {}, method = 'GET', body, ...requestOptions } = options;
+    const response = await this.requestThroughBroker({
+      target,
+      method: String(method).toUpperCase(),
+      headers,
+      body,
+      requestOptions,
+      cookies: jar.cookies(),
+      transport: 'broker',
+    });
+    jar.remember(readSetCookieHeaders(response.headers));
+    return { response, text: await response.text() };
+  }
+
+  private async solveCasCaptcha(content: string): Promise<{ answer: number }> {
+    const broker = this.webVpnBroker;
+    if (!broker) throw new Error('CAS captcha solver requires WebVPN broker');
+    let response: Response;
+    try {
+      response = await broker.fetchImpl(`${broker.url}/v1/captcha/solve`, {
+        method: 'POST',
+        headers: {
+          authorization: broker.authorization,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ content }),
+        signal: AbortSignal.timeout(25_000),
+      });
+    } catch (error) {
+      throw new HbuJwLoginError('图片验证码识别服务当前无法访问。', {
+        code: 'cas_captcha_solver_unreachable',
+        diagnostic: describeError(error),
+        category: 'upstream',
+        cause: error,
+      });
+    }
+    const payload = await parseBrokerPayload(response);
+    const answer = Number((payload.result as Record<string, unknown> | undefined)?.answer);
+    if (!response.ok || payload.ok !== true || !Number.isSafeInteger(answer)) {
+      throw new HbuJwLoginError('图片验证码识别服务返回了无效结果。', {
+        code: 'cas_captcha_solver_failed',
+        diagnostic: `captcha solver status=${response.status}`,
         category: 'upstream',
       });
     }
-    if (isLoginPageHtml(login.text)) {
-      const message = extractLoginFailureMessage(login.text) ?? '教务登录失败，教务系统未返回登录态。';
-      throw new HbuJwLoginError(message, {
-        code: 'login_rejected',
-        diagnostic: `login_submit status=${login.response.status} url=${login.url} message=${message}`,
-        category: message.includes('验证码') ? 'interaction_required' : 'credential',
-      });
-    }
-    throw new HbuJwLoginError('教务登录协议发生变化，提交账号后没有获得登录态。', {
-      code: 'not_authenticated',
-      diagnostic: `login_submit status=${login.response.status} url=${login.url}`,
-      category: 'protocol',
-    });
+    return { answer };
   }
 
   private async assertAuthenticatedStudent(jar: CookieJar, username: string): Promise<void> {
@@ -660,67 +905,6 @@ export class HbuJwHttpClient {
     return normalizeCourseOfferings(requireRecordArray(payload.rwRxkZlList, '自由选课班次'), 'free');
   }
 
-  private async loginWebVpn(username: string, password: string, jar: CookieJar, html: string): Promise<void> {
-    const csrf = extractInputValue(html, '_csrf');
-    if (!csrf) {
-      throw new HbuJwLoginError('河北大学 WebVPN 登录协议发生变化，自动登录暂时无法完成。', {
-        code: 'webvpn_login_page_changed',
-        diagnostic: 'webvpn login page is missing _csrf',
-        category: 'protocol',
-      });
-    }
-    const body = new URLSearchParams({
-      _csrf: csrf,
-      auth_type: extractInputValue(html, 'auth_type') ?? 'local',
-      username,
-      password: encryptWebVpnPassword(password),
-      captcha: '',
-      needCaptcha: extractInputValue(html, 'needCaptcha') ?? 'false',
-      captcha_id: extractInputValue(html, 'captcha_id') ?? '',
-      remember_cookie: 'on',
-    });
-    const response = await this.request(`${this.webVpnOrigin}/do-login`, {
-      jar,
-      method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        origin: this.webVpnOrigin,
-        referer: `${this.webVpnOrigin}/login`,
-        'x-requested-with': 'XMLHttpRequest',
-      },
-      body,
-    });
-    if (response.response.status !== 200) {
-      throw new HbuJwLoginError(`河北大学 WebVPN 登录接口返回 HTTP ${response.response.status}，自动登录暂时无法完成。`, {
-        code: 'webvpn_login_http_error',
-        diagnostic: `webvpn do-login status=${response.response.status}`,
-        category: 'upstream',
-      });
-    }
-
-    const payload = parseWebVpnLoginPayload(response.text);
-    if (payload.success === true) {
-      const successUrl = typeof payload.url === 'string' ? payload.url : '';
-      if (!successUrl) {
-        throw new HbuJwLoginError('河北大学 WebVPN 登录响应缺少教务访问地址。', {
-          code: 'webvpn_login_response_changed',
-          diagnostic: 'webvpn success response is missing url',
-          category: 'protocol',
-        });
-      }
-      const target = this.resolveRequestUrl(successUrl);
-      if (target.origin !== this.webVpnOrigin) {
-        throw new HbuJwLoginError('河北大学 WebVPN 返回了非预期访问地址。', {
-          code: 'webvpn_success_cross_origin',
-          diagnostic: `webvpn success origin=${target.origin}`,
-          category: 'protocol',
-        });
-      }
-      return;
-    }
-    throw createWebVpnLoginError(payload);
-  }
-
   private async request(url: string, options: RequestOptions & { jar: CookieJar }): Promise<{ response: Response; text: string; url: string }> {
     const {
       jar,
@@ -729,16 +913,16 @@ export class HbuJwHttpClient {
       body: configuredBody,
       ...requestOptions
     } = options;
-    let currentUrl = this.resolveRequestUrl(url, jar.transport === 'broker', jar.origin);
+    let currentUrl = this.resolveRequestUrl(url, jar.transport !== 'direct', jar.origin);
     let method = String(configuredMethod ?? 'GET').toUpperCase();
     let body = configuredBody;
-    let brokerHeaders = jar.transport === 'broker' && currentUrl.origin !== this.baseOrigin
+    let brokerHeaders = jar.transport !== 'direct' && currentUrl.origin !== this.baseOrigin
       ? rebaseAcademicHeaders(configuredHeaders, new URL(this.baseOrigin), currentUrl)
       : { ...configuredHeaders };
 
     for (let redirectCount = 0; redirectCount <= 8; redirectCount += 1) {
       this.assertAllowedOrigin(currentUrl, 'cross_origin_request');
-      const throughBroker = jar.transport === 'broker';
+      const throughBroker = jar.transport !== 'direct';
       const transportUrl = throughBroker ? currentUrl : this.toTransportUrl(currentUrl);
       const headers = throughBroker
         ? brokerHeaders
@@ -752,6 +936,7 @@ export class HbuJwHttpClient {
             body,
             requestOptions,
             cookies: jar.serialize().cookies,
+            transport: jar.transport,
           })
         : await this.fetchImpl(transportUrl.href, {
             ...requestOptions,
@@ -901,6 +1086,7 @@ export class HbuJwHttpClient {
     body: BodyInit | null | undefined;
     requestOptions: Omit<RequestInit, 'headers' | 'method' | 'body'>;
     cookies: SerializedCookieJar['cookies'];
+    transport: SerializedCookieJar['transport'];
   }): Promise<Response> {
     const broker = this.webVpnBroker;
     if (!broker) throw new Error('HBU WebVPN broker transport is not configured');
@@ -925,7 +1111,7 @@ export class HbuJwHttpClient {
 
     let brokerResponse: Response;
     try {
-      brokerResponse = await broker.fetchImpl(`${broker.url}/v1/fetch`, {
+      brokerResponse = await broker.fetchImpl(`${broker.url}${args.transport === 'broker-cas' ? '/v1/cas/fetch' : '/v1/fetch'}`, {
         method: 'POST',
         headers: {
           authorization: broker.authorization,
@@ -935,7 +1121,7 @@ export class HbuJwHttpClient {
           targetUrl: args.target.href,
           method: args.method,
           headers: args.headers,
-          cookies: args.cookies,
+          ...(args.transport === 'broker-cas' ? {} : { cookies: args.cookies }),
           ...(bodyBase64 === undefined ? {} : { bodyBase64 }),
         }),
         signal: AbortSignal.timeout(25_000),
@@ -976,6 +1162,8 @@ function webVpnBrokerUserMessage(code: string, challenge: string | null): string
       return '学校 WebVPN 的资源会话已失效，自动重新登录后仍未恢复。请稍后重试；如果持续出现，请先完成 WebVPN 验证。';
     case 'webvpn_unavailable':
       return '学校 WebVPN 当前未连接，自动重新登录尚未完成。如果收到了验证通知，请完成验证后重试。';
+    case 'academic_cas_session_unavailable':
+      return '共享 CAS 教务登录态当前不可用，请先在 WebVPN 控制页完成 CAS 登录。';
     case 'unexpected_resource_redirect':
       return '教务系统返回了异常跳转，本次查询无法继续，请稍后重试。';
     case 'response_too_large':
@@ -1002,13 +1190,6 @@ function webVpnChallengeLabel(challenge: string | null): string {
     default:
       return '人工验证';
   }
-}
-
-interface WebVpnLoginPayload {
-  success?: boolean;
-  url?: unknown;
-  error?: unknown;
-  message?: unknown;
 }
 
 function normalizeOrigin(value: string): string {
@@ -1085,7 +1266,7 @@ function isCurrentCookieJar(value: unknown): value is SerializedCookieJar {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const jar = value as Partial<SerializedCookieJar>;
   return jar.version === 2
-    && (jar.transport === 'direct' || jar.transport === 'broker')
+    && (jar.transport === 'direct' || jar.transport === 'broker' || jar.transport === 'broker-cas')
     && typeof jar.origin === 'string'
     && Array.isArray(jar.cookies);
 }
@@ -1190,118 +1371,54 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
-function isWebVpnLoginPageHtml(html: string): boolean {
-  return /<form\b[^>]*\bid=["']form["'][^>]*>/i.test(html)
-    && /(?:\/do-login|WEBVPN资源访问系统|wengine-vpn)/i.test(html)
-    && /name=["']auth_type["']/i.test(html);
-}
-
-function extractInputValue(html: string, name: string): string | null {
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const tag = html.match(new RegExp(`<input\\b[^>]*\\bname=["']${escapedName}["'][^>]*>`, 'i'))?.[0];
-  if (!tag) return null;
-  const value = tag.match(/\bvalue=["']([^"']*)["']/i)?.[1];
-  return value === undefined ? '' : decodeBasicHtmlEntities(value);
-}
-
-function encryptWebVpnPassword(password: string): string {
-  const key = Buffer.from('wrdvpnisawesome!', 'utf8');
-  const iv = Buffer.from('wrdvpnisawesome!', 'utf8');
-  const sourceLength = password.length;
-  const padded = sourceLength % 16 === 0
-    ? password
-    : password.padEnd(sourceLength + (16 - sourceLength % 16), '0');
-  const cipher = createCipheriv('aes-128-cfb', key, iv);
-  const encrypted = Buffer.concat([cipher.update(Buffer.from(padded, 'utf8')), cipher.final()]);
-  return `${iv.toString('hex')}${encrypted.subarray(0, sourceLength).toString('hex')}`;
-}
-
-function parseWebVpnLoginPayload(text: string): WebVpnLoginPayload {
-  try {
-    const payload = JSON.parse(text) as unknown;
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) return payload as WebVpnLoginPayload;
-  } catch {
-    // Converted into the structured protocol error below.
-  }
-  throw new HbuJwLoginError('河北大学 WebVPN 登录响应格式发生变化，自动登录暂时无法完成。', {
-    code: 'webvpn_login_response_changed',
-    diagnostic: `webvpn response=${clipDiagnostic(text)}`,
-    category: 'protocol',
-  });
-}
-
-function createWebVpnLoginError(payload: WebVpnLoginPayload): HbuJwLoginError {
-  const error = typeof payload.error === 'string' ? payload.error : 'UNKNOWN';
-  const serverMessage = typeof payload.message === 'string' ? clipDiagnostic(payload.message) : '';
-  const diagnostic = `webvpn error=${error}${serverMessage ? ` message=${serverMessage}` : ''}`;
-  switch (error) {
-    case 'INVALID_ACCOUNT':
-      return new HbuJwLoginError('河北大学 WebVPN 拒绝了账号或密码，请确认统一认证密码后重新绑定。', {
-        code: 'webvpn_invalid_account',
-        diagnostic,
-        category: 'credential',
-      });
-    case 'CAPTCHA_FAILED':
-      return new HbuJwLoginError('河北大学 WebVPN 要求图片验证码，机器人无法自动完成本次登录，请稍后重试。', {
-        code: 'webvpn_captcha_required',
-        diagnostic,
-        category: 'interaction_required',
-      });
-    case 'NEED_TWO_STEP':
-      return new HbuJwLoginError('河北大学 WebVPN 要求短信二次验证，请先在 WebVPN 网页完成验证后重试。', {
-        code: 'webvpn_sms_required',
-        diagnostic,
-        category: 'interaction_required',
-      });
-    case 'NEED_TWO_STEP_TOTP':
-      return new HbuJwLoginError('河北大学 WebVPN 要求六位动态口令，请先在 WebVPN 网页完成验证后重试。', {
-        code: 'webvpn_totp_required',
-        diagnostic,
-        category: 'interaction_required',
-      });
-    case 'NEED_CONFIRM':
-      return new HbuJwLoginError('河北大学 WebVPN 检测到其他登录会话，需要人工确认是否继续登录。', {
-        code: 'webvpn_login_confirmation_required',
-        diagnostic,
-        category: 'interaction_required',
-      });
-    case 'WEEK_PASSWORD_FORBID':
-      return new HbuJwLoginError('河北大学 WebVPN 禁止弱密码登录，请先修改统一认证密码。', {
-        code: 'webvpn_weak_password_forbidden',
-        diagnostic,
-        category: 'interaction_required',
-      });
-    case 'WECHAT_BINDING':
-      return new HbuJwLoginError('河北大学 WebVPN 要求先完成企业微信账号绑定。', {
-        code: 'webvpn_wechat_binding_required',
-        diagnostic,
-        category: 'interaction_required',
-      });
-    case 'IP_FORBIDDEN':
-      return new HbuJwLoginError('河北大学 WebVPN 拒绝了当前服务器 IP，请联系管理员检查访问策略。', {
-        code: 'webvpn_ip_forbidden',
-        diagnostic,
-        category: 'upstream',
-      });
-    case 'TOO_MANY_ATTEMPTS':
-      return new HbuJwLoginError('河北大学 WebVPN 登录尝试过多，请稍后再试。', {
-        code: 'webvpn_too_many_attempts',
-        diagnostic,
-        category: 'upstream',
-      });
-    default:
-      return new HbuJwLoginError(serverMessage
-        ? `河北大学 WebVPN 登录失败：${serverMessage}`
-        : '河北大学 WebVPN 返回了无法识别的登录错误。', {
-        code: 'webvpn_unknown_error',
-        diagnostic,
-        category: 'protocol',
-      });
-  }
-}
-
 function clipDiagnostic(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
+class CasCookieJar {
+  private readonly values = new Map<string, string>();
+
+  static from(value?: HbuJwCasSession): CasCookieJar {
+    const jar = new CasCookieJar();
+    if (value === undefined) return jar;
+    if (value.version !== 1 || !Array.isArray(value.cookies) || value.cookies.length > 64) {
+      throw new Error('HBU CAS session is invalid');
+    }
+    for (const cookie of value.cookies) jar.set(cookie.name, cookie.value);
+    return jar;
+  }
+
+  get(name: string): string | undefined {
+    return this.values.get(name);
+  }
+
+  set(name: string, value: string): void {
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) throw new Error('HBU CAS cookie name is invalid');
+    if (typeof value !== 'string' || value.length > 4096 || /[\0\r\n;]/.test(value)) throw new Error('HBU CAS cookie value is invalid');
+    this.values.set(name, value);
+  }
+
+  remember(headers: string[]): void {
+    for (const raw of headers) {
+      for (const header of splitSetCookieHeader(raw)) {
+        const pair = header.split(';', 1)[0] ?? '';
+        const index = pair.indexOf('=');
+        if (index <= 0) continue;
+        const name = pair.slice(0, index).trim();
+        const value = pair.slice(index + 1).trim();
+        if (!value || /(?:^|;)\s*Max-Age=0(?:;|$)/i.test(header)) this.values.delete(name);
+        else this.set(name, value);
+      }
+    }
+  }
+
+  cookies(): SerializedCookieJar['cookies'] {
+    return [...this.values].map(([name, value]) => ({ name, value }));
+  }
+
+  serialize(): HbuJwCasSession {
+    return { version: 1, cookies: this.cookies() };
+  }
 }
 
 class CookieJar {
@@ -1354,6 +1471,109 @@ class CookieJar {
   }
 }
 
+function casLoginUrl(): string {
+  return `${CAS_ORIGIN}/lyuapServer/login?service=${encodeURIComponent(CAS_SERVICE)}`;
+}
+
+function encryptCasToken(): string {
+  return crypto.publicEncrypt(
+    { key: CAS_PUBLIC_KEY, padding: crypto.constants.RSA_PKCS1_PADDING },
+    Buffer.from(`lyasp${Date.now()}`, 'utf8'),
+  ).toString('hex');
+}
+
+function bigintBytes(hex: string): Buffer {
+  const normalized = hex.replace(/^00+/, '');
+  return Buffer.from(normalized.length % 2 === 0 ? normalized : `0${normalized}`, 'hex');
+}
+
+function parseCasJson(response: { text: string }, label: string): any {
+  try {
+    return JSON.parse(response.text);
+  } catch (error) {
+    throw new HbuJwLoginError(`${label}返回了无效响应。`, {
+      code: 'cas_invalid_json',
+      diagnostic: `${label} returned invalid JSON`,
+      category: 'protocol',
+      cause: error,
+    });
+  }
+}
+
+function parseCasTicket(text: string, contentType: string): string | null {
+  const trimmed = text.trim();
+  let value: unknown = trimmed;
+  if (/application\/json/i.test(contentType)) {
+    try {
+      value = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === 'string' && /^[A-Za-z0-9._~-]{8,4096}$/.test(value) ? value : null;
+}
+
+function parseTwoVerify(data: any): HbuJwCasChallenge['verification'] {
+  const content = data?.content;
+  const uid = String(data?.uid ?? '');
+  const phone = String(content?.phone ?? '');
+  const twoVerifyType = String(content?.twoVerifyType ?? '');
+  if (!uid || !phone || !twoVerifyType) {
+    throw new HbuJwLoginError('统一认证二次验证响应结构发生变化。', {
+      code: 'cas_two_verify_changed',
+      diagnostic: 'TWOVERIFY response is missing uid, phone, or twoVerifyType',
+      category: 'protocol',
+    });
+  }
+  return {
+    uid,
+    phone,
+    twoVerifyType,
+    isCommonIP: content.isCommonIP === true,
+    ...(content.ext === undefined ? {} : { ext: content.ext }),
+  };
+}
+
+function validateCasChallenge(value: HbuJwCasChallenge): void {
+  if (!value || value.version !== 1 || !value.username || !value.verification) {
+    throw new Error('HBU CAS SMS challenge is invalid');
+  }
+  CasCookieJar.from(value.casSession);
+  parseTwoVerify({ uid: value.verification.uid, content: value.verification });
+}
+
+function maskCasPhone(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 7 ? `${digits.slice(0, 3)}****${digits.slice(-4)}` : '账号绑定手机';
+}
+
+function casAccountStateError(data: any): HbuJwLoginError {
+  const code = String(data?.code ?? 'UNKNOWN');
+  const credentialCodes = new Set(['USERNOTFOUND', 'PASSWORDERROR', 'ERROR', 'CODEFALSE']);
+  return new HbuJwLoginError(
+    credentialCodes.has(code) ? '统一认证账号或密码错误。' : `统一认证要求处理账号状态：${code}。`,
+    {
+      code: `cas_${code.toLowerCase()}`,
+      diagnostic: `CAS account state code=${code}`,
+      category: credentialCodes.has(code) ? 'credential' : 'interaction_required',
+    },
+  );
+}
+
+function casPayloadError(
+  payload: any,
+  code: string,
+  fallbackMessage: string,
+  category: HbuJwLoginErrorCategory = 'upstream',
+): HbuJwLoginError {
+  const providerMessage = typeof payload?.meta?.message === 'string' ? payload.meta.message.trim() : '';
+  return new HbuJwLoginError(providerMessage || fallbackMessage, {
+    code,
+    diagnostic: `CAS response success=${String(payload?.meta?.success)} message=${clipDiagnostic(providerMessage)}`,
+    category,
+  });
+}
+
 function readSetCookieHeaders(headers: Headers): string[] {
   const extended = headers as Headers & { getSetCookie?: () => string[] };
   const setCookies = extended.getSetCookie?.();
@@ -1368,33 +1588,6 @@ function splitSetCookieHeader(header: string): string[] {
 
 function isAuthenticatedHtml(html: string): boolean {
   return /URP综合教务系统首页|本学期课程表|个人管理|教学资源|选课|成绩/.test(html) && !/name=["']password["']|j_spring_security_check/.test(html);
-}
-
-function isLoginPageHtml(html: string): boolean {
-  return /<form\b[\s\S]*?(?:\/sigin|j_spring_security_check)[\s\S]*?<\/form>/i.test(html)
-    || /name=["']password["']|name=["']j_password["']|id=["']cas["']|id=["']native["']/.test(html);
-}
-
-function extractLoginFailureMessage(html: string): string | null {
-  const text = decodeBasicHtmlEntities(html)
-    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const patterns = [
-    /账号不存在/,
-    /用户名或密码错误/,
-    /账号或密码错误/,
-    /密码错误/,
-    /验证码错误/,
-    /登录失败[，,。；;：:\s]*[^。；;，,\s]{0,40}/,
-  ];
-  for (const pattern of patterns) {
-    const matched = text.match(pattern)?.[0]?.trim();
-    if (matched) return matched;
-  }
-  return null;
 }
 
 function decodeBasicHtmlEntities(value: string): string {

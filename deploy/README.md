@@ -54,6 +54,15 @@ Install the Cloudflare Tunnel token on the server before deploying the HBU JW pu
 cloudflared tunnel token qqbot-hbu-jw | ssh km6 'install -d -m 700 /etc/cloudflared && umask 177 && cat > /etc/cloudflared/qqbot-hbu-jw.token'
 ```
 
+To let exactly one bound QQ identity reuse the loopback HBU CAS session owner, configure both values together:
+
+```dotenv
+HBU_JW_SHARED_CAS_OWNER_KEY=onebot:<qq-user-id>
+HBU_JW_SHARED_CAS_STUDENT_ID=<student-id>
+```
+
+The plugin verifies the returned student profile before using the cookie-free `broker-cas` transport. Other bound identities continue to use isolated broker sessions.
+
 Install the Cloudflare Tunnel token for the Genshin bind page:
 
 ```bash

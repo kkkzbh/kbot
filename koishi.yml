@@ -124,6 +124,8 @@ plugins:
       webVpnBrokerUrl: ${{ env.HBU_JW_WEBVPN_BROKER_URL || '' }}
       webVpnBrokerTokenFile: ${{ env.HBU_JW_WEBVPN_BROKER_TOKEN_FILE || '' }}
       allowedGroups: ${{ env.HBU_JW_ALLOWED_GROUPS || '' }}
+      sharedCasOwnerKey: ${{ env.HBU_JW_SHARED_CAS_OWNER_KEY || '' }}
+      sharedCasStudentId: ${{ env.HBU_JW_SHARED_CAS_STUDENT_ID || '' }}
       naturalTriggerEnabled: ${{ env.HBU_JW_NATURAL_TRIGGER_ENABLED === 'true' }}
       naturalTriggerGroups: ${{ env.HBU_JW_NATURAL_TRIGGER_GROUPS || '' }}
     ./dist/plugins/chaoxing:chaoxing:

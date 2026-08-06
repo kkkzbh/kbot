@@ -1,6 +1,14 @@
 import { Logger } from 'koishi';
-import { HbuJwLoginError, type HbuJwHttpClient } from './jw-client.js';
 import {
+  HbuJwLoginError,
+  type HbuJwCasChallenge,
+  type HbuJwCasSession,
+  type HbuJwHttpClient,
+  type HbuJwLoginResult,
+  type HbuJwLoginStartResult,
+} from './jw-client.js';
+import {
+  casSessionAad,
   constantTimeEqualHex,
   cookieAad,
   credentialAad,
@@ -11,6 +19,7 @@ import {
   encryptEnvelopeJson,
   encryptSelfContainedJson,
   sha256Hex,
+  smsDeviceTokenAad,
   type HbuJwKek,
 } from './crypto.js';
 import { HbuJwStore } from './store.js';
@@ -20,6 +29,7 @@ import {
   HbuJwUserError,
   type HbuJwBindChallenge,
   type HbuJwCredentialPayload,
+  type HbuJwSmsDevicePlatform,
   type OwnerIdentity,
   type SerializedCookieJar,
 } from './types.js';
@@ -31,6 +41,10 @@ export interface HbuJwRuntimeConfig {
   publicBaseUrl: string;
   bindTokenTtlMs: number;
   autoReloginEnabled: boolean;
+  sharedCasIdentity?: {
+    ownerKey: string;
+    studentId: string;
+  };
 }
 
 export interface StartBindingResult {
@@ -41,13 +55,22 @@ export interface StartBindingResult {
 export interface BindPageChallenge {
   token: string;
   qqUserId: string;
-  state: 'form' | 'pending' | 'success';
+  purpose: HbuJwBindChallenge['purpose'];
+  state: 'form' | 'pending' | 'sms' | 'success';
   confirmCode?: string;
+  maskedPhone?: string;
+  resendAvailableAt?: number;
 }
 
 export interface SubmitCredentialsResult {
   qqUserId: string;
+  state: 'sms' | 'success';
   confirmCode: string;
+}
+
+export interface SmsAutomationTokens {
+  ios: string;
+  android: string;
 }
 
 interface PendingConfirmCodePayload {
@@ -99,24 +122,39 @@ export class HbuJwService {
   async resolveBindPageChallenge(token: string): Promise<BindPageChallenge> {
     const challenge = await this.requireUsableChallenge(token);
     if (challenge.status === 'login_succeeded') {
-      const payload = this.decryptPendingConfirmCode(challenge);
       return {
         token,
         qqUserId: challenge.qqUserId,
+        purpose: challenge.purpose,
         state: 'success',
-        confirmCode: payload.confirmCode,
+        ...(challenge.purpose === 'binding' ? { confirmCode: this.decryptPendingConfirmCode(challenge).confirmCode } : {}),
+      };
+    }
+    if (challenge.status === 'awaiting_sms') {
+      if (!challenge.maskedPhone || !challenge.resendAvailableAt) {
+        throw new Error('hbu-jw awaiting_sms challenge is missing public state.');
+      }
+      return {
+        token,
+        qqUserId: challenge.qqUserId,
+        purpose: challenge.purpose,
+        state: 'sms',
+        maskedPhone: challenge.maskedPhone,
+        resendAvailableAt: challenge.resendAvailableAt,
       };
     }
     if (challenge.status === 'login_pending') {
       return {
         token,
         qqUserId: challenge.qqUserId,
+        purpose: challenge.purpose,
         state: 'pending',
       };
     }
     return {
       token,
       qqUserId: challenge.qqUserId,
+      purpose: challenge.purpose,
       state: 'form',
     };
   }
@@ -160,38 +198,36 @@ export class HbuJwService {
     }
 
     try {
-      const login = await this.jwClient.login(username, args.password);
-      const cookieJarCipher = encryptSelfContainedJson(login.cookieJar, cookieAad(claimedChallenge.ownerKey), this.kek);
+      const credentialPayload = { username, password: args.password } satisfies HbuJwCredentialPayload;
       const credential = encryptEnvelopeJson(
-        { username, password: args.password } satisfies HbuJwCredentialPayload,
+        credentialPayload,
         pendingCredentialAad(claimedChallenge),
         this.kek,
       );
-      const confirmCode = createConfirmCode();
-      const pendingConfirmCode = encryptEnvelopeJson(
-        { confirmCode } satisfies PendingConfirmCodePayload,
-        pendingConfirmCodeAad(claimedChallenge),
-        this.kek,
-      );
-      const completed = await this.store.completeChallengeLogin(claimedChallenge.id, loginAttemptId, {
-        status: 'login_succeeded',
-        confirmCodeHash: hashConfirmCode(claimedChallenge, confirmCode),
-        pendingConfirmCodeCipher: pendingConfirmCode.cipherText,
-        pendingConfirmCodeMeta: pendingConfirmCode.meta,
-        pendingCookieJarCipher: cookieJarCipher,
-        pendingCredentialCipher: credential.cipherText,
-        pendingCredentialMeta: credential.meta,
-        errorMessage: null,
-        updatedAt: now,
-      });
-      if (!completed) {
-        throw new HbuJwUserError('该绑定链接状态已变化，请重新发送“教务绑定”生成新链接。');
+      const login = await this.loginForIdentity(claimedChallenge.ownerKey, username, args.password);
+      if (login.kind === 'awaiting_sms') {
+        const encryptedChallenge = encryptEnvelopeJson(
+          login.challenge,
+          pendingCasChallengeAad(claimedChallenge),
+          this.kek,
+        );
+        const waiting = await this.store.setChallengeAwaitingSms(claimedChallenge.id, loginAttemptId, {
+          pendingCasChallengeCipher: encryptedChallenge.cipherText,
+          pendingCasChallengeMeta: encryptedChallenge.meta,
+          pendingCredentialCipher: credential.cipherText,
+          pendingCredentialMeta: credential.meta,
+          maskedPhone: login.maskedPhone,
+          resendAvailableAt: login.resendAvailableAt,
+          errorMessage: null,
+          updatedAt: this.now(),
+        });
+        if (!waiting) throw new HbuJwUserError('该绑定链接状态已变化，请重新发送“教务绑定”生成新链接。');
+        await this.audit(claimedChallenge.ownerKey, 'cas_sms_sent', 'ok');
+        return { qqUserId: claimedChallenge.qqUserId, state: 'sms', confirmCode: '' };
       }
+      const result = await this.completeBindingLogin(claimedChallenge, loginAttemptId, login, credential, 'login_pending');
       await this.audit(claimedChallenge.ownerKey, 'jw_login_succeeded', 'ok');
-      return {
-        qqUserId: claimedChallenge.qqUserId,
-        confirmCode,
-      };
+      return result;
     } catch (error) {
       const reason = formatLoginFailureReason(error);
       await this.store.releaseChallengeLogin(claimedChallenge.id, loginAttemptId, reason, now);
@@ -201,6 +237,197 @@ export class HbuJwService {
       if (error instanceof HbuJwLoginError) throw new HbuJwUserError(error.message);
       throw new HbuJwUserError('教务登录失败，请稍后重试。');
     }
+  }
+
+  async submitSmsCode(token: string, code: string): Promise<SubmitCredentialsResult> {
+    const challenge = await this.requireUsableChallenge(token);
+    if (challenge.status === 'login_succeeded') return this.completedSubmitResult(challenge);
+    if (challenge.status !== 'awaiting_sms') throw new HbuJwUserError('当前绑定流程没有等待短信验证码。');
+    return this.completeSmsChallenge(challenge, code);
+  }
+
+  async getSmsAutomationTokens(ownerKey: string): Promise<SmsAutomationTokens> {
+    return {
+      ios: await this.getOrCreateSmsDeviceToken(ownerKey, 'ios'),
+      android: await this.getOrCreateSmsDeviceToken(ownerKey, 'android'),
+    };
+  }
+
+  async ingestSmsMessage(deviceToken: string, message: string): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(deviceToken)) throw new HbuJwUserError('短信自动转发 Token 无效。');
+    const device = await this.store.findSmsDeviceByTokenHash(sha256Hex(deviceToken));
+    if (!device) throw new HbuJwUserError('短信自动转发 Token 无效。');
+    const codes = [...message.matchAll(/(?<!\d)\d{6}(?!\d)/g)].map((match) => match[0]);
+    const uniqueCodes = [...new Set(codes)];
+    if (uniqueCodes.length !== 1) throw new HbuJwUserError('短信中没有唯一的六位验证码。');
+    const waiting = (await this.store.findActiveChallenges(device.ownerKey))
+      .filter((challenge) => challenge.status === 'awaiting_sms');
+    if (waiting.length !== 1) throw new HbuJwUserError('当前没有唯一的教务验证码事务。');
+    await this.completeSmsChallenge(waiting[0]!, uniqueCodes[0]!);
+  }
+
+  private async completeSmsChallenge(challenge: HbuJwBindChallenge, code: string): Promise<SubmitCredentialsResult> {
+    const credentialPayload = this.decryptPendingCredential(challenge);
+    const casChallenge = this.decryptPendingCasChallenge(challenge);
+    try {
+      const login = await this.jwClient.completeSmsLogin(casChallenge, credentialPayload.password, code.trim());
+      const credential = encryptEnvelopeJson(
+        credentialPayload,
+        pendingCredentialAad(challenge),
+        this.kek,
+      );
+      if (challenge.purpose === 'reauth') {
+        await this.completeReauthentication(challenge, login, credentialPayload);
+        return { qqUserId: challenge.qqUserId, state: 'success', confirmCode: '' };
+      }
+      const result = await this.completeBindingLogin(challenge, challenge.loginAttemptId!, login, credential, 'awaiting_sms');
+      await this.audit(challenge.ownerKey, 'cas_sms_validated', 'ok');
+      return result;
+    } catch (error) {
+      const reason = formatLoginFailureReason(error);
+      await this.store.updateChallenge(challenge.id, { errorMessage: reason, updatedAt: this.now() });
+      await this.audit(challenge.ownerKey, 'cas_sms_failed', 'failed', reason);
+      if (error instanceof HbuJwLoginError) throw new HbuJwUserError(error.message);
+      throw error;
+    }
+  }
+
+  private async getOrCreateSmsDeviceToken(ownerKey: string, platform: HbuJwSmsDevicePlatform): Promise<string> {
+    const existing = await this.store.getSmsDevice(ownerKey, platform);
+    if (existing) {
+      const { token } = decryptSelfContainedJson<{ token: string }>(
+        existing.tokenCipher,
+        smsDeviceTokenAad(ownerKey, platform),
+        this.kek,
+      );
+      if (sha256Hex(token) !== existing.tokenHash) throw new Error('hbu-jw SMS device token integrity check failed.');
+      return token;
+    }
+    const token = createRandomToken();
+    await this.store.createSmsDevice(
+      ownerKey,
+      platform,
+      sha256Hex(token),
+      encryptSelfContainedJson({ token }, smsDeviceTokenAad(ownerKey, platform), this.kek),
+      this.now(),
+    );
+    return token;
+  }
+
+  async resendSmsCode(token: string): Promise<number> {
+    const challenge = await this.requireUsableChallenge(token);
+    if (challenge.status !== 'awaiting_sms') throw new HbuJwUserError('当前绑定流程没有等待短信验证码。');
+    const now = this.now();
+    if ((challenge.resendAvailableAt ?? 0) > now) {
+      throw new HbuJwUserError('验证码发送间隔尚未结束，请稍后重试。');
+    }
+    const casChallenge = this.decryptPendingCasChallenge(challenge);
+    const resendAvailableAt = await this.jwClient.resendSmsCode(casChallenge);
+    const encryptedChallenge = encryptEnvelopeJson(casChallenge, pendingCasChallengeAad(challenge), this.kek);
+    await this.store.updateChallenge(challenge.id, {
+      pendingCasChallengeCipher: encryptedChallenge.cipherText,
+      pendingCasChallengeMeta: encryptedChallenge.meta,
+      resendAvailableAt,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    await this.audit(challenge.ownerKey, 'cas_sms_resent', 'ok');
+    return resendAvailableAt;
+  }
+
+  private async completeBindingLogin(
+    challenge: HbuJwBindChallenge,
+    loginAttemptId: string,
+    login: HbuJwLoginResult,
+    credential: { cipherText: string; meta: string },
+    source: 'login_pending' | 'awaiting_sms',
+  ): Promise<SubmitCredentialsResult> {
+    const now = this.now();
+    const confirmCode = createConfirmCode();
+    const pendingConfirmCode = encryptEnvelopeJson(
+      { confirmCode } satisfies PendingConfirmCodePayload,
+      pendingConfirmCodeAad(challenge),
+      this.kek,
+    );
+    const patch: Partial<HbuJwBindChallenge> = {
+      status: 'login_succeeded',
+      confirmCodeHash: hashConfirmCode(challenge, confirmCode),
+      pendingConfirmCodeCipher: pendingConfirmCode.cipherText,
+      pendingConfirmCodeMeta: pendingConfirmCode.meta,
+      pendingCookieJarCipher: encryptSelfContainedJson(login.cookieJar, cookieAad(challenge.ownerKey), this.kek),
+      pendingCasSessionCipher: login.casSession
+        ? encryptSelfContainedJson(login.casSession, casSessionAad(challenge.ownerKey), this.kek)
+        : null,
+      pendingCasChallengeCipher: null,
+      pendingCasChallengeMeta: null,
+      pendingCredentialCipher: credential.cipherText,
+      pendingCredentialMeta: credential.meta,
+      maskedPhone: null,
+      resendAvailableAt: null,
+      errorMessage: null,
+      updatedAt: now,
+    };
+    const completed = source === 'login_pending'
+      ? await this.store.completeChallengeLogin(challenge.id, loginAttemptId, patch)
+      : await this.store.completeSmsChallenge(challenge.id, loginAttemptId, patch);
+    if (!completed) throw new HbuJwUserError('该绑定链接状态已变化，请重新发送“教务绑定”生成新链接。');
+    return { qqUserId: challenge.qqUserId, state: 'success', confirmCode };
+  }
+
+  private async completeReauthentication(
+    challenge: HbuJwBindChallenge,
+    login: HbuJwLoginResult,
+    credentialPayload: HbuJwCredentialPayload,
+  ): Promise<void> {
+    const now = this.now();
+    const identity = challengeIdentity(challenge);
+    const cookieJarCipher = encryptSelfContainedJson(login.cookieJar, cookieAad(challenge.ownerKey), this.kek);
+    const casSessionCipher = login.casSession
+      ? encryptSelfContainedJson(login.casSession, casSessionAad(challenge.ownerKey), this.kek)
+      : null;
+    await this.store.replaceSession(identity, cookieJarCipher, 'active', now, casSessionCipher);
+    const credential = await this.store.getActiveCredential(challenge.ownerKey);
+    if (!credential || credentialPayload.username.length === 0) {
+      throw new Error('hbu-jw reauthentication challenge is missing its credential.');
+    }
+    await this.store.markCredentialUsed(credential.id, now);
+    const completed = await this.store.completeSmsChallenge(challenge.id, challenge.loginAttemptId!, {
+      status: 'login_succeeded',
+      pendingCasChallengeCipher: null,
+      pendingCasChallengeMeta: null,
+      pendingCredentialCipher: null,
+      pendingCredentialMeta: null,
+      maskedPhone: null,
+      resendAvailableAt: null,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    if (!completed) throw new HbuJwUserError('验证码已经由另一次请求处理。');
+    await this.audit(challenge.ownerKey, 'cas_reauthentication_succeeded', 'ok');
+  }
+
+  private decryptPendingCredential(challenge: HbuJwBindChallenge): HbuJwCredentialPayload {
+    if (!challenge.pendingCredentialCipher || !challenge.pendingCredentialMeta) {
+      throw new Error('hbu-jw SMS challenge is missing pending credentials.');
+    }
+    return decryptEnvelopeJson<HbuJwCredentialPayload>(
+      challenge.pendingCredentialCipher,
+      challenge.pendingCredentialMeta,
+      pendingCredentialAad(challenge),
+      this.kek,
+    );
+  }
+
+  private decryptPendingCasChallenge(challenge: HbuJwBindChallenge): HbuJwCasChallenge {
+    if (!challenge.pendingCasChallengeCipher || !challenge.pendingCasChallengeMeta) {
+      throw new Error('hbu-jw SMS challenge is missing CAS state.');
+    }
+    return decryptEnvelopeJson<HbuJwCasChallenge>(
+      challenge.pendingCasChallengeCipher,
+      challenge.pendingCasChallengeMeta,
+      pendingCasChallengeAad(challenge),
+      this.kek,
+    );
   }
 
   async confirmBinding(identity: OwnerIdentity, confirmCode: string): Promise<void> {
@@ -238,7 +465,13 @@ export class HbuJwService {
     );
     await this.store.updateCredentialEnvelope(credentialRow, credential.cipherText, credential.meta, now);
     await this.store.removeAcademicData(identity.ownerKey);
-    await this.store.replaceSession(identity, challenge.pendingCookieJarCipher, 'active', now);
+    await this.store.replaceSession(
+      identity,
+      challenge.pendingCookieJarCipher,
+      'active',
+      now,
+      challenge.pendingCasSessionCipher ?? null,
+    );
     await this.store.clearChallengeSecrets(challenge.id, 'confirmed', now);
     await this.audit(identity.ownerKey, 'bind_confirmed', 'ok');
   }
@@ -256,7 +489,8 @@ export class HbuJwService {
     if (session?.status === 'invalid') return session.lastFailureReason ?? '教务账号凭据已失效，需要重新绑定';
     const challenges = await this.store.findActiveChallenges(identity.ownerKey);
     if (challenges.some((challenge) => challenge.status === 'login_succeeded')) return '绑定流程待确认';
-    if (challenges.some((challenge) => challenge.status === 'login_pending')) return '正在验证教务账号密码';
+    if (challenges.some((challenge) => challenge.status === 'awaiting_sms')) return '统一认证验证码已发送，等待验证';
+    if (challenges.some((challenge) => challenge.status === 'login_pending')) return '正在验证统一认证账号';
     if (challenges.some((challenge) => challenge.status === 'created')) return '绑定链接已生成，等待网页登录';
     const latestChallenge = await this.store.findLatestChallenge(identity.ownerKey);
     if (latestChallenge?.status === 'expired') return '绑定链接已过期';
@@ -268,6 +502,7 @@ export class HbuJwService {
     await this.store.removeSession(identity.ownerKey);
     await this.store.revokeCredential(identity.ownerKey, now);
     await this.store.removeAcademicData(identity.ownerKey);
+    await this.store.removeSmsDevices(identity.ownerKey);
     await this.store.cancelActiveChallenges(identity.ownerKey, now);
     await this.store.clearOwnerChallengeSecrets(identity.ownerKey, now);
     await this.audit(identity.ownerKey, 'unbind', 'ok');
@@ -277,9 +512,6 @@ export class HbuJwService {
     const now = this.now();
     const session = await this.store.getSession(identity.ownerKey);
     const credential = await this.store.getActiveCredential(identity.ownerKey);
-    if (this.jwClient.usesSharedBroker()) {
-      return this.ensureSharedSessionAuthenticated(identity, credential, now);
-    }
     if (session?.status === 'active') {
       if (!credential) {
         throw new Error(`active hbu-jw session is missing credential: owner=${identity.ownerKey}`);
@@ -301,6 +533,12 @@ export class HbuJwService {
       return { kind: 'unavailable', reason: '教务登录态已过期，自动续登当前未启用，请联系管理员或重新绑定。' };
     }
 
+    const activeReauth = (await this.store.findActiveChallenges(identity.ownerKey))
+      .find((challenge) => challenge.purpose === 'reauth' && challenge.status === 'awaiting_sms');
+    if (activeReauth) {
+      return { kind: 'unavailable', reason: this.reauthenticationMessage(activeReauth) };
+    }
+
     try {
       const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
         credential.credentialCipher,
@@ -308,11 +546,25 @@ export class HbuJwService {
         credentialAad(identity.ownerKey, HBU_JW_SERVICE_ID, credential.id),
         this.kek,
       );
-      const login = await this.jwClient.login(credentialPayload.username, credentialPayload.password);
+      const usesSharedCas = this.matchesSharedCasIdentity(identity.ownerKey, credentialPayload.username);
+      const previousCasSession = session?.casSessionCipher
+        ? decryptSelfContainedJson<HbuJwCasSession>(session.casSessionCipher, casSessionAad(identity.ownerKey), this.kek)
+        : undefined;
+      const login = usesSharedCas
+        ? await this.jwClient.loginSharedCas(credentialPayload.username)
+        : await this.jwClient.beginLogin(credentialPayload.username, credentialPayload.password, previousCasSession);
+      if (login.kind === 'awaiting_sms') {
+        const challenge = await this.createReauthenticationChallenge(identity, credentialPayload, login);
+        await this.audit(identity.ownerKey, 'cas_sms_sent', 'ok');
+        return { kind: 'unavailable', reason: this.reauthenticationMessage(challenge) };
+      }
       const cookieJarCipher = encryptSelfContainedJson(login.cookieJar, cookieAad(identity.ownerKey), this.kek);
-      await this.store.replaceSession(identity, cookieJarCipher, 'active', now);
+      const casSessionCipher = login.casSession
+        ? encryptSelfContainedJson(login.casSession, casSessionAad(identity.ownerKey), this.kek)
+        : null;
+      await this.store.replaceSession(identity, cookieJarCipher, 'active', now, casSessionCipher);
       await this.store.markCredentialUsed(credential.id, now);
-      await this.audit(identity.ownerKey, 'credential_refresh_succeeded', 'ok');
+      await this.audit(identity.ownerKey, usesSharedCas ? 'shared_cas_session_acquired' : 'credential_refresh_succeeded', 'ok');
       return { kind: 'authenticated', cookieJar: login.cookieJar, credentialVersion: credential.version };
     } catch (error) {
       const failure = classifyCredentialRefreshFailure(error);
@@ -326,55 +578,72 @@ export class HbuJwService {
     }
   }
 
-  private async ensureSharedSessionAuthenticated(
-    identity: OwnerIdentity,
-    credential: Awaited<ReturnType<HbuJwStore['getActiveCredential']>>,
-    now: number,
-  ): Promise<AuthenticatedSessionResult> {
-    const state = this.sharedSession.requireState();
-    if (!credential) {
-      return { kind: 'needs_binding', reason: '请先发送“教务绑定”。' };
-    }
-    if (state.authenticated?.ownerKey === identity.ownerKey
-      && state.authenticated.credentialVersion === credential.version) {
-      return {
-        kind: 'authenticated',
-        cookieJar: state.authenticated.cookieJar,
-        credentialVersion: credential.version,
-      };
-    }
-    if (!this.config.autoReloginEnabled) {
-      return { kind: 'unavailable', reason: '共享教务会话需要自动切换账号，自动续登当前未启用。' };
-    }
+  private loginForIdentity(ownerKey: string, username: string, password: string): Promise<HbuJwLoginStartResult> {
+    return this.matchesSharedCasIdentity(ownerKey, username)
+      ? this.jwClient.loginSharedCas(username)
+      : this.jwClient.beginLogin(username, password);
+  }
 
-    try {
-      const credentialPayload = decryptEnvelopeJson<HbuJwCredentialPayload>(
-        credential.credentialCipher,
-        credential.credentialMeta,
-        credentialAad(identity.ownerKey, HBU_JW_SERVICE_ID, credential.id),
-        this.kek,
-      );
-      const login = await this.jwClient.login(credentialPayload.username, credentialPayload.password);
-      const cookieJarCipher = encryptSelfContainedJson(login.cookieJar, cookieAad(identity.ownerKey), this.kek);
-      await this.store.replaceSession(identity, cookieJarCipher, 'active', now);
-      await this.store.markCredentialUsed(credential.id, now);
-      await this.audit(identity.ownerKey, 'shared_session_switched', 'ok');
-      state.authenticated = {
-        ownerKey: identity.ownerKey,
-        cookieJar: login.cookieJar,
-        credentialVersion: credential.version,
-      };
-      return { kind: 'authenticated', cookieJar: login.cookieJar, credentialVersion: credential.version };
-    } catch (error) {
-      const failure = classifyCredentialRefreshFailure(error);
-      await this.store.setSessionStatus(identity.ownerKey, failure.sessionStatus, failure.userMessage, now);
-      if (failure.credentialRejected) {
-        await this.store.markCredentialFailure(credential.id, failure.diagnostic, now);
-      }
-      await this.audit(identity.ownerKey, failure.eventType, 'failed', failure.diagnostic);
-      logger.warn('hbu jw shared session switch failed: owner=%s reason=%s', identity.ownerKey, failure.diagnostic);
-      return { kind: failure.resultKind, reason: failure.userMessage };
-    }
+  private async createReauthenticationChallenge(
+    identity: OwnerIdentity,
+    credentialPayload: HbuJwCredentialPayload,
+    login: Extract<HbuJwLoginStartResult, { kind: 'awaiting_sms' }>,
+  ): Promise<HbuJwBindChallenge> {
+    const now = this.now();
+    await this.store.cancelActiveChallenges(identity.ownerKey, now);
+    const token = createRandomToken();
+    const challenge = await this.store.createChallenge(
+      identity,
+      sha256Hex(token),
+      now + this.config.bindTokenTtlMs,
+      now,
+      'reauth',
+    );
+    const loginAttemptId = createRandomToken(16);
+    const claimed = await this.store.claimChallengeForLogin(challenge.id, loginAttemptId, now);
+    if (!claimed) throw new Error('hbu-jw could not claim reauthentication challenge.');
+    const encryptedCredential = encryptEnvelopeJson(
+      credentialPayload,
+      pendingCredentialAad(claimed),
+      this.kek,
+    );
+    const encryptedChallenge = encryptEnvelopeJson(
+      login.challenge,
+      pendingCasChallengeAad(claimed),
+      this.kek,
+    );
+    const pageTokenCipher = encryptSelfContainedJson({ token }, reauthTokenAad(identity.ownerKey), this.kek);
+    const waiting = await this.store.setChallengeAwaitingSms(claimed.id, loginAttemptId, {
+      pageTokenCipher,
+      pendingCasChallengeCipher: encryptedChallenge.cipherText,
+      pendingCasChallengeMeta: encryptedChallenge.meta,
+      pendingCredentialCipher: encryptedCredential.cipherText,
+      pendingCredentialMeta: encryptedCredential.meta,
+      maskedPhone: login.maskedPhone,
+      resendAvailableAt: login.resendAvailableAt,
+      errorMessage: null,
+      updatedAt: now,
+    });
+    if (!waiting) throw new Error('hbu-jw could not persist reauthentication challenge.');
+    return waiting;
+  }
+
+  private reauthenticationMessage(challenge: HbuJwBindChallenge): string {
+    if (!challenge.pageTokenCipher) throw new Error('hbu-jw reauthentication challenge is missing its page token.');
+    const { token } = decryptSelfContainedJson<{ token: string }>(
+      challenge.pageTokenCipher,
+      reauthTokenAad(challenge.ownerKey),
+      this.kek,
+    );
+    const link = `${this.config.publicBaseUrl}${this.config.bindPagePath}?token=${encodeURIComponent(token)}`;
+    return `统一认证验证码已发送至 ${challenge.maskedPhone ?? '账号绑定手机'}，请打开链接完成验证：\n${link}`;
+  }
+
+  private matchesSharedCasIdentity(ownerKey: string, username: string): boolean {
+    const configured = this.config.sharedCasIdentity;
+    return configured !== undefined
+      && configured.ownerKey === ownerKey
+      && configured.studentId === username;
   }
 
   async runKeepAlive(recentUseWindowMs: number): Promise<void> {
@@ -419,8 +688,12 @@ export class HbuJwService {
   }
 
   private completedSubmitResult(challenge: HbuJwBindChallenge): SubmitCredentialsResult {
+    if (challenge.purpose === 'reauth') {
+      return { qqUserId: challenge.qqUserId, state: 'success', confirmCode: '' };
+    }
     return {
       qqUserId: challenge.qqUserId,
+      state: 'success',
       confirmCode: this.decryptPendingConfirmCode(challenge).confirmCode,
     };
   }
@@ -458,6 +731,23 @@ function pendingCredentialAad(challenge: HbuJwBindChallenge): string {
 
 function pendingConfirmCodeAad(challenge: HbuJwBindChallenge): string {
   return `hbu-jw:pending-confirm-code:v1:${challenge.ownerKey}:${challenge.id}`;
+}
+
+function pendingCasChallengeAad(challenge: HbuJwBindChallenge): string {
+  return `hbu-jw:pending-cas-challenge:v1:${challenge.ownerKey}:${challenge.id}`;
+}
+
+function reauthTokenAad(ownerKey: string): string {
+  return `hbu-jw:reauth-token:v1:${ownerKey}`;
+}
+
+function challengeIdentity(challenge: HbuJwBindChallenge): OwnerIdentity {
+  return {
+    ownerKey: challenge.ownerKey,
+    platform: challenge.platform,
+    qqUserId: challenge.qqUserId,
+    channelId: challenge.channelId,
+  };
 }
 
 function formatLoginFailureReason(error: unknown): string {
