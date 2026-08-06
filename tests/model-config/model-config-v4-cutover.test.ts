@@ -28,8 +28,44 @@ describe('Model Config V4 cutover', () => {
     const migrated = modelConfigDocumentSchema.parse(JSON.parse(await readFile(path, 'utf8')));
     expect(migrated.schemaVersion).toBe(4);
     expect(migrated.savedRevision).toBe(8);
-    expect(migrated.bindings).toContainEqual({ workload: 'groupSummary.generate', mode: 'inheritMain' });
+    expect(migrated.bindings).toContainEqual({
+      workload: 'groupSummary.generate',
+      mode: 'dedicated',
+      connectionId: 'primary',
+      modelId: 'primary-chat',
+    });
     expect(migrated.secrets).toEqual(v3Document().secrets);
+  });
+
+  it('reuses the native memory extractor when main chat uses the reply protocol', async () => {
+    const directory = await mkdtemp('/var/tmp/model-config-v4-main-reply-'); directories.push(directory);
+    const path = join(directory, 'model-config.json');
+    const source = v3Document();
+    source.models.push({
+      ...source.models[0]!,
+      id: 'main-chat-reply',
+      displayName: 'Main Chat Reply',
+      structuredOutputProtocol: 'chat_reply_v1',
+    });
+    source.bindings = source.bindings.map((binding) => {
+      if (binding.workload === 'main.chat') return { ...binding, modelId: 'main-chat-reply' };
+      if (binding.workload === 'affinity.analysis') {
+        return { ...binding, mode: 'dedicated' as const, connectionId: 'primary', modelId: 'primary-chat' };
+      }
+      return binding;
+    });
+    await writeFile(path, `${JSON.stringify(source, null, 2)}\n`, { mode: 0o600 });
+
+    const report = await preflightModelConfigV4(path);
+    await applyModelConfigV4(path, report);
+
+    const migrated = modelConfigDocumentSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+    expect(migrated.bindings).toContainEqual({
+      workload: 'groupSummary.generate',
+      mode: 'dedicated',
+      connectionId: 'primary',
+      modelId: 'primary-chat',
+    });
   });
 
   it('rejects drift after preflight', async () => {

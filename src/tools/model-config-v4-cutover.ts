@@ -3,17 +3,8 @@ import { open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, resolve } from 'node:path';
 import { z } from 'zod';
-
-const sourceSchema = z.object({
-  schemaVersion: z.literal(3),
-  savedRevision: z.number().int().positive(),
-  appliedRevision: z.number().int().positive(),
-  updatedAt: z.string(),
-  connections: z.array(z.unknown()),
-  models: z.array(z.unknown()),
-  bindings: z.array(z.object({ workload: z.string(), mode: z.string() }).passthrough()),
-  secrets: z.array(z.unknown()),
-}).passthrough();
+import { modelConfigDocumentSchema } from '../plugins/model-config/types.js';
+import { modelConfigV3DocumentSchema } from './model-config-v3-cutover.js';
 
 const reportSchema = z.object({
   schemaVersion: z.literal(1),
@@ -23,16 +14,48 @@ const reportSchema = z.object({
   appliedRevision: z.number().int().positive(),
 }).strict();
 
+function buildModelConfigV4(document: z.infer<typeof modelConfigV3DocumentSchema>) {
+  const memoryBinding = document.bindings.find((binding) => binding.workload === 'memory.extract');
+  if (!memoryBinding) {
+    throw new Error('Model Config V4 cutover requires the memory.extract binding.');
+  }
+
+  const groupSummaryBinding = memoryBinding.mode === 'inheritMain'
+    ? { workload: 'groupSummary.generate' as const, mode: 'inheritMain' as const }
+    : memoryBinding.mode === 'dedicated' && memoryBinding.connectionId && memoryBinding.modelId
+      ? {
+          workload: 'groupSummary.generate' as const,
+          mode: 'dedicated' as const,
+          connectionId: memoryBinding.connectionId,
+          modelId: memoryBinding.modelId,
+        }
+      : null;
+  if (!groupSummaryBinding) {
+    throw new Error('Model Config V4 cutover requires memory.extract to use inheritMain or a complete dedicated target.');
+  }
+
+  const revision = document.savedRevision + 1;
+  return modelConfigDocumentSchema.parse({
+    ...document,
+    schemaVersion: 4,
+    savedRevision: revision,
+    appliedRevision: revision,
+    updatedAt: new Date().toISOString(),
+    bindings: [...document.bindings, groupSummaryBinding],
+  });
+}
+
 export async function preflightModelConfigV4(configPath: string) {
   const absolute = resolve(configPath);
   const source = await readFile(absolute);
-  const document = sourceSchema.parse(JSON.parse(source.toString('utf8')));
+  const document = modelConfigV3DocumentSchema.parse(JSON.parse(source.toString('utf8')));
   if (document.savedRevision !== document.appliedRevision) {
     throw new Error('Model Config V4 cutover requires savedRevision to equal appliedRevision.');
   }
   if (document.bindings.some((binding) => binding.workload === 'groupSummary.generate')) {
     throw new Error('Model Config V3 already contains groupSummary.generate.');
   }
+  buildModelConfigV4(document);
   return reportSchema.parse({
     schemaVersion: 1,
     configPath: absolute,
@@ -49,16 +72,8 @@ export async function applyModelConfigV4(configPath: string, expected: unknown):
   const source = await readFile(absolute);
   const digest = createHash('sha256').update(source).digest('hex');
   if (digest !== report.sourceSha256) throw new Error('Model Config changed after V4 preflight.');
-  const document = sourceSchema.parse(JSON.parse(source.toString('utf8')));
-  const revision = document.savedRevision + 1;
-  const target = {
-    ...document,
-    schemaVersion: 4,
-    savedRevision: revision,
-    appliedRevision: revision,
-    updatedAt: new Date().toISOString(),
-    bindings: [...document.bindings, { workload: 'groupSummary.generate', mode: 'inheritMain' }],
-  };
+  const document = modelConfigV3DocumentSchema.parse(JSON.parse(source.toString('utf8')));
+  const target = buildModelConfigV4(document);
   const staged = resolve(dirname(absolute), `.${basename(absolute)}.v4.${process.pid}.${randomUUID()}.staged`);
   try {
     await writeFile(staged, `${JSON.stringify(target, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
